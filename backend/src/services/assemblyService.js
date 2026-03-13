@@ -828,7 +828,12 @@ class AssemblyService {
                 lotSelections ? Object.keys(lotSelections).filter(k => lotSelections[k]) : []
             );
 
-            if (canAutoConsume) {
+            // ── Skip auto-consume if Post-CONTEO already pre-consumed these items ──
+            // When CONTEO completes, it pre-consumes EMPAQUE items and sets
+            // materialsPreConsumed=true. If we auto-consume again here, it's a double-decrement.
+            const alreadyPreConsumed = note.processParameters?.materialsPreConsumed === true;
+
+            if (canAutoConsume && !alreadyPreConsumed) {
                 for (const item of (note.items || [])) {
                     if (consumedItemIds.has(item.id)) continue; // Already consumed above
                     if (!item.componentId) continue;

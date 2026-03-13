@@ -332,7 +332,7 @@ exports.getSuppliers = async (req, res) => {
         const suppliers = await prisma.supplier.findMany({
             where,
             orderBy: { name: 'asc' },
-            take: 200
+            take: 1000
         });
         res.json(suppliers);
     } catch (error) {

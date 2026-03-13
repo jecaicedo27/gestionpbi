@@ -36,6 +36,10 @@ backend/prisma/*.db-journal
 backend/uploads/
 backend/screenshots/
 backend/rpa-screenshots/
+backend/src/rpa-screenshots/
+
+# Backups
+backups/
 
 # Temp
 tmp/

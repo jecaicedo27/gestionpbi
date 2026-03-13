@@ -95,11 +95,10 @@ const assemblyNoteController = {
                         qpuMap[ti.productId] = { qpu: ti.quantityPerUnit, unit: ti.unit, product: ti.product };
                     }
 
-                    // For ENSAMBLE: qpu = absolute qty, use directly (no scaling by targetQuantity)
                     // For PESAJE: SKIP recalculation — quickStart already computed correct
                     // scaled values (handles both absolute and per-gram ratio inputs).
                     // Live recalc would lose the scaling and show raw template values.
-                    const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
+                    // For ENSAMBLE and EMPAQUE: qpu is per-unit, multiply by targetQuantity.
                     const isPesajeNote = note.processType?.code === 'PESAJE';
                     if (isPesajeNote) {
                         // Keep stored DB values for PESAJE — they are already correct
@@ -110,7 +109,7 @@ const assemblyNoteController = {
                         if (current !== undefined) {
                             return {
                                 ...item,
-                                plannedQuantity: isEnsambleNote ? current.qpu : current.qpu * note.targetQuantity,
+                                plannedQuantity: current.qpu * note.targetQuantity,
                                 unit: current.unit || item.unit,
                                 _recalculated: true
                             };
@@ -135,7 +134,7 @@ const assemblyNoteController = {
                                     id: `virtual_${ti.id}`,
                                     componentId: ti.productId,
                                     component: ti.product,
-                                    plannedQuantity: (isEnsambleNote || isPesajeNote) ? ti.quantityPerUnit : ti.quantityPerUnit * note.targetQuantity,
+                                    plannedQuantity: isPesajeNote ? ti.quantityPerUnit : ti.quantityPerUnit * note.targetQuantity,
                                     actualQuantity: null,
                                     unit: ti.unit,
                                     lotNumber: null,

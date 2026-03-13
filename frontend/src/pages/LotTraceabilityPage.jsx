@@ -321,84 +321,88 @@ const StockTable = ({ items, loading, zone, search, onSearchChange, onRefresh })
 
 /* ─── Movements Table (existing traceability) ────────────────── */
 const MovementsTable = ({ data, loading }) => {
-    const getRowStyle = (c) => {
-        const isIngress = c.type === 'INGRESS';
-        const isProduction = c.type === 'PRODUCTION';
-        return {
-            bgColor: isIngress ? '#eff6ff' : isProduction ? '#f0fdf4' : '#fff',
-            qtyColor: isIngress ? '#1e40af' : isProduction ? '#16a34a' : '#dc2626',
-            typeLabel: isIngress ? '📥 Ingreso' : isProduction ? '🏭 Producción' : '↓ Consumo',
-            isPositive: isProduction || isIngress,
-        };
-    };
+    if (loading) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Cargando...</div>;
+    if (data.length === 0) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Sin registros</div>;
+
+
+    // Compute running balance per PRODUCT — data is sorted DESC by date
+    // 1. Collect current quantity of each unique lot, summed per product
+    const lotSeen = {};   // "product::lot" → true
+    const prodBalance = {}; // productName → total current balance
+    data.forEach(c => {
+        const prodKey = c.materialLot?.siigoProductName || c.id;
+        const lotKey = c.materialLot?.lotNumber || c.id;
+        const k = `${prodKey}::${lotKey}`;
+        if (!lotSeen[k]) {
+            lotSeen[k] = true;
+            prodBalance[prodKey] = (prodBalance[prodKey] || 0) + (c.materialLot?.currentQuantity ?? 0);
+        }
+    });
+    // 2. Walk through rows (desc) and assign balance after each movement
+    const rows = data.map(c => {
+        const prodKey = c.materialLot?.siigoProductName || c.id;
+        const isPositive = c.type === 'INGRESS' || c.type === 'PRODUCTION';
+        const qty = Math.abs(c.quantity || c.quantityUsed || 0);
+        const balanceAfter = prodBalance[prodKey] ?? null;
+        // Reverse the operation to get the balance BEFORE this movement
+        if (typeof balanceAfter === 'number') {
+            prodBalance[prodKey] = isPositive ? balanceAfter - qty : balanceAfter + qty;
+        }
+        return { ...c, _balance: balanceAfter, _isPositive: isPositive, _qty: qty };
+    });
 
     return (
         <div style={S.card}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
                 <thead>
                     <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
-                        {['Tipo', 'Producto', 'Lote', 'Zona', 'Cantidad', 'Operario', 'Proceso', 'Batch', 'Fecha'].map(h => (
-                            <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.73rem', textTransform: 'uppercase' }}>{h}</th>
+                        {['Producto', 'Lote', 'Ingreso', 'Egreso', 'Restante', 'Operario', 'Proceso', 'Batch', 'Fecha'].map(h => (
+                            <th key={h} style={{
+                                padding: '10px 12px', textAlign: ['Ingreso','Egreso','Restante'].includes(h) ? 'right' : 'left',
+                                fontWeight: 700, color: h === 'Ingreso' ? '#16a34a' : h === 'Egreso' ? '#dc2626' : '#475569',
+                                fontSize: '0.72rem', textTransform: 'uppercase'
+                            }}>{h}</th>
                         ))}
                     </tr>
                 </thead>
                 <tbody>
-                    {loading ? (
-                        <tr><td colSpan="9" style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Cargando...</td></tr>
-                    ) : data.length === 0 ? (
-                        <tr><td colSpan="9" style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Sin registros</td></tr>
-                    ) : data.map((c, idx) => {
-                        const rs = getRowStyle(c);
-                        const qty = c.quantity || (c.quantityUsed ? -c.quantityUsed : 0);
-                        const absQ = Math.abs(qty);
-
-                        return (
-                            <tr key={c.id || idx} style={{ borderBottom: '1px solid #f1f5f9', background: rs.bgColor }}>
-                                <td style={{ padding: '8px 12px' }}>
-                                    <span style={{
-                                        display: 'inline-block', padding: '2px 7px', borderRadius: 5,
-                                        fontSize: '0.7rem', fontWeight: 700,
-                                        background: c.type === 'INGRESS' ? '#dbeafe' : c.type === 'PRODUCTION' ? '#dcfce7' : '#fee2e2',
-                                        color: rs.qtyColor,
-                                    }}>{rs.typeLabel}</span>
-                                </td>
-                                <td style={{ padding: '8px 12px', fontWeight: 600, color: '#1e293b', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {c.materialLot?.siigoProductName || '—'}
-                                </td>
-                                <td style={{ padding: '8px 12px' }}>
-                                    {c.materialLot?.lotNumber ? (
-                                        <span style={S.lotBadge}>{c.materialLot.lotNumber}</span>
-                                    ) : <span style={{ color: '#cbd5e1' }}>—</span>}
-                                </td>
-                                <td style={{ padding: '8px 12px', textAlign: 'center' }}>
-                                    {c.zone ? (
-                                        <span style={S.badge(c.zone === 'PRODUCTION' ? 'green' : 'blue')}>
-                                            {c.zone === 'PRODUCTION' ? '🏭' : '📦'}
-                                        </span>
-                                    ) : '—'}
-                                </td>
-                                <td style={{ padding: '8px 12px', fontWeight: 800, fontSize: '0.88rem', color: rs.qtyColor }}>
-                                    {rs.isPositive ? '+' : '-'}{fmtQty(absQ, c.unit)}
-                                </td>
-                                <td style={{ padding: '8px 12px', fontSize: '0.78rem', color: '#475569' }}>
-                                    {c.usedBy?.name || (c.type === 'INGRESS' ? '📥 Compra' : c.type === 'PRODUCTION' ? '🏭 Auto' : '—')}
-                                </td>
-                                <td style={{ padding: '8px 12px', fontSize: '0.78rem', color: '#475569', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {c.processInfo?.stageName || '—'}
-                                </td>
-                                <td style={{ padding: '8px 12px' }}>
-                                    {c.processInfo?.productionBatch?.batchNumber ? (
-                                        <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: 4, background: '#f3e8ff', color: '#7c3aed', fontWeight: 700, fontFamily: 'monospace' }}>
-                                            {c.processInfo.productionBatch.batchNumber}
-                                        </span>
-                                    ) : <span style={{ color: '#cbd5e1' }}>—</span>}
-                                </td>
-                                <td style={{ padding: '8px 12px', fontSize: '0.78rem', color: '#64748b', whiteSpace: 'nowrap' }}>
-                                    {fmtDate(c.date || c.usedAt)}
-                                </td>
-                            </tr>
-                        );
-                    })}
+                    {rows.map((c, idx) => (
+                        <tr key={c.id || idx} style={{ borderBottom: '1px solid #f1f5f9', background: c._isPositive ? '#f0fdf4' : idx % 2 === 0 ? '#fff' : '#fafafa' }}>
+                            <td style={{ padding: '8px 12px', fontWeight: 600, color: '#1e293b', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {c.materialLot?.siigoProductName || '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                                {c.materialLot?.lotNumber ? (
+                                    <span style={S.lotBadge}>{c.materialLot.lotNumber}</span>
+                                ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                            </td>
+                            <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 800, color: '#16a34a', fontSize: '0.85rem' }}>
+                                {c._isPositive ? `+${Math.round(c._qty).toLocaleString()} g` : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 800, color: '#dc2626', fontSize: '0.85rem' }}>
+                                {!c._isPositive ? `-${Math.round(c._qty).toLocaleString()} g` : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: c._balance <= 0 ? '#94a3b8' : '#475569', fontSize: '0.82rem' }}>
+                                {typeof c._balance === 'number' ? `${Math.round(c._balance).toLocaleString()} g` : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', fontSize: '0.76rem', color: '#475569' }}>
+                                {c.usedBy?.name || (c.type === 'INGRESS' ? '📥 Compra' : c.type === 'PRODUCTION' ? '🏭 Auto' : '—')}
+                            </td>
+                            <td style={{ padding: '8px 12px', fontSize: '0.76rem', color: '#475569', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {c.processInfo?.stageName || '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                                {c.processInfo?.productionBatch?.batchNumber ? (
+                                    <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, background: '#f3e8ff', color: '#7c3aed', fontWeight: 700, fontFamily: 'monospace' }}>
+                                        {c.processInfo.productionBatch.batchNumber}
+                                    </span>
+                                ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                            </td>
+                            <td style={{ padding: '8px 12px', fontSize: '0.76rem', color: '#64748b', whiteSpace: 'nowrap' }}>
+                                {fmtDate(c.date || c.usedAt)}
+                            </td>
+                        </tr>
+                    ))}
                 </tbody>
             </table>
         </div>
@@ -428,13 +432,14 @@ const LotTraceabilityPage = () => {
         }
     };
 
-    const loadMovements = async () => {
+    const loadMovements = async (zoneOverride) => {
         setLoading(true);
         try {
             const params = new URLSearchParams();
             if (movFilters.startDate) params.append('startDate', movFilters.startDate);
             if (movFilters.endDate) params.append('endDate', movFilters.endDate);
-            if (movFilters.zone) params.append('zone', movFilters.zone);
+            const z = zoneOverride || movFilters.zone;
+            if (z) params.append('zone', z);
             params.append('limit', '300');
             const res = await api.get(`/inventory/lots/traceability?${params}`);
             setMovements(res.data);
@@ -456,14 +461,16 @@ const LotTraceabilityPage = () => {
     };
 
     useEffect(() => {
-        if (activeTab === 'MOVEMENTS') loadMovements();
+        if (activeTab === 'MOV_PRODUCTION') loadMovements('PRODUCTION');
+        else if (activeTab === 'MOV_WAREHOUSE') loadMovements('WAREHOUSE');
         else if (activeTab === 'UNASSIGNED') loadUnassigned();
         else loadStock();
     }, [activeTab]);
 
     const exportCSV = () => {
-        const zone = activeTab === 'MOVEMENTS' ? 'Movimientos' : activeTab === 'WAREHOUSE' ? 'Bodega' : 'Produccion';
-        if (activeTab === 'MOVEMENTS') {
+        const isMovements = activeTab === 'MOV_PRODUCTION' || activeTab === 'MOV_WAREHOUSE';
+        const zone = isMovements ? (activeTab === 'MOV_PRODUCTION' ? 'Mov_Produccion' : 'Mov_Bodega') : activeTab === 'WAREHOUSE' ? 'Bodega' : 'Produccion';
+        if (isMovements) {
             const headers = ['Fecha', 'Tipo', 'Producto', 'Lote', 'Zona', 'Cantidad', 'Operario', 'Proceso', 'Batch'];
             const rows = movements.map(c => {
                 const qty = c.quantity || (c.quantityUsed ? -c.quantityUsed : 0);
@@ -514,7 +521,8 @@ const LotTraceabilityPage = () => {
     const tabs = [
         { key: 'WAREHOUSE', label: 'Bodega', icon: <Package size={15} />, count: stockData.WAREHOUSE?.length || 0 },
         { key: 'PRODUCTION', label: 'Producción', icon: <Factory size={15} />, count: stockData.PRODUCTION?.length || 0 },
-        { key: 'MOVEMENTS', label: 'Movimientos', icon: <List size={15} /> },
+        { key: 'MOV_PRODUCTION', label: 'Mov. Producción', icon: <List size={15} /> },
+        { key: 'MOV_WAREHOUSE', label: 'Mov. Bodega', icon: <List size={15} /> },
         { key: 'UNASSIGNED', label: 'Sin Lotes', icon: <PackageOpen size={15} />, count: unassignedProducts.length, alert: unassignedProducts.length > 0 }
     ];
 
@@ -579,7 +587,7 @@ const LotTraceabilityPage = () => {
                         onRefresh={loadStock}
                     />
                 )}
-                {activeTab === 'MOVEMENTS' && (
+                {(activeTab === 'MOV_PRODUCTION' || activeTab === 'MOV_WAREHOUSE') && (
                     <>
                         {/* Filters */}
                         <div style={{ ...S.card, marginBottom: 12, padding: 12 }}>
@@ -607,21 +615,7 @@ const LotTraceabilityPage = () => {
                                         style={{ padding: '6px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: '0.8rem' }}
                                     />
                                 </div>
-                                <div style={{ display: 'flex', gap: 4 }}>
-                                    {[{ label: 'Todas', value: '' }, { label: '📦 Bodega', value: 'WAREHOUSE' }, { label: '🏭 Prod.', value: 'PRODUCTION' }].map(z => (
-                                        <button key={z.value}
-                                            onClick={() => setMovFilters(p => ({ ...p, zone: p.zone === z.value ? '' : z.value }))}
-                                            style={{
-                                                padding: '6px 10px', borderRadius: 6, fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer',
-                                                border: movFilters.zone === z.value ? '2px solid #4f46e5' : '1px solid #e2e8f0',
-                                                background: movFilters.zone === z.value ? '#eef2ff' : '#fff',
-                                                color: movFilters.zone === z.value ? '#4f46e5' : '#64748b',
-                                                whiteSpace: 'nowrap'
-                                            }}
-                                        >{z.label}</button>
-                                    ))}
-                                </div>
-                                <button onClick={loadMovements} style={{
+                                <button onClick={() => loadMovements(activeTab === 'MOV_PRODUCTION' ? 'PRODUCTION' : 'WAREHOUSE')} style={{
                                     padding: '8px 18px', borderRadius: 6, border: 'none',
                                     background: '#4f46e5', color: '#fff', fontSize: '0.8rem',
                                     fontWeight: 700, cursor: 'pointer', flexShrink: 0

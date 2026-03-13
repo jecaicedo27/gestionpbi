@@ -44,12 +44,33 @@ const lotController = {
                 return res.status(400).json({ error: 'productId, lotNumber y quantity son requeridos' });
             }
 
-            // Look up product for SKU/name
+            const qty = parseInt(quantity);
+            if (qty <= 0) return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
+
+            // Look up product for SKU/name and current Siigo stock
             const product = await prisma.product.findUnique({
                 where: { id: productId },
-                select: { sku: true, name: true }
+                select: { sku: true, name: true, currentStock: true }
             });
             if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
+
+            // ── Validation: total lots cannot exceed Siigo stock ──
+            const existingLots = await prisma.materialLot.findMany({
+                where: { productId, currentQuantity: { gt: 0 } },
+                select: { currentQuantity: true }
+            });
+            const totalAssigned = existingLots.reduce((sum, l) => sum + l.currentQuantity, 0);
+            const siigoStock = product.currentStock || 0;
+            const available = Math.max(0, siigoStock - totalAssigned);
+
+            if (qty > available) {
+                return res.status(400).json({
+                    error: `No se puede crear lote de ${qty.toLocaleString()}g. ` +
+                        `Stock Siigo: ${siigoStock.toLocaleString()}g, ` +
+                        `ya asignado en lotes: ${totalAssigned.toLocaleString()}g, ` +
+                        `disponible para lotear: ${available.toLocaleString()}g.`
+                });
+            }
 
             const lot = await prisma.materialLot.create({
                 data: {
@@ -57,8 +78,8 @@ const lotController = {
                     siigoProductCode: product.sku,
                     siigoProductName: product.name,
                     lotNumber,
-                    initialQuantity: parseInt(quantity),
-                    currentQuantity: parseInt(quantity),
+                    initialQuantity: qty,
+                    currentQuantity: qty,
                     unit: unit || 'gramo',
                     expiresAt: expiresAt ? new Date(expiresAt) : null,
                     status: 'AVAILABLE'
