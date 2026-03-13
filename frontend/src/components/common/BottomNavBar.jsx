@@ -1,0 +1,52 @@
+import React from 'react';
+import { NavLink } from 'react-router-dom';
+import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck } from 'lucide-react';
+
+const tabsByRole = {
+    PRODUCCION: [
+        { icon: LayoutDashboard, label: 'Inicio', path: '/' },
+        { icon: Package, label: 'Inventario', path: '/inventory' },
+        { icon: Calendar, label: 'Producción', path: '/production/view' },
+        { icon: PlayCircle, label: 'Producir', path: '/production/operator' },
+        { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel' },
+        { icon: Activity, label: 'RPA', path: '/rpa-history' },
+        { icon: Layers, label: 'Lotes', path: '/lots/traceability' },
+    ],
+    LOGISTICA: [
+        { icon: Package, label: 'Pedidos', path: '/orders' },
+        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },
+        { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
+        { icon: Tag, label: 'QR', path: '/qr-generator' },
+    ],
+    CARTERA: [
+        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },
+        { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
+        { icon: Truck, label: 'Forecast', path: '/procurement/forecast' },
+    ],
+    CONTABILIDAD: [
+        { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
+        { icon: Truck, label: 'Forecast', path: '/procurement/forecast' },
+    ],
+};
+
+const getTabs = (role) => tabsByRole[role] || tabsByRole.PRODUCCION;
+
+const BottomNavBar = ({ userRole }) => (
+    <nav className="btm-nav">
+        {getTabs(userRole).map((tab) => (
+            <NavLink
+                key={tab.path}
+                to={tab.path}
+                end={tab.path === '/'}
+                className={({ isActive }) =>
+                    `btm-nav__tab ${isActive ? 'btm-nav__tab--active' : ''}`
+                }
+            >
+                <tab.icon size={22} strokeWidth={1.8} />
+                <span className="btm-nav__label">{tab.label}</span>
+            </NavLink>
+        ))}
+    </nav>
+);
+
+export default BottomNavBar;

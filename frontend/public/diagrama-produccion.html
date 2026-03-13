@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diagrama de Flujo — Producción LIQUIPOPS</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    min-height: 100vh;
+    color: #e2e8f0;
+    padding: 32px 16px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 28px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 40px;
+  }
+  .flow-container {
+    max-width: 900px;
+    margin: 0 auto;
+    position: relative;
+  }
+  /* Vertical connector line */
+  .flow-container::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: linear-gradient(to bottom, #4f46e5, #7c3aed, #ec4899, #10b981);
+    transform: translateX(-50%);
+    z-index: 0;
+  }
+
+  /* ── Phase card (collapsible) ── */
+  .phase {
+    position: relative;
+    z-index: 1;
+    margin-bottom: 24px;
+  }
+  .phase-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 24px;
+    border-radius: 16px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    user-select: none;
+    border: 1px solid transparent;
+  }
+  .phase-header:hover {
+    transform: scale(1.02);
+    border-color: rgba(255,255,255,0.1);
+  }
+  .phase-header .icon {
+    font-size: 32px;
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.1);
+  }
+  .phase-header .info { flex: 1; }
+  .phase-header .info .phase-num {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    opacity: 0.6;
+  }
+  .phase-header .info .phase-title {
+    font-size: 18px;
+    font-weight: 700;
+  }
+  .phase-header .info .phase-desc {
+    font-size: 12px;
+    opacity: 0.7;
+    margin-top: 2px;
+  }
+  .phase-header .chevron {
+    font-size: 20px;
+    transition: transform 0.3s ease;
+    opacity: 0.5;
+  }
+  .phase.open .chevron { transform: rotate(180deg); }
+
+  /* Phase colors */
+  .phase-1 .phase-header { background: linear-gradient(135deg, #312e81, #4338ca); }
+  .phase-2 .phase-header { background: linear-gradient(135deg, #7c2d12, #ea580c); }
+  .phase-3 .phase-header { background: linear-gradient(135deg, #166534, #16a34a); }
+  .phase-4 .phase-header { background: linear-gradient(135deg, #92400e, #f59e0b); }
+  .phase-5 .phase-header { background: linear-gradient(135deg, #0e7490, #06b6d4); }
+  .phase-6 .phase-header { background: linear-gradient(135deg, #86198f, #d946ef); }
+
+  /* ── Phase body (steps inside) ── */
+  .phase-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    margin: 0 24px;
+  }
+  .phase.open .phase-body {
+    max-height: 2000px;
+  }
+  .phase-body-inner {
+    padding: 16px 0;
+  }
+
+  /* ── Step inside a phase ── */
+  .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: background 0.2s;
+  }
+  .step:hover { background: rgba(255,255,255,0.08); }
+  .step .step-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,0.08);
+  }
+  .step .step-info { flex: 1; }
+  .step .step-info .step-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: #f1f5f9;
+  }
+  .step .step-info .step-detail {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 3px;
+    line-height: 1.5;
+  }
+  .step .step-badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .badge-pesaje   { background: #1d4ed8; color: #fff; }
+  .badge-coccion  { background: #dc2626; color: #fff; }
+  .badge-medicion { background: #7c3aed; color: #fff; }
+  .badge-ensamble { background: #059669; color: #fff; }
+  .badge-formacion{ background: #d97706; color: #fff; }
+  .badge-conteo   { background: #0891b2; color: #fff; }
+  .badge-empaque  { background: #c026d3; color: #fff; }
+  .badge-control  { background: #475569; color: #fff; }
+  .badge-siigo    { background: #2563eb; color: #fff; }
+
+  /* Arrow between steps */
+  .arrow {
+    text-align: center;
+    color: #475569;
+    font-size: 18px;
+    margin: 4px 0;
+  }
+
+  /* QC callout */
+  .qc-callout {
+    margin: 8px 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(234, 179, 8, 0.1);
+    border-left: 3px solid #eab308;
+    font-size: 12px;
+    color: #fbbf24;
+  }
+  .qc-callout strong { color: #fde68a; }
+
+  /* Start / End nodes */
+  .endpoint {
+    text-align: center;
+    margin: 20px auto;
+    position: relative;
+    z-index: 1;
+  }
+  .endpoint .node {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 28px;
+    border-radius: 50px;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .node-start { background: linear-gradient(135deg, #4f46e5, #7c3aed); color: #fff; }
+  .node-end   { background: linear-gradient(135deg, #059669, #10b981); color: #fff; }
+
+  /* Print friendly */
+  @media print {
+    body { background: #fff; color: #000; }
+    .phase-body { max-height: none !important; }
+    .phase-header { color: #000; -webkit-print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<h1>🏭 Diagrama de Flujo — Producción LIQUIPOPS</h1>
+<p class="subtitle">Haz clic en cada fase para ver los pasos internos · Desde programación hasta entrega a empaque</p>
+
+<div class="flow-container">
+
+  <!-- START -->
+  <div class="endpoint">
+    <span class="node node-start">🗓️ INICIO — Programación del Producto</span>
+  </div>
+
+  <!-- FASE 1: PROGRAMACIÓN -->
+  <div class="phase phase-1 open" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">📋</div>
+      <div class="info">
+        <div class="phase-num">Fase 1</div>
+        <div class="phase-title">Programación y Lanzamiento</div>
+        <div class="phase-desc">Definir sabor, fecha, cantidades por presentación</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">📅</div>
+          <div class="step-info">
+            <div class="step-name">Crear Batch en Scheduler</div>
+            <div class="step-detail">Seleccionar sabor (Fresa, Café, Maracuyá, etc.), asignar fecha de producción y definir el template de la receta a utilizar.</div>
+          </div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🎯</div>
+          <div class="step-info">
+            <div class="step-name">Definir Output Targets (Metas)</div>
+            <div class="step-detail">Especificar cuántos tarros fabricar por presentación:<br>
+            <strong>3400g</strong> → N tarros &nbsp;|&nbsp; <strong>1150g</strong> → N tarros &nbsp;|&nbsp; <strong>350g</strong> → N tarros</div>
+          </div>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🚀</div>
+          <div class="step-info">
+            <div class="step-name">Iniciar Proceso (Quick Start)</div>
+            <div class="step-detail">El operador inicia desde el Panel de Control. El backend carga el Template maestro + Sub-templates y aplana todas las etapas en una secuencia lineal de notas de producción.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FASE 2: PREMIXES -->
+  <div class="phase phase-2" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">⚗️</div>
+      <div class="info">
+        <div class="phase-num">Fase 2</div>
+        <div class="phase-title">Preparación de Premixes</div>
+        <div class="phase-desc">Alginato, Calcio, Gomas, Conservantes — cada uno con su proceso</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">⚖️</div>
+          <div class="step-info">
+            <div class="step-name">Pesaje de Materias Primas</div>
+            <div class="step-detail">Pesar cada ingrediente según la fórmula activa. Registrar lote de materia prima. Tomar foto de evidencia por cada ingrediente pesado.</div>
+          </div>
+          <span class="step-badge badge-pesaje">PESAJE</span>
+        </div>
+        <div class="qc-callout">
+          📷 <strong>Control:</strong> Foto obligatoria de la balanza por cada ingrediente pesado + registro del lote de materia prima utilizado.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🔥</div>
+          <div class="step-info">
+            <div class="step-name">Cocción / Calentamiento</div>
+            <div class="step-detail">Llevar la mezcla a temperatura objetivo (ej: Alginato → 88°C × 30 min). Cronómetro automático se activa al confirmar la temperatura.</div>
+          </div>
+          <span class="step-badge badge-coccion">COCCIÓN</span>
+        </div>
+        <div class="qc-callout">
+          🌡️ <strong>Control:</strong> Foto del termómetro obligatoria. Al finalizar el timer → alarma intrusiva (sonido + vibración) que el operador debe confirmar.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">❄️</div>
+          <div class="step-info">
+            <div class="step-name">Enfriamiento</div>
+            <div class="step-detail">Enfriar hasta temperatura de conservación (ej: Alginato → 25°C). Foto de termómetro al llegar a la temperatura objetivo.</div>
+          </div>
+          <span class="step-badge badge-coccion">COCCIÓN</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🧪</div>
+          <div class="step-info">
+            <div class="step-name">Agregar Conservante</div>
+            <div class="step-detail">Disolver Sorbato de Potacio en agua y agregar a la mezcla enfriada. Pesar según fórmula (ej: 40g por lote).</div>
+          </div>
+          <span class="step-badge badge-pesaje">PESAJE</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🏗️</div>
+          <div class="step-info">
+            <div class="step-name">Ensamble — Almacenamiento</div>
+            <div class="step-detail">Almacenar en tanque sanitizado. Registrar cantidad real producida. Se crea lote de producto semi-terminado en inventario. Siigo RPA registra el ensamble automáticamente.</div>
+          </div>
+          <span class="step-badge badge-ensamble">ENSAMBLE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FASE 3: COMPUESTO -->
+  <div class="phase phase-3" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">🧪</div>
+      <div class="info">
+        <div class="phase-num">Fase 3</div>
+        <div class="phase-title">Fabricación del Compuesto</div>
+        <div class="phase-desc">Base Liquipops + Azúcar + Glucosa + Sabor + Colorante + Premixes</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">⚖️</div>
+          <div class="step-info">
+            <div class="step-name">Pesaje de Ingredientes del Compuesto</div>
+            <div class="step-detail">Pesar todos los ingredientes de la fórmula del compuesto: Base Liquipops (Agua, Azúcar, Glucosa), Saborizante, Colorante, y los premixes ya preparados (Alginato, Calcio, Gomas, Conservantes).</div>
+          </div>
+          <span class="step-badge badge-pesaje">PESAJE</span>
+        </div>
+        <div class="qc-callout">
+          📷 <strong>Control:</strong> Foto por cada ingrediente. Validación de lote de materia prima para trazabilidad completa.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🔥</div>
+          <div class="step-info">
+            <div class="step-name">Cocción del Compuesto</div>
+            <div class="step-detail">Llevar a 105°C con cronómetro de control. La cocción transforma los azúcares y activa el gel. Alarma intrusiva al finalizar el tiempo.</div>
+          </div>
+          <span class="step-badge badge-coccion">COCCIÓN</span>
+        </div>
+        <div class="qc-callout">
+          🌡️ <strong>Control:</strong> Foto del termómetro a 105°C. Timer con alarma intrusiva (sonido + vibración + modal de confirmación).
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">📏</div>
+          <div class="step-info">
+            <div class="step-name">Medición de Calidad</div>
+            <div class="step-detail">Medir <strong>°Brix</strong> (concentración de azúcar), <strong>pH</strong> y <strong>Temperatura</strong>. Los valores deben estar dentro del rango definido en la fórmula. Si están fuera de rango, no se puede avanzar.</div>
+          </div>
+          <span class="step-badge badge-medicion">MEDICIÓN</span>
+        </div>
+        <div class="qc-callout">
+          📏 <strong>Control:</strong> Foto obligatoria del refractómetro (Brix) y del pH-metro. Valores fuera de rango bloquean el avance.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🏗️</div>
+          <div class="step-info">
+            <div class="step-name">Ensamble del Compuesto</div>
+            <div class="step-detail">Registrar cantidad real producida (ej: 120,155g). Se crea lote semi-terminado. Siigo RPA sincroniza el ensamble automáticamente (fire-and-forget).</div>
+          </div>
+          <span class="step-badge badge-ensamble">ENSAMBLE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FASE 4: ESFERIFICACIÓN -->
+  <div class="phase phase-4" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">🟠</div>
+      <div class="info">
+        <div class="phase-num">Fase 4</div>
+        <div class="phase-title">Esferificación (Formación)</div>
+        <div class="phase-desc">8 controles pre-proceso → Máquina → Producción de esferas</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">✅</div>
+          <div class="step-info">
+            <div class="step-name">8 Controles Pre-Proceso (Obligatorios)</div>
+            <div class="step-detail">
+              <strong>1.</strong> Temperatura del Alginato (12–17°C) + 📷<br>
+              <strong>2.</strong> Verificar inyectores de cabezal ✓<br>
+              <strong>3.</strong> Adición de Tween 20 + cantidad<br>
+              <strong>4.</strong> Lavado de perlas + Citrosán (40ml/80kg) + 📷<br>
+              <strong>5.</strong> Temperatura de marmita (90–94°C) + 📷<br>
+              <strong>6.</strong> Análisis de Brix post-lavado y post-cocción + 📷📷<br>
+              <strong>7.</strong> Peso de 10 perlas post-cocción + 📷<br>
+              <strong>8.</strong> Validar tablero de máquina + 📷
+            </div>
+          </div>
+          <span class="step-badge badge-control">CONTROL</span>
+        </div>
+        <div class="qc-callout">
+          ⛔ <strong>Bloqueo:</strong> Los 8 controles DEBEN estar completos y dentro de rango para poder iniciar la esferificación. Sin excepción.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">⚙️</div>
+          <div class="step-info">
+            <div class="step-name">Esferificación en Máquina</div>
+            <div class="step-detail">Cronómetro activo durante toda la producción. Si hay una pausa, el operador debe seleccionar la razón de la pausa (obligatorio). Las pausas se registran para análisis de KPIs.</div>
+          </div>
+          <span class="step-badge badge-formacion">FORMACIÓN</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">📊</div>
+          <div class="step-info">
+            <div class="step-name">Registrar Producción Real</div>
+            <div class="step-detail">Registrar la cantidad total de esferas producidas en gramos. Este valor alimenta la siguiente fase (Conteo) para calcular tarros.</div>
+          </div>
+          <span class="step-badge badge-formacion">FORMACIÓN</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FASE 5: CONTEO -->
+  <div class="phase phase-5" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">🔢</div>
+      <div class="info">
+        <div class="phase-num">Fase 5</div>
+        <div class="phase-title">Conteo de Producción</div>
+        <div class="phase-desc">Contar tarros por presentación y comparar con la meta</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">📦</div>
+          <div class="step-info">
+            <div class="step-name">Conteo por Presentación</div>
+            <div class="step-detail">Contar la cantidad real de tarros producidos para cada presentación:<br>
+              <strong>X 3400g</strong> → ___ tarros reales<br>
+              <strong>X 1150g</strong> → ___ tarros reales<br>
+              <strong>X 350g</strong> → ___ tarros reales<br>
+              Se usa factor de conversión de peso total de esferas → tarros.</div>
+          </div>
+          <span class="step-badge badge-conteo">CONTEO</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">📈</div>
+          <div class="step-info">
+            <div class="step-name">Comparar Actual vs Planeado</div>
+            <div class="step-detail">El sistema muestra la diferencia entre la producción real y la meta programada. Si hay diferencia, se ajustan automáticamente las cantidades de las etapas de EMPAQUE y ENSAMBLE posteriores.</div>
+          </div>
+          <span class="step-badge badge-conteo">CONTEO</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FASE 6: EMPAQUE -->
+  <div class="phase phase-6" onclick="this.classList.toggle('open')">
+    <div class="phase-header">
+      <div class="icon">📦</div>
+      <div class="info">
+        <div class="phase-num">Fase 6</div>
+        <div class="phase-title">Empaque y Entrega</div>
+        <div class="phase-desc">Empacar, inspeccionar defectos, registrar producto terminado</div>
+      </div>
+      <div class="chevron">▼</div>
+    </div>
+    <div class="phase-body">
+      <div class="phase-body-inner">
+        <div class="step">
+          <div class="step-icon">📦</div>
+          <div class="step-info">
+            <div class="step-name">Empaque por Presentación</div>
+            <div class="step-detail">Para cada presentación (3400g, 1150g, 350g) se consume:<br>
+              🫙 <strong>Tarro</strong> + 🔵 <strong>Tapa</strong> + ◻️ <strong>Liner</strong> + 🏷️ <strong>Sello</strong> + 🏷️ <strong>Etiqueta</strong> + 📦 <strong>Caja</strong><br>
+              Los materiales se descuentan automáticamente del inventario.</div>
+          </div>
+          <span class="step-badge badge-empaque">EMPAQUE</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🔍</div>
+          <div class="step-info">
+            <div class="step-name">Inspección de Defectos</div>
+            <div class="step-detail">Registrar tarros defectuosos encontrados durante el empaque. Para cada defecto es <strong>obligatorio</strong> seleccionar la causa y adjuntar foto de evidencia.</div>
+          </div>
+          <span class="step-badge badge-empaque">EMPAQUE</span>
+        </div>
+        <div class="qc-callout">
+          🔍 <strong>Control:</strong> Si existen tarros defectuosos, la causa del defecto es OBLIGATORIA. No se puede completar el empaque sin documentar cada defecto.
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">✅</div>
+          <div class="step-info">
+            <div class="step-name">Cálculo de Aprobados</div>
+            <div class="step-detail"><strong>Aprobados = Conteo Real − Defectuosos</strong><br>Solo la cantidad aprobada se registra como producto terminado.</div>
+          </div>
+          <span class="step-badge badge-empaque">EMPAQUE</span>
+        </div>
+        <div class="arrow">↓</div>
+        <div class="step">
+          <div class="step-icon">🏗️</div>
+          <div class="step-info">
+            <div class="step-name">Ensamble de Producto Terminado</div>
+            <div class="step-detail">Se registra la cantidad aprobada. Se crea el lote de producto terminado en inventario. Siigo RPA sincroniza el ensamble final automáticamente.</div>
+          </div>
+          <span class="step-badge badge-ensamble">ENSAMBLE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- END -->
+  <div class="endpoint">
+    <span class="node node-end">✅ FIN — Producto terminado entregado y registrado</span>
+  </div>
+
+</div>
+
+<script>
+  // No extra JS needed — CSS handles the open/close via class toggle on onclick
+</script>
+</body>
+</html>

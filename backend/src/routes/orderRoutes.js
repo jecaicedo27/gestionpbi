@@ -1,0 +1,73 @@
+const express = require('express');
+const router = express.Router();
+const orderController = require('../controllers/orderController');
+const distributorController = require('../controllers/distributorController');
+const { auth, roles } = require('../middleware/auth');
+
+// Legacy routes (kept for compatibility)
+router.get('/catalog', auth, distributorController.getCatalog);
+router.post('/', auth, roles(['DISTRIBUIDOR', 'ADMIN', 'LOGISTICA']), orderController.createOrder);
+
+// Admin/Logistics Routes
+router.get('/counts', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getOrderCounts);
+router.get('/', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getAllOrders);
+router.get('/:id', auth, orderController.getOrderById);
+router.patch('/:id/status', auth, roles(['ADMIN', 'LOGISTICA']), orderController.updateOrderStatus);
+
+// Workflow endpoints
+router.post('/:id/approve', auth, roles(['ADMIN', 'LOGISTICA']), orderController.approveOrder);
+router.post('/:id/reject', auth, roles(['ADMIN', 'LOGISTICA']), orderController.rejectOrder);
+router.post('/:id/mark-ready', auth, roles(['LOGISTICA']), orderController.markReady);
+
+// Invoicing — creates invoice directly in Siigo
+router.post('/:id/invoice', auth, roles(['ADMIN', 'COMERCIAL']), orderController.invoiceOrder);
+
+// Dispatch (logistics fills driver form)
+router.post('/:id/dispatch', auth, roles(['ADMIN', 'LOGISTICA']), orderController.dispatchOrder);
+
+// Delivery confirmation — distributor or logistics can confirm, with optional signed guide upload
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const SIGNED_DIR = path.join(__dirname, '../../uploads/signed-guides');
+if (!fs.existsSync(SIGNED_DIR)) fs.mkdirSync(SIGNED_DIR, { recursive: true });
+const signedGuideUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, SIGNED_DIR),
+        filename: (req, file, cb) => cb(null, `guia-firmada-${req.params.id}-${Date.now()}${path.extname(file.originalname)}`)
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 }
+});
+router.post('/:id/deliver', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR']),
+    signedGuideUpload.single('signedGuide'), orderController.deliverOrder);
+
+// Transport guide (printable HTML — no auth since it opens in a new browser tab)
+router.get('/:id/transport-guide', orderController.getTransportGuide);
+
+// Siigo invoice PDF proxy — streams PDF from Siigo API
+router.get('/:id/siigo-pdf', auth, async (req, res) => {
+    try {
+        const { PrismaClient } = require('@prisma/client');
+        const prisma = new PrismaClient();
+        const order = await prisma.order.findUnique({
+            where: { id: req.params.id },
+            select: { invoicePdfUrl: true, invoiceNumber: true }
+        });
+        await prisma.$disconnect();
+
+        if (!order?.invoicePdfUrl) {
+            return res.status(404).json({ error: 'No hay factura Siigo para este pedido' });
+        }
+
+        const siigoService = require('../services/siigoService');
+        const pdfBuffer = await siigoService.getInvoicePdf(order.invoicePdfUrl);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${order.invoiceNumber || 'factura'}.pdf"`);
+        res.send(Buffer.from(pdfBuffer));
+    } catch (err) {
+        console.error('Siigo PDF proxy error:', err.message);
+        res.status(500).json({ error: 'Error obteniendo PDF de Siigo' });
+    }
+});
+
+module.exports = router;

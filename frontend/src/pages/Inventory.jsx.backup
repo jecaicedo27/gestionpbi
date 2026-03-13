@@ -1,0 +1,191 @@
+import { useState, useEffect } from 'react';
+import Card from '../components/common/Card';
+import api from '../services/api';
+import { socket } from '../services/socket';
+import { Search, Filter, AlertTriangle, CheckCircle, XCircle, Grid, List } from 'lucide-react';
+import InventoryMatrix from '../components/inventory/InventoryMatrix';
+
+const Inventory = () => {
+    const [products, setProducts] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [selectedGroup, setSelectedGroup] = useState('ALL');
+    const [groups, setGroups] = useState([]);
+    const [viewMode, setViewMode] = useState('LIST'); // 'LIST' or 'MATRIX'
+
+    useEffect(() => {
+        loadInventory();
+
+        const handleUpdate = (event) => {
+            console.log('Real-time inventory update received:', event);
+            loadInventory();
+        };
+
+        socket.on('inventory:updated', handleUpdate);
+
+        // Rotating page sync: cycles through pages 1-6 every 2 minutes (12 min full cycle)
+        let currentPage = 1;
+        const syncInterval = setInterval(() => {
+            syncInventory(currentPage); currentPage = (currentPage % 6) + 1;
+        }, 120000); // 2 minutes
+
+        return () => {
+            socket.off('inventory:updated', handleUpdate);
+            clearInterval(syncInterval);
+        };
+    }, []);
+
+    const loadInventory = async () => {
+        try {
+            const res = await api.get('/inventory/list');
+            if (res.data.success) {
+                const loadedProducts = res.data.data;
+                setProducts(loadedProducts);
+
+                // Extract unique groups
+                const uniqueGroups = [...new Set(loadedProducts.map(p => p.group))].sort();
+                setGroups(uniqueGroups);
+            }
+        } catch (error) {
+            console.error('Error loading inventory:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const syncInventory = async (page = 1) => {
+        try {
+            console.log(`🔄 Auto-syncing inventory page ${page}...`);
+            const res = await api.post(`/inventory/sync?page=${page}`);
+            if (res.data.success) {
+                setProducts(res.data.data);
+                const uniqueGroups = [...new Set(res.data.data.map(p => p.group))].sort();
+                setGroups(uniqueGroups);
+                console.log(`✅ Synced ${res.data.meta.syncedCount} products`);
+            }
+        } catch (error) {
+            console.error('Error syncing inventory:', error);
+        }
+    };
+
+    const filteredProducts = products.filter(p => {
+        const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            p.code.toLowerCase().includes(searchTerm.toLowerCase());
+
+        if (selectedGroup === 'ALL') return matchesSearch;
+        return matchesSearch && p.group === selectedGroup;
+    });
+
+    const getStatusBadge = (level) => {
+        if (level === 'CRITICAL') return <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-semibold"><XCircle size={14} /> Crítico</span>;
+        if (level === 'WARNING') return <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-semibold"><AlertTriangle size={14} /> Bajo</span>;
+        return <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-green-100 text-green-700 text-xs font-semibold"><CheckCircle size={14} /> OK</span>;
+    };
+
+    if (loading) return <div className="p-8 text-center text-neutral-500">Cargando inventario...</div>;
+
+    return (
+        <div className="space-y-6 max-w-7xl mx-auto">
+            <div className="flex flex-col gap-4">
+                <div className="flex justify-between items-start">
+                    <div>
+                        <h1 className="text-2xl font-bold text-neutral-900">Inventario General</h1>
+                        <p className="text-neutral-500 text-sm mt-1">Gestión de stock en tiempo real (Sincronizado con SIIGO)</p>
+                    </div>
+
+                    {/* View Toggles */}
+                    <div className="flex bg-white border border-neutral-200 p-1 rounded-lg shadow-sm">
+                        <button
+                            onClick={() => setViewMode('LIST')}
+                            className={`px-3 py-1.5 rounded flex items-center text-sm font-medium transition-all ${viewMode === 'LIST' ? 'bg-neutral-100 text-primary-700 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}
+                            title="Vista de Lista"
+                        >
+                            <List className="w-4 h-4 mr-1.5" /> Lista
+                        </button>
+                        <button
+                            onClick={() => setViewMode('MATRIX')}
+                            className={`px-3 py-1.5 rounded flex items-center text-sm font-medium transition-all ${viewMode === 'MATRIX' ? 'bg-neutral-100 text-primary-700 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}
+                            title="Vista de Matriz"
+                        >
+                            <Grid className="w-4 h-4 mr-1.5" /> Matriz
+                        </button>
+                    </div>
+                </div>
+
+                {/* Wrapped Groups Filter */}
+                <div className="flex gap-2 flex-wrap pb-2">
+                    <button
+                        onClick={() => setSelectedGroup('ALL')}
+                        className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${selectedGroup === 'ALL' ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50 border border-neutral-200'}`}
+                    >
+                        Todos
+                    </button>
+                    {groups.map(group => (
+                        <button
+                            key={group}
+                            onClick={() => setSelectedGroup(group)}
+                            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${selectedGroup === group ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50 border border-neutral-200'}`}
+                        >
+                            {group}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <Card>
+                <div className="flex gap-4 mb-6">
+                    <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" size={20} />
+                        <input
+                            type="text"
+                            placeholder="Buscar por nombre, código o grupo..."
+                            className="w-full pl-10 pr-4 py-2 rounded-lg border border-neutral-200 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
+                </div>
+
+                {viewMode === 'MATRIX' ? (
+                    <InventoryMatrix products={filteredProducts} />
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm text-left">
+                            <thead className="bg-neutral-50 text-neutral-500 font-medium">
+                                <tr>
+                                    <th className="px-4 py-3 rounded-l-lg">Código</th>
+                                    <th className="px-4 py-3">Producto</th>
+                                    <th className="px-4 py-3">Grupo</th>
+                                    <th className="px-4 py-3 text-right">Precio</th>
+                                    <th className="px-4 py-3 text-center">Disponible</th>
+                                    <th className="px-4 py-3 text-center">Reservado</th>
+                                    <th className="px-4 py-3 rounded-r-lg text-right">Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-100">
+                                {filteredProducts.map((p) => (
+                                    <tr key={p.id} className="hover:bg-neutral-50 transition-colors">
+                                        <td className="px-4 py-3 font-mono text-neutral-600">{p.code}</td>
+                                        <td className="px-4 py-3 font-medium text-neutral-900">{p.name}</td>
+                                        <td className="px-4 py-3 text-neutral-500">{p.group}</td>
+                                        <td className="px-4 py-3 text-right font-mono">${p.price?.toLocaleString()}</td>
+                                        <td className="px-4 py-3 text-center font-bold text-neutral-800">{p.available} {p.unit}</td>
+                                        <td className="px-4 py-3 text-center text-neutral-400">{p.reserved}</td>
+                                        <td className="px-4 py-3 text-right">{getStatusBadge(p.alertLevel)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {filteredProducts.length === 0 && (
+                            <div className="p-8 text-center text-neutral-400">
+                                No se encontraron productos con estos filtros.
+                            </div>
+                        )}
+                    </div>
+                )}
+            </Card>
+        </div>
+    );
+};
+
+export default Inventory;

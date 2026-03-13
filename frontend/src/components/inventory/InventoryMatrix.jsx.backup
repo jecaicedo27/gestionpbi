@@ -1,0 +1,330 @@
+import React, { useMemo } from 'react';
+import { Package, Warehouse } from 'lucide-react';
+
+const InventoryMatrix = ({ products }) => {
+    // Groups that benefit from matrix view (flavors x sizes)
+    const MATRIX_GROUPS = ['LIQUIPOPS', 'GENIALITY', 'PRODUCTOS EN PROCESO LIQUIPOPS', 'PRODUCTOS EN PROCESO GENIALITY'];
+
+    // 1. Get Unique Groups from the filtered products
+    const groups = [...new Set(products.map(p => p.group))].sort();
+
+    // 2. Check if a group should use matrix or list view
+    const shouldUseMatrix = (groupName) => {
+        return MATRIX_GROUPS.includes(groupName);
+    };
+
+    // 3. Process Matrix for a specific group and warehouse
+    const processMatrix = (groupName, warehouseName) => {
+        const groupProducts = products.filter(p => p.group === groupName);
+
+        // Filter products by warehouse
+        const warehouseProducts = groupProducts.map(p => {
+            const warehouse = Array.isArray(p.warehouses)
+                ? p.warehouses.find(w => w.name === warehouseName)
+                : null;
+
+            if (!warehouse) return null;
+
+            return {
+                ...p,
+                warehouseQty: warehouse.quantity || 0
+            };
+        }).filter(p => p !== null);
+
+        if (warehouseProducts.length === 0) {
+            return { sizes: [], flavors: [], productMap: {}, hasData: false };
+        }
+
+        // Extract unique Sizes and Flavors for THIS group/warehouse
+        const sizes = [...new Set(warehouseProducts.map(p => p.size || 'Estándar'))].sort((a, b) => {
+            const getVal = (s) => parseInt(s) || 9999;
+            return getVal(a) - getVal(b);
+        });
+
+        const flavors = [...new Set(warehouseProducts.map(p => p.flavor || 'Original'))].sort();
+
+        // Build Map
+        const productMap = {};
+        warehouseProducts.forEach(p => {
+            const key = `${p.flavor || 'Original'}-${p.size || 'Estándar'}`;
+            productMap[key] = p;
+        });
+
+        return { sizes, flavors, productMap, hasData: true };
+    };
+
+    // 4. Get unique warehouses for a group
+    const getWarehousesForGroup = (groupName) => {
+        const groupProducts = products.filter(p => p.group === groupName);
+        const warehouseNames = new Set();
+
+        groupProducts.forEach(p => {
+            if (Array.isArray(p.warehouses)) {
+                p.warehouses.forEach(w => {
+                    if (w.quantity > 0) {
+                        warehouseNames.add(w.name);
+                    }
+                });
+            }
+        });
+
+        return Array.from(warehouseNames).sort((a, b) => {
+            if (a === 'Sin asignar') return -1;
+            if (b === 'Sin asignar') return 1;
+            return a.localeCompare(b);
+        });
+    };
+
+    // 5. Render Matrix Table
+    const renderMatrix = (groupName, warehouseName) => {
+        const { sizes, flavors, productMap, hasData } = processMatrix(groupName, warehouseName);
+
+        if (!hasData) return null;
+
+        return (
+            <div key={`${groupName}-${warehouseName}`} className="mb-8 overflow-x-auto border rounded-xl shadow-sm bg-white">
+                <h3 className="text-xs font-bold text-gray-700 bg-gray-50 p-2 flex items-center border-b">
+                    <Package className="w-3 h-3 mr-1" />
+                    {groupName}
+                    <Warehouse className="w-3 h-3 ml-3 mr-1" />
+                    <span className="text-blue-600">{warehouseName}</span>
+                </h3>
+
+                <table className="min-w-full text-[10px] border-collapse">
+                    <thead>
+                        <tr>
+                            <th className="p-1 border-b bg-white text-left font-bold text-gray-400 w-20 sticky left-0 z-10">
+                                PRES/SABOR
+                            </th>
+                            {flavors.map(f => (
+                                <th key={f} className="p-1 border-b bg-white font-bold text-gray-600 min-w-[60px] text-center">
+                                    {f.toUpperCase()}
+                                </th>
+                            ))}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {sizes.map(size => (
+                            <tr key={size} className="hover:bg-gray-50 transition-colors">
+                                <td className="p-1 border-b font-bold text-gray-600 bg-gray-50/50 whitespace-nowrap sticky left-0 z-10 text-[9px]">
+                                    {size.toUpperCase()}
+                                </td>
+                                {flavors.map(flavor => {
+                                    const key = `${flavor}-${size}`;
+                                    const product = productMap[key];
+
+                                    if (!product) {
+                                        return <td key={key} className="p-1 border-b text-center text-gray-200">.</td>;
+                                    }
+
+                                    let bgClass = 'bg-emerald-50 text-emerald-700 border-emerald-100';
+                                    if (product.warehouseQty < 0) bgClass = 'bg-purple-100 text-purple-800 border-purple-200 font-bold';
+                                    else if (product.warehouseQty === 0) bgClass = 'bg-red-50 text-red-600 border-red-100 font-bold';
+                                    else if (product.warehouseQty < 50) bgClass = 'bg-amber-50 text-amber-700 border-amber-100';
+
+                                    return (
+                                        <td key={key} className="p-1 border-b text-center relative group">
+                                            <div className={`py-1 px-1 rounded border ${bgClass} cursor-pointer transition-all hover:scale-105`}>
+                                                <div className="text-sm font-bold">{product.warehouseQty}</div>
+                                                <div className="text-[8px] opacity-60 font-mono mt-0.5">{product.code}</div>
+                                            </div>
+
+                                            {/* Tooltip */}
+                                            <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-1 hidden group-hover:block bg-gray-900 text-white p-2 rounded text-[9px] w-48 shadow-xl pointer-events-none">
+                                                <div className="font-bold mb-1">{product.name}</div>
+                                                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 opacity-90">
+                                                    <span>Precio:</span> <span className="text-right">${product.price?.toLocaleString()}</span>
+                                                    <span>Total:</span> <span className="text-right">{product.currentStock}</span>
+                                                    <span>Código:</span> <span className="text-right">{product.code}</span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    );
+                                })}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        );
+    };
+
+    // 6. Detect product line from name
+    const detectProductLine = (productName) => {
+        const nameLower = productName.toLowerCase();
+        if (nameLower.includes('liquipops')) return 'LIQUIPOPS';
+        if (nameLower.includes('geniality') || nameLower.includes('sirope')) return 'SIROPES';
+        if (nameLower.includes('liquimon') || nameLower.includes('base citrica') || nameLower.includes('base cítrica')) return 'BASE CÍTRICA';
+        return 'OTROS';
+    };
+
+    // 7. Render List View (for non-matrix groups)
+    const renderList = (groupName, warehouseName) => {
+        const groupProducts = products.filter(p => p.group === groupName);
+
+        const warehouseProducts = groupProducts.map(p => {
+            const warehouse = Array.isArray(p.warehouses)
+                ? p.warehouses.find(w => w.name === warehouseName)
+                : null;
+
+            if (!warehouse) return null;
+
+            return {
+                ...p,
+                warehouseQty: warehouse.quantity || 0,
+                productLine: detectProductLine(p.name)
+            };
+        }).filter(p => p !== null).sort((a, b) => a.name.localeCompare(b.name));
+
+        if (warehouseProducts.length === 0) return null;
+
+        // Group by product line
+        const lineGroups = {};
+        warehouseProducts.forEach(p => {
+            if (!lineGroups[p.productLine]) {
+                lineGroups[p.productLine] = [];
+            }
+            lineGroups[p.productLine].push(p);
+        });
+
+        const sortedLines = Object.keys(lineGroups).sort((a, b) => {
+            const order = { 'LIQUIPOPS': 1, 'SIROPES': 2, 'BASE CÍTRICA': 3, 'OTROS': 4 };
+            return (order[a] || 99) - (order[b] || 99);
+        });
+
+        return (
+            <div key={`${groupName}-${warehouseName}`} className="mb-8 border rounded-xl shadow-sm bg-white">
+                <h3 className="text-xs font-bold text-gray-700 bg-gray-50 p-2 flex items-center border-b">
+                    <Package className="w-3 h-3 mr-1" />
+                    {groupName}
+                    <Warehouse className="w-3 h-3 ml-3 mr-1" />
+                    <span className="text-blue-600">{warehouseName}</span>
+                </h3>
+
+                {sortedLines.map(line => (
+                    <div key={line} className="p-2 border-b last:border-b-0">
+                        <h4 className="text-[10px] font-bold text-gray-600 mb-2 flex items-center">
+                            <div className="w-1 h-4 bg-blue-500 rounded mr-2"></div>
+                            {line}
+                        </h4>
+
+                        {(line === 'LIQUIPOPS' || line === 'SIROPES') ? (
+                            // Matrix view for flavor/size products
+                            (() => {
+                                const lineProducts = lineGroups[line];
+                                const sizes = [...new Set(lineProducts.map(p => p.size || 'Estándar'))].sort((a, b) => {
+                                    const getVal = (s) => parseInt(s) || 9999;
+                                    return getVal(a) - getVal(b);
+                                });
+                                const flavors = [...new Set(lineProducts.map(p => p.flavor || 'Original'))].sort();
+
+                                const productMap = {};
+                                lineProducts.forEach(p => {
+                                    const key = `${p.flavor || 'Original'}-${p.size || 'Estándar'}`;
+                                    productMap[key] = p;
+                                });
+
+                                return (
+                                    <table className="min-w-full text-[9px] border-collapse">
+                                        <thead>
+                                            <tr>
+                                                <th className="p-1 border-b bg-gray-50 text-left font-bold text-gray-400 text-[8px]">PRES/SABOR</th>
+                                                {flavors.map(f => (
+                                                    <th key={f} className="p-1 border-b bg-gray-50 font-bold text-gray-600 text-[9px] text-center">
+                                                        {f.toUpperCase()}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {sizes.map(size => (
+                                                <tr key={size} className="hover:bg-gray-50">
+                                                    <td className="p-1 border-b font-bold text-gray-600 bg-gray-50/50 text-[8px]">
+                                                        {size.toUpperCase()}
+                                                    </td>
+                                                    {flavors.map(flavor => {
+                                                        const key = `${flavor}-${size}`;
+                                                        const product = productMap[key];
+
+                                                        if (!product) {
+                                                            return <td key={key} className="p-1 border-b text-center text-gray-200">.</td>;
+                                                        }
+
+                                                        let bgClass = 'bg-emerald-50 text-emerald-700 border-emerald-100';
+                                                        if (product.warehouseQty < 0) bgClass = 'bg-purple-100 text-purple-800 border-purple-200 font-bold';
+                                                        else if (product.warehouseQty === 0) bgClass = 'bg-red-50 text-red-600 border-red-100 font-bold';
+                                                        else if (product.warehouseQty < 50) bgClass = 'bg-amber-50 text-amber-700 border-amber-100';
+
+                                                        return (
+                                                            <td key={key} className="p-1 border-b text-center relative group">
+                                                                <div className={`py-1 px-1 rounded border ${bgClass} cursor-pointer transition-all hover:scale-105`}>
+                                                                    <div className="text-xs font-bold">{product.warehouseQty}</div>
+                                                                    <div className="text-[8px] opacity-60 font-mono mt-0.5">{product.code}</div>
+                                                                </div>
+
+                                                                <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-1 hidden group-hover:block bg-gray-900 text-white p-2 rounded text-[8px] w-40 shadow-xl pointer-events-none">
+                                                                    <div className="font-bold mb-1">{product.name}</div>
+                                                                    <div className="grid grid-cols-2 gap-1 opacity-90">
+                                                                        <span>Total:</span> <span className="text-right">{product.currentStock}</span>
+                                                                        <span>Código:</span> <span className="text-right">{product.code}</span>
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                        );
+                                                    })}
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                );
+                            })()
+                        ) : (
+                            // Card view for other products
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+                                {lineGroups[line].map(product => {
+                                    let bgClass = 'bg-emerald-50 border-emerald-200';
+                                    let textClass = 'text-emerald-700';
+                                    if (product.warehouseQty < 0) {
+                                        bgClass = 'bg-purple-100 border-purple-200';
+                                        textClass = 'text-purple-800';
+                                    } else if (product.warehouseQty === 0) {
+                                        bgClass = 'bg-red-50 border-red-200';
+                                        textClass = 'text-red-600';
+                                    } else if (product.warehouseQty < 50) {
+                                        bgClass = 'bg-amber-50 border-amber-200';
+                                        textClass = 'text-amber-700';
+                                    }
+
+                                    return (
+                                            )
+                                }
+                                        </div>
+                        );
+                                })}
+                    </div>
+                )}
+            </div>
+        ))
+    }
+            </div >
+        );
+    };
+
+return (
+    <div className="p-1">
+        {products.length === 0 && <div className="text-center text-gray-500 mt-10">No hay productos.</div>}
+        {groups.map(group => {
+            const warehouses = getWarehousesForGroup(group);
+            const useMatrix = shouldUseMatrix(group);
+
+            return warehouses.map(warehouse =>
+                useMatrix
+                    ? renderMatrix(group, warehouse)
+                    : renderList(group, warehouse)
+            );
+        })}
+    </div>
+);
+};
+
+export default InventoryMatrix;

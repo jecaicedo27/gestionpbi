@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply text-base text-neutral-900 antialiased;
+        font-size: 13px;
+        /* Compact typography as requested */
+    }
+}
+
+/* Force Drag Preview Size */
+.custom-drag-preview {
+    height: 116px !important;
+    /* Approx 140 min at 50px/hr */
+    flex: none !important;
+    overflow: hidden !important;
+    z-index: 50 !important;
+    opacity: 0.8;
+}
+
+/* Calendar Visual Fixes */
+.rbc-allday-cell {
+    display: none !important;
+    /* Hide unused All Day row to fix top alignment */
+}
+
+.rbc-time-view .rbc-header {
+    border-bottom: 1px solid #e5e7eb !important;
+    /* Tailwind gray-200 */
+}
+
+.rbc-time-header-content {
+    border-left: 1px solid #e5e7eb !important;
+}
+
+.rbc-day-slot {
+    border-left: 1px solid #e5e7eb !important;
+}
+
+/* Ensure header column lines up with body column */
+.rbc-time-header-content>.rbc-row>.rbc-header {
+    border-bottom: none !important;
+}
+
+/* PQR Lot Timeline gauge animation */
+@keyframes gaugeExpand {
+    from {
+        width: 0%;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Bottom Nav Bar — Tablet-optimized for PRODUCCION role
+   ═══════════════════════════════════════════════════════════ */
+.btm-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    height: 64px;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid #e5e7eb;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
+    padding: 0 4px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.btm-nav__tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    flex: 1;
+    height: 100%;
+    color: #9ca3af;
+    text-decoration: none;
+    transition: color 0.15s, transform 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    min-width: 44px;
+}
+
+.btm-nav__tab:active {
+    transform: scale(0.92);
+}
+
+.btm-nav__tab--active {
+    color: #6366f1;
+}
+
+.btm-nav__tab--active .btm-nav__label {
+    font-weight: 700;
+}
+
+.btm-nav__label {
+    font-size: 10px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+
+/* ── Tablet layout mode (PRODUCCION) ── */
+.layout--tablet .layout__content {
+    padding-bottom: 72px;
+    /* space for bottom nav */
+}
+
+.layout--tablet .layout__header {
+    height: 52px;
+    padding-left: 16px;
+    padding-right: 16px;
+}
+
+.layout--tablet .layout__header h2 {
+    font-size: 15px;
+}

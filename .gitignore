@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build
+frontend/dist/
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PM2
+ecosystem.config.js
+
+# Prisma
+backend/prisma/*.db
+backend/prisma/*.db-journal
+
+# IDE
+.vscode/
+.idea/
+
+# Agents/Skills
+.agents/
+.gemini/
+
+# Screenshots & uploads
+backend/uploads/
+backend/screenshots/
+backend/rpa-screenshots/
+
+# Temp
+tmp/

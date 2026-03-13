@@ -1,0 +1,26 @@
+# Aliases para MRP Popping Boba & Gestión de Perlas
+# Uso: source ~/.bashrc después de agregar
+
+# === MRP POPPING BOBA (Este Workspace) ===
+alias popping-restart='pm2 restart popping-backend && echo "✅ Popping Backend reiniciado"'
+alias popping-logs='pm2 logs popping-backend'
+alias popping-status='pm2 info popping-backend'
+alias popping-build='cd /var/www/gestionpbi/frontend && npm run build && echo "✅ Frontend construido"'
+alias popping-health='bash /var/www/gestionpbi/scripts/health-check.sh'
+
+# === GESTIÓN DE PERLAS (NO TOCAR) ===
+alias perlas-restart='pm2 restart perlas-backend && echo "✅ Perlas Backend reiniciado"'
+alias perlas-logs='pm2 logs perlas-backend'  
+alias perlas-status='pm2 info perlas-backend'
+
+# === ATAJOS RÁPIDOS ===
+alias pm2-all='pm2 list'
+alias pm2-save='pm2 save && echo "✅ Configuración PM2 guardada"'
+
+# === NAVEGACIÓN RÁPIDA ===
+alias cdpopping='cd /var/www/gestionpbi'
+alias cdperlas='cd /var/www/gestion_de_pedidos'
+
+echo "✅ Aliases actualizados:"
+echo "   🍿 popping-restart, popping-logs, popping-health"
+echo "   💎 perlas-restart, perlas-logs"

@@ -1,0 +1,8 @@
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+playwright-log.txt
+.env
+.DS_Store
+Thumbs.db

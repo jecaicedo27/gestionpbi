@@ -1,0 +1,1571 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "views", "metrics", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  extensions = [pgcrypto, pg_trgm, pg_stat_statements]
+}
+
+// USUARIOS
+enum UserRole {
+  ADMIN
+  LOGISTICA                // Logística (reception + inventory)
+  OPERARIO_PICKING       // Operario de Picking/Packing
+  PRODUCCION             // Producción (includes former LIDER_PRODUCCION)
+  CARTERA                // Cartera (billing/collections)
+  DISTRIBUIDOR           // Distribuidor (customers)
+  CALIDAD                // Calidad (quality/PQR)
+  CONTABILIDAD           // Contabilidad (accounting)
+  COMERCIAL              // Comercial (invoicing / sales)
+}
+
+model User {
+  id            String      @id @default(uuid())
+  email         String      @unique
+  username      String      @unique
+  password      String
+  name          String
+  role          UserRole
+  nit           String?          // NIT or cédula for Siigo invoicing
+  active        Boolean     @default(true)
+  lastLogin     DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  
+  distributorOrders   Order[]         @relation("DistributorOrders")
+  approvedOrders      Order[]         @relation("OrderApprover")
+  pickedOrders        Order[]         @relation("OrderPicker")
+  scannedItems        OrderPickingItem[] @relation("OrderScanner")
+  productionOrders    ProductionOrder[]
+  auditLogs           AuditLog[]
+  
+  // PQR Relations
+  createdPQRs         PQR[]           @relation("PQRCreator")
+  managedPQRs         PQR[]           @relation("PQRManager")
+  recallLotCollections RecallLotCollection[]
+
+  // Micro Analysis Relations
+  microSamples        MicroSample[]   @relation("MicroSampleTaker")
+
+  // Assembly System Relations
+  createdTemplates          AssemblyTemplate[]        @relation("TemplateCreator")
+  updatedTemplates          AssemblyTemplate[]        @relation("TemplateUpdater")
+  createdFormulas           Formula[]                 @relation("FormulaCreator")
+  updatedFormulas           Formula[]                 @relation("FormulaUpdater")
+  approvedFormulas          Formula[]                 @relation("FormulaApprover")
+  createdNotes              AssemblyNote[]            @relation("NoteCreator")
+  executedNotes             AssemblyNote[]            @relation("NoteExecutor")
+  completedNotes            AssemblyNote[]            @relation("NoteCompleter")
+  consumedItems             AssemblyNoteItem[]        @relation("ItemConsumer")
+  capturedVariables         AssemblyProcessVariable[] @relation("VariableCaptor")
+  qualityChecks             AssemblyQualityCheck[]    @relation("QualityChecker")
+  rpaExecutions             RpaExecution[]
+
+  // Procurement Relations
+  createdPurchaseOrders     PurchaseOrder[]    @relation("POCreator")
+  approvedPurchaseOrders    PurchaseOrder[]    @relation("POApprover")
+  paidPurchaseOrders        PurchaseOrder[]    @relation("POPayer")
+  receivedReceptions        Reception[]        @relation("ReceptionReceiver")
+  validatedReceptions       Reception[]        @relation("ReceptionValidator")
+  lotConsumptions           LotConsumption[]   @relation("LotConsumer")
+  zoneTransfers             ZoneTransfer[]     @relation("ZoneTransferUser")
+
+  // Cart Reservation
+  cartReservations          CartReservation[]  @relation("CartDistributor")
+  
+  @@index([email])
+  @@index([role, active])
+  @@map("users")
+}
+
+// PRODUCTOS
+enum ProductType {
+  PERLA_EXPLOSIVA
+  SYRUP
+  BASE_CITRICA
+  MATERIA_PRIMA
+}
+
+enum ProductClassification {
+  PRODUCTO_TERMINADO
+  MATERIA_PRIMA
+  PRODUCTO_EN_PROCESO
+}
+
+model InventoryGroup {
+  id          String    @id @default(uuid())
+  siigoId     String    @unique
+  name        String
+  type        String
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@index([siigoId])
+  @@map("inventory_groups")
+}
+
+model Product {
+  id                  String         @id @default(uuid())
+  siigoId             String         @unique
+  sku                 String         @unique
+  barcode             String         @unique
+  name                String
+  type                ProductType
+  classification      ProductClassification?
+  accountGroup        Int?           // SIIGO account group classification
+  flavor              String?
+  size                String?
+  unit                String
+  
+  groupId             String
+  group               InventoryGroup @relation(fields: [groupId], references: [id])
+  
+  currentStock          Float          @default(0)
+  productionZoneStock   Float          @default(0)  // Stock en zona de producción
+  price               Float          @default(0)
+  taxClassification   String?
+  taxIncluded         Boolean?
+  taxes               Json?
+  warehouses          Json?
+  active              Boolean        @default(true)
+
+  minimumStock        Float          @default(0)
+  lastSync            DateTime?
+  
+  avgDailyConsumption Float          @default(0)
+  dailyVelocity       Float          @default(0) // Calculated from Data Mining
+  daysOfStock         Float          @default(0)
+  velocityTrend       String?
+
+  // Replenishment Config
+  packSize            Float          @default(1)
+  costPrice           Float          @default(0)
+  
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  
+  boms                BOM[]
+  bomComponents       BOMItem[]      @relation("ComponentProduct")
+  inventoryAlternate  InventoryAlternate?
+  consumptionHistory  ConsumptionHistory[]
+  orderItems          OrderItem[]
+  productionOrders    ProductionOrder[]
+  productionBatches   ProductionBatch[]
+  batchTargets        BatchOutputTarget[]
+  
+  // Assembly System Relations
+  templates                 AssemblyTemplate[]              @relation("ProductTemplate")
+  formulas                  Formula[]                       @relation("ProductFormula")
+  stageOutputs              AssemblyTemplateStage[]         @relation("StageOutput")
+  stageInputs               AssemblyTemplateStageInput[]    @relation("StageInputProduct")
+  formulaIngredients        FormulaItem[]                   @relation("FormulaIngredient")
+  assemblyNotes             AssemblyNote[]                  @relation("AssemblyNoteProduct")
+  assemblyComponents        AssemblyNoteItem[]              @relation("AssemblyComponent")
+  movements                 Movement[]
+  pqrItems                  PQRItem[]
+
+  // Procurement Relations
+  purchaseOrderItems        PurchaseOrderItem[]     @relation("POItemProduct")
+  materialLots              MaterialLot[]           @relation("LotProduct")
+  zoneTransfers             ZoneTransfer[]          @relation("ZoneTransferProduct")
+  productPackaging          ProductPackaging?       @relation("PackagingProduct")
+
+  // Cart Reservation
+  cartReservations          CartReservation[]       @relation("CartProduct")
+  
+  @@index([siigoId])
+  @@index([barcode])
+  @@index([type, groupId])
+  @@index([daysOfStock])
+  @@map("products")
+}
+
+// BOM
+model BOM {
+  id              String      @id @default(uuid())
+  productId       String
+  product         Product     @relation(fields: [productId], references: [id])
+  version         Int         @default(1)
+  active          Boolean     @default(true)
+  stage           Int
+  stageName       String
+  expectedYield   Float?
+  items           BOMItem[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@unique([productId, version, stage])
+  @@index([productId, active])
+  @@map("bom")
+}
+
+model BOMItem {
+  id              String    @id @default(uuid())
+  bomId           String
+  bom             BOM       @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  componentId     String
+  component       Product   @relation("ComponentProduct", fields: [componentId], references: [id])
+  quantity        Float
+  unit            String
+  
+  @@index([bomId])
+  @@index([componentId])
+  @@map("bom_items")
+}
+
+// INVENTARIO ALTERNO
+model InventoryAlternate {
+  id              String    @id @default(uuid())
+  productId       String    @unique
+  product         Product   @relation(fields: [productId], references: [id])
+  reservedQty     Float     @default(0)
+  availableQty    Float     @default(0)
+  lastUpdated     DateTime  @updatedAt
+  
+  @@map("inventory_alternate")
+}
+
+model CartReservation {
+  id             String   @id @default(uuid())
+  distributorId  String
+  distributor    User     @relation("CartDistributor", fields: [distributorId], references: [id])
+  productId      String
+  product        Product  @relation("CartProduct", fields: [productId], references: [id])
+  quantity       Float
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([distributorId, productId])
+  @@index([productId])
+  @@index([expiresAt])
+  @@map("cart_reservations")
+}
+
+// CONSUMO
+model ConsumptionHistory {
+  id              String    @id @default(uuid())
+  productId       String
+  product         Product   @relation(fields: [productId], references: [id])
+  date            DateTime
+  consumed        Float
+  source          String
+  reference       String?
+  createdAt       DateTime  @default(now())
+  
+  @@index([productId, date])
+  @@map("consumption_history")
+}
+
+// PEDIDOS
+enum OrderStatus {
+  PENDING       // Distribuidor creó el pedido
+  APPROVED      // Director Logístico aprobó
+  IN_PICKING    // Operario está separando
+  READY         // Listo para despacho
+  INVOICED      // Facturado
+  DISPATCHED    // Despachado
+  DELIVERED     // Entregado
+  CANCELLED     // Cancelado por distribuidor
+  REJECTED      // Rechazado por director
+}
+
+model Order {
+  id                String        @id @default(uuid())
+  orderNumber       String        @unique
+  distributorId     String
+  distributor       User          @relation("DistributorOrders", fields: [distributorId], references: [id])
+  status            OrderStatus   @default(PENDING)
+  completionPercent Int           @default(0)
+  items             OrderItem[]
+  
+  // Picking Progress
+  pickingProgress   Int           @default(0)  // 0-100%
+  pickingStartedAt  DateTime?
+  pickingStartedBy  String?
+  picker            User?         @relation("OrderPicker", fields: [pickingStartedBy], references: [id])
+  
+  // Distributor notes
+  notes             String?
+  
+  // Approval workflow
+  approvedBy        String?
+  approver          User?         @relation("OrderApprover", fields: [approvedBy], references: [id])
+  approvedAt        DateTime?
+  rejectedReason    String?
+  
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  readyAt           DateTime?
+  invoicedAt        DateTime?
+  dispatchedAt      DateTime?
+  deliveredAt       DateTime?
+  
+  siigoInvoiceId    String?
+  invoiceNumber     String?
+  invoicePdfUrl     String?
+  accountStatementUrl String?
+  invoicedBy        String?
+  trackingGuide     String?
+  dispatchNotes     String?
+  
+  // Enhanced dispatch fields
+  driverName        String?
+  licensePlate      String?
+  driverCedula      String?
+  amountPaid        Float?
+  totalWeightKg     Float?
+  dispatchTime      String?
+  destination       String?
+  transportGuideNumber String?   @unique
+  signedGuideUrl    String?      @map("signed_guide_url")
+  
+  @@index([distributorId])
+  @@index([status, createdAt])
+  @@index([approvedBy])
+  @@map("orders")
+}
+
+model OrderItem {
+  id              String    @id @default(uuid())
+  orderId         String
+  order           Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product   @relation(fields: [productId], references: [id])
+  requestedQty    Float
+  allocatedQty    Float     @default(0)
+  pendingQty      Float
+  
+  pickingItems    OrderPickingItem[]
+  
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model OrderPickingItem {
+  id              String    @id @default(uuid())
+  orderItemId     String
+  orderItem       OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  
+  // QR Scan Data
+  productCode     String
+  barcode         String
+  productName     String
+  unitsPerBox     Int
+  lotNumber       String
+  expirationDate  DateTime
+  
+  // Picking Details
+  scannedQty      Int       @default(0)
+  scannedAt       DateTime  @default(now())
+  scannedBy       String
+  scanner         User      @relation("OrderScanner", fields: [scannedBy], references: [id])
+  
+  @@index([orderItemId])
+  @@index([scannedBy])
+  @@map("order_picking_items")
+}
+
+// PRODUCCIÓN
+enum ProductionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model ProductionOrder {
+  id              String            @id @default(uuid())
+  orderNumber     String            @unique
+  productId       String
+  product         Product           @relation(fields: [productId], references: [id])
+  scheduledDate   DateTime
+  totalBatches    Int
+  completedBatches Int              @default(0)
+  status          ProductionStatus  @default(SCHEDULED)
+  createdById     String
+  createdBy       User              @relation(fields: [createdById], references: [id])
+  batches         ProductionBatch[]
+  
+  createdAt       DateTime          @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([scheduledDate, status])
+  @@index([productId])
+  @@map("production_orders")
+}
+
+enum BatchStatus {
+  PENDING
+  STAGE_1_BASE
+  STAGE_2_JARABE
+  STAGE_3_ESFERIFICACION
+  STAGE_4_PRODUCTO_FINAL
+  LABELING
+  COMPLETED
+  FAILED
+}
+
+model ProductionBatch {
+  id                  String            @id @default(uuid())
+  batchNumber         String            @unique
+  
+  // Optional links to legacy ProductionOrder system
+  productionOrderId   String?
+  productionOrder     ProductionOrder?  @relation(fields: [productionOrderId], references: [id], onDelete: SetNull)
+  productId           String?
+  product             Product?          @relation(fields: [productId], references: [id])
+  
+  // New Schedulling Fields
+  flavor              String?           // For Liquipops Batches (e.g. "Fresa")
+  scheduledStart      DateTime?
+  scheduledEnd        DateTime?
+  notes               String?           // For auxiliary event descriptions or instructions
+  
+  // Weight Management
+  baseWeight          Float?            // Input Kg (e.g. 120kg)
+  projectedTotalWeight Float?           // Output Kg (e.g. 200kg)
+  
+  currentStage        Int               @default(1)
+  status              BatchStatus       @default(PENDING)
+  lotNumbers          Json?
+  
+  stage1AssemblyId    String?
+  stage2AssemblyId    String?
+  stage3AssemblyId    String?
+  stage4AssemblyId    String?
+  
+  expectedOutput      Float?
+  actualOutput        Float?
+  containersProduced  Int               @default(0)
+  containersLabeled   Int               @default(0)
+  
+  qrCodes             QRCode[]
+  outputTargets       BatchOutputTarget[]
+  assemblyNotes       AssemblyNote[]
+  
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  
+  @@index([productionOrderId])
+  @@index([batchNumber])
+  @@index([status])
+  @@index([flavor])
+  @@map("production_batches")
+}
+
+model BatchOutputTarget {
+  id              String          @id @default(uuid())
+  batchId         String
+  batch           ProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id])
+  
+  plannedUnits    Int             @default(0)
+  plannedWeightKg Float           @default(0)
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  @@index([batchId])
+  @@map("batch_output_targets")
+}
+
+// QR
+model QRCode {
+  id              String            @id @default(uuid())
+  code            String            @unique
+  batchId         String
+  batch           ProductionBatch   @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  productName     String
+  barcode         String
+  lotNumber       String
+  expiryDate      DateTime
+  scanned         Boolean           @default(false)
+  scannedAt       DateTime?
+  scannedBy       String?
+  createdAt       DateTime          @default(now())
+  
+  @@index([batchId])
+  @@index([code])
+  @@map("qr_codes")
+}
+
+// AUDITORÍA
+model AuditLog {
+  id          String    @id @default(uuid())
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  action      String
+  entity      String
+  entityId    String?
+  changes     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+// CONFIGURACIÓN
+model SystemConfig {
+  id          String    @id @default(uuid())
+  key         String    @unique
+  value       Json
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@map("system_config")
+}
+
+// WEBHOOKS
+model WebhookLog {
+  id          String    @id @default(uuid())
+  event       String
+  payload     Json
+  processed   Boolean   @default(false)
+  error       String?
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+  
+  @@index([event, processed])
+  @@map("webhook_logs")
+}
+// CONFIGURACIÓN DEL SISTEMA
+model SystemSettings {
+  id                String   @id @default(uuid())
+  key               String   @unique // e.g., 'PRODUCTION_CONFIG'
+  value             Json     // Stores structure: { targetDays: 8, minStockDays: 15, alertYellow: 12, alertRed: 3 }
+  description       String?
+  updatedAt         DateTime @updatedAt
+  
+  @@map("system_settings")
+}
+
+// ============================================
+// SISTEMA DE ENSAMBLE - PLANTILLAS
+// ============================================
+
+// Tipos de proceso configurables
+model ProcessType {
+  id                String                   @id @default(uuid())
+  code              String                   @unique
+  name              String
+  category          String                   // 'STANDARD', 'SPECIAL'
+  icon              String?
+  color             String?
+  parametersSchema  Json?                    @map("parameters_schema")
+  active            Boolean                  @default(true)
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  
+  stages            AssemblyTemplateStage[]
+  assemblyNotes     AssemblyNote[]
+  
+  @@map("process_types")
+}
+
+// Plantillas de ensamble
+model AssemblyTemplate {
+  id                String                   @id @default(uuid())
+  templateCode      String                   @unique @map("template_code")
+  templateName      String                   @map("template_name")
+  productId         String                   @map("product_id")
+  product           Product                  @relation("ProductTemplate", fields: [productId], references: [id])
+  
+  version           Int                      @default(1)
+  isActive          Boolean                  @default(true) @map("is_active")
+  parentTemplateId  String?                  @map("parent_template_id")
+  parentTemplate    AssemblyTemplate?        @relation("TemplateVersion", fields: [parentTemplateId], references: [id])
+  childVersions     AssemblyTemplate[]       @relation("TemplateVersion")
+  
+  description       String?
+  totalStages       Int                      @map("total_stages")
+  
+  stages            AssemblyTemplateStage[]
+  referencedByStages AssemblyTemplateStage[] @relation("SubTemplateStage")
+  assemblyNotes     AssemblyNote[]
+  
+  createdById       String?                  @map("created_by")
+  createdBy         User?                    @relation("TemplateCreator", fields: [createdById], references: [id])
+  updatedById       String?                  @map("updated_by")
+  updatedBy         User?                    @relation("TemplateUpdater", fields: [updatedById], references: [id])
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  
+  @@unique([productId, version])
+  @@index([productId])
+  @@index([isActive])
+  @@map("assembly_templates")
+}
+
+// Etapas de la plantilla
+model AssemblyTemplateStage {
+  id                    String                          @id @default(uuid())
+  templateId            String                          @map("template_id")
+  template              AssemblyTemplate                @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  
+  stageOrder            Int                             @map("stage_order")
+  stageName             String                          @map("stage_name")
+  
+  processTypeId         String                          @map("process_type_id")
+  processType           ProcessType                     @relation(fields: [processTypeId], references: [id])
+  processParameters     Json?                           @map("process_parameters")
+  
+  outputProductId       String?                         @map("output_product_id")
+  outputProduct         Product?                        @relation("StageOutput", fields: [outputProductId], references: [id])
+  outputClassification  String?                         @map("output_classification")
+  
+  specialInstructions   String?                         @map("special_instructions")
+  
+  subTemplateId         String?                         @map("sub_template_id")
+  subTemplate           AssemblyTemplate?               @relation("SubTemplateStage", fields: [subTemplateId], references: [id])
+  
+  inputs                AssemblyTemplateStageInput[]
+  assemblyNotes         AssemblyNote[]
+  
+  createdAt             DateTime                        @default(now()) @map("created_at")
+  updatedAt             DateTime                        @updatedAt @map("updated_at")
+  
+  @@unique([templateId, stageOrder])
+  @@index([templateId])
+  @@map("assembly_template_stages")
+}
+
+// Inputs de cada etapa
+model AssemblyTemplateStageInput {
+  id                String                   @id @default(uuid())
+  stageId           String                   @map("stage_id")
+  stage             AssemblyTemplateStage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  
+  inputType         String                   @map("input_type") // 'RAW_MATERIAL', 'SUB_ASSEMBLY', 'FROM_PREVIOUS_STAGE'
+  
+  productId         String?                  @map("product_id")
+  product           Product?                 @relation("StageInputProduct", fields: [productId], references: [id])
+  
+  fromStageOrder    Int?                     @map("from_stage_order")
+  
+  quantityPerUnit   Float                    @map("quantity_per_unit")
+  unit              String
+  
+  displayOrder      Int?                     @map("display_order")
+  aggregateOnRepeat Boolean                  @default(false) @map("aggregate_on_repeat")
+  
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  
+  @@index([stageId])
+  @@map("assembly_template_stage_inputs")
+}
+
+// ============================================
+// SISTEMA DE FORMULACIONES
+// ============================================
+
+model Formula {
+  id                        String            @id @default(uuid())
+  formulaCode               String            @unique @map("formula_code")
+  formulaName               String            @map("formula_name")
+  
+  productId                 String            @map("product_id")
+  product                   Product           @relation("ProductFormula", fields: [productId], references: [id])
+  
+  version                   Int               @default(1)
+  isActive                  Boolean           @default(true) @map("is_active")
+  parentFormulaId           String?           @map("parent_formula_id")
+  parentFormula             Formula?          @relation("FormulaVersion", fields: [parentFormulaId], references: [id])
+  childVersions             Formula[]         @relation("FormulaVersion")
+  
+  baseUnit                  String            @map("base_unit")
+  baseQuantity              Float             @default(1.0) @map("base_quantity")
+  expectedYieldPercentage   Float             @default(100.0) @map("expected_yield_percentage")
+  
+  description               String?
+  notes                     String?
+  
+  items                     FormulaItem[]
+  cost                      FormulaCost?
+  
+  createdById               String?           @map("created_by")
+  createdBy                 User?             @relation("FormulaCreator", fields: [createdById], references: [id])
+  updatedById               String?           @map("updated_by")
+  updatedBy                 User?             @relation("FormulaUpdater", fields: [updatedById], references: [id])
+  approvedById              String?           @map("approved_by")
+  approvedBy                User?             @relation("FormulaApprover", fields: [approvedById], references: [id])
+  approvedAt                DateTime?         @map("approved_at")
+  createdAt                 DateTime          @default(now()) @map("created_at")
+  updatedAt                 DateTime          @updatedAt @map("updated_at")
+  
+  @@unique([productId, version])
+  @@index([productId])
+  @@index([isActive])
+  @@map("formulas")
+}
+
+model FormulaItem {
+  id              String            @id @default(uuid())
+  formulaId       String            @map("formula_id")
+  formula         Formula           @relation(fields: [formulaId], references: [id], onDelete: Cascade)
+  
+  ingredientId    String            @map("ingredient_id")
+  ingredient      Product           @relation("FormulaIngredient", fields: [ingredientId], references: [id])
+  ingredientType  String            @map("ingredient_type")
+  
+  quantity        Float
+  unit            String
+  percentage      Float?
+  
+  additionOrder   Int?              @map("addition_order")
+  
+  minQuantity     Float?            @map("min_quantity")
+  maxQuantity     Float?            @map("max_quantity")
+  
+  notes           String?
+  
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  
+  @@index([formulaId])
+  @@index([ingredientId])
+  @@map("formula_items")
+}
+
+model FormulaCost {
+  id              String            @id @default(uuid())
+  formulaId       String            @unique @map("formula_id")
+  formula         Formula           @relation(fields: [formulaId], references: [id], onDelete: Cascade)
+  
+  materialCost    Float             @map("material_cost")
+  laborCost       Float             @default(0) @map("labor_cost")
+  overheadCost    Float             @default(0) @map("overhead_cost")
+  totalCost       Float             @map("total_cost")
+  costPerUnit     Float             @map("cost_per_unit")
+  
+  calculatedAt    DateTime          @default(now()) @map("calculated_at")
+  
+  @@map("formula_costs")
+}
+
+// ============================================
+// NOTAS DE ENSAMBLE
+// ============================================
+
+model AssemblyNote {
+  id                    String                        @id @default(uuid())
+  noteNumber            String                        @unique @map("note_number")
+  
+  productionBatchId     String                        @map("production_batch_id")
+  productionBatch       ProductionBatch               @relation(fields: [productionBatchId], references: [id])
+  
+  productId             String                        @map("product_id")
+  product               Product                       @relation("AssemblyNoteProduct", fields: [productId], references: [id])
+  
+  templateId            String?                       @map("template_id")
+  template              AssemblyTemplate?             @relation(fields: [templateId], references: [id])
+  stageId               String?                       @map("stage_id")
+  stage                 AssemblyTemplateStage?        @relation(fields: [stageId], references: [id])
+  stageOrder            Int                           @map("stage_order")
+  stageName             String                        @map("stage_name")
+  
+  targetQuantity        Float                         @map("target_quantity")
+  actualQuantity        Float?                        @map("actual_quantity")
+  unit                  String
+  
+  status                String                        @default("PENDING")
+  
+  processTypeId         String?                       @map("process_type_id")
+  processType           ProcessType?                  @relation(fields: [processTypeId], references: [id])
+  processParameters     Json?                         @map("process_parameters")
+  actualParameters      Json?                         @map("actual_parameters")
+  
+  batchCode             String?                       @map("batch_code")
+  
+  notes                 String?
+  observations          String?
+  
+  items                 AssemblyNoteItem[]
+  processVariables      AssemblyProcessVariable[]
+  qualityChecks         AssemblyQualityCheck[]
+  rpaExecutions         RpaExecution[]
+  
+  createdById           String?                       @map("created_by")
+  createdBy             User?                         @relation("NoteCreator", fields: [createdById], references: [id])
+  executedById          String?                       @map("executed_by")
+  executedBy            User?                         @relation("NoteExecutor", fields: [executedById], references: [id])
+  completedById         String?                       @map("completed_by")
+  completedBy           User?                         @relation("NoteCompleter", fields: [completedById], references: [id])
+  createdAt             DateTime                      @default(now()) @map("created_at")
+  startedAt             DateTime?                     @map("started_at")
+  completedAt           DateTime?                     @map("completed_at")
+  updatedAt             DateTime                      @updatedAt @map("updated_at")
+  
+  @@index([productionBatchId])
+  @@index([productId])
+  @@index([status])
+  @@map("assembly_notes")
+}
+
+model AssemblyNoteItem {
+  id                String            @id @default(uuid())
+  assemblyNoteId    String            @map("assembly_note_id")
+  assemblyNote      AssemblyNote      @relation(fields: [assemblyNoteId], references: [id], onDelete: Cascade)
+  
+  componentId       String            @map("component_id")
+  component         Product           @relation("AssemblyComponent", fields: [componentId], references: [id])
+  componentType     String            @map("component_type")
+  
+  plannedQuantity   Float             @map("planned_quantity")
+  actualQuantity    Float?            @map("actual_quantity")
+  unit              String
+  
+  lotNumber         String?           @map("lot_number")
+  
+  consumed          Boolean           @default(false)
+  consumedAt        DateTime?         @map("consumed_at")
+  consumedById      String?           @map("consumed_by")
+  consumedBy        User?             @relation("ItemConsumer", fields: [consumedById], references: [id])
+  
+  notes             String?
+  
+  createdAt         DateTime          @default(now()) @map("created_at")
+  
+  @@index([assemblyNoteId])
+  @@index([componentId])
+  @@map("assembly_note_items")
+}
+
+model AssemblyProcessVariable {
+  id                String            @id @default(uuid())
+  assemblyNoteId    String            @map("assembly_note_id")
+  assemblyNote      AssemblyNote      @relation(fields: [assemblyNoteId], references: [id], onDelete: Cascade)
+  
+  variableName      String            @map("variable_name")
+  variableValue     String            @map("variable_value")
+  variableUnit      String?           @map("variable_unit")
+  
+  expectedMin       Float?            @map("expected_min")
+  expectedMax       Float?            @map("expected_max")
+  isWithinRange     Boolean           @default(true) @map("is_within_range")
+  
+  capturedAt        DateTime          @default(now()) @map("captured_at")
+  capturedById      String?           @map("captured_by")
+  capturedBy        User?             @relation("VariableCaptor", fields: [capturedById], references: [id])
+  
+  @@index([assemblyNoteId])
+  @@map("assembly_process_variables")
+}
+
+model AssemblyQualityCheck {
+  id                String            @id @default(uuid())
+  assemblyNoteId    String            @map("assembly_note_id")
+  assemblyNote      AssemblyNote      @relation(fields: [assemblyNoteId], references: [id], onDelete: Cascade)
+  
+  checkType         String            @map("check_type")
+  checkName         String            @map("check_name")
+  
+  resultValue       String?           @map("result_value")
+  expectedValue     String?           @map("expected_value")
+  
+  passed            Boolean
+  notes             String?
+  
+  photoUrls         String[]          @map("photo_urls")
+  
+  checkedById       String?           @map("checked_by")
+  checkedBy         User?             @relation("QualityChecker", fields: [checkedById], references: [id])
+  checkedAt         DateTime          @default(now()) @map("checked_at")
+  
+  @@index([assemblyNoteId])
+  @@map("assembly_quality_checks")
+}
+
+// ============================================
+// MOVIMIENTOS Y VENTAS (AUTOMATIZADO)
+// ============================================
+
+model Movement {
+  id                String      @id @default(uuid())
+  type              String      // 'VTA' (Venta), 'PROD' (Producción/Entrada), 'CONS' (Consumo/Salida)
+  date              DateTime
+  productId         String      @map("product_id")
+  product           Product     @relation(fields: [productId], references: [id])
+  quantity          Float
+  documentNumber    String?     @map("document_number") // FV-1-xxx, NE-1-xxx
+  customerName      String?     @map("customer_name")   // Específico para Ventas
+  source            String      @default("SIIGO")       // 'SIIGO', 'EXCEL', 'SISTEMA'
+  
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  @@index([date])
+  @@index([productId])
+  @@index([type])
+  @@map("movements")
+}
+
+// ============================================
+// SISTEMA DE PQR / GARANTÍAS
+// ============================================
+
+enum PQRType {
+  CALIDAD
+  FALTANTE
+  TROCADO
+  AVERIA_TRANSPORTE
+}
+
+enum PQRStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+
+// New Enums for Advanced Workflow
+enum PQRStage {
+  PENDING_REVIEW       // 1. Calidad revisa
+  PENDING_BILLING      // 2. Contabilidad hace Nota Crédito
+  PENDING_INVOICE      // 3. Contabilidad hace Factura (solo Reposición Física)
+  PENDING_LOGISTICS    // 4. Logística despacha (solo Reposición Física)
+  DISPATCHED           // 5. Despachado
+  COMPLETED            // Final
+  REJECTED             // Rechazado en cualquier etapa
+}
+
+enum PQRRefundMethod {
+  WALLET_BALANCE       // Saldo a Favor
+  PHYSICAL_REPLACEMENT // Reposición Física
+}
+
+model PQR {
+  id              String      @id @default(uuid())
+  ticketNumber    String      @unique // e.g. PQR-PBI-001
+  userId          String
+  user            User        @relation("PQRCreator", fields: [userId], references: [id])
+  
+  // Workflow Fields
+  status          PQRStatus   @default(PENDING) // General Status
+  stage           PQRStage    @default(PENDING_REVIEW) // Granular Workflow Stage
+  refundMethod    PQRRefundMethod? 
+
+  // Internal PQR fields
+  isInternal      Boolean     @default(false) // true = PQR Interno (planta)
+  origin          String?     // DETERIORO_PLANTA | DEFECTO_FABRICACION
+  daysAfterProduction Int?    // Días desde fabricación
+  adjustmentDocUrl String?    // PDF ajuste de inventario
+
+  // Legacy/Simple fields (Keep for backward compatibility during dev, but logic moves to PQRItem)
+  type            PQRType?    // Optional now, usually at Item level but can be Global
+  
+  // Resolution Details
+  managedById     String?
+  managedBy       User?       @relation("PQRManager", fields: [managedById], references: [id])
+  rejectionReason String?
+  internalNotes   String?
+  technicalResponse String?
+  reportedByName  String?    // Subdistribuidor / Cliente final reportado por el distribuidor
+  reportedByNameNormalized String?
+  
+  // Billing/Logistics Links
+  replacementOrderId String?  // ID de la orden de reposición en Siigo (Factura)
+  creditNoteId       String?  // ID de la Nota Crédito en Siigo
+  creditNoteUrl      String?  // URL of uploaded credit note PDF
+  accountStatementUrl String? // URL of uploaded account statement PDF
+  invoiceUrl         String?  // URL of uploaded invoice PDF
+  
+  // Logistics Evidence
+  dispatchEvidenceUrl String? // URL of dispatch photo/file
+  
+  items           PQRItem[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  resolvedAt      DateTime?
+  
+  @@index([userId])
+  @@index([userId, reportedByNameNormalized])
+  @@index([status])
+  @@index([ticketNumber])
+  @@map("pqr")
+}
+
+model PQRItem {
+  id              String      @id @default(uuid())
+  pqrId           String
+  pqr             PQR         @relation(fields: [pqrId], references: [id], onDelete: Cascade)
+  
+  type            PQRType     @default(CALIDAD)
+  productId       String?
+  product         Product?    @relation(fields: [productId], references: [id])
+  
+  quantity        Float
+  unit            String
+  lotNumber       String?
+  description     String
+  
+  evidence        PQREvidence[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([pqrId])
+  @@map("pqr_items")
+}
+
+model PQREvidence {
+  id              String      @id @default(uuid())
+  // Link to Item (Preferred)
+  pqrItemId       String?
+  pqrItem         PQRItem?    @relation(fields: [pqrItemId], references: [id], onDelete: Cascade)
+  
+  // Legacy Link to Header (Optional)
+  pqrId           String?
+  
+  url             String
+  type            String      // IMAGE, VIDEO
+  createdAt       DateTime    @default(now())
+  
+  @@index([pqrItemId])
+  @@map("pqr_evidence")
+}
+
+model RecallLotCollection {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lotNumber   String   @map("lot_number")
+  collectedAt DateTime @default(now()) @map("collected_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, lotNumber])
+  @@index([lotNumber])
+  @@map("recall_lot_collections")
+}
+
+// RPA Bot Execution History
+model RpaExecution {
+  id                String      @id @default(uuid())
+  executionType     String      @map("execution_type")  // 'SIIGO_ASSEMBLY'
+  status            String      @default("RUNNING")     // RUNNING, SUCCESS, FAILED
+  
+  // Input parameters
+  productName       String      @map("product_name")
+  quantity          Float
+  assemblyType      String?     @map("assembly_type")   // 'proceso', 'terminado'
+  observations      String?
+  
+  // Result
+  siigoNoteCode     String?     @map("siigo_note_code") // Code returned by Siigo
+  siigoUrl          String?     @map("siigo_url")
+  screenshotPath    String?     @map("screenshot_path")
+  errorMessage      String?     @map("error_message")
+  logs              Json?                                // Full execution logs
+  
+  // Links
+  assemblyNoteId    String?     @map("assembly_note_id")
+  assemblyNote      AssemblyNote? @relation(fields: [assemblyNoteId], references: [id])
+  triggeredById     String?     @map("triggered_by_id")
+  triggeredBy       User?       @relation(fields: [triggeredById], references: [id])
+  
+  // Timing
+  startedAt         DateTime    @default(now()) @map("started_at")
+  completedAt       DateTime?   @map("completed_at")
+  durationMs        Int?        @map("duration_ms")
+  
+  @@index([status])
+  @@index([assemblyNoteId])
+  @@map("rpa_executions")
+}
+
+// ============================================
+// ANÁLISIS MICROBIOLÓGICOS (LIMS Light)
+// ============================================
+
+model MicroSamplingPoint {
+  id            String   @id @default(uuid())
+  code          String   @unique // ALG-PRE, COMP, ESF-INY, etc.
+  name          String   // Alginato Pre-Pasteurización
+  description   String?
+  processArea   String?  // Pasteurización, Esferificación, Materias Primas, Ambiente
+  isEnvironmental Boolean @default(false)
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  
+  schedules     MicroSchedule[]
+  samples       MicroSample[]
+  
+  createdAt     DateTime @default(now())
+  
+  @@map("micro_sampling_points")
+}
+
+model MicroParameter {
+  id            String   @id @default(uuid())
+  code          String   @unique // ENTEROBACTERIAS, MOHOS_LEVADURAS, etc.
+  name          String   // Recuento de Enterobacterias
+  unit          String   // UFC/g o mL
+  method        String?  // ISO 21528-2:2017
+  specMin       Float?   // m value (acceptable limit)
+  specMax       Float?   // M value (marginal limit)
+  specText      String?  // "Ausente /25g" (for qualitative params)
+  regulatoryRef String?  // Res. 1407/22 MinSalud
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  
+  results       MicroResult[]
+  
+  createdAt     DateTime @default(now())
+  
+  @@map("micro_parameters")
+}
+
+model MicroSchedule {
+  id              String            @id @default(uuid())
+  samplingPointId String
+  samplingPoint   MicroSamplingPoint @relation(fields: [samplingPointId], references: [id], onDelete: Cascade)
+  dayOfWeek       Int               // 0=Domingo, 1=Lunes ... 6=Sábado
+  isActive        Boolean           @default(true)
+  
+  @@unique([samplingPointId, dayOfWeek])
+  @@map("micro_schedules")
+}
+
+model MicroSample {
+  id              String            @id @default(uuid())
+  sampleNumber    String            @unique // MIC-001, MIC-002...
+  samplingPointId String
+  samplingPoint   MicroSamplingPoint @relation(fields: [samplingPointId], references: [id])
+  
+  takenAt         DateTime          @default(now())
+  takenById       String
+  takenBy         User              @relation("MicroSampleTaker", fields: [takenById], references: [id])
+  
+  lotNumber       String?
+  batchCode       String?
+  sampleDescription String?
+  
+  lab             String?           // Biotrends, Confía Control, UniNacional
+  reportNumber    String?           // M-26-27561-0
+  reportUrl       String?           // PDF uploaded
+  
+  status          String            @default("PENDING") // PENDING, RECEIVED, COMPLETED
+  notes           String?
+  
+  results         MicroResult[]
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([samplingPointId])
+  @@index([takenAt])
+  @@index([status])
+  @@map("micro_samples")
+}
+
+model MicroResult {
+  id            String         @id @default(uuid())
+  sampleId      String
+  sample        MicroSample    @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  parameterId   String
+  parameter     MicroParameter @relation(fields: [parameterId], references: [id])
+  
+  value         Float?         // Numeric value (e.g. 10, 15100000)
+  valueText     String?        // Text value for qualitative ("Ausente", "<10")
+  isDetected    Boolean?       // For presence/absence tests (Salmonella)
+  isCompliant   Boolean?       // Auto-calculated: within spec?
+  
+  notes         String?
+  
+  createdAt     DateTime       @default(now())
+  
+  @@unique([sampleId, parameterId])
+  @@index([sampleId])
+  @@index([parameterId])
+  @@map("micro_results")
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PROCUREMENT SYSTEM — Purchase Orders, Reception, Lot Tracking
+// ═══════════════════════════════════════════════════════════════════
+
+enum PurchaseOrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  PAYMENT_PENDING
+  PAID
+  PARTIALLY_RECEIVED
+  RECEIVED
+  ACCOUNTING_PENDING
+  COMPLETED
+  CANCELLED
+}
+
+model Supplier {
+  id              String   @id @default(uuid())
+  siigoId         String   @unique
+  name            String
+  identification  String?  // NIT / CC
+  email           String?
+  phone           String?
+  address         String?
+  city            String?
+  type            String?  // Supplier, Customer, Both
+  active          Boolean  @default(true)
+  
+  // Tax configuration per supplier
+  ivaRate         Float?   // IVA % (e.g. 19.0), null = exempt
+  reteFuenteRate  Float?   // RetefUente % (e.g. 2.5), null = not applicable
+  paymentTermDays Int?     @default(30) // Payment term in days
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  purchaseOrders  PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id              String              @id @default(uuid())
+  orderNumber     String              @unique   // OC-001, OC-002...
+  status          PurchaseOrderStatus @default(DRAFT)
+  
+  // Supplier from Siigo
+  supplierId      String              // Siigo customer ID
+  supplierName    String
+  supplierNit     String?
+  supplier        Supplier?           @relation(fields: [supplierDbId], references: [id])
+  supplierDbId    String?
+  
+  notes           String?
+  expectedDate    DateTime?           // When delivery is expected
+  quotationUrls   Json?               // Array of uploaded supplier quotation file URLs
+  
+  createdById     String
+  createdBy       User                @relation("POCreator", fields: [createdById], references: [id])
+  approvedById    String?
+  approvedBy      User?               @relation("POApprover", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  
+  // Cartera (payment) step
+  paidById        String?
+  paidBy          User?               @relation("POPayer", fields: [paidById], references: [id])
+  paidAt          DateTime?
+  paymentProofUrls Json?              // Array of payment proof file URLs
+  paymentNotes    String?
+  paymentSubtotal Float?              @map("payment_subtotal")     // Subtotal before taxes
+  paymentIvaAmount Float?             @map("payment_iva_amount")   // IVA amount applied
+  paymentReteAmount Float?            @map("payment_rete_amount")  // Retefuente amount applied
+  paymentTotal    Float?              @map("payment_total")        // Final total paid
+  paymentIvaRate  Float?              @map("payment_iva_rate")     // IVA % used
+  paymentReteRate Float?              @map("payment_rete_rate")    // Retefuente % used
+  paymentItemCosts Json?              @map("payment_item_costs")   // Per-item {itemId: {totalPay, unitCostPerKg}}
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  
+  items           PurchaseOrderItem[]
+  receptions      Reception[]
+  
+  @@index([status])
+  @@index([createdAt])
+  @@index([createdById])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id                String          @id @default(uuid())
+  purchaseOrderId   String
+  purchaseOrder     PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  
+  productId         String?         // FK to Product table
+  product           Product?        @relation("POItemProduct", fields: [productId], references: [id])
+  siigoProductCode  String          // SKU from Siigo (e.g. MP2F01)
+  siigoProductName  String          // Human name (e.g. AZUCAR)
+  unit              String          @default("gramo")     // Always grams internally
+  packagingQtyGrams Int?            // Conversion: 1 bulto = 50000g
+  packagingDesc     String?         // "Bulto 50kg", "Caja 25kg"
+  
+  quantityOrdered   Int             // Total grams ordered
+  quantityReceived  Int             @default(0) // Accumulated received grams
+  unitCost          Float?          // Cost per gram (accounting only)
+  
+  receptionItems    ReceptionItem[]
+  lots              MaterialLot[]
+  
+  @@index([purchaseOrderId])
+  @@index([siigoProductCode])
+  @@map("purchase_order_items")
+}
+
+enum ReceptionStatus {
+  PENDING
+  RECEIVED
+  ACCOUNTING_REVIEW
+  LOTS_PENDING
+  COMPLETED
+}
+
+model Reception {
+  id                  String          @id @default(uuid())
+  purchaseOrderId     String
+  purchaseOrder       PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  status              ReceptionStatus @default(PENDING)
+  
+  // Logistics
+  receivedById        String
+  receivedBy          User            @relation("ReceptionReceiver", fields: [receivedById], references: [id])
+  receivedAt          DateTime        @default(now())
+  photoProductUrl     String?         // Photo of received product (legacy single)
+  photoInvoiceUrl     String?         // Photo of invoice/remission (legacy)
+  invoiceImageUrls    Json?           // Array of invoice photo URLs
+  receptionPhotoUrls  Json?           // Array of reception + product photo URLs
+  observations        String?
+  
+  // Accounting validation
+  accountingUserId    String?
+  accountingUser      User?           @relation("ReceptionValidator", fields: [accountingUserId], references: [id])
+  accountingAt        DateTime?
+  siigoRef            String?         // Reference from Siigo registration
+  siigoPurchaseId     String?         // Siigo purchase invoice ID
+  siigoScreenshotUrl  String?         // Screenshot of Siigo entry
+  accountingNotes     String?
+  providerInvoiceNumber String?       @map("provider_invoice_number") // Invoice number from provider
+  itemCosts           Json?           // Per-item cost data {itemId: {totalPay}}
+  
+  items               ReceptionItem[]
+  
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  
+  @@index([purchaseOrderId])
+  @@index([status])
+  @@map("receptions")
+}
+
+model ReceptionItem {
+  id                String          @id @default(uuid())
+  receptionId       String
+  reception         Reception       @relation(fields: [receptionId], references: [id], onDelete: Cascade)
+  orderItemId       String
+  orderItem         PurchaseOrderItem @relation(fields: [orderItemId], references: [id])
+  
+  quantityExpected  Int             // What was expected (grams)
+  quantityReceived  Int             // What actually arrived (grams)
+  discrepancyNote   String?         // If more or less arrived
+  
+  @@index([receptionId])
+  @@index([orderItemId])
+  @@map("reception_items")
+}
+
+enum LotStatus {
+  AVAILABLE
+  LOW_STOCK
+  DEPLETED
+  EXPIRED
+}
+
+model MaterialLot {
+  id                    String            @id @default(uuid())
+  purchaseOrderItemId   String?
+  purchaseOrderItem     PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id])
+  
+  productId             String?           // FK to Product table
+  product               Product?          @relation("LotProduct", fields: [productId], references: [id])
+  siigoProductCode      String            // SKU (e.g. MP2F01)
+  siigoProductName      String            // Name (e.g. AZUCAR)
+  lotNumber             String            // Supplier lot number
+  
+  initialQuantity       Int               // Original grams received
+  currentQuantity       Int               // Remaining grams
+  unit                  String            @default("gramo")
+  
+  qrData                String?           // QR code content
+  receivedAt            DateTime          @default(now())
+  expiresAt             DateTime?         // Expiration date
+  status                LotStatus         @default(AVAILABLE)
+  zone                  String            @default("WAREHOUSE")  // WAREHOUSE | PRODUCTION
+
+  zoneTransfers         ZoneTransfer[]    @relation("ZoneTransferLot")
+  
+  consumptions          LotConsumption[]
+  
+  @@index([siigoProductCode])
+  @@index([status])
+  @@index([receivedAt])
+  @@index([lotNumber])
+  @@map("material_lots")
+}
+
+model LotConsumption {
+  id              String      @id @default(uuid())
+  materialLotId   String
+  materialLot     MaterialLot @relation(fields: [materialLotId], references: [id])
+  
+  assemblyNoteId  String?     // Production note that consumed it
+  quantityUsed    Int         // Grams consumed
+  
+  usedById        String
+  usedBy          User        @relation("LotConsumer", fields: [usedById], references: [id])
+  usedAt          DateTime    @default(now())
+  observations    String?
+  
+  @@index([materialLotId])
+  @@index([assemblyNoteId])
+  @@index([usedAt])
+  @@map("lot_consumptions")
+}
+
+model ProductPackaging {
+  id                String    @id @default(uuid())
+  productId         String    @unique   // FK to Product table
+  product           Product   @relation("PackagingProduct", fields: [productId], references: [id])
+  siigoProductCode  String    @unique   // SKU (kept for convenience)
+  packagingDesc     String              // "Bulto 50kg"
+  gramsPerUnit      Int                 // 50000
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@map("product_packagings")
+}
+
+model ForecastConfig {
+  id                String    @id @default(uuid())
+  key               String    @unique   // e.g. "inventory_weeks", "buffer_pct"
+  value             String              // "3", "15"
+  description       String?
+  
+  updatedAt         DateTime  @updatedAt
+  
+  @@map("forecast_configs")
+}
+
+// ============================================
+// PRODUCTION LOT REGISTRY (Imported from Excel)
+// ============================================
+
+model ProductionLot {
+  id              String   @id @default(uuid())
+  lotCode         String   @unique  // Full lot code e.g. "2601051940MA12"
+  premixLot       String?           // Premix lot e.g. "260105-12"
+  flavor          String            // Normalized: "Fresa", "Chamoy", etc.
+  flavorRaw       String            // Original from Excel: "FRESA", "CHAMOY"
+  productionDate  DateTime
+  mixAssemblyNote String?
+  mixQuantityKg   Float?
+  phJarabe        Float?
+  bxJarabe        Float?
+  conductividad   Float?
+  bxPerla         Float?
+  tempCoccion     Float?
+  tempChiller     Float?
+  productionStartAt       DateTime?
+  productionEndAt         DateTime?
+  productionDurationMin   Int?
+  productionDurationRaw   String?
+
+  protectionLotCode       String?
+  protectionQuantityKg    Float?
+  protectionPh            Float?
+  protectionBx            Float?
+  protectionAssemblyNote  String?
+
+  alginateLotCode         String?
+  pearlGrowthCheckRaw     String?
+  pearlGrowthConfirmed    Boolean?
+  pearlCookTempC          Float?
+  pearlCookTimeSec        Float?
+
+  protectionAdded3400     Float?
+  protectionAdded1150     Float?
+  protectionAdded350      Float?
+
+  damaged3400             Int?
+  damaged1150             Int?
+  damaged350              Int?
+
+  pesoPerlas      Float?
+  units3400       Int?             // Tarros 3400g produced (col AA)
+  units1150       Int?             // Tarros 1150g produced (col AB — 1100g in Excel)
+  units350        Int?             // Tarros 350g produced  (col AC — 300g in Excel)
+  logisticsDeliveredDate  DateTime?
+  logisticsDeliveredTo    String?
+  leader          String?
+  createdAt       DateTime @default(now())
+
+  @@index([flavor])
+  @@index([productionDate])
+  @@map("production_lots")
+}
+
+// ============================================
+// SYRUP LOT REGISTRY (Sirope Geniality - Excel)
+// ============================================
+
+model SyrupLot {
+  id              String    @id @default(uuid())
+  lotCode         String              // "260109-1" (NOT unique — same lot, multiple flavors)
+  flavor          String              // Normalized: "Maracuya", "Fresa"
+  flavorRaw       String              // Original: "MARACUYA", "FRESA"
+  productionDate  DateTime
+  mixQuantityKg   Float?              // kg mezcla producida
+  phJarabe        Float?
+  bxJarabe        Float?
+  assemblyNote    String?             // nota de ensamble
+  units1000ml     Int       @default(0)
+  units360ml      Int       @default(0)
+  units60ml       Int       @default(0)
+  delivered1000ml Int       @default(0)
+  delivered360ml  Int       @default(0)
+  delivered60ml   Int       @default(0)
+  deliveryDate    DateTime?
+  leader          String?
+  createdAt       DateTime  @default(now())
+
+  @@unique([lotCode, flavor, productionDate])
+  @@index([flavor])
+  @@index([productionDate])
+  @@map("syrup_lots")
+}
+
+model ZoneTransfer {
+  id              String       @id @default(uuid())
+  productId       String
+  product         Product      @relation("ZoneTransferProduct", fields: [productId], references: [id])
+  materialLotId   String?
+  materialLot     MaterialLot? @relation("ZoneTransferLot", fields: [materialLotId], references: [id])
+  direction       String       // IN = bodega→zona | OUT = zona→bodega
+  quantity        Float
+  unit            String       @default("unidad")
+  lotNumber       String?
+  transferredById String
+  transferredBy   User         @relation("ZoneTransferUser", fields: [transferredById], references: [id])
+  observations    String?
+  photos          Json?          @default("[]")  // Array of photo URLs
+  createdAt       DateTime     @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([transferredById])
+  @@map("zone_transfers")
+}
