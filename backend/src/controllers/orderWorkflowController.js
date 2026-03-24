@@ -434,7 +434,9 @@ exports.getPickingProgress = async (req, res) => {
                             select: {
                                 id: true,
                                 name: true,
-                                sku: true
+                                sku: true,
+                                barcode: true,
+                                packSize: true
                             }
                         },
                         pickingItems: true

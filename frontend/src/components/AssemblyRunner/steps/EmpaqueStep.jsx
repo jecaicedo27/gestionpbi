@@ -21,8 +21,25 @@ const EmpaqueStep = ({
 }) => {
     const noteData = stepData;
     const empData = noteData.empaqueData || {};
-    const conteoQty = empData.conteo_qty ?? null;
-    const plannedQty = empData.planned_qty ?? null;
+    const empRef = noteData.processParameters?.empaqueRef || {};
+
+    // Compute planned from empaqueData / empaqueRef or from container items
+    let plannedQty = empData.planned_qty ?? empRef.planned_qty ?? null;
+    let conteoQty = empData.conteo_qty ?? empRef.conteo_qty ?? null;
+
+    if (plannedQty === null && noteData.items?.length > 0) {
+        const containerItem = noteData.items.find(i =>
+            /TARRO|FRASCO|BOTELLA|ENVASE/i.test(i.component?.name || '')
+        );
+        if (containerItem) {
+            plannedQty = containerItem.plannedQuantity || null;
+            if (conteoQty === null && containerItem.actualQuantity) {
+                conteoQty = containerItem.actualQuantity;
+            }
+        }
+    }
+    if (plannedQty === null) plannedQty = noteData.targetQuantity || null;
+
     const defectivos = parseInt(empaqueDefective || 0, 10);
     const aprobados = conteoQty !== null ? Math.max(0, conteoQty - defectivos) : null;
     const needsPhoto = defectivos > 0 && empaquePhotoUrls.filter(Boolean).length < defectivos;
@@ -43,7 +60,10 @@ const EmpaqueStep = ({
                         <h2 className="text-white font-black text-2xl leading-tight">
                             {noteData.product?.name || noteData.stageName}
                         </h2>
-                        <div className="text-white/50 text-xs mt-1">Lote {noteData.productionBatch?.batchNumber}</div>
+                        <div className="mt-2 inline-block bg-emerald-500 rounded-xl px-4 py-2 shadow-md">
+                            <span className="text-emerald-100 text-xs font-semibold">🏷️ Lote: </span>
+                            <span className="text-white font-black text-lg tracking-wide">{noteData.productionBatch?.batchNumber}</span>
+                        </div>
                     </div>
                     <div className="text-right">
                         <div className="inline-flex items-center gap-1.5 bg-white/15 backdrop-blur rounded-full px-3 py-1.5">

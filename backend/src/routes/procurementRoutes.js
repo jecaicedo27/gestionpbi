@@ -49,6 +49,7 @@ router.put('/purchase-orders/:id/approve', auth, roles('ADMIN', 'PRODUCCION'), p
 router.put('/purchase-orders/:id/send', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.markSent);
 router.put('/purchase-orders/:id/send-to-cartera', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.sendToCartera);
 router.put('/purchase-orders/:id/payment', auth, roles('ADMIN', 'CARTERA', 'CONTABILIDAD'), purchaseOrderController.registerPayment);
+router.put('/purchase-orders/:id/credit-payment', auth, roles('ADMIN', 'CARTERA', 'CONTABILIDAD'), purchaseOrderController.registerCreditPayment);
 router.put('/purchase-orders/:id/cancel', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.cancel);
 
 // ── Payment Proof Upload ──
@@ -124,26 +125,26 @@ router.get('/suppliers', auth, purchaseOrderController.getSuppliers);
 router.get('/raw-materials', auth, purchaseOrderController.getRawMaterials);
 
 // ── Sync Suppliers from Siigo ──
-router.post('/suppliers/sync', auth, roles('ADMIN', 'PRODUCCION'), async (req, res) => {
-    try {
+// ── In-memory sync status ──
+let supplierSyncStatus = { running: false, result: null, startedAt: null };
+const siigoQueue = require('../services/siigoQueue');
+
+router.post('/suppliers/sync', auth, roles('ADMIN', 'PRODUCCION', 'CONTABILIDAD'), async (req, res) => {
+    if (supplierSyncStatus.running) {
+        const qStatus = siigoQueue.status();
+        return res.json({ status: 'RUNNING', message: `Sincronización en progreso... ${qStatus.running ? '(esperando: ' + qStatus.running + ')' : ''}` });
+    }
+
+    supplierSyncStatus = { running: true, result: null, startedAt: new Date() };
+    res.json({ status: 'STARTED', message: 'Sincronización encolada' });
+
+    // Enqueue through siigoQueue so it waits for CRON to finish
+    siigoQueue.enqueue('sync-proveedores', async () => {
         const siigoService = require('../services/siigoService');
         const logger = require('../utils/logger');
 
         logger.info('📡 Starting Siigo supplier sync...');
-
-        let siigoSuppliers;
-        try {
-            siigoSuppliers = await siigoService.getSuppliers();
-        } catch (err) {
-            // Retry once on rate limit (429)
-            if (err.response?.status === 429) {
-                logger.warn('⚠️ Siigo rate limit hit, waiting 6s and retrying...');
-                await new Promise(r => setTimeout(r, 6000));
-                siigoSuppliers = await siigoService.getSuppliers();
-            } else {
-                throw err;
-            }
-        }
+        const siigoSuppliers = await siigoService.getSuppliers();
 
         let synced = 0;
         for (const s of siigoSuppliers) {
@@ -172,14 +173,15 @@ router.post('/suppliers/sync', auth, roles('ADMIN', 'PRODUCCION'), async (req, r
         }
 
         logger.info(`✅ Supplier sync complete: ${synced} proveedores sincronizados`);
-        res.json({ success: true, synced, total: siigoSuppliers.length });
-    } catch (error) {
+        supplierSyncStatus = { running: false, result: { success: true, synced, total: siigoSuppliers.length }, startedAt: null };
+    }).catch(error => {
         console.error('Supplier sync error:', error.message);
-        const msg = error.response?.status === 429
-            ? 'Siigo está limitando las peticiones. Espera 1 minuto e intenta de nuevo.'
-            : `Error sincronizando proveedores: ${error.message}`;
-        res.status(500).json({ error: msg });
-    }
+        supplierSyncStatus = { running: false, result: { success: false, error: error.message }, startedAt: null };
+    });
+});
+
+router.get('/suppliers/sync-status', auth, async (req, res) => {
+    res.json(supplierSyncStatus);
 });
 
 // ── Supplier Tax Config ──
@@ -187,7 +189,7 @@ router.get('/suppliers/:id/tax-config', auth, async (req, res) => {
     try {
         const supplier = await prisma.supplier.findUnique({
             where: { id: req.params.id },
-            select: { id: true, name: true, identification: true, ivaRate: true, reteFuenteRate: true, paymentTermDays: true }
+            select: { id: true, name: true, identification: true, ivaRate: true, reteFuenteRate: true, paymentTermDays: true, fiscalConfigConfirmed: true, fiscalConfigAt: true }
         });
         if (!supplier) return res.status(404).json({ error: 'Proveedor no encontrado' });
         res.json(supplier);
@@ -196,17 +198,26 @@ router.get('/suppliers/:id/tax-config', auth, async (req, res) => {
 
 router.put('/suppliers/:id/tax-config', auth, roles('ADMIN', 'CONTABILIDAD'), async (req, res) => {
     try {
-        const { ivaRate, reteFuenteRate, paymentTermDays } = req.body;
+        const { ivaRate, reteFuenteRate, paymentTermDays, securityCode } = req.body;
+
+        // Security code required to confirm fiscal configuration
+        if (!securityCode || securityCode !== '1987') {
+            return res.status(403).json({ error: 'Código de seguridad incorrecto' });
+        }
+
         const updated = await prisma.supplier.update({
             where: { id: req.params.id },
             data: {
-                ...(ivaRate !== undefined && { ivaRate: parseFloat(ivaRate) || null }),
-                ...(reteFuenteRate !== undefined && { reteFuenteRate: parseFloat(reteFuenteRate) || null }),
-                ...(paymentTermDays !== undefined && { paymentTermDays: parseInt(paymentTermDays) || 30 })
+                ivaRate: ivaRate !== undefined ? (parseFloat(ivaRate) || 0) : 0,
+                reteFuenteRate: reteFuenteRate !== undefined ? (parseFloat(reteFuenteRate) || 0) : 0,
+                paymentTermDays: paymentTermDays !== undefined ? (parseInt(paymentTermDays) || 30) : 30,
+                fiscalConfigConfirmed: true,
+                fiscalConfigAt: new Date(),
+                fiscalConfigById: req.user?.id || null
             }
         });
         res.json(updated);
-    } catch (err) { res.status(500).json({ error: 'Error actualizando config fiscal' }); }
+    } catch (err) { console.error('Tax config error:', err); res.status(500).json({ error: 'Error actualizando config fiscal' }); }
 });
 
 // ── Receptions ──
@@ -309,6 +320,21 @@ router.post('/lots', auth, roles('ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES
 router.get('/lots', auth, receptionController.listLots);
 router.get('/lots/stock-summary', auth, receptionController.stockSummary);
 router.get('/lots/:id/label', auth, generateLotLabel);
+
+// ── Update Material Lot (edit expiresAt, lotNumber, etc.) ──
+router.patch('/lots/:id', auth, roles('ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CALIDAD', 'LOGISTICA'), async (req, res) => {
+    try {
+        const { expiresAt, lotNumber } = req.body;
+        const updateData = {};
+        if (expiresAt !== undefined) updateData.expiresAt = expiresAt ? new Date(expiresAt) : null;
+        if (lotNumber !== undefined) updateData.lotNumber = lotNumber;
+        const lot = await prisma.materialLot.update({ where: { id: req.params.id }, data: updateData });
+        res.json(lot);
+    } catch (err) {
+        console.error('Error updating lot:', err);
+        res.status(500).json({ error: 'Error actualizando lote' });
+    }
+});
 
 // ── Forecast ──
 

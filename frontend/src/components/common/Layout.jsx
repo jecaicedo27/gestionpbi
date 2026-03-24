@@ -19,7 +19,7 @@ const Layout = () => {
     }, []);
 
     // PRODUCCION always tablet mode (dedicated tablets). Others only on small screens.
-    const alwaysTablet = user?.role === 'PRODUCCION';
+    const alwaysTablet = user?.role === 'PRODUCCION' || user?.role === 'OPERARIO_PICKING';
     const responsiveTabletRoles = ['LOGISTICA', 'CARTERA', 'CONTABILIDAD'];
     const isTabletMode = alwaysTablet || (isSmallScreen && responsiveTabletRoles.includes(user?.role));
 
@@ -36,6 +36,8 @@ const Layout = () => {
         if (path === '/premix-panel') return 'Premezclas';
         if (path === '/rpa-history') return 'Historial RPA';
         if (path === '/lots/traceability') return 'Trazabilidad de Lotes';
+        if (path === '/quality/productive-traceability') return 'Trazabilidad Productiva';
+        if (path.startsWith('/micro')) return 'Microbiología';
         if (path === '/admin/users') return 'Usuarios';
         if (path === '/admin/config') return 'Configuración';
         if (path === '/admin/reports') return 'Reportes';
@@ -62,7 +64,7 @@ const Layout = () => {
                         {!isTabletMode && <div className="h-8 w-px bg-neutral-200 mx-1"></div>}
 
                         <div className="flex items-center gap-3">
-                            <div className="text-right hidden sm:block">
+                            <div className="text-right">
                                 <p className="text-sm font-medium text-neutral-900">{user?.name}</p>
                                 <p className="text-xs text-neutral-500">{user?.role}</p>
                             </div>
@@ -79,6 +81,7 @@ const Layout = () => {
                             title="Cerrar Sesión"
                         >
                             <LogOut size={20} />
+                            <span className="text-xs font-semibold">Salir</span>
                         </button>
                     </div>
                 </header>

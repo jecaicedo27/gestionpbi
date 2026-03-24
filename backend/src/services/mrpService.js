@@ -49,6 +49,9 @@ class MRPService {
      * Recursive function to explode requirements for a batch
      */
     async explodeBatchRequirements(batch, targetQty, requirements) {
+        // Skip batches without a productId (e.g. Geniality multi-product batches)
+        if (!batch.productId) return;
+
         // Get Template for the product
         const template = await prisma.assemblyTemplate.findFirst({
             where: { productId: batch.productId, isActive: true },

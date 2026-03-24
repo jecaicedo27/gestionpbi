@@ -1,18 +1,14 @@
-/**
- * GlobalTimerAlert — Listens for Socket.IO timer alerts and shows
- * a fullscreen alarm modal on ANY page, with sound + vibration.
- * Lives in Layout.jsx so it's always mounted.
- *
- * Also manages Web Push subscription so alerts fire even when
- * the browser tab is inactive or the screen is locked.
- */
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { useAuth } from '../../context/AuthContext';
 
 const socket = io(import.meta.env.VITE_POPPING_SOCKET_URL || undefined, {
     path: '/socket.io',
     transports: ['websocket', 'polling']
 });
+
+// Emails allowed to see cocción alarms (besides ADMIN)
+const ALARM_ALLOWED_EMAILS = ['gabriel@pbi.com', 'jesus@pbi.com', 'jontiveros@pbi.com'];
 
 // ── Push subscription helper ──
 async function subscribeToPush() {
@@ -65,17 +61,26 @@ async function subscribeToPush() {
 }
 
 const GlobalTimerAlert = () => {
+    const { user } = useAuth();
     const [alerts, setAlerts] = useState([]); // [{noteId, ...}]
     const audioCtxRef = useRef(null);
     const beepRef = useRef(null);
     const vibRef = useRef(null);
 
+    // Check if current user is allowed to see alarms
+    const isAllowed = user && (
+        user.role?.toUpperCase() === 'ADMIN' ||
+        ALARM_ALLOWED_EMAILS.includes(user.email?.toLowerCase())
+    );
+
     // ── Subscribe to Web Push on mount ──
     useEffect(() => {
-        subscribeToPush();
-    }, []);
+        if (isAllowed) subscribeToPush();
+    }, [isAllowed]);
 
     useEffect(() => {
+        if (!isAllowed) return; // Don't listen if not allowed
+
         const handleAlarm = (data) => {
             setAlerts(prev => {
                 // Don't duplicate
@@ -95,7 +100,7 @@ const GlobalTimerAlert = () => {
             socket.off('production:timer-alarm', handleAlarm);
             socket.off('production:timer-dismissed', handleDismiss);
         };
-    }, []);
+    }, [isAllowed]);
 
     // Sound + vibration when alerts present
     useEffect(() => {

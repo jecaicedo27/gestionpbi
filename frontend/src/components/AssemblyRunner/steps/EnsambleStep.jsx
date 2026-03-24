@@ -25,8 +25,13 @@ const EnsambleStep = ({ stepData, targetQuantityValue = '' }) => {
 
     // Use note's targetQuantity (updated by post-CONTEO with actual counts) over outputTarget planned
     const noteTarget = noteData.targetQuantity;
-    const displayQty = (noteTarget && noteTarget < 50000) ? noteTarget : (matchedTarget?.plannedUnits ?? Number(targetQuantityValue) ?? 0);
-    const displayUnit = (noteTarget && noteTarget < 50000) ? 'tarros' : (matchedTarget ? 'tarros' : (noteData.product?.formulas?.[0]?.baseUnit || 'unidades'));
+    // For weight-based intermediates (BASE, COMPUESTO, SIROPE) the noteTarget is in grams (e.g. 100000)
+    // For unit-based products (LIQUIPOPS X 350) the noteTarget is in units (e.g. 100)
+    const isWeightBased = !matchedTarget?.plannedUnits;
+    const displayQty = isWeightBased
+        ? (noteTarget || Number(targetQuantityValue) || 0)
+        : (noteTarget && noteTarget < 50000 ? noteTarget : (matchedTarget?.plannedUnits ?? Number(targetQuantityValue) ?? 0));
+    const displayUnit = isWeightBased ? 'g' : 'tarros';
 
     // Para compatibilidad con código legacy que aún usa targetGrams
     const baseQty = noteData.product?.formulas?.[0]?.baseQuantity || 1;

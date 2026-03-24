@@ -74,6 +74,36 @@ const PROCESSES = [
     },
 ];
 
+const SABORIZACIONES = [
+    {
+        name: 'Saborización Maracuyá',
+        code: 'TMPL065',
+        emoji: '🧪',
+        gradient: 'from-orange-500 to-amber-600',
+        shadow: 'shadow-orange-200',
+        description: 'Base Sirope + Ác. Cítrico + Colorantes + Sabores + Antiespumante',
+    },
+];
+
+const SIROPES_GENIALITY = [
+    {
+        name: 'Sirope Maracuyá 1000 ML',
+        code: 'TMPL066',
+        emoji: '🍋',
+        gradient: 'from-yellow-500 to-amber-600',
+        shadow: 'shadow-yellow-200',
+        description: 'Tarro Corbatín + Saborización Maracuyá + Foil + Etiqueta',
+    },
+    {
+        name: 'Sirope Maracuyá 360 ML',
+        code: 'TMPL067',
+        emoji: '🍋',
+        gradient: 'from-yellow-400 to-orange-500',
+        shadow: 'shadow-orange-200',
+        description: 'Tarro 360ml + Saborización Maracuyá + Foil + Etiqueta',
+    },
+];
+
 /* Dynamic flavor metadata for auto-assigned emoji & colors */
 const FLAVOR_META = {
     'FRESA': { emoji: '🍓', color: 'linear-gradient(135deg, #ef4444, #dc2626)' },
@@ -111,6 +141,10 @@ export default function PremixQuickPanel() {
     const [starting, setStarting] = useState(null);
     const [quantities, setQuantities] = useState({});     // code → number of batches
     const [selectedFlavor, setSelectedFlavor] = useState(FLAVORS[0]); // for generic esferificación
+    const [activeTab, setActiveTab] = useState('liquipops'); // 'liquipops' | 'geniality'
+
+    const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
+    const premezclasToShow = PREMIXES;
 
     // ── Active-batch conflict dialog state ────────────────────
     const [conflictDialog, setConflictDialog] = useState(null);
@@ -223,15 +257,46 @@ export default function PremixQuickPanel() {
 
     return (
         <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #f0f4ff 0%, #e8f0fe 50%, #f5f0ff 100%)', padding: '0.75rem' }}>
-            {/* Header */}
+            {/* Header + Tabs */}
             <div style={{ margin: '0 0 1rem' }}>
                 <h1 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
-                    🧪 Panel de Premezclas
+                    🏭 Panel de Producción
                 </h1>
                 <p style={{ color: '#64748b', margin: '.15rem 0 0', fontSize: '.8rem' }}>
-                    Prepara insumos intermedios bajo demanda — sin programación previa
+                    Prepara insumos intermedios y productos finales bajo demanda
                 </p>
+                {/* Tab bar — large and prominent */}
+                <div style={{ display: 'flex', gap: 0, marginTop: '.75rem', background: '#e2e8f0', borderRadius: 14, padding: 4 }}>
+                    {[
+                        { key: 'liquipops', label: '🧊 Perlas Liquipops', color: '#4f46e5', lightBg: '#eef2ff' },
+                        { key: 'geniality', label: '🍯 Siropes Geniality', color: '#d97706', lightBg: '#fffbeb' },
+                    ].map(tab => (
+                        <button
+                            key={tab.key}
+                            onClick={() => setActiveTab(tab.key)}
+                            style={{
+                                flex: 1,
+                                padding: '.75rem 1rem',
+                                borderRadius: 11,
+                                border: 'none',
+                                background: activeTab === tab.key ? tab.color : 'transparent',
+                                color: activeTab === tab.key ? '#fff' : '#64748b',
+                                fontWeight: 800,
+                                fontSize: '1.05rem',
+                                cursor: 'pointer',
+                                transition: 'all .25s ease',
+                                boxShadow: activeTab === tab.key ? '0 4px 12px rgba(0,0,0,.15)' : 'none',
+                                letterSpacing: '.01em',
+                            }}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
             </div>
+
+            {/* ════════ LIQUIPOPS TAB ════════ */}
+            {activeTab === 'liquipops' && (<>
 
             {/* Grid of cards */}
             <div style={{
@@ -239,7 +304,7 @@ export default function PremixQuickPanel() {
                 gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
                 gap: '0.75rem',
             }}>
-                {PREMIXES.map((premix) => {
+                {premezclasToShow.map((premix) => {
                     const template = getTemplate(premix.code);
                     const tid = template?.id;
                     const isStarting = starting === premix.code;
@@ -358,7 +423,7 @@ export default function PremixQuickPanel() {
             </div>
 
             {/* ── PROCESSES section ── */}
-            {PROCESSES.length > 0 && (
+            {isAdmin && PROCESSES.length > 0 && (
                 <>
                     <div style={{ margin: '1.5rem 0 0.75rem' }}>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -395,6 +460,7 @@ export default function PremixQuickPanel() {
                                     <div style={{
                                         background: {
                                             'TMPL-BASELIQ-001': 'linear-gradient(135deg, #4f46e5, #1e40af)',
+                                            'TMPL064': 'linear-gradient(135deg, #d97706, #b45309)',
                                         }[premix.code] || 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                                         padding: '0.5rem',
                                         display: 'flex',
@@ -444,11 +510,11 @@ export default function PremixQuickPanel() {
                             );
                         })}
                     </div>
-                </>
+            </>
             )}
 
             {/* ── COMPUESTOS section ── */}
-            {COMPUESTOS.length > 0 && (
+            {isAdmin && COMPUESTOS.length > 0 && (
                 <>
                     <div style={{ margin: '1.5rem 0 0.75rem' }}>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -496,7 +562,8 @@ export default function PremixQuickPanel() {
                 </>
             )}
 
-            {/* ── ESFERAS section (generic with flavor selector) ── */}
+            {/* ── ESFERAS section ── */}
+            {isAdmin && (
             <>
                 <div style={{ margin: '1.5rem 0 0.75rem' }}>
                     <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -507,7 +574,6 @@ export default function PremixQuickPanel() {
                     </p>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.75rem' }}>
-                    {/* Esferificación card */}
                     {(() => {
                         const esfTemplate = getTemplate(ESFERIFICACION_TEMPLATE);
                         const esfTid = esfTemplate?.id;
@@ -547,8 +613,9 @@ export default function PremixQuickPanel() {
                     })()}
                 </div>
             </>
+            )}
 
-            {/* ── PROTECCIÓN section (individual cards per flavor) ── */}
+            {/* ── PROTECCIÓN section ── */}
             <>
                 <div style={{ margin: '1.5rem 0 0.75rem' }}>
                     <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -594,6 +661,160 @@ export default function PremixQuickPanel() {
                     })}
                 </div>
             </>
+
+            {/* ═══ END LIQUIPOPS TAB ═══ */}
+            </>)}
+
+            {/* ════════ GENIALITY TAB ════════ */}
+            {activeTab === 'geniality' && (<>
+
+            {/* ── BASE SIROPE process ── */}
+            <>
+                <div style={{ margin: '0 0 0.75rem' }}>
+                    <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
+                        🏭 Proceso Base
+                    </h2>
+                    <p style={{ color: '#64748b', margin: '.15rem 0 0', fontSize: '.8rem' }}>
+                        Base intermedia para todas las saborizaciones
+                    </p>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                    {[{ name: 'Base Sirope Clásica', code: 'TMPL064', emoji: '🍯', description: 'Gomas + Sucralosa + Azúcar + Agua + Sorbato + Fructosa' }].map((premix) => {
+                        const template = getTemplate(premix.code);
+                        const tid = template?.id;
+                        const isStarting = starting === premix.code;
+                        const bg = 'linear-gradient(135deg, #d97706, #b45309)';
+                        return (
+                            <div key={premix.code} style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,.06)', transition: 'transform .2s, box-shadow .2s', cursor: 'pointer' }}
+                                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(0,0,0,.12)'; }}
+                                onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(0,0,0,.06)'; }}>
+                                <div style={{ background: bg, padding: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <span style={{ fontSize: '1.2rem' }}>{premix.emoji}</span>
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ color: '#fff', fontWeight: 700, fontSize: '.9rem', lineHeight: 1.2 }}>{premix.name}</div>
+                                        <div style={{ color: 'rgba(255,255,255,.75)', fontSize: '.65rem' }}>{premix.code}</div>
+                                    </div>
+                                </div>
+                                <div style={{ padding: '0.5rem 0.75rem' }}>
+                                    <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3 }}>{premix.description}</p>
+                                    <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                        <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                    </div>
+                                    <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
+                                        style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
+                                        {isStarting ? '⏳ Iniciando...' : loading ? 'Cargando...' : tid ? '🏭 Iniciar proceso' : '⚠️ Template no encontrado'}
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </>
+
+            {/* ── SABORIZACIONES section ── */}
+            {SABORIZACIONES.length > 0 && (
+                <>
+                    <div style={{ margin: '1.5rem 0 0.75rem' }}>
+                        <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
+                            🧪 Saborizaciones
+                        </h2>
+                        <p style={{ color: '#64748b', margin: '.15rem 0 0', fontSize: '.8rem' }}>
+                            Proceso intermedio — Base sirope + sabor + colorantes
+                        </p>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                        {SABORIZACIONES.map((premix) => {
+                            const template = getTemplate(premix.code);
+                            const tid = template?.id;
+                            const isStarting = starting === premix.code;
+                            const bg = 'linear-gradient(135deg, #ea580c, #c2410c)';
+                            return (
+                                <div key={premix.code} style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,.06)', transition: 'transform .2s, box-shadow .2s', cursor: 'pointer' }}
+                                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(0,0,0,.12)'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(0,0,0,.06)'; }}>
+                                    <div style={{ background: bg, padding: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <span style={{ fontSize: '1.2rem' }}>{premix.emoji}</span>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ color: '#fff', fontWeight: 700, fontSize: '.9rem', lineHeight: 1.2 }}>{premix.name}</div>
+                                            <div style={{ color: 'rgba(255,255,255,.75)', fontSize: '.65rem' }}>{premix.code}</div>
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '0.5rem 0.75rem' }}>
+                                        <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
+                                        <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                            <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                        </div>
+                                        <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
+                                            style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
+                                            {isStarting ? '⏳ Iniciando...' : loading ? 'Cargando...' : tid ? '🧪 Saborizar' : '⚠️ Template no encontrado'}
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </>
+            )}
+
+            {/* ── SIROPES GENIALITY section ── */}
+            {SIROPES_GENIALITY.length > 0 && (
+                <>
+                    <div style={{ margin: '1.5rem 0 0.75rem' }}>
+                        <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
+                            🍯 Siropes Geniality
+                        </h2>
+                        <p style={{ color: '#64748b', margin: '.15rem 0 0', fontSize: '.8rem' }}>
+                            Producto terminado — Siropes embotellados
+                        </p>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                        {SIROPES_GENIALITY.map((premix) => {
+                            const template = getTemplate(premix.code);
+                            const tid = template?.id;
+                            const isStarting = starting === premix.code;
+                            const bg = {
+                                'TMPL066': 'linear-gradient(135deg, #eab308, #ca8a04)',
+                                'TMPL067': 'linear-gradient(135deg, #f59e0b, #ea580c)',
+                            }[premix.code] || 'linear-gradient(135deg, #eab308, #ca8a04)';
+                            return (
+                                <div key={premix.code} style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,.06)', transition: 'transform .2s, box-shadow .2s', cursor: 'pointer' }}
+                                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-4px)'; e.currentTarget.style.boxShadow = '0 8px 32px rgba(0,0,0,.12)'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 24px rgba(0,0,0,.06)'; }}>
+                                    <div style={{ background: bg, padding: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                        <span style={{ fontSize: '1.2rem' }}>{premix.emoji}</span>
+                                        <div style={{ minWidth: 0 }}>
+                                            <div style={{ color: '#fff', fontWeight: 700, fontSize: '.9rem', lineHeight: 1.2 }}>{premix.name}</div>
+                                            <div style={{ color: 'rgba(255,255,255,.75)', fontSize: '.65rem' }}>{premix.code}</div>
+                                        </div>
+                                    </div>
+                                    <div style={{ padding: '0.5rem 0.75rem' }}>
+                                        <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
+                                        <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                            <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                        </div>
+                                        <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
+                                            style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
+                                            {isStarting ? '⏳ Iniciando...' : loading ? 'Cargando...' : tid ? '🍯 Iniciar proceso' : '⚠️ Template no encontrado'}
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </>
+            )}
+
+            {/* ═══ END GENIALITY TAB ═══ */}
+            </>)}
 
             {/* ── Conflict dialog (active batch exists) ── */}
             {conflictDialog && (

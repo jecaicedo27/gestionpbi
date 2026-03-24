@@ -47,15 +47,51 @@ exports.approveOrder = async (req, res) => {
         // Note: Stock validation removed — backorders are allowed.
         // Insufficient stock items will be fulfilled from upcoming production.
 
+        const { skipInsufficient } = req.body || {};
+
         // Approve and allocate in transaction
         const updated = await prisma.$transaction(async (tx) => {
+            // If skipInsufficient, remove items where stock < requested
+            if (skipInsufficient) {
+                const insufficientItems = order.items.filter(
+                    item => (item.product?.currentStock || 0) < item.requestedQty
+                );
+                if (insufficientItems.length > 0) {
+                    await tx.orderItem.deleteMany({
+                        where: { id: { in: insufficientItems.map(i => i.id) } }
+                    });
+                    // Also release reserved stock for removed items
+                    for (const item of insufficientItems) {
+                        try {
+                            await tx.inventoryAlternate.update({
+                                where: { productId: item.productId },
+                                data: {
+                                    reservedQty: { decrement: item.requestedQty },
+                                    availableQty: { increment: item.requestedQty }
+                                }
+                            });
+                        } catch (e) { /* no alternate record */ }
+                    }
+                }
+            }
+
+            // Get remaining items after potential deletions
+            const remainingItems = skipInsufficient
+                ? order.items.filter(item => (item.product?.currentStock || 0) >= item.requestedQty)
+                : order.items;
+
+            if (remainingItems.length === 0) {
+                throw new Error('No quedan productos con stock suficiente para aprobar');
+            }
+
             // Update order status
             const approvedOrder = await tx.order.update({
                 where: { id },
                 data: {
                     status: 'APPROVED',
                     approvedBy: approverId,
-                    approvedAt: new Date()
+                    approvedAt: new Date(),
+                    ...(skipInsufficient ? { notes: (order.notes || '') + ' [Aprobado sin faltantes]' } : {})
                 },
                 include: {
                     items: {
@@ -72,8 +108,8 @@ exports.approveOrder = async (req, res) => {
                 }
             });
 
-            // Update allocated quantities
-            for (const item of order.items) {
+            // Update allocated quantities for remaining items
+            for (const item of remainingItems) {
                 await tx.orderItem.update({
                     where: { id: item.id },
                     data: {

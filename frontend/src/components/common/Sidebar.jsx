@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LayoutDashboard, Package, Factory, ShoppingCart, Tag, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronLeft, ChevronRight, ClipboardList, Warehouse } from 'lucide-react';
+import { LayoutDashboard, Package, Factory, ShoppingCart, Tag, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -23,7 +23,7 @@ const Sidebar = () => {
         // ── Producción ──
         { icon: Calendar, label: 'Prog. Producción', path: '/production/schedule', roles: ['ADMIN'], section: 'Producción' },
         { icon: Calendar, label: 'Producción', path: '/production/view', roles: ['PRODUCCION'], section: 'Producción' },
-        { icon: PlayCircle, label: 'Modo Operador (PLC)', path: '/production/operator', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: PlayCircle, label: 'Modo Operador (PLC)', path: '/production/operator', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'] },
         { icon: Factory, label: 'Plantillas Producción', path: '/assembly-templates', roles: ['ADMIN'] },
         { icon: Activity, label: 'Historial RPA', path: '/rpa-history', roles: ['ADMIN', 'PRODUCCION'] },
         { icon: FileText, label: 'Gestor Fórmulas', path: '/formulas', roles: ['ADMIN'] },
@@ -32,14 +32,18 @@ const Sidebar = () => {
         { icon: BarChart2, label: 'KPIs Producción', path: '/production/kpis', roles: ['ADMIN'] },
         { icon: ClipboardList, label: 'Historial Batches', path: '/production/batch-history', roles: ['ADMIN'] },
         { icon: Warehouse, label: 'Zona de Producción', path: '/production/zone', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: Package, label: 'Zonas Prod. Terminado', path: '/production/finished-zone', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION'] },
+        { icon: ClipboardList, label: 'Conteo Físico', path: '/production/physical-count', roles: ['ADMIN', 'LOGISTICA'] },
+        { icon: AlertCircle, label: 'Recall por Lote', path: '/recall-report', roles: ['ADMIN', 'CALIDAD', 'LOGISTICA'] },
+        { icon: Printer, label: 'Impresión Etiquetas', path: '/labeling', roles: ['ADMIN', 'PRODUCCION'] },
 
         // ── Calidad ──
-        { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL'], section: 'Calidad' },
+        { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL', 'LOGISTICA'], section: 'Calidad' },
         { icon: Activity, label: 'Dashboard PQR', path: '/pqr/dashboard', roles: ['ADMIN', 'CALIDAD'] },
         { icon: AlertCircle, label: 'PQR Interno — Crear', path: '/internal-pqr/create', roles: ['ADMIN', 'CALIDAD'] },
         { icon: AlertCircle, label: 'PQR Interno — Gestión', path: '/internal-pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD'] },
-        { icon: Microscope, label: 'Control Microbiológico', path: '/micro/dashboard', roles: ['ADMIN', 'CALIDAD'] },
-        { icon: Microscope, label: 'Tendencias Micro', path: '/micro/trends', roles: ['ADMIN', 'CALIDAD'] },
+        { icon: Network, label: 'Trazabilidad Productiva', path: '/quality/productive-traceability', roles: ['ADMIN', 'CALIDAD', 'PRODUCCION'] },
+        { icon: Microscope, label: 'Microbiología', path: '/micro/dashboard', roles: ['ADMIN', 'CALIDAD'] },
 
         // ── Compras ──
         { icon: Truck, label: 'Forecast MP', path: '/procurement/forecast', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA'], section: 'Compras' },
@@ -50,7 +54,7 @@ const Sidebar = () => {
         { icon: FileText, label: 'Garantías (PQR)', path: '/pqr/list', roles: ['DISTRIBUIDOR'], section: 'Distribución' },
 
         // ── Reportes & Admin ──
-        { icon: Tag, label: 'Generar QR', path: '/qr-generator', roles: ['ADMIN', 'OPERARIO_PICKING', 'LOGISTICA'], section: 'Admin' },
+        { icon: Search, label: 'Conciliación Siigo', path: '/reconciliation', roles: ['ADMIN'], section: 'Reportes' },
         { icon: LineChart, label: 'Análisis Ejecutivo', path: '/analytics/executive', roles: ['ADMIN'] },
         { icon: FileText, label: 'Movimientos', path: '/admin/movements', roles: ['ADMIN'] },
         { icon: UsersIcon, label: 'Usuarios', path: '/admin/users', roles: ['ADMIN'] },

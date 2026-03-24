@@ -42,7 +42,7 @@ const InputStep = ({
 
     // Detect COLOR EN POLVO ingredient for water dissolve feature
     const isColorPolvo = materialName.includes('COLOR') && materialName.includes('POLVO');
-    const isConservantes = materialName.includes('CONSERVANTES');
+    const isConservantes = materialName.includes('CONSERVANTES') || materialName.includes('SORBATO') || materialName.includes('BENZOATO');
 
     // Auto-generate lot number for AGUA in AAMMDD-HHMM format
     useEffect(() => {
@@ -281,6 +281,15 @@ const InputStep = ({
                 </div>
 
                 <div className="flex-1 flex flex-col items-center justify-start p-4 gap-3">
+                    {/* Process instruction banner */}
+                    {note?.processParameters?.instruction && (
+                        <div className="w-full max-w-lg bg-blue-50 border-2 border-blue-200 rounded-xl p-3 flex items-center gap-2">
+                            <span className="text-lg">✅</span>
+                            <div className="text-xs font-bold text-blue-700">
+                                {note.processParameters.instruction}
+                            </div>
+                        </div>
+                    )}
                     {/* Material name + icon */}
                     <div className="flex items-center gap-3 w-full max-w-lg">
                         <div className="h-10 w-10 rounded-xl bg-violet-50 border border-violet-200 flex items-center justify-center flex-shrink-0">
@@ -301,7 +310,7 @@ const InputStep = ({
                         <div className="bg-violet-50 rounded-xl p-3 text-center border border-violet-200">
                             <div className="text-[10px] font-bold text-violet-500 uppercase">Planificado</div>
                             <div className="text-2xl font-black text-violet-700">
-                                {Number(planned).toLocaleString('es-CO')}
+                                {Number(planned).toLocaleString('es-CO', { maximumFractionDigits: 1 })}
                             </div>
                             <div className="text-xs text-violet-400">{item.unit}</div>
                             {batchMultiplier > 1 && (
@@ -315,7 +324,7 @@ const InputStep = ({
                                 {deviation !== null ? (parseFloat(deviation) > 0 ? `+${deviation}%` : `${deviation}%`) : 'Pesado'}
                             </div>
                             <div className={`text-2xl font-black ${isOverOrUnder ? 'text-amber-700' : actual > 0 ? 'text-green-700' : 'text-slate-300'}`}>
-                                {actual > 0 ? actual.toLocaleString('es-CO') : '—'}
+                                {actual > 0 ? actual.toLocaleString('es-CO', { maximumFractionDigits: 1 }) : '—'}
                             </div>
                             <div className={`text-xs ${isOverOrUnder ? 'text-amber-400' : 'text-slate-400'}`}>{item.unit}</div>
                         </div>
@@ -331,7 +340,7 @@ const InputStep = ({
                             inputMode="decimal"
                             value={actualQty}
                             onChange={(e) => onActualQtyChange(item.id, e.target.value)}
-                            placeholder={parseFloat(planned.toFixed(3)).toString()}
+                            placeholder={parseFloat(planned.toFixed(1)).toString()}
                             className={`w-full text-center text-2xl font-black py-3 px-4 rounded-xl border-2 
                                 focus:outline-none focus:ring-2 transition-all
                                 ${isOverOrUnder
@@ -358,7 +367,7 @@ const InputStep = ({
                                         shadow-lg hover:shadow-xl active:scale-95 transition-all"
                                 >
                                     <Droplets size={24} />
-                                    💧 DISOLVER EN {isConservantes ? '250' : '700'} g DE AGUA
+                                    💧 DISOLVER EN {isConservantes ? '500' : '700'} ml DE AGUA
                                 </button>
                             ) : (
                                 <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-4 text-center">
@@ -366,7 +375,7 @@ const InputStep = ({
                                         <Droplets size={20} className="text-blue-500" />
                                         <span className="text-sm font-bold text-blue-600 uppercase">Agua para disolver</span>
                                     </div>
-                                    <div className="text-3xl font-black text-blue-700">{isConservantes ? '250' : '700'} g</div>
+                                    <div className="text-3xl font-black text-blue-700">{isConservantes ? '500' : '700'} ml</div>
                                     <div className="text-xs text-blue-400 mt-1">✅ Cantidad fija registrada</div>
                                 </div>
                             )}
@@ -433,7 +442,9 @@ const InputStep = ({
                                     </div>
                                 ) : (
                                     <div className="bg-amber-50 border-2 border-amber-200 rounded-xl px-4 py-3 text-center">
-                                        <span className="text-xs font-bold text-amber-700">⚠️ No hay lotes disponibles de este material en producción</span>
+                                        <div className="text-xs font-bold text-amber-700">⚠️ No hay lotes disponibles en producción</div>
+                                        <div className="text-sm font-black text-amber-800 mt-1">{item.component?.name || 'Material'}</div>
+                                        <div className="text-xs text-amber-600 mt-0.5">Se necesitan: <span className="font-black">{fmtQty(planned, item.unit)}</span></div>
                                     </div>
                                 )}
                             </div>
@@ -550,8 +561,9 @@ const InputStep = ({
                                     </button>
                                 )}
                                 {!lotsLoading && availableLots.length === 0 && !isAgua && (
-                                    <div className="mt-2 text-xs text-amber-500 font-medium text-center">
-                                        ⚠️ No hay lotes registrados para este material
+                                    <div className="mt-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-center">
+                                        <div className="text-xs text-amber-600 font-bold">⚠️ No hay lotes de <span className="font-black">{item.component?.name || 'este material'}</span></div>
+                                        <div className="text-xs text-amber-500 mt-0.5">Se necesitan: <span className="font-black">{fmtQty(planned, item.unit)}</span></div>
                                     </div>
                                 )}
                             </div>

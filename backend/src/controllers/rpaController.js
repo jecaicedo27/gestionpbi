@@ -115,7 +115,7 @@ const getHistory = async (req, res) => {
             where,
             include: {
                 assemblyNote: {
-                    select: { id: true, noteNumber: true, stageName: true }
+                    select: { id: true, noteNumber: true, stageName: true, product: { select: { sku: true, name: true } } }
                 },
                 triggeredBy: {
                     select: { id: true, name: true }

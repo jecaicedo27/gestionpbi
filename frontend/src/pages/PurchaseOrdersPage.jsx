@@ -60,6 +60,8 @@ const PurchaseOrdersPage = () => {
     const [expectedDate, setExpectedDate] = useState(null);
     const [notes, setNotes] = useState('');
     const [creating, setCreating] = useState(false);
+    const [paymentMethod, setPaymentMethod] = useState('CONTADO');
+    const [creditDays, setCreditDays] = useState(30);
 
     // Detail Modal
     const [detailVisible, setDetailVisible] = useState(false);
@@ -143,6 +145,7 @@ const PurchaseOrdersPage = () => {
     const openCreate = () => {
         setCreateVisible(true);
         setOrderItems([]); setSelectedSupplier(null); setNotes(''); setExpectedDate(null);
+        setPaymentMethod('CONTADO'); setCreditDays(30);
         loadSuppliers(); loadRawMaterials();
     };
     const addItem = () => setOrderItems([...orderItems, { siigoProductCode: '', siigoProductName: '', quantityOrdered: 0, packagingDesc: '', packQty: null, unitsPerPack: null }]);
@@ -191,9 +194,13 @@ const PurchaseOrdersPage = () => {
         setCreating(true);
         try {
             const supplier = suppliers.find(s => s.id === selectedSupplier);
+            const creditDueDate = paymentMethod === 'CREDITO'
+                ? new Date(Date.now() + creditDays * 24 * 60 * 60 * 1000).toISOString()
+                : null;
             const res = await api.post('/procurement/purchase-orders', {
                 supplierId: String(selectedSupplier), supplierName: supplier?.name || '', supplierNit: supplier?.identification || '',
-                notes, expectedDate: expectedDate?.toISOString(), items: orderItems
+                notes, expectedDate: expectedDate?.toISOString(), items: orderItems,
+                paymentMethod, creditDueDate
             });
             message.success('✅ Orden de compra creada');
             setCreateVisible(false); loadOrders();
@@ -486,7 +493,13 @@ const PurchaseOrdersPage = () => {
                 if (v === 'COMPLETED' && r.items?.some(i => !i.lots || i.lots.length === 0)) {
                     return <Tag color="orange">🏷️ Pendiente Loteo</Tag>;
                 }
-                return <Tag color={statusColors[v]}>{statusLabels[v]}</Tag>;
+                const isCredit = r.paymentMethod === 'CREDITO';
+                const creditBadge = isCredit && !r.creditPaid
+                    ? <Tag color="blue" style={{ marginLeft: 2, fontSize: 10 }}>🏦</Tag>
+                    : isCredit && r.creditPaid
+                        ? <Tag color="green" style={{ marginLeft: 2, fontSize: 10 }}>🏦✓</Tag>
+                        : null;
+                return <>{<Tag color={statusColors[v]}>{statusLabels[v]}</Tag>}{creditBadge}</>;
             }
         },
         {
@@ -501,6 +514,7 @@ const PurchaseOrdersPage = () => {
         {
             title: 'Acciones', key: 'actions', width: 180,
             render: (_, r) => {
+                const isCreditPO = r.paymentMethod === 'CREDITO';
                 const actionMap = {
                     DRAFT: { label: 'Ver', icon: <EyeOutlined />, tab: 'info' },
                     PENDING_APPROVAL: isRestrictedRole
@@ -509,9 +523,13 @@ const PurchaseOrdersPage = () => {
                     APPROVED: isRestrictedRole
                         ? { label: 'Ver', icon: <EyeOutlined />, tab: 'info' }
                         : { label: 'Enviar', icon: <SendOutlined />, tab: 'info' },
-                    SENT: isRestrictedRole
-                        ? { label: 'Ver', icon: <EyeOutlined />, tab: 'info' }
-                        : { label: '📎 Cotización', icon: null, tab: 'quotation', style: { background: '#13c2c2', borderColor: '#13c2c2', color: '#fff' } },
+                    SENT: (isLogistica && isCreditPO)
+                        ? { label: '📦 Recepcionar', icon: <InboxOutlined />, tab: 'info', style: { background: '#722ed1', borderColor: '#722ed1', color: '#fff' } }
+                        : isRestrictedRole
+                            ? { label: 'Ver', icon: <EyeOutlined />, tab: 'info' }
+                            : isCreditPO
+                                ? { label: '📦 Recibir', icon: <InboxOutlined />, tab: 'info', style: { background: '#722ed1', borderColor: '#722ed1', color: '#fff' } }
+                                : { label: '📎 Cotización', icon: null, tab: 'quotation', style: { background: '#13c2c2', borderColor: '#13c2c2', color: '#fff' } },
                     PAYMENT_PENDING: isCartera
                         ? { label: '💳 Pagar', icon: null, tab: 'cartera', style: { background: '#fa541c', borderColor: '#fa541c', color: '#fff' } }
                         : isRestrictedRole
@@ -531,6 +549,10 @@ const PurchaseOrdersPage = () => {
                                 ? { label: '📊 Contabilizar', icon: null, tab: 'accounting', style: { background: '#d4b106', borderColor: '#d4b106', color: '#fff' } }
                                 : { label: 'Ver', icon: <EyeOutlined />, tab: 'info' },
                     COMPLETED: (() => {
+                        // Credit PO not yet paid — Cartera action
+                        if (isCreditPO && !r.creditPaid && isCartera) {
+                            return { label: '🏦 Pagar Crédito', icon: null, tab: 'cartera', style: { background: '#1677ff', borderColor: '#1677ff', color: '#fff' } };
+                        }
                         const hasSiigo = r.receptions?.length > 0 && r.receptions.every(rec => rec.siigoRef);
                         const missingLots = r.items?.some(i => !i.lots || i.lots.length === 0);
                         if (hasSiigo && missingLots) {
@@ -566,11 +588,11 @@ const PurchaseOrdersPage = () => {
     ];
     // ── Role-based Pending vs History split ──
     const pendingStatuses = isCartera
-        ? ['PAYMENT_PENDING']
+        ? ['PAYMENT_PENDING', 'SENT', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
         : isContabilidad
             ? ['ACCOUNTING_PENDING']
             : isLogistica
-                ? ['PAID', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
+                ? ['SENT', 'PAID', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
                 : ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SENT', 'PAYMENT_PENDING', 'PAID', 'PARTIALLY_RECEIVED', 'RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED'];
     const historyStatuses = ['COMPLETED', 'CANCELLED'];
 
@@ -580,6 +602,14 @@ const PurchaseOrdersPage = () => {
     const needsLots = (order) => order.items?.some(item => !item.lots || item.lots.length === 0);
     const lotsRelevant = !isContabilidad && !isCartera; // Only ADMIN/PRODUCCION/LOGISTICA care about lots
     const pendingOrders = orders.filter(o => {
+        // Cartera: also show credit POs that haven't been paid yet
+        if (isCartera) {
+            if (o.status === 'PAYMENT_PENDING') return true;
+            if (o.paymentMethod === 'CREDITO' && !o.creditPaid) return true;
+            return false;
+        }
+        // Logística: SENT credit POs are actionable (can receive directly)
+        if (isLogistica && o.status === 'SENT' && o.paymentMethod !== 'CREDITO') return false;
         if (!pendingStatuses.includes(o.status)) return false;
         // COMPLETED orders only pending if lots are missing (only for lot-relevant roles)
         if (o.status === 'COMPLETED' && lotsRelevant && !needsLots(o)) return false;
@@ -722,6 +752,28 @@ const PurchaseOrdersPage = () => {
                             filterOption={fuzzyFilter}
                             options={suppliers.map(s => ({ value: s.id, label: `${s.name} ${s.identification ? `(${s.identification})` : ''}` }))} />
                     </div>
+                    <div style={{ marginTop: 8 }}>
+                        <Text strong>Tipo de Pago:</Text>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                            <Button type={paymentMethod === 'CONTADO' ? 'primary' : 'default'}
+                                onClick={() => setPaymentMethod('CONTADO')}
+                                style={paymentMethod === 'CONTADO' ? { background: '#52c41a', borderColor: '#52c41a' } : {}}
+                            >💵 Contado</Button>
+                            <Button type={paymentMethod === 'CREDITO' ? 'primary' : 'default'}
+                                onClick={() => setPaymentMethod('CREDITO')}
+                                style={paymentMethod === 'CREDITO' ? { background: '#1677ff', borderColor: '#1677ff' } : {}}
+                            >🏦 Crédito</Button>
+                            {paymentMethod === 'CREDITO' && (
+                                <InputNumber min={1} max={180} value={creditDays} onChange={v => setCreditDays(v || 30)}
+                                    addonAfter="días" style={{ width: 140 }} />
+                            )}
+                        </div>
+                        {paymentMethod === 'CREDITO' && (
+                            <Text type="secondary" style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
+                                🏦 La mercancía se recibe sin pago previo. Cartera paga después.
+                            </Text>
+                        )}
+                    </div>
                     <Divider style={{ margin: '8px 0' }}>Productos</Divider>
                     {/* Column headers */}
                     <div style={{ display: 'flex', gap: 8, padding: '0 8px', marginBottom: 4 }}>
@@ -785,6 +837,12 @@ const PurchaseOrdersPage = () => {
                                 <Descriptions.Item label="NIT">{selectedOrder.supplierNit || '-'}</Descriptions.Item>
                                 <Descriptions.Item label="Creado por">{selectedOrder.createdBy?.name}</Descriptions.Item>
                                 <Descriptions.Item label="Fecha">{dayjs(selectedOrder.createdAt).format('DD/MM/YYYY HH:mm')}</Descriptions.Item>
+                                <Descriptions.Item label="Pago">
+                                    {selectedOrder.paymentMethod === 'CREDITO'
+                                        ? <Tag color="blue">🏦 Crédito{selectedOrder.creditDueDate ? ` — vence ${dayjs(selectedOrder.creditDueDate).format('DD/MM/YY')}` : ''}{selectedOrder.creditPaid ? ' ✅ Pagado' : ''}</Tag>
+                                        : <Tag color="green">💵 Contado</Tag>
+                                    }
+                                </Descriptions.Item>
                                 {selectedOrder.approvedBy && <Descriptions.Item label="Aprobado por">{selectedOrder.approvedBy?.name} — {dayjs(selectedOrder.approvedAt).format('DD/MM/YY')}</Descriptions.Item>}
                                 {selectedOrder.notes && <Descriptions.Item label="Notas" span={2}>{selectedOrder.notes}</Descriptions.Item>}
                             </Descriptions>
@@ -827,12 +885,15 @@ const PurchaseOrdersPage = () => {
                                 {!isRestrictedRole && selectedOrder.status === 'APPROVED' && (
                                     <Button icon={<SendOutlined />} onClick={() => sendOrder(selectedOrder.id)}>Enviar al Proveedor</Button>
                                 )}
-                                {!isRestrictedRole && selectedOrder.status === 'SENT' && (
+                                {!isRestrictedRole && selectedOrder.status === 'SENT' && selectedOrder.paymentMethod !== 'CREDITO' && (
                                     selectedOrder.quotationUrls?.length > 0
                                         ? <Button type="primary" style={{ background: '#13c2c2' }} onClick={() => sendToCartera(selectedOrder.id)}>💳 Enviar a Cartera</Button>
                                         : <Button disabled>💳 Enviar a Cartera (sube cotización primero)</Button>
                                 )}
-                                {(isLogistica || isAdmin || (!isRestrictedRole)) && ['PAID', 'PARTIALLY_RECEIVED'].includes(selectedOrder.status) && (
+                                {(isLogistica || isAdmin || (!isRestrictedRole)) && (
+                                    ['PAID', 'PARTIALLY_RECEIVED'].includes(selectedOrder.status) ||
+                                    (selectedOrder.status === 'SENT' && selectedOrder.paymentMethod === 'CREDITO')
+                                ) && (
                                     <Button type="primary" style={{ background: '#722ed1' }} icon={<InboxOutlined />} onClick={startReception}>
                                         Registrar Recepción
                                     </Button>
@@ -1103,13 +1164,13 @@ const PurchaseOrdersPage = () => {
                                         </Space>
                                     </div>
 
-                                    {/* Per-item cost entry — user enters TOTAL TO PAY (with taxes included) */}
+                                    {/* Per-item cost entry — user enters BASE PRICE (without taxes) */}
                                     <Table dataSource={selectedOrder.items || []} rowKey="id" size="small" pagination={false}
                                         columns={[
                                             { title: 'Producto', dataIndex: 'siigoProductName', width: '28%' },
                                             { title: 'Cantidad', key: 'qty', width: '12%', align: 'right', render: (_, r) => <div><div>{r.quantityOrdered?.toLocaleString()} g</div><div style={{ fontSize: 11, color: '#1890ff' }}>{(r.quantityOrdered / 1000).toFixed(1)} kg</div></div> },
                                             {
-                                                title: 'Valor a pagar ($)', key: 'totalPay', width: '22%', render: (_, r) => (
+                                                title: 'Base sin IVA ($)', key: 'totalPay', width: '22%', render: (_, r) => (
                                                     <InputNumber min={0} size="small" style={{ width: '100%' }}
                                                         value={carteraCosts[r.id]?.totalPay ?? (r.unitCost ? r.unitCost * (r.quantityOrdered / 1000) : 0)}
                                                         onChange={v => setCarteraCosts(prev => ({ ...prev, [r.id]: { totalPay: v || 0 } }))}
@@ -1119,31 +1180,26 @@ const PurchaseOrdersPage = () => {
                                             {
                                                 title: 'Costo/g', key: 'costG', width: '15%', align: 'right', render: (_, r) => {
                                                     const grams = r.quantityOrdered;
-                                                    const ivaR = carteraTaxes.ivaRate || 0;
-                                                    const reteR = carteraTaxes.reteFuenteRate || 0;
-                                                    const totalPay = carteraCosts[r.id]?.totalPay ?? (r.unitCost ? r.unitCost * (r.quantityOrdered / 1000) : 0);
-                                                    const factor = 1 + (ivaR / 100) - (reteR / 100);
-                                                    const subtotal = factor > 0 ? totalPay / factor : totalPay;
-                                                    const costPerG = grams > 0 ? subtotal / grams : 0;
+                                                    const basePay = carteraCosts[r.id]?.totalPay ?? (r.unitCost ? r.unitCost * (r.quantityOrdered / 1000) : 0);
+                                                    const costPerG = grams > 0 ? basePay / grams : 0;
                                                     return <Text type="secondary">$ {costPerG.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/g</Text>;
                                                 }
                                             }
                                         ]} />
 
-                                    {/* Totals — back-calculate subtotal from total paid */}
+                                    {/* Totals — forward-calculate from base (sin IVA) */}
                                     {(() => {
                                         const ivaRate = carteraTaxes.ivaRate || 0;
                                         const reteRate = carteraTaxes.reteFuenteRate || 0;
-                                        const factor = 1 + (ivaRate / 100) - (reteRate / 100);
-                                        const totalPay = (selectedOrder.items || []).reduce((sum, r) => {
+                                        const subtotal = (selectedOrder.items || []).reduce((sum, r) => {
                                             return sum + (carteraCosts[r.id]?.totalPay ?? (r.unitCost ? r.unitCost * (r.quantityOrdered / 1000) : 0));
                                         }, 0);
-                                        const subtotal = factor > 0 ? totalPay / factor : totalPay;
                                         const iva = subtotal * (ivaRate / 100);
                                         const rete = subtotal * (reteRate / 100);
+                                        const totalPay = subtotal + iva - rete;
                                         return (
                                             <div style={{ marginTop: 12, textAlign: 'right', background: '#fafafa', padding: 12, borderRadius: 8 }}>
-                                                <div>Subtotal (sin imp.): <Text strong>$ {subtotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text></div>
+                                                <div>Subtotal (base sin IVA): <Text strong>$ {subtotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text></div>
                                                 {ivaRate > 0 && <div>IVA {ivaRate}%: <Text style={{ color: '#389e0d' }}>+ $ {iva.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text></div>}
                                                 {reteRate > 0 && <div>Retefuente {reteRate}%: <Text style={{ color: '#cf1322' }}>- $ {rete.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text></div>}
                                                 <Divider style={{ margin: '8px 0' }} />
@@ -1436,7 +1492,23 @@ const PurchaseOrdersPage = () => {
                                             columns={[
                                                 { title: 'Lote', dataIndex: 'lotNumber', render: v => <Tag color="blue">{v}</Tag> },
                                                 { title: 'Cantidad', dataIndex: 'currentQuantity', align: 'right', render: v => v?.toLocaleString() },
-                                                { title: 'Vencimiento', dataIndex: 'expiresAt', render: v => v ? dayjs(v).format('DD/MM/YY') : '-' },
+                                                { title: 'Vencimiento', dataIndex: 'expiresAt', render: (v, lot) => {
+                                                    if (v) return dayjs(v).format('DD/MM/YY');
+                                                    return (
+                                                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                                            <input type="date" style={{ fontSize: 11, padding: '2px 4px', border: '1px solid #ffa39e', borderRadius: 4, width: 120 }}
+                                                                onChange={async (e) => {
+                                                                    if (!e.target.value) return;
+                                                                    try {
+                                                                        await api.patch(`/procurement/lots/${lot.id}`, { expiresAt: e.target.value });
+                                                                        message.success('Vencimiento actualizado');
+                                                                        viewDetail(selectedOrder.id);
+                                                                    } catch { message.error('Error actualizando'); }
+                                                                }} />
+                                                            <Text type="danger" style={{ fontSize: 10 }}>⚠</Text>
+                                                        </span>
+                                                    );
+                                                }},
                                                 { title: 'Estado', dataIndex: 'status', render: v => <Tag color={v === 'AVAILABLE' ? 'green' : v === 'LOW_STOCK' ? 'orange' : 'red'}>{v}</Tag> },
                                                 {
                                                     title: '', key: 'print', width: 80, render: (_, lot) => (
@@ -1798,7 +1870,7 @@ const PurchaseOrdersPage = () => {
                                             { title: 'Producto', render: (_, r) => r.orderItem?.siigoProductName || '—', width: '35%' },
                                             { title: 'Recibido', render: (_, r) => <div><div>{r.quantityReceived?.toLocaleString()} g</div><div style={{ fontSize: 11, color: '#1890ff' }}>{(r.quantityReceived / 1000).toFixed(2)} kg</div></div>, width: '15%', align: 'right' },
                                             {
-                                                title: 'Valor a pagar ($)', key: 'cost', width: '25%', render: (_, r) => (
+                                                title: 'Base sin IVA ($)', key: 'cost', width: '25%', render: (_, r) => (
                                                     <InputNumber min={0} value={accountingCosts[r.orderItemId]?.totalPay || 0}
                                                         onChange={v => setAccountingCosts(prev => ({ ...prev, [r.orderItemId]: { totalPay: v || 0 } }))}
                                                         formatter={v => `$ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} parser={v => v.replace(/\$\s?|(,*)/g, '')}
@@ -1967,7 +2039,7 @@ const PurchaseOrdersPage = () => {
                 const lotsTotal = lotEntries.reduce((s, l) => s + (l.quantity || 0), 0);
                 const maxQty = selectedPOItem?.quantityReceived || 0;
                 const exceeds = lotsTotal > maxQty;
-                const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0);
+                const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0 && l.expiresAtRaw?.trim());
                 const canSubmit = allValid && !exceeds && lotsTotal > 0;
                 return (
             <Modal title={`📦 Registrar Lotes — ${selectedPOItem?.siigoProductName || ''}`} open={lotModalVisible}
@@ -1985,26 +2057,46 @@ const PurchaseOrdersPage = () => {
                             <div style={{ width: 24 }} />
                         </div>
                         {lotEntries.map((lot, idx) => (
-                            <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: '#fafafa', padding: 8, marginBottom: 8, borderRadius: 6 }}>
-                                <Input placeholder="Ej: LOT-2024-001" value={lot.lotNumber} onChange={e => updateLotEntry(idx, 'lotNumber', e.target.value)} style={{ flex: 2 }} />
-                                <div style={{ flex: 1 }}>
-                                    <InputNumber placeholder="0" value={lot.quantity} onChange={v => updateLotEntry(idx, 'quantity', v)}
-                                        min={0} style={{ width: '100%' }} formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} addonAfter="g"
-                                        status={exceeds ? 'error' : ''} />
-                                    {lot.quantity > 0 && (
-                                        <div style={{ fontSize: 11, color: '#1890ff', marginTop: 2, textAlign: 'center' }}>= {(lot.quantity / 1000).toFixed(2)} kg</div>
-                                    )}
+                            <div key={idx} style={{ background: '#fafafa', padding: 10, marginBottom: 8, borderRadius: 8, border: '1px solid #eee' }}>
+                                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                    <Input placeholder="Ej: LOT-2024-001" value={lot.lotNumber} onChange={e => updateLotEntry(idx, 'lotNumber', e.target.value)} style={{ flex: 2 }} />
+                                    <div style={{ flex: 1 }}>
+                                        <InputNumber placeholder="0" value={lot.quantity} onChange={v => updateLotEntry(idx, 'quantity', v)}
+                                            min={0} style={{ width: '100%' }} formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} addonAfter="g"
+                                            status={exceeds ? 'error' : ''} />
+                                        {lot.quantity > 0 && (
+                                            <div style={{ fontSize: 11, color: '#1890ff', marginTop: 2, textAlign: 'center' }}>= {(lot.quantity / 1000).toFixed(2)} kg</div>
+                                        )}
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                        <input type="date" value={lot.expiresAtRaw || ''}
+                                            onChange={e => {
+                                                const newEntries = [...lotEntries];
+                                                newEntries[idx] = { ...newEntries[idx], expiresAtRaw: e.target.value };
+                                                setLotEntries(newEntries);
+                                            }}
+                                            className="px-3 py-2 border rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none"
+                                            style={{ width: '100%' }}
+                                        />
+                                        {!lot.expiresAtRaw && <div style={{ fontSize: 10, color: '#ff4d4f', marginTop: 2 }}>⚠ Obligatorio</div>}
+                                    </div>
+                                    {lotEntries.length > 1 && <Button danger size="small" onClick={() => setLotEntries(lotEntries.filter((_, i) => i !== idx))}>×</Button>}
                                 </div>
-                                <input type="date" value={lot.expiresAtRaw || ''}
-                                    onChange={e => {
-                                        const newEntries = [...lotEntries];
-                                        newEntries[idx] = { ...newEntries[idx], expiresAtRaw: e.target.value };
-                                        setLotEntries(newEntries);
-                                    }}
-                                    className="px-3 py-2 border rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none"
-                                    style={{ flex: 1 }}
-                                />
-                                {lotEntries.length > 1 && <Button danger size="small" onClick={() => setLotEntries(lotEntries.filter((_, i) => i !== idx))}>×</Button>}
+                                {/* Photo upload per lot */}
+                                <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: lot.photoPreview ? '#f6ffed' : '#fff7e6', border: `1px solid ${lot.photoPreview ? '#b7eb8f' : '#ffd591'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                        {lot.photoPreview ? '✅ Foto tomada' : '📷 Tomar foto del lote'}
+                                        <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                                            onChange={e => {
+                                                const file = e.target.files?.[0];
+                                                if (!file) return;
+                                                const newEntries = [...lotEntries];
+                                                newEntries[idx] = { ...newEntries[idx], photoFile: file, photoPreview: URL.createObjectURL(file) };
+                                                setLotEntries(newEntries);
+                                            }} />
+                                    </label>
+                                    {lot.photoPreview && <img src={lot.photoPreview} alt="Lote" style={{ height: 40, borderRadius: 4, border: '1px solid #d9d9d9' }} />}
+                                </div>
                             </div>
                         ))}
                         {/* Total summary */}

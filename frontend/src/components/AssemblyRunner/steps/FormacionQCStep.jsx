@@ -462,7 +462,7 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
                                 <div className="flex items-center justify-between mb-2">
                                     <label className="text-xs font-bold text-cyan-600 uppercase">Cantidad de Citrosán (ml)</label>
                                     <span className="text-xs font-bold bg-white/80 px-2 py-1 rounded-full text-slate-500">
-                                        Rango: 40 ml / 80 kg agua
+                                        Rango: 30–40 ml / 80 kg agua
                                     </span>
                                 </div>
                                 <input

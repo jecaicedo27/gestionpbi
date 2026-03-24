@@ -181,6 +181,151 @@ const updateOrderStatus = async (req, res) => {
     }
 };
 
+// ─── Excel Upload ─────────────────────────────────────────────
+const XLSX = require('xlsx');
+
+const createOrderFromExcel = async (req, res) => {
+    try {
+        const { distributorId } = req.body;
+        if (!distributorId) return res.status(400).json({ error: 'distributorId es requerido' });
+        if (!req.file) return res.status(400).json({ error: 'Archivo Excel es requerido' });
+
+        // Validate distributor exists
+        const distributor = await prisma.user.findUnique({
+            where: { id: distributorId },
+            select: { id: true, name: true, role: true }
+        });
+        if (!distributor) return res.status(404).json({ error: 'Distribuidor no encontrado' });
+
+        // Parse Excel
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+        // Skip header row (row 0), start from row 1
+        // Col B (idx 1) = barcode, Col G (idx 6) = quantity
+        const parsedItems = [];
+        const warnings = [];
+        const debugRows = []; // for debugging
+
+        for (let i = 1; i < rows.length; i++) {
+            const row = rows[i];
+            const barcode = String(row[1] || '').trim();
+            const qty = parseFloat(row[6]) || 0;
+            const productName = String(row[2] || '').trim();
+
+            // Debug: capture first 5 rows
+            if (i <= 5) {
+                debugRows.push({ rowNum: i + 1, colA: row[0], colB: row[1], colC: row[2], colD: row[3], colE: row[4], colF: row[5], colG: row[6], parsedBarcode: barcode, parsedQty: qty });
+            }
+
+            if (!barcode || qty <= 0) continue;
+
+            // Find product by barcode
+            const product = await prisma.product.findFirst({
+                where: { barcode },
+                select: { id: true, name: true, sku: true, barcode: true, currentStock: true, packSize: true }
+            });
+
+            if (!product) {
+                warnings.push(`Fila ${i + 1}: código de barras ${barcode} ("${productName}") no encontrado`);
+                continue;
+            }
+
+            parsedItems.push({
+                productId: product.id,
+                quantity: qty,
+                product
+            });
+        }
+
+        if (parsedItems.length === 0) {
+            return res.status(400).json({
+                error: 'No se encontraron productos válidos en el Excel',
+                warnings,
+                debug: { totalRows: rows.length, headerRow: rows[0], sampleRows: debugRows }
+            });
+        }
+
+        // If ?preview=1, return parsed items without creating order
+        if (req.query.preview === '1') {
+            return res.json({
+                preview: true,
+                items: parsedItems.map(i => ({
+                    productId: i.productId,
+                    name: i.product.name,
+                    sku: i.product.sku,
+                    barcode: i.product.barcode,
+                    quantity: i.quantity,
+                    currentStock: i.product.currentStock,
+                    packSize: i.product.packSize
+                })),
+                warnings
+            });
+        }
+
+        // Create order (same transactional pattern as createOrder)
+        const result = await prisma.$transaction(async (tx) => {
+            const count = await tx.order.count();
+            const orderNumber = `ORD-${String(count + 1).padStart(6, '0')}`;
+
+            const order = await tx.order.create({
+                data: {
+                    orderNumber,
+                    distributorId,
+                    status: 'PENDING',
+                    notes: `[Excel] Pedido cargado desde archivo Excel`,
+                    items: {
+                        create: parsedItems.map(item => ({
+                            productId: item.productId,
+                            requestedQty: item.quantity,
+                            pendingQty: item.quantity,
+                            allocatedQty: 0
+                        }))
+                    }
+                },
+                include: {
+                    items: { include: { product: { select: { name: true, sku: true } } } },
+                    distributor: { select: { name: true } }
+                }
+            });
+
+            // Reserve stock
+            for (const item of parsedItems) {
+                await tx.inventoryAlternate.upsert({
+                    where: { productId: item.productId },
+                    update: { reservedQty: { increment: item.quantity }, availableQty: { decrement: item.quantity } },
+                    create: { productId: item.productId, reservedQty: item.quantity, availableQty: -item.quantity }
+                });
+            }
+
+            return order;
+        });
+
+        // Invalidate cache
+        await cacheService.invalidatePattern('inventory:*');
+
+        // Socket notification
+        const io = req.app.get('io');
+        if (io) {
+            io.emit('order:new', {
+                id: result.id,
+                orderNumber: result.orderNumber,
+                distributor: distributor.name,
+                source: 'excel'
+            });
+        }
+
+        logger.info(`Excel order created: ${result.orderNumber} for ${distributor.name} (${parsedItems.length} items)`);
+
+        res.json({ success: true, data: result, warnings });
+
+    } catch (error) {
+        logger.error('Create Order from Excel Error:', error);
+        res.status(500).json({ error: 'Error creando pedido desde Excel: ' + error.message });
+    }
+};
+
 // Import admin/logistics methods
 const {
     approveOrder,
@@ -197,6 +342,7 @@ const {
 
 module.exports = {
     createOrder,
+    createOrderFromExcel,
     getOrders,
     updateOrderStatus,
     approveOrder,

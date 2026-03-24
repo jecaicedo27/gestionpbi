@@ -102,16 +102,26 @@ class AssemblyService {
                 if (stage.subTemplateId && stage.subTemplate?.stages?.length > 0) {
                     let subTmpl = stage.subTemplate;
 
-                    // ── Dynamic COMPUESTO resolution by flavor ──
-                    // If sub-template is a COMPUESTO but the batch flavor differs,
-                    // find the correct COMPUESTO template for this flavor
-                    if (batchFlavorForResolve && subTmpl.product?.name?.toUpperCase().includes('COMPUESTO')) {
-                        const subFlavor = (subTmpl.product.name.match(/COMPUESTO\s+(.+)/i) || [])[1] || '';
-                        if (subFlavor.toUpperCase() !== batchFlavorForResolve.toUpperCase()) {
-                            const flavorCompuesto = await prisma.assemblyTemplate.findFirst({
+                    // ── Dynamic sub-template resolution by flavor ──
+                    // The parent template may reference a default flavor's sub-template (e.g. MARACUYÁ).
+                    // When the batch flavor differs, find the equivalent template for the correct flavor.
+                    // This applies to COMPUESTO, SABORIZACIÓN, EMPAQUE (sirope presentations), etc.
+                    if (batchFlavorForResolve && subTmpl.product?.name) {
+                        const subProductName = subTmpl.product.name.toUpperCase();
+                        const batchFlavorUpper = batchFlavorForResolve.toUpperCase();
+
+                        // Check if the sub-template product contains a flavor that differs from batch flavor
+                        // Known flavor keywords to detect mismatch
+                        const KNOWN_FLAVORS = ['MARACUYA', 'FRESA', 'BLUEBERRY', 'MANGO BICHE', 'CEREZA', 'MANZANA VERDE', 'LYCHE', 'GRANADINA', 'CURAZAO', 'TAMARINDO', 'CHICLE', 'CHAMOY', 'ICE PINK', 'MORA', 'DURAZNO'];
+                        const detectedFlavor = KNOWN_FLAVORS.find(f => subProductName.includes(f));
+
+                        if (detectedFlavor && detectedFlavor !== batchFlavorUpper && !subProductName.includes(batchFlavorUpper)) {
+                            // Build search pattern: replace the detected flavor with batch flavor
+                            const searchName = subTmpl.product.name.replace(new RegExp(detectedFlavor, 'i'), batchFlavorForResolve);
+                            const flavorTemplate = await prisma.assemblyTemplate.findFirst({
                                 where: {
                                     isActive: true,
-                                    templateName: { contains: `COMPUESTO ${batchFlavorForResolve}`, mode: 'insensitive' }
+                                    product: { name: { equals: searchName, mode: 'insensitive' } }
                                 },
                                 include: {
                                     product: true,
@@ -125,11 +135,35 @@ class AssemblyService {
                                     }
                                 }
                             });
-                            if (flavorCompuesto?.stages?.length > 0) {
-                                console.log(`[generateNotes] 🔄 Resolved COMPUESTO: ${subTmpl.templateCode} → ${flavorCompuesto.templateCode} for flavor ${batchFlavorForResolve}`);
-                                subTmpl = flavorCompuesto;
+                            if (flavorTemplate?.stages?.length > 0) {
+                                console.log(`[generateNotes] 🔄 Resolved sub-template: ${subTmpl.templateCode} (${subTmpl.product.name}) → ${flavorTemplate.templateCode} (${flavorTemplate.product.name}) for flavor ${batchFlavorForResolve}`);
+                                subTmpl = flavorTemplate;
                             } else {
-                                console.warn(`[generateNotes] ⚠️ No COMPUESTO template for flavor ${batchFlavorForResolve} — using default ${subTmpl.templateCode}`);
+                                // Fallback: try searching by templateName
+                                const fallback = await prisma.assemblyTemplate.findFirst({
+                                    where: {
+                                        isActive: true,
+                                        templateName: { contains: batchFlavorForResolve, mode: 'insensitive' },
+                                        product: { name: { contains: subProductName.includes('1000') ? '1000' : subProductName.includes('360') ? '360' : batchFlavorForResolve, mode: 'insensitive' } }
+                                    },
+                                    include: {
+                                        product: true,
+                                        stages: {
+                                            include: {
+                                                processType: true,
+                                                inputs: { include: { product: true }, orderBy: { displayOrder: 'asc' } },
+                                                outputProduct: true
+                                            },
+                                            orderBy: { stageOrder: 'asc' }
+                                        }
+                                    }
+                                });
+                                if (fallback?.stages?.length > 0) {
+                                    console.log(`[generateNotes] 🔄 Resolved sub-template (fallback): ${subTmpl.templateCode} → ${fallback.templateCode} for flavor ${batchFlavorForResolve}`);
+                                    subTmpl = fallback;
+                                } else {
+                                    console.warn(`[generateNotes] ⚠️ No matching sub-template for "${searchName}" — using default ${subTmpl.templateCode}`);
+                                }
                             }
                         }
                     }
@@ -705,14 +739,26 @@ class AssemblyService {
                 }
             });
 
-            // ── CONTEO completion: log actual counts (plannedUnits preserved from scheduler) ──
-            // Downstream EMPAQUE/ENSAMBLE read actuals from processParameters.conteo directly
+            // ── CONTEO completion: sync actual counts → BatchOutputTarget ──
+            // Downstream EMPAQUE/ENSAMBLE notes read META from outputTargets.plannedUnits.
+            // After CONTEO, update plannedUnits so Ensamble Siigo shows the real count,
+            // not the original scheduled estimate.
             if (note.processType?.code === 'CONTEO') {
                 const conteoMap = note.processParameters?.conteo;
                 if (conteoMap && typeof conteoMap === 'object') {
                     for (const [productName, data] of Object.entries(conteoMap)) {
                         if (data.productId && data.actual != null) {
                             console.log(`[completeNote] CONTEO actual: ${productName} → ${data.actual} units`);
+                            // Update BatchOutputTarget so Ensamble Siigo META matches conteo
+                            await tx.batchOutputTarget.updateMany({
+                                where: {
+                                    batchId: note.productionBatchId,
+                                    productId: data.productId,
+                                },
+                                data: {
+                                    plannedUnits: parseInt(data.actual, 10),
+                                },
+                            });
                         }
                     }
                 }
@@ -770,7 +816,13 @@ class AssemblyService {
             }
 
             // ── Consume input ingredients from their MaterialLots ──
-            if (lotSelections && typeof lotSelections === 'object') {
+            // GUARD: Skip if Post-CONTEO already pre-consumed these items.
+            // When CONTEO completes (assemblyNoteController.completeNote), it auto-consumes
+            // ALL EMPAQUE materials and flags materialsPreConsumed=true. If the frontend
+            // then sends lotSelections when completing EMPAQUE, we must NOT consume again.
+            const alreadyPreConsumedLots = note.processParameters?.materialsPreConsumed === true;
+
+            if (lotSelections && typeof lotSelections === 'object' && !alreadyPreConsumedLots) {
                 for (const [itemId, lotId] of Object.entries(lotSelections)) {
                     if (!lotId) continue;
 
@@ -808,11 +860,19 @@ class AssemblyService {
                         }
                     });
 
-                    // Decrement production zone stock (Siigo sync handles currentStock)
-                    await tx.product.update({
+                    // Decrement production zone stock (floor-to-zero: prevent negative)
+                    const curProd = await tx.product.findUnique({
                         where: { id: item.componentId },
-                        data: { productionZoneStock: { decrement: qtyToConsume } }
+                        select: { productionZoneStock: true }
                     });
+                    const curZone = curProd?.productionZoneStock || 0;
+                    const safeDec = Math.min(qtyToConsume, Math.max(0, curZone));
+                    if (safeDec > 0) {
+                        await tx.product.update({
+                            where: { id: item.componentId },
+                            data: { productionZoneStock: { decrement: safeDec } }
+                        });
+                    }
                 }
             }
 
@@ -878,22 +938,45 @@ class AssemblyService {
                         });
 
                         if (item.componentId) {
-                            await tx.product.update({
+                            // Floor-to-zero: never let productionZoneStock go negative
+                            const currentProduct = await tx.product.findUnique({
                                 where: { id: item.componentId },
-                                data: { productionZoneStock: { decrement: qtyToConsume } }
+                                select: { productionZoneStock: true }
                             });
+                            const currentZoneStock = currentProduct?.productionZoneStock || 0;
+                            const safeDecrement = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
+                            if (safeDecrement > 0) {
+                                await tx.product.update({
+                                    where: { id: item.componentId },
+                                    data: { productionZoneStock: { decrement: safeDecrement } }
+                                });
+                            }
+                            if (safeDecrement < qtyToConsume) {
+                                console.warn(`[completeNote] ⚠️ Stock insuficiente para ${item.component?.name}: necesita ${qtyToConsume}, zona tiene ${currentZoneStock}. Consumido solo ${safeDecrement}`);
+                            }
                         }
 
                         console.log(`[completeNote] 🔄 Auto-consumed ${qtyToConsume}g of ${item.component?.name} from lot ${autoLot.lotNumber}`);
                     } else if (processCode === 'EMPAQUE' && item.componentId) {
                         // ── Packaging items without MaterialLot (tarros, tapas, etc.) ──
-                        // Still decrement product stock for traceability
+                        // Floor-to-zero: never let productionZoneStock go negative
                         const qtyToConsume = Math.round(qty);
-                        await tx.product.update({
+                        const currentProduct = await tx.product.findUnique({
                             where: { id: item.componentId },
-                            data: { productionZoneStock: { decrement: qtyToConsume } }
+                            select: { productionZoneStock: true }
                         });
-                        console.log(`[completeNote] 📦 EMPAQUE stock-only consumed ${qtyToConsume} of ${item.component?.name} (no MaterialLot)`);
+                        const currentZoneStock = currentProduct?.productionZoneStock || 0;
+                        const safeDecrement = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
+                        if (safeDecrement > 0) {
+                            await tx.product.update({
+                                where: { id: item.componentId },
+                                data: { productionZoneStock: { decrement: safeDecrement } }
+                            });
+                        }
+                        if (safeDecrement < qtyToConsume) {
+                            console.warn(`[completeNote] ⚠️ EMPAQUE stock insuficiente para ${item.component?.name}: necesita ${qtyToConsume}, zona tiene ${currentZoneStock}. Consumido solo ${safeDecrement}`);
+                        }
+                        console.log(`[completeNote] 📦 EMPAQUE stock-only consumed ${safeDecrement} of ${item.component?.name} (no MaterialLot)`);
                     }
                 }
             }
@@ -1023,7 +1106,7 @@ class AssemblyService {
                 }
             }
 
-            return { updatedNote, createdLotNumber, producesOutput, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName };
+            return { updatedNote, createdLotNumber, producesOutput, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName, batchNumber: note.productionBatch?.batchNumber || null };
         });
 
         // ── Fire RPA after transaction commits (fire-and-forget) ──
@@ -1032,6 +1115,7 @@ class AssemblyService {
             const productSku = result.productSku || '';
             const stageName = result.stageName || '';
             const lotNum = result.createdLotNumber;
+            const batchNum = result.batchNumber || '';
             const qty = actualQuantity;
 
             // Create RPA execution record + enqueue
@@ -1042,7 +1126,7 @@ class AssemblyService {
                     productName,
                     quantity: Math.round(Number(qty)),
                     assemblyType: 'proceso',
-                    observations: `Proceso: ${stageName}. Lote: ${lotNum}.`,
+                    observations: `Lote: ${batchNum}. Proceso: ${stageName}. Lote Material: ${lotNum}.`,
                     assemblyNoteId: noteId,
                     triggeredById: operatorId || null
                 }
@@ -1053,7 +1137,7 @@ class AssemblyService {
                         productName: productSku || productName,
                         quantity: Math.round(Number(qty)),
                         assemblyType: 'proceso',
-                        observations: `Proceso: ${stageName}. Lote: ${lotNum}.`
+                        observations: `Lote: ${batchNum}. Proceso: ${stageName}. Lote Material: ${lotNum}.`
                     },
                     executionId: execution.id,
                     resolve: async (res) => {

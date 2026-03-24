@@ -94,6 +94,8 @@ const AssemblyExecutionWizard = () => {
     // ── Local wizard state ───────────────────────────────────────────────────
     const [submitting, setSubmitting] = useState(false);
     const [showCompletionPanel, setShowCompletionPanel] = useState(false);
+    const [showHandoff, setShowHandoff] = useState(false);
+    const [empaqueReceptionConfirmed, setEmpaqueReceptionConfirmed] = useState(false);
     const [marcadoCajas, setMarcadoCajas] = useState({ unidadesPorCaja: 0, totalCajas: 0 });
     const [weighingPhotos, setWeighingPhotos] = useState({});
     const [selectedLotIds, setSelectedLotIds] = useState({});
@@ -104,11 +106,18 @@ const AssemblyExecutionWizard = () => {
     const [esferificacionData, setEsferificacionData] = useState(null);
     const [proteccionValidated, setProteccionValidated] = useState(false);
 
-    // Auto-advance past INTRO when arriving with ?skipIntro=1 (from empaque multi-selector)
+    // Auto-advance past INTRO when arriving with ?skipIntro=1 (from empaque selector or other)
     useEffect(() => {
         if (!skipIntroParam || !note || wizardSteps.length === 0) return;
+
         const currentStep = wizardSteps[currentStepIndex];
         if (currentStep?.type === 'INTRO') {
+            const isEmpaqueProcess = note.processType?.code === 'EMPAQUE';
+            // For EMPAQUE, jump directly to the EMPAQUE step (past auto-processed INPUTs)
+            const targetIdx = isEmpaqueProcess
+                ? wizardSteps.findIndex(s => s.type === 'EMPAQUE') || 1
+                : 1;
+
             // If note is PENDING, auto-start it first
             if (note.status === 'PENDING') {
                 (async () => {
@@ -118,8 +127,8 @@ const AssemblyExecutionWizard = () => {
                         const refreshed = await api.get(`/assembly-notes/${note.id}`);
                         setNote(refreshed.data);
                         message.success('Materiales consumidos — Proceso iniciado');
-                        // Only advance past INTRO on success
-                        setCurrentStepIndex(1);
+                        setCurrentStepIndex(targetIdx);
+                        saveWizardStep(targetIdx);
                         navigate(`/assembly-execution/${id}`, { replace: true });
                     } catch (e) {
                         const errMsg = e.response?.data?.error || e.message;
@@ -134,7 +143,8 @@ const AssemblyExecutionWizard = () => {
                 })();
             } else {
                 // Already executing, just advance
-                setCurrentStepIndex(1);
+                setCurrentStepIndex(targetIdx);
+                saveWizardStep(targetIdx);
                 navigate(`/assembly-execution/${id}`, { replace: true });
             }
         }
@@ -320,6 +330,22 @@ const AssemblyExecutionWizard = () => {
                     }
                 });
                 message.success(`📦 Marcado guardado — ${marcadoCajas.totalCajas} cajas × ${marcadoCajas.unidadesPorCaja} uds`);
+
+                // ── Auto-ingest finished product stock into PRODUCCION zone ──
+                const totalUnits = marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja;
+                if (totalUnits > 0 && note.product?.id && note.productionBatch?.batchNumber) {
+                    try {
+                        await api.post('/finished-lots/ingest', {
+                            productId: note.product.id,
+                            lotNumber: note.productionBatch.batchNumber,
+                            quantity: totalUnits,
+                            batchId: note.productionBatchId || null,
+                        });
+                        message.success(`📥 Stock registrado: ${totalUnits} uds en zona PRODUCCIÓN`);
+                    } catch (ingErr) {
+                        console.warn('Finished lot ingest (non-blocking):', ingErr.message);
+                    }
+                }
             } catch (e) {
                 console.warn('Error guardando marcado de cajas:', e.message);
                 // Non-blocking — continue anyway
@@ -613,11 +639,19 @@ const AssemblyExecutionWizard = () => {
             );
 
             if (nextNote) {
-                message.info(`Avanzando a Etapa ${nextNote.stageOrder}: ${nextNote.stageName}`);
-                setTimeout(() => {
-                    navigate(`/assembly-execution/${nextNote.id}`, { replace: true });
-                    window.location.reload();
-                }, 1200);
+                const nextIsEmpaque = nextNote.processType?.code === 'EMPAQUE';
+                const isProduccion = user?.role === 'PRODUCCION';
+
+                if (nextIsEmpaque && isProduccion) {
+                    // ── Handoff to empaque — don't navigate, show handoff screen ──
+                    setShowHandoff(true);
+                } else {
+                    message.info(`Avanzando a Etapa ${nextNote.stageOrder}: ${nextNote.stageName}`);
+                    setTimeout(() => {
+                        navigate(`/assembly-execution/${nextNote.id}`, { replace: true });
+                        window.location.reload();
+                    }, 1200);
+                }
             } else {
                 message.success('🎉 ¡Todas las etapas completadas!');
                 setShowCompletionPanel(true);
@@ -651,6 +685,48 @@ const AssemblyExecutionWizard = () => {
     );
 
     if (!note || wizardSteps.length === 0) return null;
+
+    // ── Handoff to empaque panel ───────────────────────────────────────────
+    if (showHandoff) {
+        const batchNum = note.productionBatch?.batchNumber || '';
+        return (
+            <div style={{
+                minHeight: '100vh', display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(135deg, #f59e0b 0%, #ef4444 100%)',
+                padding: 32, gap: 24
+            }}>
+                <div style={{ fontSize: 80, animation: 'bounce 1s ease infinite' }}>🛒</div>
+                <h1 style={{ fontSize: 32, fontWeight: 800, color: '#fff', textAlign: 'center', textShadow: '0 2px 20px rgba(0,0,0,0.3)' }}>
+                    ¡Conteo Completado!
+                </h1>
+                <div style={{
+                    background: 'rgba(255,255,255,0.95)', borderRadius: 20, padding: '24px 40px',
+                    textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.2)'
+                }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: 2, marginBottom: 8 }}>
+                        🏷️ Lote para escribir en el carrito
+                    </div>
+                    <div style={{ fontSize: 36, fontWeight: 900, color: '#1e293b', letterSpacing: 1 }}>
+                        {batchNum}
+                    </div>
+                </div>
+                <p style={{ fontSize: 20, color: 'rgba(255,255,255,0.95)', textAlign: 'center', maxWidth: 400, fontWeight: 600, lineHeight: 1.4 }}>
+                    Escriba el lote en el carrito y entréguelo al personal de empaque
+                </p>
+                <button onClick={() => navigate('/production/operator')}
+                    style={{
+                        padding: '20px 48px', fontSize: 22, fontWeight: 800,
+                        background: 'rgba(255,255,255,0.25)', color: '#fff',
+                        border: '2px solid rgba(255,255,255,0.5)', borderRadius: 16,
+                        cursor: 'pointer', backdropFilter: 'blur(10px)', transition: 'all 0.3s'
+                    }}>
+                    ← Volver al Panel
+                </button>
+                <style>{`@keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-15px)} }`}</style>
+            </div>
+        );
+    }
 
     // ── Completion panel ─────────────────────────────────────────────────────
     if (showCompletionPanel) {
@@ -710,7 +786,7 @@ const AssemblyExecutionWizard = () => {
     // Block SIGUIENTE on EMPAQUE multi-presentation selector until ALL are completed
     const isEmpaque = note.processType?.code === 'EMPAQUE';
     const empaqueNotes = isEmpaque ? allBatchNotes.filter(n => n.processType?.code === 'EMPAQUE') : [];
-    const isEmpaqueMultiSelector = isEmpaque && currentStep.type === 'INTRO' && empaqueNotes.length > 1;
+    const isEmpaqueMultiSelector = isEmpaque && currentStep.type === 'INTRO' && empaqueNotes.length >= 1;
     const allEmpaqueDone = empaqueNotes.every(n => n.status === 'COMPLETED');
     if (isEmpaqueMultiSelector && !allEmpaqueDone) {
         canAdvance = false;
@@ -739,21 +815,39 @@ const AssemblyExecutionWizard = () => {
     // Block FINALIZAR on OUTPUT step if REAL PRODUCIDO is empty or variation > 5%
     if (currentStep.type === 'OUTPUT') {
         const realQty = parseFloat(outputQuantity);
-        // For PESAJE, expectedQty = sum of ingredient quantities (not targetQuantity which is 1)
         const isPesajeNote = note.processType?.code === 'PESAJE';
         const isFormacionNote = note.processType?.code === 'FORMACION';
+        
         const pesajeTotal = isPesajeNote && note.items?.length > 0
             ? note.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
             : null;
-        // Each PESAJE note is independent — expected = just this note's ingredient sum
-        const pesajeExpected = pesajeTotal;
+
+        // Same logic as OutputStep: try to find a previous completed PESAJE step for batch total
+        const previousPesajeOutput = isPesajeNote && allBatchNotes?.length > 0
+            ? allBatchNotes
+                .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== note.id)
+                .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0]?.actualQuantity
+            : null;
+
         const formulaBaseQty = note.product?.formulas?.[0]?.baseQuantity || 0;
         const noteMultiplier = note.multiplier || 1;
-        const expectedQty = pesajeExpected
-            || (isFormacionNote && formulaBaseQty > 1 ? formulaBaseQty * noteMultiplier : null)
-            || parseFloat(targetQuantity)
-            || note.targetQuantity
-            || 0;
+
+        // Determine if MAJOR pesaje step or ADDITIVE (like conservante)
+        const pesajeIsMajor = pesajeTotal && previousPesajeOutput && pesajeTotal > previousPesajeOutput * 0.1;
+
+        let expectedQty;
+        if (pesajeIsMajor || !previousPesajeOutput) {
+            expectedQty = pesajeTotal
+                || previousPesajeOutput
+                || (isFormacionNote && formulaBaseQty > 1 ? formulaBaseQty * noteMultiplier : null)
+                || parseFloat(targetQuantity)
+                || note.targetQuantity
+                || 0;
+        } else {
+            // Additive step: expected = previous batch output + items being added
+            expectedQty = previousPesajeOutput + (pesajeTotal || 0);
+        }
+            
         if (!outputQuantity || realQty <= 0) {
             canAdvance = false;
         } else if (expectedQty > 0) {
@@ -876,6 +970,8 @@ const AssemblyExecutionWizard = () => {
                     onEmpaquePhotoChange={setPhotoUrl}
                     empaqueDefectReasons={empaqueDefectReasons}
                     onEmpaqueDefectReasonChange={setDefectReason}
+                    empaqueReceptionConfirmed={empaqueReceptionConfirmed}
+                    onReceptionConfirm={() => setEmpaqueReceptionConfirmed(true)}
                     esferaOutputFactor={esferaOutputFactor}
                     onMarcadoChange={setMarcadoCajas}
                     onProteccionValidated={setProteccionValidated}

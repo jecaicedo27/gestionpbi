@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { X, Eye, Check, AlertCircle, ChevronLeft, ChevronRight, FileText, Package, CheckCircle, Upload, Receipt } from 'lucide-react';
 import axios from 'axios';
 import { useAuth } from '../../context/AuthContext';
@@ -8,9 +8,38 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
     const [selectedImage, setSelectedImage] = useState(null);
     const [actionNote, setActionNote] = useState('');
     const [processing, setProcessing] = useState(false);
-    const [billingFile, setBillingFile] = useState(null);
-    const [accountStatementFile, setAccountStatementFile] = useState(null);
-    const [dispatchFile, setDispatchFile] = useState(null);
+    const [billingFiles, setBillingFiles] = useState([]);
+    const [accountStatementFiles, setAccountStatementFiles] = useState([]);
+    const [dispatchFiles, setDispatchFiles] = useState([]);
+    const [toast, setToast] = useState(null); // { type: 'success'|'error'|'warning', message }
+    const [confirmDialog, setConfirmDialog] = useState(null); // { message, onConfirm }
+
+    // Clipboard paste handler — appends pasted images to the active upload section
+    const handlePaste = useCallback((e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        const pastedFiles = [];
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) pastedFiles.push(file);
+            }
+        }
+        if (pastedFiles.length === 0) return;
+        e.preventDefault();
+
+        const stage = pqr.stage || (pqr.status === 'PENDING' ? 'PENDING_REVIEW' : null);
+        if (stage === 'PENDING_LOGISTICS') {
+            setDispatchFiles(prev => [...prev, ...pastedFiles]);
+        } else if (stage === 'PENDING_BILLING') {
+            setBillingFiles(prev => [...prev, ...pastedFiles]);
+        }
+    }, [pqr.stage, pqr.status]);
+
+    useEffect(() => {
+        document.addEventListener('paste', handlePaste);
+        return () => document.removeEventListener('paste', handlePaste);
+    }, [handlePaste]);
 
     const getStatusBadge = (status) => {
         const styles = {
@@ -36,22 +65,35 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
 
     const handleAction = async (action, extraData = {}) => {
         if (action === 'REJECT' && !actionNote.trim()) {
-            alert('Por favor ingrese una razón para el rechazo.');
+            setToast({ type: 'warning', message: 'Por favor ingrese una razón para el rechazo.' });
             return;
         }
 
-        if (!confirm('¿Está seguro de continuar con esta acción?')) return;
+        // Use custom confirm dialog instead of native confirm()
+        setConfirmDialog({
+            message: action === 'REJECT' 
+                ? '¿Está seguro de rechazar esta solicitud?'
+                : action === 'DISPATCH'
+                ? `¿Confirmar despacho con ${dispatchFiles.length} evidencia(s)?`
+                : '¿Está seguro de continuar con esta acción?',
+            onConfirm: () => executeAction(action, extraData)
+        });
+    };
+
+    const executeAction = async (action, extraData = {}) => {
+        setConfirmDialog(null);
 
         setProcessing(true);
         try {
             if (action === 'DISPATCH') {
-                if (!dispatchFile) {
-                    alert('Debe seleccionar un archivo de evidencia.');
+                if (dispatchFiles.length === 0) {
+                    setToast({ type: 'warning', message: 'Debe seleccionar al menos una foto de evidencia.' });
                     setProcessing(false);
                     return;
                 }
                 const formData = new FormData();
-                formData.append('file', dispatchFile);
+                dispatchFiles.forEach(f => formData.append('file', f));
+                if (actionNote) formData.append('notes', actionNote);
 
                 await axios.post(`${import.meta.env.VITE_API_URL}/api/pqr/${pqr.id}/dispatch`, formData, {
                     headers: {
@@ -60,19 +102,19 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                     }
                 });
             } else if (action === 'UPLOAD_CREDIT_NOTE' || action === 'UPLOAD_INVOICE') {
-                if (!billingFile) {
-                    alert('Debe seleccionar el archivo PDF.');
+                if (billingFiles.length === 0) {
+                    setToast({ type: 'warning', message: 'Debe seleccionar al menos un archivo.' });
                     setProcessing(false);
                     return;
                 }
-                if (action === 'UPLOAD_CREDIT_NOTE' && !accountStatementFile) {
-                    alert('Debe subir el estado de cuenta del cliente.');
+                if (action === 'UPLOAD_CREDIT_NOTE' && accountStatementFiles.length === 0) {
+                    setToast({ type: 'warning', message: 'Debe subir el estado de cuenta del cliente.' });
                     setProcessing(false);
                     return;
                 }
                 const formData = new FormData();
-                formData.append('file', billingFile);
-                if (accountStatementFile) formData.append('accountStatement', accountStatementFile);
+                billingFiles.forEach(f => formData.append('file', f));
+                accountStatementFiles.forEach(f => formData.append('accountStatement', f));
                 formData.append('documentType', action === 'UPLOAD_CREDIT_NOTE' ? 'credit_note' : 'invoice');
                 formData.append('notes', actionNote);
 
@@ -96,11 +138,11 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
             }
 
             if (onUpdate) onUpdate();
-            alert('Estado actualizado correctamente.');
-            onClose();
+            setToast({ type: 'success', message: '✅ Estado actualizado correctamente.' });
+            setTimeout(() => onClose(), 1200);
         } catch (err) {
             console.error('Error updating PQR:', err);
-            alert('Error al actualizar: ' + (err.response?.data?.error || err.message));
+            setToast({ type: 'error', message: 'Error al actualizar: ' + (err.response?.data?.error || err.message) });
         } finally {
             setProcessing(false);
         }
@@ -254,37 +296,40 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                             </div>
 
                             {/* Uploaded Documents Section */}
-                            {(pqr.creditNoteUrl || pqr.accountStatementUrl || pqr.invoiceUrl || pqr.dispatchEvidenceUrl) && (
-                                <div className="space-y-2">
-                                    <h3 className="font-bold text-gray-800 text-sm uppercase tracking-wider">Documentos del Proceso</h3>
-                                    <div className="flex gap-3 flex-wrap">
-                                        {pqr.creditNoteUrl && (
-                                            <a href={`${import.meta.env.VITE_API_URL}${pqr.creditNoteUrl}`} target="_blank" rel="noopener noreferrer"
-                                                className="flex items-center gap-2 px-4 py-2 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm hover:bg-green-100 transition-colors">
-                                                <FileText size={16} /> Nota Crédito PDF
-                                            </a>
-                                        )}
-                                        {pqr.accountStatementUrl && (
-                                            <a href={`${import.meta.env.VITE_API_URL}${pqr.accountStatementUrl}`} target="_blank" rel="noopener noreferrer"
-                                                className="flex items-center gap-2 px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-sm hover:bg-emerald-100 transition-colors">
-                                                <FileText size={16} /> Estado de Cuenta PDF
-                                            </a>
-                                        )}
-                                        {pqr.invoiceUrl && (
-                                            <a href={`${import.meta.env.VITE_API_URL}${pqr.invoiceUrl}`} target="_blank" rel="noopener noreferrer"
-                                                className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm hover:bg-blue-100 transition-colors">
-                                                <Receipt size={16} /> Factura PDF
-                                            </a>
-                                        )}
-                                        {pqr.dispatchEvidenceUrl && (
-                                            <a href={`${import.meta.env.VITE_API_URL}${pqr.dispatchEvidenceUrl}`} target="_blank" rel="noopener noreferrer"
-                                                className="flex items-center gap-2 px-4 py-2 bg-purple-50 border border-purple-200 rounded-lg text-purple-800 text-sm hover:bg-purple-100 transition-colors">
-                                                <Package size={16} /> Evidencia Despacho
-                                            </a>
-                                        )}
+                            {(pqr.creditNoteUrl || pqr.accountStatementUrl || pqr.invoiceUrl || pqr.dispatchEvidenceUrl) && (() => {
+                                // Parse URL that may be a JSON array of URLs or a single URL
+                                const parseUrls = (raw) => {
+                                    if (!raw) return [];
+                                    try {
+                                        const parsed = JSON.parse(raw);
+                                        if (Array.isArray(parsed)) return parsed;
+                                    } catch {}
+                                    return [raw];
+                                };
+
+                                const renderDocLinks = (urls, label, Icon, colorClass) => {
+                                    if (urls.length === 0) return null;
+                                    return urls.map((url, i) => (
+                                        <a key={url} href={`${import.meta.env.VITE_API_URL}${url}`} target="_blank" rel="noopener noreferrer"
+                                            className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm hover:opacity-80 transition-colors ${colorClass}`}>
+                                            <Icon size={16} />
+                                            {label}{urls.length > 1 ? ` (${i + 1})` : ''}
+                                        </a>
+                                    ));
+                                };
+
+                                return (
+                                    <div className="space-y-2">
+                                        <h3 className="font-bold text-gray-800 text-sm uppercase tracking-wider">Documentos del Proceso</h3>
+                                        <div className="flex gap-3 flex-wrap">
+                                            {renderDocLinks(parseUrls(pqr.creditNoteUrl), 'Nota Crédito', FileText, 'bg-green-50 border-green-200 text-green-800')}
+                                            {renderDocLinks(parseUrls(pqr.accountStatementUrl), 'Estado de Cuenta', FileText, 'bg-emerald-50 border-emerald-200 text-emerald-800')}
+                                            {renderDocLinks(parseUrls(pqr.invoiceUrl), 'Factura', Receipt, 'bg-blue-50 border-blue-200 text-blue-800')}
+                                            {renderDocLinks(parseUrls(pqr.dispatchEvidenceUrl), 'Evidencia Despacho', Package, 'bg-purple-50 border-purple-200 text-purple-800')}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                );
+                            })()}
                         </div>
 
                         {/* RIGHT: ACTIONS & HISTORY */}
@@ -379,41 +424,43 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                                     ></textarea>
 
                                                     {/* Upload Card 1: Nota Crédito */}
-                                                    <div className={`border-2 rounded-xl p-4 transition-all ${billingFile ? 'border-amber-400 bg-amber-50/50' : 'border-dashed border-gray-300 bg-white'}`}>
+                                                    <div className={`border-2 rounded-xl p-4 transition-all ${billingFiles.length > 0 ? 'border-amber-400 bg-amber-50/50' : 'border-dashed border-gray-300 bg-white'}`}>
                                                         <div className="flex items-center gap-2 mb-2">
                                                             <span className="text-lg">📄</span>
                                                             <span className="font-bold text-sm text-gray-800">1. Nota Crédito</span>
-                                                            {billingFile && <span className="ml-auto text-amber-600 text-xs font-semibold">✓ Seleccionado</span>}
+                                                            {billingFiles.length > 0 && <span className="ml-auto text-amber-600 text-xs font-semibold">✓ {billingFiles.length} archivo(s)</span>}
                                                         </div>
                                                         <input
                                                             type="file"
-                                                            accept="application/pdf"
-                                                            onChange={(e) => setBillingFile(e.target.files[0])}
+                                                            multiple
+                                                            accept="image/*,application/pdf"
+                                                            onChange={(e) => setBillingFiles(Array.from(e.target.files))}
                                                             className="block w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-white hover:file:bg-amber-600 cursor-pointer"
                                                         />
-                                                        {billingFile && <p className="text-xs text-gray-500 mt-1 truncate">📎 {billingFile.name}</p>}
+                                                        {billingFiles.length > 0 && <p className="text-xs text-gray-500 mt-1 truncate">📎 {billingFiles.map(f => f.name).join(', ')}</p>}
                                                     </div>
 
                                                     {/* Upload Card 2: Estado de Cuenta */}
-                                                    <div className={`border-2 rounded-xl p-4 transition-all ${accountStatementFile ? 'border-emerald-400 bg-emerald-50/50' : 'border-dashed border-gray-300 bg-white'}`}>
+                                                    <div className={`border-2 rounded-xl p-4 transition-all ${accountStatementFiles.length > 0 ? 'border-emerald-400 bg-emerald-50/50' : 'border-dashed border-gray-300 bg-white'}`}>
                                                         <div className="flex items-center gap-2 mb-2">
                                                             <span className="text-lg">🧾</span>
                                                             <span className="font-bold text-sm text-gray-800">2. Estado de Cuenta del Cliente</span>
-                                                            {accountStatementFile && <span className="ml-auto text-emerald-600 text-xs font-semibold">✓ Seleccionado</span>}
+                                                            {accountStatementFiles.length > 0 && <span className="ml-auto text-emerald-600 text-xs font-semibold">✓ {accountStatementFiles.length} archivo(s)</span>}
                                                         </div>
                                                         <input
                                                             type="file"
-                                                            accept="application/pdf"
-                                                            onChange={(e) => setAccountStatementFile(e.target.files[0])}
+                                                            multiple
+                                                            accept="image/*,application/pdf"
+                                                            onChange={(e) => setAccountStatementFiles(Array.from(e.target.files))}
                                                             className="block w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-emerald-500 file:text-white hover:file:bg-emerald-600 cursor-pointer"
                                                         />
-                                                        {accountStatementFile && <p className="text-xs text-gray-500 mt-1 truncate">📎 {accountStatementFile.name}</p>}
+                                                        {accountStatementFiles.length > 0 && <p className="text-xs text-gray-500 mt-1 truncate">📎 {accountStatementFiles.map(f => f.name).join(', ')}</p>}
                                                     </div>
 
                                                     <button
                                                         onClick={() => handleAction('UPLOAD_CREDIT_NOTE')}
-                                                        disabled={!billingFile || !accountStatementFile || processing}
-                                                        className={`w-full px-4 py-3 bg-amber-600 text-white rounded-xl hover:bg-amber-700 text-sm font-bold shadow-lg shadow-amber-200 transition-all ${!billingFile || !accountStatementFile || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                        disabled={billingFiles.length === 0 || accountStatementFiles.length === 0 || processing}
+                                                        className={`w-full px-4 py-3 bg-amber-600 text-white rounded-xl hover:bg-amber-700 text-sm font-bold shadow-lg shadow-amber-200 transition-all ${billingFiles.length === 0 || accountStatementFiles.length === 0 || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                                                     >
                                                         {processing ? 'Subiendo...' : '✅ Confirmar Nota Crédito y Estado de Cuenta'}
                                                     </button>
@@ -443,15 +490,15 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                                         <label className="block text-xs font-medium text-gray-600 mb-1">Factura (PDF)</label>
                                                         <input
                                                             type="file"
-                                                            accept="application/pdf"
-                                                            onChange={(e) => setBillingFile(e.target.files[0])}
+                                                            accept="image/*,application/pdf"
+                                                            onChange={(e) => setBillingFiles(Array.from(e.target.files))}
                                                             className="block w-full text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
                                                         />
                                                     </div>
                                                     <button
                                                         onClick={() => handleAction('UPLOAD_INVOICE')}
-                                                        disabled={!billingFile || processing}
-                                                        className={`w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium shadow-md shadow-indigo-200 transition-all ${!billingFile || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                        disabled={billingFiles.length === 0 || processing}
+                                                        className={`w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium shadow-md shadow-indigo-200 transition-all ${billingFiles.length === 0 || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                                                     >
                                                         {processing ? 'Subiendo...' : 'Confirmar Factura'}
                                                     </button>
@@ -463,22 +510,56 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                                 <>
                                                     <div className="bg-purple-50 text-purple-800 text-xs p-3 rounded-lg space-y-1">
                                                         <p><strong>📦 Despacho de Reposición:</strong></p>
-                                                        <p>Suba la guía o foto del despacho para completar el proceso.</p>
+                                                        <ol className="list-decimal ml-4 mt-1 space-y-0.5">
+                                                            <li>Tome foto del <strong>producto</strong> a enviar</li>
+                                                            <li>Tome foto del <strong>empaque</strong> y embalaje</li>
+                                                            <li>Suba <strong>guía de envío</strong> si aplica</li>
+                                                        </ol>
                                                     </div>
 
-                                                    <input
-                                                        type="file"
-                                                        accept="image/*,application/pdf"
-                                                        onChange={(e) => setDispatchFile(e.target.files[0])}
-                                                        className="block w-full text-xs text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100 cursor-pointer"
-                                                    />
+                                                    <textarea
+                                                        className="w-full border-gray-200 rounded-lg text-sm p-3 focus:ring-2 focus:ring-purple-500 transition-shadow bg-gray-50 focus:bg-white"
+                                                        rows="2"
+                                                        placeholder="Notas del despacho (guía, transportadora, etc.)..."
+                                                        value={actionNote}
+                                                        onChange={(e) => setActionNote(e.target.value)}
+                                                    ></textarea>
+
+                                                    <div className={`border-2 rounded-xl p-4 transition-all ${dispatchFiles.length > 0 ? 'border-purple-400 bg-purple-50/50' : 'border-dashed border-gray-300 bg-white'}`}>
+                                                        <div className="flex items-center gap-2 mb-2">
+                                                            <span className="text-lg">📸</span>
+                                                            <span className="font-bold text-sm text-gray-800">Evidencias del Despacho</span>
+                                                            {dispatchFiles.length > 0 && <span className="ml-auto text-purple-600 text-xs font-semibold">✓ {dispatchFiles.length} archivo(s)</span>}
+                                                        </div>
+                                                        <input
+                                                            type="file"
+                                                            multiple
+                                                            accept="image/*,application/pdf"
+                                                            onChange={(e) => setDispatchFiles(prev => [...prev, ...Array.from(e.target.files)])}
+                                                            className="block w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-purple-500 file:text-white hover:file:bg-purple-600 cursor-pointer"
+                                                        />
+                                                        <p className="text-xs text-gray-400 mt-1">💡 También puede pegar imágenes con <kbd className="px-1 py-0.5 bg-gray-100 border rounded text-[10px]">Ctrl+V</kbd></p>
+                                                        {dispatchFiles.length > 0 && (
+                                                            <div className="flex gap-2 mt-2 overflow-x-auto">
+                                                                {dispatchFiles.map((f, i) => (
+                                                                    <div key={i} className="w-14 h-14 rounded-lg bg-gray-200 flex-shrink-0 overflow-hidden border border-gray-300">
+                                                                        {f.type.startsWith('image/') ? (
+                                                                            <img src={URL.createObjectURL(f)} className="w-full h-full object-cover" alt={f.name} />
+                                                                        ) : (
+                                                                            <div className="w-full h-full flex items-center justify-center text-xs text-gray-500">PDF</div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
 
                                                     <button
                                                         onClick={() => handleAction('DISPATCH')}
-                                                        disabled={!dispatchFile || processing}
-                                                        className={`w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium shadow-md shadow-purple-200 ${!dispatchFile || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                        disabled={dispatchFiles.length === 0 || processing}
+                                                        className={`w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium shadow-md shadow-purple-200 ${dispatchFiles.length === 0 || processing ? 'opacity-50 cursor-not-allowed' : ''}`}
                                                     >
-                                                        {processing ? 'Procesando...' : 'Confirmar Despacho'}
+                                                        {processing ? 'Procesando...' : `📦 Confirmar Despacho (${dispatchFiles.length} evidencia${dispatchFiles.length > 1 ? 's' : ''})`}
                                                     </button>
                                                 </>
                                             )}
@@ -560,6 +641,53 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                     <ChevronRight size={40} />
                                 </button>
                             )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Custom Toast Notification */}
+                {toast && (
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[70] animate-fadeIn">
+                        <div className={`flex items-center gap-3 px-5 py-3 rounded-xl shadow-2xl border backdrop-blur-sm ${
+                            toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+                            toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
+                            'bg-amber-50 border-amber-200 text-amber-800'
+                        }`}>
+                            <span className="text-lg">
+                                {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : '⚠️'}
+                            </span>
+                            <p className="text-sm font-medium max-w-sm">{toast.message}</p>
+                            <button onClick={() => setToast(null)} className="ml-2 text-gray-400 hover:text-gray-600">
+                                <X size={16} />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Custom Confirm Dialog */}
+                {confirmDialog && (
+                    <div className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+                        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-fadeIn">
+                            <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
+                                <h3 className="text-white font-bold text-lg">Confirmar Acción</h3>
+                            </div>
+                            <div className="p-6">
+                                <p className="text-gray-700 text-sm mb-6">{confirmDialog.message}</p>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setConfirmDialog(null)}
+                                        className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 text-sm font-medium transition-colors"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button
+                                        onClick={confirmDialog.onConfirm}
+                                        className="flex-1 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 text-sm font-bold shadow-lg shadow-purple-200 transition-all"
+                                    >
+                                        Confirmar
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 )}

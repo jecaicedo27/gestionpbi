@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import LotContinuityInsights from '../../components/PQR/LotContinuityInsights';
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
     PieChart, Pie, Cell, Legend,
@@ -452,9 +453,22 @@ const PQRDashboard = () => {
     })();
     const reportTemperature = data.reportTemperature || null;
     const lotFollowUpSummary = data.lotFollowUpSummary || null;
-    const defectFollowUpProjection = data.defectFollowUpProjection
-        || lotFollowUpSummary?.defectFollowUpProjection
+    const lotContinuityOverview = data.lotContinuityOverview
+        || lotFollowUpSummary?.lotContinuityOverview
+        || null;
+    const defectContinuityBreakdown = data.defectContinuityBreakdown
+        || lotFollowUpSummary?.defectContinuityBreakdown
         || [];
+    const lotContinuityMap = data.lotContinuityMap || [];
+    const analysisQuality = data.analysisQuality
+        || lotFollowUpSummary?.analysisQuality
+        || null;
+    const executiveSummary = data.executiveSummary
+        || lotFollowUpSummary?.executiveSummary
+        || null;
+    const predictionModel = reportTemperature?.predictionModel
+        || lotFollowUpSummary?.predictionModel
+        || null;
     const calmLight = reportTemperature?.calmLight || lotFollowUpSummary?.calmLight || null;
 
     const getFollowUpStatusMeta = (status) => {
@@ -695,7 +709,7 @@ const PQRDashboard = () => {
             </div>
 
             {/* Row 6: Lot Tracking Table */}
-            <ChartCard title="🔍 Seguimiento de Lotes Problemáticos (Consolidado por Sabor)" className="!p-0">
+            <ChartCard title="Seguimiento de Lotes Problemáticos" className="!p-0">
                 <div className="p-5 pb-3 grid grid-cols-2 lg:grid-cols-5 gap-3">
                     <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2">
                         <p className="text-[10px] font-bold uppercase tracking-wide text-red-500">Lotes Críticos</p>
@@ -772,27 +786,71 @@ const PQRDashboard = () => {
                                 <p className="text-[11px] mt-0.5">{calmLight.hint}</p>
                             </div>
                         )}
-                        {reportTemperature.predictionModel && (
-                            <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                                <span className="font-black uppercase tracking-wide text-[10px]">Validación del Modelo</span>
-                                <p className="mt-1">
-                                    {reportTemperature.predictionModel.trained ? 'Modelo entrenado' : 'Fallback heurístico'} ·
-                                    muestras {toUnitsNumber(reportTemperature.predictionModel.trainingSamples).toLocaleString('es-CO')} ·
-                                    F1 {reportTemperature.predictionModel.validation?.f1 ?? '—'} ·
-                                    AUC {reportTemperature.predictionModel.validation?.aucRoc ?? '—'} ·
-                                    Brier {reportTemperature.predictionModel.validation?.brier ?? '—'}
+                        {predictionModel && (
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3 text-xs text-slate-700">
+                                <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
+                                    <div className="max-w-3xl">
+                                        <p className="font-black uppercase tracking-wide text-[10px] text-slate-500">Motor Predictivo</p>
+                                        <p className="mt-1 text-sm font-black text-slate-900">
+                                            {predictionModel.methodologyLabel || (predictionModel.trained ? 'Modelo supervisado + evidencia temporal' : 'Motor de evidencia temporal')}
+                                        </p>
+                                        <p className="mt-1 text-[12px] leading-5 text-slate-600">
+                                            {predictionModel.summary}
+                                        </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[11px] font-bold text-sky-700">
+                                            Confiabilidad {toUnitsNumber(predictionModel.reliabilityScorePct).toLocaleString('es-CO')}%
+                                        </span>
+                                        {predictionModel.readiness?.label && (
+                                            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-bold text-slate-600">
+                                                {predictionModel.readiness.label}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Muestras</p>
+                                        <p className="mt-1 text-lg font-black text-slate-900">
+                                            {toUnitsNumber(predictionModel.trainingSamples).toLocaleString('es-CO')}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Lotes maduros</p>
+                                        <p className="mt-1 text-lg font-black text-slate-900">
+                                            {toUnitsNumber(predictionModel.trainingDiagnostics?.horizonEligibleLots).toLocaleString('es-CO')}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Snapshots útiles</p>
+                                        <p className="mt-1 text-lg font-black text-slate-900">
+                                            {toUnitsNumber(predictionModel.trainingDiagnostics?.usableSnapshotLots).toLocaleString('es-CO')}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                        <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">Cobertura</p>
+                                        <p className="mt-1 text-lg font-black text-slate-900">
+                                            {predictionModel.calibration?.isCalibrated ? 'Calibrada' : 'Base'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <p className="mt-3 text-[11px] text-slate-500">
+                                    {predictionModel.trained
+                                        ? `F1 ${predictionModel.validation?.f1 ?? '—'} · AUC ${predictionModel.validation?.aucRoc ?? '—'} · Brier ${predictionModel.validation?.brier ?? '—'}`
+                                        : `${predictionModel.limitation} ${predictionModel.nextMilestone}`}
                                 </p>
-                                {reportTemperature.predictionModel.qualityGate && (
-                                    <p className="mt-0.5">
-                                        Gate calidad {reportTemperature.predictionModel.qualityGate.passed ? 'aprobado' : 'rechazado'} ·
-                                        umbral {reportTemperature.predictionModel.decisionThreshold ?? '—'} ·
-                                        folds {toUnitsNumber(reportTemperature.predictionModel.validation?.folds).toLocaleString('es-CO')}
+                                {predictionModel.qualityGate && (
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                        Gate calidad {predictionModel.qualityGate.passed ? 'aprobado' : 'rechazado'} ·
+                                        umbral {predictionModel.decisionThreshold ?? '—'} ·
+                                        folds {toUnitsNumber(predictionModel.validation?.folds).toLocaleString('es-CO')}
                                     </p>
                                 )}
-                                {reportTemperature.predictionModel.calibration?.isCalibrated && (
-                                    <p className="mt-0.5">
-                                        Calibración cobertura: γ {reportTemperature.predictionModel.calibration.gamma} ·
-                                        mse {reportTemperature.predictionModel.calibration.mse} (base {reportTemperature.predictionModel.calibration.baselineMse})
+                                {predictionModel.calibration?.isCalibrated && (
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                        Calibración cobertura: γ {predictionModel.calibration.gamma} ·
+                                        mse {predictionModel.calibration.mse} (base {predictionModel.calibration.baselineMse})
                                     </p>
                                 )}
                             </div>
@@ -803,47 +861,22 @@ const PQRDashboard = () => {
                     <div className="px-5 pb-3">
                         <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                             Seguimiento global: {toUnitsNumber(lotFollowUpSummary.totalLotsAnalyzed).toLocaleString('es-CO')} lotes analizados ·
-                            {` `}Siguen reportándose {toUnitsNumber(lotFollowUpSummary.lotsStillReporting).toLocaleString('es-CO')} ·
-                            {` `}No se volvieron a reportar {toUnitsNumber(lotFollowUpSummary.lotsStoppedReporting).toLocaleString('es-CO')} ·
-                            {` `}Nuevos con riesgo de continuidad {toUnitsNumber(lotFollowUpSummary.newLotsLikelyContinue).toLocaleString('es-CO')}
+                            {` `}Activos recientes {toUnitsNumber(lotFollowUpSummary.recentActiveLots).toLocaleString('es-CO')} ·
+                            {` `}En vigilancia {toUnitsNumber(lotFollowUpSummary.monitoringLots).toLocaleString('es-CO')} ·
+                            {` `}En enfriamiento {toUnitsNumber(lotFollowUpSummary.coolingLots).toLocaleString('es-CO')} ·
+                            {` `}Sin reporte reciente {toUnitsNumber(lotFollowUpSummary.stoppedRecentLots).toLocaleString('es-CO')}
                         </div>
                     </div>
                 )}
-                {defectFollowUpProjection.length > 0 && (
-                    <div className="px-5 pb-3">
-                        <div className="rounded-xl border border-rose-100 bg-rose-50 px-3 py-3">
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-2">
-                                <p className="text-[10px] font-black uppercase tracking-wide text-rose-700">
-                                    Continuidad Proyectada por Defecto
-                                </p>
-                                <p className="text-[11px] text-rose-600">
-                                    {toUnitsNumber(defectFollowUpProjection.reduce((sum, row) => sum + toUnitsNumber(row.defectiveUnits), 0)).toLocaleString('es-CO')} envases defectuosos evaluados
-                                </p>
-                            </div>
-                            <ResponsiveContainer width="100%" height={260}>
-                                <BarChart data={defectFollowUpProjection} layout="vertical" margin={{ left: 14, right: 14 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#fecdd3" />
-                                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} tickFormatter={(value) => `${value}%`} />
-                                    <YAxis type="category" dataKey="defectLabel" width={130} tick={{ fontSize: 10 }} />
-                                    <Tooltip
-                                        formatter={(value, name) => [`${toUnitsNumber(value).toLocaleString('es-CO')}%`, name]}
-                                        labelFormatter={(label, payload) => {
-                                            const row = payload?.[0]?.payload;
-                                            if (!row) return label;
-                                            return `${label} · ${toUnitsNumber(row.defectiveUnits).toLocaleString('es-CO')} env defectuosos · tasa ${row.defectRateVsGoodPct ?? '—'}% vs buenos · alerta ${row.alertLevel || 'normal'}`;
-                                        }}
-                                    />
-                                    <Legend wrapperStyle={{ fontSize: '11px' }} />
-                                    <Bar dataKey="continueLikelyPct" stackId="projection" name="Seguiran reportes" fill="#ef4444" />
-                                    <Bar dataKey="uncertainPct" stackId="projection" name="Incierto" fill="#f59e0b" />
-                                    <Bar dataKey="stopLikelyPct" stackId="projection" name="Bajaran/pararan" fill="#10b981" radius={[0, 6, 6, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                            <p className="mt-2 text-[11px] text-rose-700">
-                                Barra apilada por defecto en porcentaje de envases: combina probabilidad, confianza y validacion contra envases buenos para evitar sobrealertas en defectos de revision.
-                            </p>
-                        </div>
-                    </div>
+                {lotContinuityOverview?.buckets?.length > 0 && (
+                    <LotContinuityInsights
+                        overview={lotContinuityOverview}
+                        analysisQuality={analysisQuality}
+                        executiveSummary={executiveSummary}
+                        defectBreakdown={defectContinuityBreakdown}
+                        continuityMap={lotContinuityMap}
+                        predictionModel={predictionModel}
+                    />
                 )}
                 <div className="px-5 pb-3 space-y-3">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-4">

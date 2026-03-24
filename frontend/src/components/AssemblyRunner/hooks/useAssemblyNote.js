@@ -176,30 +176,36 @@ export function useAssemblyNote(id) {
         setLotNumbers(restoredLots);
 
         // Determine correct starting step:
-        // - If note is EXECUTING (already started), skip INTRO
+        // - If note is EXECUTING (already started), skip INTRO (except EMPAQUE which uses INTRO for selection)
         // - Jump to the first INPUT step that hasn't been filled yet
         let startIdx = 0;
         if (noteData.status === 'EXECUTING') {
-            // 1. Check for server-saved wizard step position (persisted when user navigates away)
-            const savedStep = noteData.processParameters?.wizardStep;
-            if (typeof savedStep === 'number' && savedStep > 0 && savedStep < steps.length) {
-                startIdx = savedStep;
+            const isEmpaque = noteData.processType?.code === 'EMPAQUE';
+            if (isEmpaque) {
+                // EMPAQUE always starts at selector — user picks presentation from there
+                startIdx = 0;
             } else {
-                // 2. Fallback: Skip INTRO (step 0) and find first unfilled INPUT
-                startIdx = 1;
-                const inputSteps = steps.map((s, i) => ({ ...s, idx: i })).filter(s => s.type === 'INPUT');
-                if (inputSteps.length > 0) {
-                    const firstUnfilled = inputSteps.find(s => {
-                        const itemId = s.data?.id;
-                        return !restoredActuals[itemId];
-                    });
-                    if (firstUnfilled) {
-                        startIdx = firstUnfilled.idx;
-                    } else {
-                        // All inputs filled — check for FORMACION_QC / ESFERIFICACION before going to OUTPUT
-                        const qcIdx = steps.findIndex(s => s.type === 'FORMACION_QC');
-                        const outputIdx = steps.findIndex(s => s.type === 'OUTPUT');
-                        startIdx = qcIdx >= 0 ? qcIdx : outputIdx >= 0 ? outputIdx : steps.length - 1;
+                // 1. Check for server-saved wizard step position (persisted when user navigates away)
+                const savedStep = noteData.processParameters?.wizardStep;
+                if (typeof savedStep === 'number' && savedStep > 0 && savedStep < steps.length) {
+                    startIdx = savedStep;
+                } else {
+                    // 2. Fallback: Skip INTRO (step 0) and find first unfilled INPUT
+                    startIdx = 1;
+                    const inputSteps = steps.map((s, i) => ({ ...s, idx: i })).filter(s => s.type === 'INPUT');
+                    if (inputSteps.length > 0) {
+                        const firstUnfilled = inputSteps.find(s => {
+                            const itemId = s.data?.id;
+                            return !restoredActuals[itemId];
+                        });
+                        if (firstUnfilled) {
+                            startIdx = firstUnfilled.idx;
+                        } else {
+                            // All inputs filled — check for FORMACION_QC / ESFERIFICACION before going to OUTPUT
+                            const qcIdx = steps.findIndex(s => s.type === 'FORMACION_QC');
+                            const outputIdx = steps.findIndex(s => s.type === 'OUTPUT');
+                            startIdx = qcIdx >= 0 ? qcIdx : outputIdx >= 0 ? outputIdx : steps.length - 1;
+                        }
                     }
                 }
             }

@@ -6,7 +6,7 @@ import api from '../../../services/api';
  * CoccionStep — Temperature control step with photo proof and countdown timer.
  * When timer finishes: alarm sound + vibration + modal until operator acknowledges.
  */
-const CoccionStep = ({ stepData, note, onCoccionChange }) => {
+const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) => {
     const params = note?.processParameters || stepData?.processParameters || {};
     const targetTemp = params.targetTemperature || 105;
     const unit = params.temperatureUnit || '°C';
@@ -17,6 +17,25 @@ const CoccionStep = ({ stepData, note, onCoccionChange }) => {
     const [realTemperature, setRealTemperature] = useState('');
     const [photoUrl, setPhotoUrl] = useState(null);
     const [uploading, setUploading] = useState(false);
+    const [conservanteActuals, setConservanteActuals] = useState({});
+
+    // Compute conservante items for validation
+    const isConservanteStep = (note?.stageName || '').toLowerCase().includes('conservante');
+    let conservanteItems = [];
+    if (isConservanteStep) {
+        conservanteItems = (note?.items || []).filter(i => i.plannedQuantity > 0);
+        if (conservanteItems.length === 0 && allBatchNotes.length > 0) {
+            const currentOrder = note?.stageOrder || 0;
+            const nextPesaje = allBatchNotes
+                .filter(n => (n.stageOrder || 0) > currentOrder && n.processType?.code === 'PESAJE')
+                .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
+            if (nextPesaje?.items) conservanteItems = nextPesaje.items.filter(i => i.plannedQuantity > 0);
+        }
+    }
+    const allConservantesConfirmed = conservanteItems.length === 0 || conservanteItems.every((_, idx) => {
+        const val = conservanteActuals[`conservante_${idx}`];
+        return val && !isNaN(parseFloat(val)) && parseFloat(val) > 0;
+    });
 
     // Timer state — recover from server (processParameters) on mount
     const [timerStarted, setTimerStarted] = useState(false);
@@ -66,9 +85,10 @@ const CoccionStep = ({ stepData, note, onCoccionChange }) => {
             targetTemperature: targetTemp,
             photoUrl,
             timerCompleted: timerFinished && alarmAcknowledged,
-            isComplete: !!photoUrl && ((timerFinished && alarmAcknowledged) || timerMin === 0) && !!realTemperature
+            isComplete: !!photoUrl && ((timerFinished && alarmAcknowledged) || timerMin === 0) && !!realTemperature && allConservantesConfirmed,
+            conservanteActuals,
         });
-    }, [realTemperature, photoUrl, timerFinished, alarmAcknowledged]);
+    }, [realTemperature, photoUrl, timerFinished, alarmAcknowledged, allConservantesConfirmed, conservanteActuals]);
 
     // Timer countdown
     useEffect(() => {
@@ -243,6 +263,71 @@ const CoccionStep = ({ stepData, note, onCoccionChange }) => {
                             📋 {instruction}
                         </div>
                     )}
+
+                    {/* Show conservante quantities if this step involves adding conservante */}
+                    {(() => {
+                        if (!isConservanteStep || conservanteItems.length === 0) return null;
+
+                        return (
+                            <div className="bg-green-50 border-2 border-green-300 rounded-2xl p-4">
+                                <div className="text-xs font-bold text-green-700 uppercase mb-3">
+                                    🧪 Conservantes a agregar — confirme la cantidad pesada
+                                </div>
+                                {conservanteItems.map((item, idx) => {
+                                    const planned = item.plannedQuantity;
+                                    const label = planned >= 1000
+                                        ? `${(planned / 1000).toFixed(2)} kg`
+                                        : `${Math.round(planned)} g`;
+                                    const actualKey = `conservante_${idx}`;
+                                    const actualVal = conservanteActuals[actualKey] || '';
+                                    const numVal = parseFloat(actualVal);
+                                    const isConfirmed = actualVal && !isNaN(numVal);
+                                    const diff = isConfirmed ? Math.abs(numVal - planned) / planned : null;
+                                    const isOk = diff !== null && diff <= 0.05;
+                                    return (
+                                        <div key={idx} style={{
+                                            background: '#fff', borderRadius: 12,
+                                            border: isOk ? '2px solid #22c55e' : '1px solid #bbf7d0',
+                                            padding: '10px 14px', marginBottom: idx < conservanteItems.length - 1 ? 8 : 0,
+                                        }}>
+                                            <div style={{ fontWeight: 700, color: '#166534', fontSize: '0.85rem', marginBottom: 6 }}>
+                                                {item.component?.name || 'Ingrediente'}
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                                <div style={{
+                                                    flex: 1, textAlign: 'center',
+                                                    background: '#dcfce7', borderRadius: 8, padding: '6px 8px',
+                                                }}>
+                                                    <div style={{ fontSize: '0.6rem', fontWeight: 700, color: '#15803d', textTransform: 'uppercase' }}>Meta</div>
+                                                    <div style={{ fontWeight: 900, fontSize: '1.2rem', color: '#166534' }}>{label}</div>
+                                                </div>
+                                                <div style={{ flex: 1, textAlign: 'center' }}>
+                                                    <div style={{ fontSize: '0.6rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase' }}>Real (g)</div>
+                                                    <input
+                                                        type="number"
+                                                        step="0.1"
+                                                        value={actualVal}
+                                                        onChange={e => setConservanteActuals(prev => ({ ...prev, [actualKey]: e.target.value }))}
+                                                        placeholder={String(Math.round(planned))}
+                                                        style={{
+                                                            width: '100%', textAlign: 'center', fontWeight: 900,
+                                                            fontSize: '1.2rem', border: '2px solid #e2e8f0', borderRadius: 8,
+                                                            padding: '4px 6px', outline: 'none',
+                                                            color: isOk ? '#166534' : isConfirmed ? '#dc2626' : '#1e293b',
+                                                            borderColor: isOk ? '#22c55e' : isConfirmed ? '#fca5a5' : '#e2e8f0',
+                                                        }}
+                                                    />
+                                                </div>
+                                                <div style={{ width: 28, textAlign: 'center', fontSize: '1.2rem' }}>
+                                                    {isOk ? '✅' : isConfirmed ? '⚠️' : ''}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })()}
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className={`${colors.bg} rounded-2xl p-4 text-center border ${colors.border}`}>

@@ -37,6 +37,7 @@ const kpiRoutes = require('./kpiRoutes');
 const procurementRoutes = require('./procurementRoutes');
 const pushRoutes = require('./pushSubscriptionRoutes');
 const cartRoutes = require('./cartRoutes');
+const productiveTraceabilityRoutes = require('./productiveTraceabilityRoutes');
 
 router.get('/', (req, res) => {
     res.json({ message: 'MRP Popping Boba API' });
@@ -123,9 +124,16 @@ router.use('/micro', microRoutes);
 router.use('/uploads', uploadRoutes);
 router.use('/production-kpis', kpiRoutes);
 router.use('/procurement', procurementRoutes);
+router.use('/productive-traceability', productiveTraceabilityRoutes);
 const zoneTransferRoutes = require('./zoneTransferRoutes');
 router.use('/zone-transfers', zoneTransferRoutes);
 router.use('/cart', cartRoutes);
+const finishedLotRoutes = require('./finishedLotRoutes');
+router.use('/finished-lots', finishedLotRoutes);
+const physicalCountRoutes = require('./physicalCountRoutes');
+router.use('/physical-counts', physicalCountRoutes);
+const reconciliationRoutes = require('./reconciliationRoutes');
+router.use('/reconciliation', reconciliationRoutes);
 router.use('/', testRoute);
 
 module.exports = router;

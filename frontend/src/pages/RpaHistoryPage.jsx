@@ -166,7 +166,12 @@ const RpaHistoryPage = () => {
                                                 </div>
                                             </td>
                                             <td style={{ padding: '10px 16px', fontWeight: 600, color: '#1e293b' }}>
-                                                {exec.productName}
+                                                <div>{exec.productName}</div>
+                                                {exec.assemblyNote?.product?.sku && (
+                                                    <span style={{ fontSize: '0.65rem', padding: '1px 6px', borderRadius: 4, background: '#f1f5f9', color: '#475569', fontWeight: 700, fontFamily: 'monospace' }}>
+                                                        {exec.assemblyNote.product.sku}
+                                                    </span>
+                                                )}
                                             </td>
                                             <td style={{ padding: '10px 16px' }}>
                                                 {batch ? (
@@ -378,6 +383,11 @@ const RpaHistoryPage = () => {
                                     <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#1e293b', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                         {exec.productName}
                                     </div>
+                                    {exec.assemblyNote?.product?.sku && (
+                                        <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4, background: '#f1f5f9', color: '#475569', fontWeight: 700, fontFamily: 'monospace' }}>
+                                            {exec.assemblyNote.product.sku}
+                                        </span>
+                                    )}
                                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 2 }}>
                                         <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>{fmtDate(exec.startedAt)}</span>
                                         {batch && <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4, background: '#dbeafe', color: '#1e40af', fontWeight: 600 }}>{batch}</span>}

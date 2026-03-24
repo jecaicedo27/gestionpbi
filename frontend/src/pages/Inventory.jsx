@@ -135,8 +135,19 @@ const Inventory = () => {
     };
 
     const filteredProducts = products.filter(p => {
-        const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            p.code.toLowerCase().includes(searchTerm.toLowerCase());
+        const term = searchTerm.trim().toLowerCase();
+        let matchesSearch = true;
+        if (term) {
+            if (term.includes('%')) {
+                // Convert % wildcards to regex: escape special chars, then replace % with .*
+                const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*');
+                const re = new RegExp(escaped, 'i');
+                matchesSearch = re.test(p.name) || re.test(p.code);
+            } else {
+                matchesSearch = p.name.toLowerCase().includes(term) ||
+                    p.code.toLowerCase().includes(term);
+            }
+        }
 
         if (selectedGroup === 'ALL') return matchesSearch;
         return matchesSearch && p.group === selectedGroup;

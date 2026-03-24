@@ -58,14 +58,35 @@ const OutputStep = ({
     const multiplier = noteData.multiplier || 1;
 
     // For PESAJE: expected = just THIS note's ingredient sum (independent per batch)
+    // BUT: for intermediate PESAJE notes (like "Agregar Conservante"), the ESPERADO should be the
+    // total batch output (from a previous completed PESAJE step) + the items being added.
     const pesajeExpected = pesajeTotalGrams;
 
-    const targetGrams = pesajeExpected
-        || (isFormacion && formulaBase > 1 ? formulaBase * multiplier : null)
-        || Number(targetQuantityValue)
-        || noteData.targetQuantity
-        || formulaBase
-        || 1;
+    // Check if there's a completed PESAJE note with actual output (e.g. the main batch weight)
+    const previousPesajeOutput = isPesaje && allBatchNotes?.length > 0
+        ? allBatchNotes
+            .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== noteData.id)
+            .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0]?.actualQuantity
+        : null;
+
+    // Determine if this is a MAJOR pesaje step (items sum is large relative to the batch)
+    // or an ADDITIVE step (small ingredients being added to an existing batch)
+    const pesajeIsMajor = pesajeExpected && previousPesajeOutput && pesajeExpected > previousPesajeOutput * 0.1;
+
+    let targetGrams;
+    if (pesajeIsMajor || !previousPesajeOutput) {
+        // Major step or first step: use items sum directly
+        targetGrams = pesajeExpected
+            || previousPesajeOutput
+            || (isFormacion && formulaBase > 1 ? formulaBase * multiplier : null)
+            || Number(targetQuantityValue)
+            || noteData.targetQuantity
+            || formulaBase
+            || 1;
+    } else {
+        // Additive step: expected = previous batch output + items being added
+        targetGrams = previousPesajeOutput + (pesajeExpected || 0);
+    }
     const outputNum = parseFloat(outputQuantity) || 0;
     const deviation = outputNum > 0 && targetGrams > 0
         ? (((outputNum - targetGrams) / targetGrams) * 100).toFixed(1) : null;

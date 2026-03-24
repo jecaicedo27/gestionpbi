@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const assemblyNoteController = require('../controllers/assemblyNoteController');
+const { auth } = require('../middleware/auth');
 const productionBatchController = require('../controllers/productionBatchController');
 
 // All routes are prefixed with /api/assembly-notes in index.js
@@ -40,7 +41,7 @@ router.patch('/:id/items/:itemId', assemblyNoteController.updateItemActualQty);
 
 router.post('/:id/variables', assemblyNoteController.recordVariable);
 router.get('/:id/check-proteccion', assemblyNoteController.checkProteccion);
-router.post('/:id/complete', assemblyNoteController.completeNote);
+router.post('/:id/complete', auth, assemblyNoteController.completeNote);
 
 // Production Batch Operations
 router.post('/batches/:id/close', productionBatchController.closeBatch);

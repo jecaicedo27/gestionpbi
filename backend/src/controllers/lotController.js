@@ -244,14 +244,17 @@ const lotController = {
             const lotRows = materialLots.map(p => {
                 const isPO = !!p.purchaseOrderItemId;
                 const poInfo = p.purchaseOrderItem?.purchaseOrder;
+                // Lots always originate in WAREHOUSE (PO or manual). Only production-output lots start in PRODUCTION.
+                const originZone = isPO ? 'WAREHOUSE' : (p.zone || 'PRODUCTION');
                 return {
                     id: `${isPO ? 'ingress' : 'prod'}-${p.id}`,
                     type: isPO ? 'INGRESS' : 'PRODUCTION',
                     date: p.receivedAt,
                     quantity: p.initialQuantity,
                     unit: p.unit || 'gramo',
-                    zone: p.zone || null,
+                    zone: originZone,
                     materialLot: {
+                        id: p.id,
                         lotNumber: p.lotNumber,
                         siigoProductCode: p.siigoProductCode,
                         siigoProductName: p.siigoProductName,
@@ -260,21 +263,176 @@ const lotController = {
                         unit: p.unit,
                         zone: p.zone
                     },
+                    materialLotId: p.id,
                     usedBy: null,
                     processInfo: isPO ? { stageName: `OC ${poInfo?.orderNumber || ''}`, productionBatch: null } : null,
                     observations: isPO ? `Compra — ${poInfo?.supplierName || 'Proveedor'}` : 'Producción'
                 };
             });
 
-            // ── 3. Merge & sort by date desc ──
-            let all = [...consumptionRows, ...lotRows]
-                .sort((a, b) => new Date(b.date) - new Date(a.date))
-                .slice(0, maxRows);
+            // ── 3. Zone Transfers (bidirectional — each transfer creates egress + ingress) ──
+            const ztWhere = {};
+            if (productId) ztWhere.productId = productId;
+            if (sku) ztWhere.materialLot = { siigoProductCode: sku };
+            if (startDate || endDate) {
+                ztWhere.createdAt = {};
+                if (startDate) ztWhere.createdAt.gte = new Date(startDate);
+                if (endDate) ztWhere.createdAt.lte = new Date(endDate + 'T23:59:59');
+            }
 
-            // ── 4. Optional zone filter ──
+            const zoneTransfers = await prisma.zoneTransfer.findMany({
+                where: ztWhere,
+                orderBy: { createdAt: 'desc' },
+                take: maxRows,
+                include: {
+                    materialLot: {
+                        select: {
+                            id: true,
+                            lotNumber: true,
+                            siigoProductCode: true,
+                            siigoProductName: true,
+                            initialQuantity: true,
+                            currentQuantity: true,
+                            unit: true,
+                            zone: true
+                        }
+                    },
+                    transferredBy: { select: { id: true, name: true, role: true } }
+                }
+            });
+
+            const transferRows = [];
+            zoneTransfers.forEach(zt => {
+                // direction: IN = bodega→producción, OUT = producción→bodega
+                const fromZone = zt.direction === 'IN' ? 'WAREHOUSE' : 'PRODUCTION';
+                const toZone = zt.direction === 'IN' ? 'PRODUCTION' : 'WAREHOUSE';
+                const lotData = zt.materialLot ? {
+                    id: zt.materialLot.id,
+                    lotNumber: zt.materialLot.lotNumber,
+                    siigoProductCode: zt.materialLot.siigoProductCode,
+                    siigoProductName: zt.materialLot.siigoProductName,
+                    initialQuantity: zt.materialLot.initialQuantity,
+                    currentQuantity: zt.materialLot.currentQuantity,
+                    unit: zt.materialLot.unit,
+                    zone: zt.materialLot.zone
+                } : null;
+
+                // Row 1: EGRESS from source zone
+                transferRows.push({
+                    id: `zt-out-${zt.id}`,
+                    type: 'TRANSFER_OUT',
+                    date: zt.createdAt,
+                    quantity: -zt.quantity,
+                    unit: zt.unit || 'gramo',
+                    zone: fromZone,
+                    materialLot: lotData,
+                    materialLotId: zt.materialLotId,
+                    usedBy: zt.transferredBy,
+                    processInfo: null,
+                    observations: `Traslado → ${toZone === 'PRODUCTION' ? 'Producción' : 'Bodega'}`
+                });
+                // Row 2: INGRESS to destination zone
+                transferRows.push({
+                    id: `zt-in-${zt.id}`,
+                    type: 'TRANSFER_IN',
+                    date: zt.createdAt,
+                    quantity: zt.quantity,
+                    unit: zt.unit || 'gramo',
+                    zone: toZone,
+                    materialLot: lotData,
+                    materialLotId: zt.materialLotId,
+                    usedBy: zt.transferredBy,
+                    processInfo: null,
+                    observations: `Traslado ← ${fromZone === 'WAREHOUSE' ? 'Bodega' : 'Producción'}`
+                });
+            });
+
+            // ── 4. FinishedLotTransfer (finished product zone transfers: PROD→PT, PROD→NC) ──
+            const fltWhere = {};
+            if (startDate || endDate) {
+                fltWhere.createdAt = {};
+                if (startDate) fltWhere.createdAt.gte = new Date(startDate);
+                if (endDate) fltWhere.createdAt.lte = new Date(endDate + 'T23:59:59');
+            }
+
+            const finishedTransfers = await prisma.finishedLotTransfer.findMany({
+                where: fltWhere,
+                orderBy: { createdAt: 'desc' },
+                take: maxRows,
+                include: {
+                    product: { select: { id: true, name: true, sku: true, unit: true } },
+                    transferredBy: { select: { id: true, name: true, role: true } },
+                },
+            });
+
+            const finishedTransferRows = [];
+            if (finishedTransfers.length > 0) {
+                // Query actual current stock in PRODUCCION for accurate "remaining" display
+                const fltProductIds = [...new Set(finishedTransfers.filter(ft => ft.fromZone !== ft.toZone).map(ft => ft.productId))];
+                const fltLotNumbers = [...new Set(finishedTransfers.filter(ft => ft.fromZone !== ft.toZone).map(ft => ft.lotNumber))];
+                const currentStocks = fltProductIds.length > 0 ? await prisma.finishedLotStock.findMany({
+                    where: { productId: { in: fltProductIds }, lotNumber: { in: fltLotNumbers }, zone: 'PRODUCCION' },
+                    select: { productId: true, lotNumber: true, currentQuantity: true, initialQuantity: true },
+                }) : [];
+                const stockMap = {};
+                currentStocks.forEach(s => { stockMap[`${s.productId}_${s.lotNumber}`] = s; });
+
+                finishedTransfers.forEach(ft => {
+                    if (ft.fromZone === ft.toZone) return; // skip ingestion records
+                    const prodName = ft.product?.name || '';
+                    const stockKey = `${ft.productId}_${ft.lotNumber}`;
+                    const actualStock = stockMap[stockKey];
+                    const lotData = {
+                        id: `flt-${ft.id}`,
+                        lotNumber: ft.lotNumber,
+                        siigoProductCode: ft.product?.sku || '',
+                        siigoProductName: prodName,
+                        initialQuantity: actualStock?.initialQuantity ?? ft.quantity,
+                        currentQuantity: actualStock?.currentQuantity ?? 0,
+                        unit: ft.product?.unit || 'unidad',
+                        zone: 'PRODUCTION',
+                    };
+                    const zoneName = (z) => z === 'PRODUCCION' ? 'Producción' : z === 'PRODUCTO_TERMINADO' ? 'Producto Terminado' : z === 'NO_CONFORME' ? 'No Conforme' : z === 'BODEGA' ? 'Bodega' : z === 'CUARENTENA' ? 'Cuarentena' : z === 'MAQUILA' ? 'Maquila' : z;
+                    // Egress from source zone
+                    finishedTransferRows.push({
+                        id: `flt-out-${ft.id}`,
+                        type: 'TRANSFER_OUT',
+                        date: ft.createdAt,
+                        quantity: -ft.quantity,
+                        unit: ft.product?.unit || 'unidad',
+                        zone: 'PRODUCTION',
+                        materialLot: lotData,
+                        materialLotId: `flt-${ft.id}`,
+                        usedBy: ft.transferredBy,
+                        processInfo: null,
+                        observations: `${zoneName(ft.fromZone)} → ${zoneName(ft.toZone)}`,
+                    });
+                    // Ingress to destination zone
+                    finishedTransferRows.push({
+                        id: `flt-in-${ft.id}`,
+                        type: 'TRANSFER_IN',
+                        date: ft.createdAt,
+                        quantity: ft.quantity,
+                        unit: ft.product?.unit || 'unidad',
+                        zone: ft.toZone === 'PRODUCTO_TERMINADO' ? 'WAREHOUSE' : 'PRODUCTION',
+                        materialLot: lotData,
+                        materialLotId: `flt-${ft.id}`,
+                        usedBy: ft.transferredBy,
+                        processInfo: null,
+                        observations: `${zoneName(ft.fromZone)} → ${zoneName(ft.toZone)}`,
+                    });
+                });
+            }
+
+            // ── 5. Merge & sort by date desc ──
+            let all = [...consumptionRows, ...lotRows, ...transferRows, ...finishedTransferRows]
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            // ── 5. Optional zone filter (BEFORE slice to avoid losing older entries) ──
             if (zone) {
                 all = all.filter(r => r.zone === zone);
             }
+            all = all.slice(0, maxRows);
 
             res.json(all);
         } catch (error) {
@@ -288,6 +446,7 @@ const lotController = {
     getLotHistory: async (req, res) => {
         try {
             const { id } = req.params;
+            // Try MaterialLot first
             const lot = await prisma.materialLot.findUnique({
                 where: { id },
                 include: {
@@ -300,8 +459,32 @@ const lotController = {
                     }
                 }
             });
-            if (!lot) return res.status(404).json({ error: 'Lote no encontrado' });
-            res.json(lot);
+            if (lot) return res.json(lot);
+
+            // Fallback: try FinishedLotStock (from finished zone)
+            const fls = await prisma.finishedLotStock.findUnique({
+                where: { id },
+                include: {
+                    product: { select: { id: true, name: true, sku: true } },
+                    transfers: {
+                        orderBy: { createdAt: 'desc' },
+                        include: {
+                            transferredBy: { select: { id: true, name: true } }
+                        }
+                    }
+                }
+            });
+            if (!fls) return res.status(404).json({ error: 'Lote no encontrado' });
+
+            // Map transfers to same shape as consumptions for frontend compatibility
+            const consumptions = fls.transfers.map(t => ({
+                id: t.id,
+                quantityUsed: t.quantity,
+                usedAt: t.createdAt,
+                usedBy: t.transferredBy,
+                observations: `${t.fromZone} → ${t.toZone}${t.reason ? ': ' + t.reason : ''}`,
+            }));
+            res.json({ ...fls, consumptions });
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
@@ -313,15 +496,29 @@ const lotController = {
     deleteLot: async (req, res) => {
         try {
             const { id } = req.params;
+            // Try MaterialLot first
             const lot = await prisma.materialLot.findUnique({
                 where: { id },
                 include: { _count: { select: { consumptions: true } } }
             });
-            if (!lot) return res.status(404).json({ error: 'Lote no encontrado' });
-            if (lot._count.consumptions > 0) {
-                return res.status(400).json({ error: 'No se puede eliminar un lote con consumos registrados' });
+            if (lot) {
+                if (lot._count.consumptions > 0) {
+                    return res.status(400).json({ error: 'No se puede eliminar un lote con consumos registrados' });
+                }
+                await prisma.materialLot.delete({ where: { id } });
+                return res.json({ success: true });
             }
-            await prisma.materialLot.delete({ where: { id } });
+
+            // Fallback: try FinishedLotStock
+            const fls = await prisma.finishedLotStock.findUnique({
+                where: { id },
+                include: { _count: { select: { transfers: true } } }
+            });
+            if (!fls) return res.status(404).json({ error: 'Lote no encontrado' });
+            if (fls._count.transfers > 0) {
+                return res.status(400).json({ error: 'No se puede eliminar un lote con transferencias registradas' });
+            }
+            await prisma.finishedLotStock.delete({ where: { id } });
             res.json({ success: true });
         } catch (error) {
             res.status(500).json({ error: error.message });

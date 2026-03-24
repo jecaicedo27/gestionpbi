@@ -36,7 +36,7 @@ const upload = multer({
 
 const pqrAnalyticsController = require('../controllers/pqrAnalyticsController');
 
-router.post('/', protect, upload.array('evidence', 5), pqrController.createPQR);
+router.post('/', protect, upload.array('evidence', 100), pqrController.createPQR);
 router.get('/', protect, pqrController.getPQRs);
 router.get('/analytics', protect, authorize('ADMIN', 'CALIDAD'), pqrAnalyticsController.getPQRAnalytics);
 router.get('/analytics/recall-report', protect, authorize('ADMIN', 'CALIDAD'), pqrAnalyticsController.getRecallReport);
@@ -45,9 +45,10 @@ router.get('/recall-lots', protect, pqrAnalyticsController.getRecallLots);
 router.patch('/recall-lots/:lotNumber/collection-status', protect, pqrAnalyticsController.updateRecallLotCollectionStatus);
 router.get('/valid-lots', protect, pqrAnalyticsController.getValidLots);
 router.get('/reporting-parties', protect, pqrController.getReportingParties);
+router.post('/bulk-billing', protect, authorize('ADMIN', 'CONTABILIDAD'), upload.fields([{ name: 'file', maxCount: 5 }, { name: 'accountStatement', maxCount: 5 }]), pqrController.bulkBilling);
 router.get('/:id', protect, pqrController.getPQRById);
 router.patch('/:id/status', protect, authorize('ADMIN', 'CALIDAD', 'LOGISTICA', 'CONTABILIDAD'), pqrController.updatePQRStatus);
-router.post('/:id/billing', protect, authorize('ADMIN', 'CONTABILIDAD', 'COMERCIAL'), upload.fields([{ name: 'file', maxCount: 1 }, { name: 'accountStatement', maxCount: 1 }]), pqrController.uploadBillingDocument);
-router.post('/:id/dispatch', protect, authorize('ADMIN', 'LOGISTICA'), upload.single('file'), pqrController.dispatchPQR);
+router.post('/:id/billing', protect, authorize('ADMIN', 'CONTABILIDAD', 'COMERCIAL'), upload.fields([{ name: 'file', maxCount: 5 }, { name: 'accountStatement', maxCount: 5 }]), pqrController.uploadBillingDocument);
+router.post('/:id/dispatch', protect, authorize('ADMIN', 'LOGISTICA'), upload.array('file', 10), pqrController.dispatchPQR);
 
 module.exports = router;

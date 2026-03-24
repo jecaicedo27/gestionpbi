@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck } from 'lucide-react';
+import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList } from 'lucide-react';
 
 const tabsByRole = {
     PRODUCCION: [
@@ -15,8 +15,9 @@ const tabsByRole = {
     LOGISTICA: [
         { icon: Package, label: 'Pedidos', path: '/orders' },
         { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },
+        { icon: ClipboardList, label: 'Conteo', path: '/production/physical-count' },
         { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
-        { icon: Tag, label: 'QR', path: '/qr-generator' },
+        { icon: Tag, label: 'Etiquetas', path: '/labeling' },
     ],
     CARTERA: [
         { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },

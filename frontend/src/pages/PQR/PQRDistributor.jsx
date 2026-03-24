@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { CheckCircle2, Loader2, Plus, RotateCcw, ShieldAlert, X } from 'lucide-react';
+import { CheckCircle2, Download, FileText, Loader2, Package, Plus, Receipt, RotateCcw, ShieldAlert, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import PQRForm from '../../components/PQR/PQRForm';
 import PQRDetail from '../../components/PQR/PQRDetail';
@@ -138,50 +138,37 @@ const PQRDistributor = () => {
         return { total, collected, pending };
     }, [recallLots]);
 
-    const getStatusBadge = (status) => {
-        const styles = {
-            PENDING: 'bg-yellow-100 text-yellow-800',
-            IN_REVIEW: 'bg-blue-100 text-blue-800',
-            APPROVED: 'bg-green-100 text-green-800',
-            REJECTED: 'bg-red-100 text-red-800',
-            PROCESSED: 'bg-purple-100 text-purple-800'
-        };
-        const labels = {
-            PENDING: 'Pendiente',
-            IN_REVIEW: 'En Revisión',
-            APPROVED: 'Aprobado',
-            REJECTED: 'Rechazado',
-            PROCESSED: 'Procesado'
-        };
-        return (
-            <span className={`px-2 py-1 rounded-full text-xs font-medium ${styles[status] || 'bg-gray-100 text-gray-800'}`}>
-                {labels[status] || status}
-            </span>
-        );
+    const getProgressBadge = (status, stage) => {
+        // Combine status + stage into a single clear label for distributors
+        if (status === 'REJECTED' || stage === 'REJECTED') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800">❌ Rechazado</span>;
+        }
+        if (stage === 'COMPLETED' || status === 'PROCESSED') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">✅ Completado</span>;
+        }
+        if (stage === 'PENDING_LOGISTICS') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-purple-100 text-purple-800">📦 En Despacho</span>;
+        }
+        if (stage === 'PENDING_INVOICE') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-indigo-100 text-indigo-800">📄 Facturación</span>;
+        }
+        if (stage === 'PENDING_BILLING') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800">📝 Nota Crédito</span>;
+        }
+        if (stage === 'PENDING_REVIEW' || status === 'PENDING') {
+            return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-800">🔍 En Revisión</span>;
+        }
+        return <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-800">{stage || status}</span>;
     };
 
-    const getStageBadge = (stage) => {
-        const stageStyles = {
-            PENDING_REVIEW: 'bg-blue-100 text-blue-800',
-            PENDING_BILLING: 'bg-amber-100 text-amber-800',
-            PENDING_INVOICE: 'bg-indigo-100 text-indigo-800',
-            PENDING_LOGISTICS: 'bg-purple-100 text-purple-800',
-            COMPLETED: 'bg-emerald-100 text-emerald-800',
-            REJECTED: 'bg-red-100 text-red-800'
-        };
-        const stageLabels = {
-            PENDING_REVIEW: 'Revisión Calidad',
-            PENDING_BILLING: 'Nota Crédito',
-            PENDING_INVOICE: 'Facturación',
-            PENDING_LOGISTICS: 'Logística',
-            COMPLETED: 'Completado',
-            REJECTED: 'Rechazado'
-        };
-        return (
-            <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${stageStyles[stage] || 'bg-gray-100 text-gray-800'}`}>
-                {stageLabels[stage] || stage}
-            </span>
-        );
+    // Parse URL that may be a JSON array of URLs or a single URL
+    const parseUrls = (raw) => {
+        if (!raw) return [];
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+        } catch {}
+        return [raw];
     };
 
     return (
@@ -331,8 +318,8 @@ const PQRDistributor = () => {
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Producto</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subdistribuidor / Tercero</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Detalle</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Etapa</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Progreso</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Docs</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nota</th>
                             </tr>
                         </thead>
@@ -392,10 +379,43 @@ const PQRDistributor = () => {
                                             ) : '-'}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            {getStatusBadge(pqr.status)}
+                                            {getProgressBadge(pqr.status, pqr.stage)}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            {getStageBadge(pqr.stage)}
+                                        <td className="px-4 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                            {(pqr.creditNoteUrl || pqr.accountStatementUrl || pqr.invoiceUrl || pqr.dispatchEvidenceUrl) ? (
+                                                <div className="flex items-center gap-1">
+                                                    {parseUrls(pqr.creditNoteUrl).map((url, i) => (
+                                                        <a key={`cn-${i}`} href={`${API_URL}${url}`} target="_blank" rel="noopener noreferrer"
+                                                            title={`Nota Crédito${parseUrls(pqr.creditNoteUrl).length > 1 ? ` (${i+1})` : ''}`}
+                                                            className="w-7 h-7 rounded-full bg-green-100 hover:bg-green-200 text-green-600 flex items-center justify-center transition-colors hover:scale-110">
+                                                            <FileText size={13} />
+                                                        </a>
+                                                    ))}
+                                                    {parseUrls(pqr.accountStatementUrl).map((url, i) => (
+                                                        <a key={`as-${i}`} href={`${API_URL}${url}`} target="_blank" rel="noopener noreferrer"
+                                                            title={`Estado de Cuenta${parseUrls(pqr.accountStatementUrl).length > 1 ? ` (${i+1})` : ''}`}
+                                                            className="w-7 h-7 rounded-full bg-emerald-100 hover:bg-emerald-200 text-emerald-600 flex items-center justify-center transition-colors hover:scale-110">
+                                                            <FileText size={13} />
+                                                        </a>
+                                                    ))}
+                                                    {parseUrls(pqr.invoiceUrl).map((url, i) => (
+                                                        <a key={`inv-${i}`} href={`${API_URL}${url}`} target="_blank" rel="noopener noreferrer"
+                                                            title="Factura"
+                                                            className="w-7 h-7 rounded-full bg-blue-100 hover:bg-blue-200 text-blue-600 flex items-center justify-center transition-colors hover:scale-110">
+                                                            <Receipt size={13} />
+                                                        </a>
+                                                    ))}
+                                                    {parseUrls(pqr.dispatchEvidenceUrl).map((url, i) => (
+                                                        <a key={`de-${i}`} href={`${API_URL}${url}`} target="_blank" rel="noopener noreferrer"
+                                                            title={`Evidencia Despacho${parseUrls(pqr.dispatchEvidenceUrl).length > 1 ? ` (${i+1})` : ''}`}
+                                                            className="w-7 h-7 rounded-full bg-purple-100 hover:bg-purple-200 text-purple-600 flex items-center justify-center transition-colors hover:scale-110">
+                                                            <Package size={13} />
+                                                        </a>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <span className="text-gray-300 text-xs">—</span>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={pqr.internalNotes}>
                                             {pqr.rejectionReason && <span className="text-red-500 block">Rechazo: {pqr.rejectionReason}</span>}

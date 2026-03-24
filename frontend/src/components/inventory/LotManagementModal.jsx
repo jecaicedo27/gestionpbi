@@ -5,6 +5,7 @@ import api from '../../services/api';
 const LotManagementModal = ({ product, onClose }) => {
     const [lots, setLots] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [lotTab, setLotTab] = useState('active');
     const [showAddForm, setShowAddForm] = useState(false);
     const [expandedLot, setExpandedLot] = useState(null);
     const [lotHistory, setLotHistory] = useState({});
@@ -20,8 +21,27 @@ const LotManagementModal = ({ product, onClose }) => {
     const loadLots = useCallback(async () => {
         if (!product) return;
         try {
-            const res = await api.get(`/inventory/lots?productId=${product.id}&status=AVAILABLE,LOW_STOCK,DEPLETED`);
-            setLots(res.data);
+            const [mlRes, flsRes] = await Promise.all([
+                api.get(`/inventory/lots?productId=${product.id}&status=AVAILABLE,LOW_STOCK,DEPLETED`),
+                api.get(`/finished-lots/product-lots?productId=${product.id}`).catch(() => ({ data: [] })),
+            ]);
+            const mlLots = Array.isArray(mlRes.data) ? mlRes.data : (mlRes.data?.data || []);
+            const flsLots = Array.isArray(flsRes.data) ? flsRes.data : [];
+            // Merge by lotNumber+zone — aggregate quantities for duplicates
+            const mergeMap = new Map();
+            [...mlLots, ...flsLots].forEach(l => {
+                const key = `${l.lotNumber}_${l.zone || 'WAREHOUSE'}`;
+                if (mergeMap.has(key)) {
+                    const existing = mergeMap.get(key);
+                    existing.currentQuantity += l.currentQuantity || 0;
+                    existing.initialQuantity += l.initialQuantity || 0;
+                    if (l._count?.consumptions) existing._count = { consumptions: (existing._count?.consumptions || 0) + l._count.consumptions };
+                } else {
+                    mergeMap.set(key, { ...l });
+                }
+            });
+            const merged = [...mergeMap.values()];
+            setLots(merged);
         } catch (err) {
             console.error('Error loading lots:', err);
         } finally {
@@ -126,8 +146,69 @@ const LotManagementModal = ({ product, onClose }) => {
                     </div>
                 </div>
 
+                {/* Zone distribution bar */}
+                {(() => {
+                    const ZONE_CFG = [
+                        { key: 'WAREHOUSE', label: 'Bodega', color: '#3b82f6', grad: 'linear-gradient(90deg, #3b82f6, #60a5fa)', emoji: '🏢' },
+                        { key: 'PRODUCTION', label: 'Producción', color: '#10b981', grad: 'linear-gradient(90deg, #10b981, #34d399)', emoji: '🏭' },
+                        { key: 'PRODUCCION', label: 'Producción (PT)', color: '#10b981', grad: 'linear-gradient(90deg, #10b981, #6ee7b7)', emoji: '🏭' },
+                        { key: 'PRODUCTO_TERMINADO', label: 'Prod. Terminado', color: '#8b5cf6', grad: 'linear-gradient(90deg, #8b5cf6, #a78bfa)', emoji: '📦' },
+                        { key: 'NO_CONFORME', label: 'No Conforme', color: '#ef4444', grad: 'linear-gradient(90deg, #ef4444, #f87171)', emoji: '⚠️' },
+                        { key: 'MAQUILA', label: 'Maquila', color: '#f97316', grad: 'linear-gradient(90deg, #f97316, #fb923c)', emoji: '🏷️' },
+                        { key: 'CUARENTENA', label: 'Cuarentena', color: '#eab308', grad: 'linear-gradient(90deg, #eab308, #facc15)', emoji: '🔒' },
+                    ];
+                    // Aggregate from lots
+                    const zoneQty = {};
+                    lots.forEach(l => {
+                        const z = l.zone || 'WAREHOUSE';
+                        zoneQty[z] = (zoneQty[z] || 0) + l.currentQuantity;
+                    });
+                    const zones = ZONE_CFG.filter(z => (zoneQty[z.key] || 0) > 0);
+                    const total = zones.reduce((s, z) => s + (zoneQty[z.key] || 0), 0);
+                    if (total === 0) return null;
+                    const fmtKg = (v) => v >= 1000000 ? `${(v/1000000).toFixed(2)} ton` : v >= 1000 ? `${(v/1000).toFixed(1)} kg` : `${v.toLocaleString('es-CO')} g`;
+                    return (
+                        <div className="px-4 py-2 bg-white border-b flex-shrink-0">
+                            <div className="flex items-center gap-2 mb-1">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase">Distribución</span>
+                            </div>
+                            <div className="flex rounded-full overflow-hidden h-2.5 mb-1" style={{ border: '1px solid #e2e8f0' }}>
+                                {zones.map(z => {
+                                    const pct = Math.max(Math.round((zoneQty[z.key] / total) * 100), 2);
+                                    return <div key={z.key} style={{ width: `${pct}%`, background: z.grad }} />;
+                                })}
+                            </div>
+                            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px]">
+                                {zones.map(z => (
+                                    <span key={z.key} className="flex items-center gap-1">
+                                        <span className="w-2 h-2 rounded-full inline-block" style={{ background: z.color }} />
+                                        <span className="font-semibold text-slate-600">{z.label}</span>
+                                        <span className="text-slate-400">{fmtKg(zoneQty[z.key])}</span>
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {/* Lot tabs */}
+                {(() => {
+                    const activeLots = lots.filter(l => l.currentQuantity > 0);
+                    const depletedLots = lots.filter(l => l.currentQuantity <= 0);
+                    return (
+                        <div className="flex gap-1 px-4 pt-3 pb-0 flex-shrink-0">
+                            <button onClick={() => setLotTab('active')} className={`px-3 py-1.5 rounded-t-lg text-xs font-bold transition-all ${lotTab === 'active' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                                ✅ Activos ({activeLots.length})
+                            </button>
+                            <button onClick={() => setLotTab('depleted')} className={`px-3 py-1.5 rounded-t-lg text-xs font-bold transition-all ${lotTab === 'depleted' ? 'bg-gray-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                                🚫 Agotados ({depletedLots.length})
+                            </button>
+                        </div>
+                    );
+                })()}
+
                 {/* Lots list  */}
-                <div className="flex-1 overflow-auto p-4 space-y-3">
+                <div className="flex-1 overflow-auto p-4 pt-2 space-y-3">
                     {loading ? (
                         <div className="text-center py-8 text-gray-400">Cargando lotes...</div>
                     ) : lots.length === 0 ? (
@@ -136,8 +217,13 @@ const LotManagementModal = ({ product, onClose }) => {
                             <p className="text-gray-500 font-medium">No hay lotes registrados</p>
                             <p className="text-gray-400 text-sm">Agrega el primer lote para iniciar la trazabilidad</p>
                         </div>
-                    ) : (
-                        lots.map(lot => {
+                    ) : (() => {
+                        const filtered = lots.filter(l => lotTab === 'active' ? l.currentQuantity > 0 : l.currentQuantity <= 0);
+                        return filtered.length === 0 ? (
+                            <div className="text-center py-8">
+                                <p className="text-gray-400 text-sm">{lotTab === 'active' ? 'No hay lotes con stock disponible' : 'No hay lotes agotados'}</p>
+                            </div>
+                        ) : filtered.map(lot => {
                             const pct = lot.initialQuantity > 0 ? Math.round((lot.currentQuantity / lot.initialQuantity) * 100) : 0;
                             const isExpanded = expandedLot === lot.id;
                             const history = lotHistory[lot.id] || [];
@@ -148,6 +234,18 @@ const LotManagementModal = ({ product, onClose }) => {
                                             <div className="flex items-center gap-2">
                                                 <span className="font-bold text-gray-900">{lot.lotNumber}</span>
                                                 {getStatusBadge(lot.status, lot.currentQuantity, lot.initialQuantity)}
+                                                {(() => {
+                                                    const z = lot.zone || 'WAREHOUSE';
+                                                    const cfg = { WAREHOUSE: { bg: 'bg-blue-50 border-blue-200', text: 'text-blue-600', icon: '🏢', lbl: 'Bodega' },
+                                                        PRODUCTION: { bg: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-600', icon: '🏭', lbl: 'Producción' },
+                                                        PRODUCCION: { bg: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-600', icon: '🏭', lbl: 'Producción' },
+                                                        PRODUCTO_TERMINADO: { bg: 'bg-violet-50 border-violet-200', text: 'text-violet-600', icon: '📦', lbl: 'Terminado' },
+                                                        NO_CONFORME: { bg: 'bg-red-50 border-red-200', text: 'text-red-600', icon: '⚠️', lbl: 'No Conforme' },
+                                                        MAQUILA: { bg: 'bg-orange-50 border-orange-200', text: 'text-orange-600', icon: '🏷️', lbl: 'Maquila' },
+                                                        CUARENTENA: { bg: 'bg-yellow-50 border-yellow-200', text: 'text-yellow-600', icon: '🔒', lbl: 'Cuarentena' },
+                                                    }[z] || { bg: 'bg-gray-50 border-gray-200', text: 'text-gray-600', icon: '📍', lbl: z };
+                                                    return <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${cfg.bg} ${cfg.text} border`}>{cfg.icon} {cfg.lbl}</span>;
+                                                })()}
                                             </div>
                                             <div className="text-xs text-gray-500 mt-0.5">
                                                 Recibido: {new Date(lot.receivedAt).toLocaleDateString('es-CO')} · Inicial: {fmtQty(lot.initialQuantity)}
@@ -193,8 +291,8 @@ const LotManagementModal = ({ product, onClose }) => {
                                     )}
                                 </div>
                             );
-                        })
-                    )}
+                        });
+                    })()}
                 </div>
 
                 {/* Add form */}

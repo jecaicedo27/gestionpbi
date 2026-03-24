@@ -767,14 +767,16 @@ class SiigoBrowserManager {
                 // Didn't redirect — might still be saving, wait more
                 await page.waitForTimeout(5000);
 
-                // Check for errors
+                // Check for errors — broad keyword matching to catch Siigo validation messages
                 const saveError = await page.evaluate(() => {
                     const toast = document.querySelector('.Toastify__toast--error');
                     if (toast) return toast.textContent;
-                    const errs = document.querySelectorAll('[class*="error"], [class*="Error"], .text-danger');
-                    for (const el of errs) {
-                        const t = el.textContent.trim();
-                        if (t.includes('obligatorio') || t.includes('inválid')) return t;
+                    // Also check for the red validation banner at top-right
+                    const alerts = document.querySelectorAll('[class*="error"], [class*="Error"], .text-danger, .alert-danger, [class*="alert"], [class*="toast"]');
+                    const errorKeywords = ['obligatorio', 'inválid', 'existir', 'debe', 'requerido', 'falta', 'error', 'no se puede'];
+                    for (const el of alerts) {
+                        const t = el.textContent.trim().toLowerCase();
+                        if (t && errorKeywords.some(kw => t.includes(kw))) return el.textContent.trim();
                     }
                     return null;
                 });
@@ -893,10 +895,11 @@ class SiigoBrowserManager {
                             const retryError = await page.evaluate(() => {
                                 const toast = document.querySelector('.Toastify__toast--error');
                                 if (toast) return toast.textContent;
-                                const errs = document.querySelectorAll('[class*="error"], [class*="Error"], .text-danger');
+                                const errs = document.querySelectorAll('[class*="error"], [class*="Error"], .text-danger, .alert-danger, [class*="alert"], [class*="toast"]');
+                                const errorKeywords = ['obligatorio', 'inválid', 'existir', 'debe', 'requerido', 'falta', 'error', 'no se puede'];
                                 for (const el of errs) {
-                                    const t = el.textContent.trim();
-                                    if (t.includes('obligatorio') || t.includes('inválid')) return t;
+                                    const t = el.textContent.trim().toLowerCase();
+                                    if (t && errorKeywords.some(kw => t.includes(kw))) return el.textContent.trim();
                                 }
                                 return null;
                             });
@@ -932,22 +935,47 @@ class SiigoBrowserManager {
 
             // === CAPTURE NE CODE ===
             await page.waitForTimeout(3000);
+            const urlFinal = page.url();
+            const urlChanged = urlFinal !== urlBeforeSave;
             let siigoNoteCode = null;
 
             try {
                 siigoNoteCode = await page.evaluate(() => {
                     const text = document.body.innerText;
+                    // Only accept full NE-X-XXXXX format (confirmation page)
                     const m1 = text.match(/Nota de ensamble:\s*(NE-\d+-\d+)/i);
                     if (m1) return m1[1];
                     const m2 = text.match(/(NE-\d+-\d+)/);
                     if (m2) return m2[1];
-                    const m3 = text.match(/Número\s+(\d{3,})/i);
-                    if (m3) return m3[1];
+                    // DO NOT use "Número XXXXX" — that's the form's auto-number, not proof of save
                     return null;
                 });
                 log(`📋 Nota: ${siigoNoteCode || 'No capturado'}`);
             } catch (e) {
                 log('⚠️ No se pudo capturar NE');
+            }
+
+            // If we didn't get an NE code AND the URL didn't change, check for errors one more time
+            if (!siigoNoteCode && !urlChanged) {
+                const finalError = await page.evaluate(() => {
+                    const allText = document.body.innerText.toLowerCase();
+                    const errorKeywords = ['debe existir', 'obligatorio', 'error', 'no se puede', 'inválid', 'requerido', 'falta'];
+                    for (const kw of errorKeywords) {
+                        if (allText.includes(kw)) {
+                            // Find the element containing this error
+                            const alerts = document.querySelectorAll('[class*="error"], [class*="Error"], .text-danger, .alert-danger, [class*="alert"], [class*="toast"]');
+                            for (const el of alerts) {
+                                if (el.textContent.toLowerCase().includes(kw)) return el.textContent.trim();
+                            }
+                            return `Error detectado: contiene "${kw}"`;
+                        }
+                    }
+                    return null;
+                });
+                if (finalError) {
+                    log(`❌ Error final detectado: ${finalError}`);
+                    throw new Error(`Error Siigo: ${finalError}`);
+                }
             }
 
             // Screenshot
@@ -957,8 +985,9 @@ class SiigoBrowserManager {
                 await page.screenshot({ path: screenshotPath, fullPage: true });
             } catch (e) { /* ok */ }
 
-            const success = !!siigoNoteCode;
-            log(success ? `✅ NE CREADA: ${siigoNoteCode}` : '⚠️ No se confirmó creación de NE');
+            // Success = URL changed (redirect to confirmation) OR we captured a real NE code
+            const success = !!siigoNoteCode || urlChanged;
+            log(success ? `✅ NE CREADA: ${siigoNoteCode || '(URL changed)'}` : '⚠️ No se confirmó creación de NE');
 
             return {
                 success,

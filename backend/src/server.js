@@ -67,8 +67,9 @@ pool.query('SELECT NOW()', (err, res) => {
         // ═══ CRON: Sync ventas desde Siigo cada hora ═══
         const siigoService = require('./services/siigoService');
         const dataMiningService = require('./services/dataMiningService');
+        const siigoQueue = require('./services/siigoQueue');
 
-        const syncSales = async () => {
+        const syncSales = () => siigoQueue.enqueue('sync-ventas', async () => {
             const now = new Date();
             const dateEnd = now.toISOString().split('T')[0];
             const start = new Date(now);
@@ -76,15 +77,11 @@ pool.query('SELECT NOW()', (err, res) => {
             const dateStart = start.toISOString().split('T')[0];
 
             logger.info(`⏰ CRON Sync ventas: ${dateStart} → ${dateEnd}`);
-            try {
-                const result = await siigoService.syncInvoicesRange(dateStart, dateEnd);
-                logger.info(`⏰ CRON Sync ventas: ${result.totalProcessed || 0} facturas procesadas`);
-                await dataMiningService.calculateVelocities().catch(() => { });
-                logger.info('⏰ CRON Velocidades actualizadas');
-            } catch (err) {
-                logger.error(`⏰ CRON Sync ventas error: ${err.message}`);
-            }
-        };
+            const result = await siigoService.syncInvoicesRange(dateStart, dateEnd);
+            logger.info(`⏰ CRON Sync ventas: ${result.totalProcessed || 0} facturas procesadas`);
+            await dataMiningService.calculateVelocities().catch(() => { });
+            logger.info('⏰ CRON Velocidades actualizadas');
+        }).catch(err => logger.error(`⏰ CRON Sync ventas error: ${err.message}`));
 
         // Ejecutar al iniciar (después de 30s para que todo esté listo)
         setTimeout(syncSales, 30000);
@@ -97,21 +94,17 @@ pool.query('SELECT NOW()', (err, res) => {
         startTimerAlertCron(io);
 
         // ═══ CRON: Sync inventario desde Siigo cada 30 min ═══
-        const syncInventory = async () => {
+        const syncInventory = () => siigoQueue.enqueue('sync-inventario', async () => {
             logger.info('⏰ CRON Sync inventario: iniciando...');
-            try {
-                const result = await siigoService.syncAllProducts();
-                logger.info(`⏰ CRON Sync inventario: ${result.synced}/${result.total} productos sincronizados`);
-            } catch (err) {
-                logger.error(`⏰ CRON Sync inventario error: ${err.message}`);
-            }
-        };
+            const result = await siigoService.syncAllProducts();
+            logger.info(`⏰ CRON Sync inventario: ${result.synced}/${result.total} productos sincronizados`);
+        }).catch(err => logger.error(`⏰ CRON Sync inventario error: ${err.message}`));
 
         // Ejecutar 60s después de arrancar
         setTimeout(syncInventory, 60000);
-        // Repetir cada 30 min (1800000ms)
-        setInterval(syncInventory, 1800000);
-        logger.info('⏰ CRON: Sync inventario programado cada 30 minutos');
+        // Repetir cada 2 min (120000ms)
+        setInterval(syncInventory, 120000);
+        logger.info('⏰ CRON: Sync inventario programado cada 2 minutos');
 
         // ═══ CRON: Cart reservation cleanup every 5 min ═══
         const { cleanupExpired } = require('./controllers/cartController');

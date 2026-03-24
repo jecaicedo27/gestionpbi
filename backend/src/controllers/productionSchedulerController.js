@@ -5,7 +5,8 @@ const path = require('path');
 const configController = require('./configController');
 
 // Helper: Parse size to Kg
-const parseSize = (name) => {
+// density: g/cm³ (= g/mL). Default 1.0 for water-like. Siropes use 1.35.
+const parseSize = (name, density = 1.0) => {
     const regex = /X\s*(\d+)\s*(ML|GR|G|L|KG)/i;
     const match = name.match(regex);
     if (!match) return { value: 0, unit: 'N/A', kgFactor: 0 };
@@ -14,12 +15,15 @@ const parseSize = (name) => {
     const unit = match[2].toUpperCase();
     let kgFactor = 0;
 
-    if (unit === 'ML' || unit === 'GR' || unit === 'G') {
+    if (unit === 'ML') {
+        // ML → grams via density, then to kg
+        kgFactor = (value * density) / 1000;
+    } else if (unit === 'GR' || unit === 'G') {
         kgFactor = value / 1000;
     } else if (unit === 'L' || unit === 'KG') {
         kgFactor = value;
     }
-    return { value, unit, kgFactor };
+    return { value, unit, kgFactor: Math.round(kgFactor * 10000) / 10000 };
 };
 
 // Helper: Calculate Effective Stock (Excluding Maquilas)
@@ -73,7 +77,8 @@ exports.getSuggestions = async (req, res) => {
             syrupRatio: globalConfig.syrupRatio || 0.70
         };
 
-        const BATCH_SIZE = line === 'geniality' ? 300 : 120;
+        const BATCH_SIZE = line === 'geniality' ? 100 : 120;
+    const DENSITY = line === 'geniality' ? 1.35 : 1.0; // Sirope density g/cm³
 
 
         // 2. Read REAL Sales Data from Excel
@@ -98,7 +103,7 @@ exports.getSuggestions = async (req, res) => {
 
                 if (product && product.flavor) {
                     const flavor = product.flavor.toUpperCase();
-                    const sizeInfo = parseSize(product.name); // Parse DB name as it's cleaner
+                    const sizeInfo = parseSize(product.name, DENSITY); // Parse DB name as it's cleaner
                     const soldUnits = (row['Cantidad salida'] || 0); // Correct Column Name
                     const soldKg = soldUnits * sizeInfo.kgFactor;
 
@@ -122,7 +127,7 @@ exports.getSuggestions = async (req, res) => {
             const stockDetails = [];
 
             items.forEach(p => {
-                const sizeInfo = parseSize(p.name);
+                const sizeInfo = parseSize(p.name, DENSITY);
                 const kgFactor = sizeInfo.kgFactor || 0;
 
                 // USE GLOBAL STOCK (Include Maquilas)
@@ -145,7 +150,7 @@ exports.getSuggestions = async (req, res) => {
             // instead of Excel 1-year average.
             let dailyConsumptionKg = 0;
             items.forEach(p => {
-                const sizeInfo = parseSize(p.name);
+                const sizeInfo = parseSize(p.name, DENSITY);
                 const kgFactor = sizeInfo.kgFactor || 0;
                 // dailyVelocity is in Units/Day. Convert to Kg/Day.
                 // Fallback to 0 if null
@@ -297,13 +302,14 @@ exports.calculateBatchMix = async (req, res) => {
 
         const TARGET_DAYS = config.targetDays;
         const SYRUP_RATIO = config.syrupRatio;
-        const BATCH_SIZE = line === 'geniality' ? 300 : 120;
+        const BATCH_SIZE = line === 'geniality' ? 100 : 120;
+        const DENSITY = line === 'geniality' ? 1.35 : 1.0; // Sirope density g/cm³
 
         let totalNeedKg = 0;
         const productNeeds = [];
 
         products.forEach(p => {
-            const sizeInfo = parseSize(p.name);
+            const sizeInfo = parseSize(p.name, DENSITY);
             if (sizeInfo.kgFactor === 0) return;
 
             // Use Global Stock
@@ -342,7 +348,7 @@ exports.calculateBatchMix = async (req, res) => {
         // Calculate Total Flavor Stock to see if we need negative stock recovery
         let totalFlavorStock = 0;
         products.forEach(p => {
-            const sizeInfo = parseSize(p.name);
+            const sizeInfo = parseSize(p.name, DENSITY);
             if (sizeInfo.kgFactor) totalFlavorStock += (p.currentStock * sizeInfo.kgFactor);
         });
 
@@ -402,10 +408,10 @@ exports.calculateBatchMix = async (req, res) => {
                 productId: item.product.id,
                 sku: item.product.sku,
                 name: item.product.name,
-                sizeLabel: `${item.kgFactor} Kg`,
-                kgFactor: item.kgFactor, // Exposed for frontend reactivity
+                sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
+                kgFactor: Math.round(item.kgFactor * 1000) / 1000, // Exposed for frontend reactivity
                 plannedUnits,
-                plannedWeightKg: plannedUnits * item.kgFactor
+                plannedWeightKg: Math.round(plannedUnits * item.kgFactor * 100) / 100
             });
         });
 
@@ -524,6 +530,9 @@ exports.getSchedule = async (req, res) => {
         const events = batches.map(b => {
             const parts = b.batchNumber.split('-');
             const seq = (parts.length >= 4) ? ` [${parts[2]}/${parts[3] || '?'}]` : '';
+            // Detect line from group: if any output target is in GENIALITY group, use sirope density
+            const isGenialityBatch = b.outputTargets.some(t => t.product?.group?.name === 'GENIALITY' || t.product?.name?.includes('SIROPE'));
+            const batchDensity = isGenialityBatch ? 1.35 : 1.0;
 
             return {
                 id: b.id,
@@ -535,7 +544,7 @@ exports.getSchedule = async (req, res) => {
                 baseWeight: b.baseWeight, // Exposed for frontend calculations
                 notes: b.notes, // Include notes for auxiliary events
                 mix: b.outputTargets.map(t => {
-                    const sizeInfo = parseSize(t.product.name);
+                    const sizeInfo = parseSize(t.product.name, batchDensity);
                     return {
                         id: t.productId,
                         productId: t.productId,  // Frontend launch uses this field

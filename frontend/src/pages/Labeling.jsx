@@ -1,69 +1,522 @@
-import { useState, useEffect } from 'react';
-import Card from '../components/common/Card';
-import Button from '../components/common/Button';
-import { QRCodeSVG } from 'qrcode.react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Search, Bluetooth, BluetoothOff, Printer, TestTube, Package, Hash, Calendar, Truck, Copy, CheckCircle2, AlertTriangle, Wifi, WifiOff } from 'lucide-react';
 import api from '../services/api';
-import { Printer } from 'lucide-react';
+import printer from '../services/bluetoothPrinter';
+import { buildLotLabel, buildTestLabel } from '../services/tsplLabelBuilder';
+import { buildLotLabelZPL, buildTestLabelZPL } from '../services/zplLabelBuilder';
+
+const RELAY_URL = 'http://127.0.0.1:3939';
 
 const Labeling = () => {
-    const [batches, setBatches] = useState([]);
-    const [selectedBatch, setSelectedBatch] = useState(null);
+    // ── Printer mode: 'bluetooth' (SAT) or 'network' (Zebra) ──
+    const [mode, setMode] = useState(() => localStorage.getItem('label_printer_mode') || 'bluetooth');
 
+    // ── Bluetooth (SAT) state ──
+    const [printerConnected, setPrinterConnected] = useState(printer.isConnected());
+    const [printerName, setPrinterName] = useState(printer.getDeviceName() || '');
+    const [connecting, setConnecting] = useState(false);
+    const [printing, setPrinting] = useState(false);
+    const [printMsg, setPrintMsg] = useState(null);
+
+    // ── Network (Zebra) state ──
+    const [zebraStatus, setZebraStatus] = useState(null); // null=unknown, 'connected', 'unreachable', 'relay_offline'
+    const [zebraIp, setZebraIp] = useState('');
+    const [zebraChecking, setZebraChecking] = useState(false);
+
+    // ── Lots ──
+    const [searchQuery, setSearchQuery] = useState('');
+    const [allLots, setAllLots] = useState([]);
+    const [lotsLoading, setLotsLoading] = useState(false);
+    const [selectedLot, setSelectedLot] = useState(null);
+    const [copies, setCopies] = useState(1);
+
+    // Persist mode
+    useEffect(() => { localStorage.setItem('label_printer_mode', mode); }, [mode]);
+
+    // ── Listen for Bluetooth state changes + auto-reconnect ──
     useEffect(() => {
-        // Reuse production schedule logic to get recent batches
-        // MVP: Just fetch all "SCHEDULED" or "COMPLETED" orders
-        // Ideally we need a specific endpoint for Batches
-        loadBatches();
-    }, []);
+        if (mode !== 'bluetooth') return;
+        const unsub = printer.onStateChange(({ connected, name }) => {
+            setPrinterConnected(connected);
+            setPrinterName(name || '');
+        });
+        printer.tryAutoReconnect().then(result => {
+            if (result) {
+                setPrinterConnected(true);
+                setPrinterName(result.name || '');
+            }
+        });
+        return unsub;
+    }, [mode]);
 
-    const loadBatches = async () => {
-        // Using schedule endpoint as proxy for now
-        const start = new Date(new Date().setDate(new Date().getDate() - 30)).toISOString();
-        const end = new Date(new Date().setDate(new Date().getDate() + 30)).toISOString();
-        const res = await api.get(`/production/schedule?start=${start}&end=${end}`);
-        setBatches(res.data.data.filter(b => b.batch));
+    // ── Auto-check Zebra relay on mount when in network mode ──
+    useEffect(() => {
+        if (mode !== 'network') return;
+        checkZebraRelay();
+        const interval = setInterval(checkZebraRelay, 15000);
+        return () => clearInterval(interval);
+    }, [mode]);
+
+    const checkZebraRelay = async () => {
+        setZebraChecking(true);
+        try {
+            const res = await fetch(`${RELAY_URL}/status`, { signal: AbortSignal.timeout(2000) });
+            const data = await res.json();
+            setZebraStatus(data.printer === 'connected' ? 'connected' : 'unreachable');
+            setZebraIp(data.printerIp || '');
+        } catch {
+            setZebraStatus('relay_offline');
+        } finally {
+            setZebraChecking(false);
+        }
     };
 
+    // ── Load lots ──
+    useEffect(() => {
+        (async () => {
+            setLotsLoading(true);
+            try {
+                const res = await api.get('/inventory/lots', { params: { status: 'AVAILABLE,LOW_STOCK' } });
+                setAllLots(res.data || []);
+            } catch (e) {
+                console.error('Error loading lots:', e);
+            } finally {
+                setLotsLoading(false);
+            }
+        })();
+    }, []);
+
+    // ── Client-side filter ──
+    const lots = searchQuery.trim().length > 0
+        ? allLots.filter(l => {
+            const q = searchQuery.toLowerCase();
+            return (l.siigoProductName || '').toLowerCase().includes(q)
+                || (l.siigoProductCode || '').toLowerCase().includes(q)
+                || (l.lotNumber || '').toLowerCase().includes(q)
+                || (l.product?.name || '').toLowerCase().includes(q)
+                || (l.product?.sku || '').toLowerCase().includes(q);
+        })
+        : allLots;
+
+    // ── Bluetooth connect/reconnect/disconnect ──
+    const handleConnect = async () => {
+        setConnecting(true);
+        try {
+            const result = await printer.connect();
+            setPrinterConnected(true);
+            setPrinterName(result.name);
+            showMsg('success', `Conectada: ${result.name}`);
+        } catch (err) {
+            showMsg('error', err.message || 'Error al conectar');
+        } finally {
+            setConnecting(false);
+        }
+    };
+
+    const handleReconnect = async () => {
+        setConnecting(true);
+        try {
+            const result = await printer.reconnect();
+            if (result) {
+                setPrinterConnected(true);
+                setPrinterName(result.name);
+                showMsg('success', `Reconectada: ${result.name}`);
+            } else {
+                showMsg('error', 'No se pudo reconectar — use Conectar');
+            }
+        } catch (err) {
+            showMsg('error', 'Reconexión fallida — use Conectar');
+        } finally {
+            setConnecting(false);
+        }
+    };
+
+    const handleDisconnect = () => {
+        printer.disconnect();
+        setPrinterConnected(false);
+        setPrinterName('');
+    };
+
+    // ── Print functions (dual mode) ──
+    const sendToZebra = async (zpl) => {
+        const res = await fetch(`${RELAY_URL}/print`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ zpl }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Error de impresión');
+        }
+    };
+
+    const handleTestPrint = async () => {
+        setPrinting(true);
+        try {
+            if (mode === 'bluetooth') {
+                await printer.sendTSPL(buildTestLabel());
+            } else {
+                await sendToZebra(buildTestLabelZPL());
+            }
+            showMsg('success', 'Etiqueta de prueba enviada');
+        } catch (err) {
+            showMsg('error', err.message || 'Error al imprimir');
+        } finally {
+            setPrinting(false);
+        }
+    };
+
+    const handlePrint = async () => {
+        if (!selectedLot) return;
+        setPrinting(true);
+        try {
+            const data = {
+                productName: selectedLot.siigoProductName || selectedLot.product?.name || '',
+                sku: selectedLot.siigoProductCode || selectedLot.product?.sku || '',
+                lotNumber: selectedLot.lotNumber,
+                quantity: selectedLot.currentQuantity,
+                unit: selectedLot.unit || 'gramo',
+                supplier: selectedLot.purchaseOrderItem?.purchaseOrder?.supplierName || '',
+                receivedAt: selectedLot.receivedAt,
+                expiresAt: selectedLot.expiresAt,
+                orderNumber: selectedLot.purchaseOrderItem?.purchaseOrder?.orderNumber || '',
+            };
+            if (mode === 'bluetooth') {
+                await printer.sendTSPL(buildLotLabel(data, copies));
+            } else {
+                await sendToZebra(buildLotLabelZPL(data, copies));
+            }
+            showMsg('success', `${copies} etiqueta(s) enviada(s)`);
+        } catch (err) {
+            showMsg('error', err.message || 'Error al imprimir');
+        } finally {
+            setPrinting(false);
+        }
+    };
+
+    const showMsg = (type, text) => {
+        setPrintMsg({ type, text });
+        setTimeout(() => setPrintMsg(null), 3500);
+    };
+
+    // ── Format helpers ──
+    const fmtQty = (qty, unit) => {
+        if (!qty) return '-';
+        if (unit === 'gramo' || unit === 'g') return `${(qty / 1000).toFixed(1)} kg`;
+        return `${qty.toLocaleString('es-CO')} ${unit || 'und'}`;
+    };
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-CO') : 'N/A';
+
+    const isBluetoothSupported = printer.isSupported();
+    const isPrinterReady = mode === 'bluetooth' ? printerConnected : zebraStatus === 'connected';
+
     return (
-        <div className="space-y-6">
-            <h1 className="text-2xl font-bold">Generación de Etiquetas QR</h1>
+        <div style={{ maxWidth: 960, margin: '0 auto', padding: '16px 12px' }}>
+            {/* ── Header + Mode Toggle ── */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Printer size={24} color="#fff" />
+                </div>
+                <div style={{ flex: 1 }}>
+                    <h1 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>Impresión de Etiquetas</h1>
+                    <p style={{ fontSize: '0.8rem', color: '#94a3b8', margin: 0 }}>
+                        {mode === 'bluetooth' ? 'SAT AF 330 — Bluetooth — 80×50mm' : 'Zebra ZD230t — WiFi — 80×50mm'}
+                    </p>
+                </div>
+            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card title="Lotes Recientes">
-                    <div className="space-y-2">
-                        {batches.map(order => (
-                            <div key={order.id}
-                                className="flex justify-between items-center p-3 border rounded hover:bg-neutral-50 cursor-pointer"
-                                onClick={() => setSelectedBatch(order.batch)}
-                            >
-                                <div>
-                                    <p className="font-bold">{order.batch.batchCode}</p>
-                                    <p className="text-sm text-neutral-500">{order.product.name}</p>
+            {/* ── Mode Toggle ── */}
+            <div style={{
+                display: 'flex', gap: 4, padding: 4, borderRadius: 12,
+                background: '#f1f5f9', marginBottom: 16,
+            }}>
+                <button
+                    onClick={() => setMode('bluetooth')}
+                    style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        padding: '10px 16px', borderRadius: 10, border: 'none',
+                        background: mode === 'bluetooth' ? 'white' : 'transparent',
+                        boxShadow: mode === 'bluetooth' ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                        color: mode === 'bluetooth' ? '#6366f1' : '#94a3b8',
+                        fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer',
+                        transition: 'all 0.15s',
+                    }}>
+                    <Bluetooth size={18} /> SAT AF330 (Bluetooth)
+                </button>
+                <button
+                    onClick={() => setMode('network')}
+                    style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        padding: '10px 16px', borderRadius: 10, border: 'none',
+                        background: mode === 'network' ? 'white' : 'transparent',
+                        boxShadow: mode === 'network' ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                        color: mode === 'network' ? '#059669' : '#94a3b8',
+                        fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer',
+                        transition: 'all 0.15s',
+                    }}>
+                    <Wifi size={18} /> Zebra ZD230 (WiFi)
+                </button>
+            </div>
+
+            {/* ── Status Bar ── */}
+            {mode === 'bluetooth' ? (
+                /* Bluetooth status bar */
+                <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+                    padding: '12px 16px', borderRadius: 14, marginBottom: 20,
+                    background: printerConnected ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)' : '#f8fafc',
+                    border: `1.5px solid ${printerConnected ? '#6ee7b7' : '#e2e8f0'}`,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {printerConnected ? <Bluetooth size={20} color="#059669" /> : <BluetoothOff size={20} color="#94a3b8" />}
+                        <div>
+                            <div style={{ fontWeight: 700, fontSize: '0.88rem', color: printerConnected ? '#065f46' : '#64748b' }}>
+                                {printerConnected ? `🟢 ${printerName}` : '🔴 Impresora no conectada'}
+                            </div>
+                            {!isBluetoothSupported && (
+                                <div style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: 2 }}>
+                                    ⚠️ Web Bluetooth no disponible — use Chrome en Android
                                 </div>
-                                <Button size="sm" variant="secondary" icon={Printer}>Ver QR</Button>
-                            </div>
-                        ))}
+                            )}
+                        </div>
                     </div>
-                </Card>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        {printerConnected ? (
+                            <>
+                                <button onClick={handleTestPrint} disabled={printing}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#6366f1', cursor: 'pointer' }}>
+                                    <TestTube size={14} /> Test
+                                </button>
+                                <button onClick={handleDisconnect}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #fca5a5', background: '#fef2f2', fontSize: '0.8rem', fontWeight: 600, color: '#dc2626', cursor: 'pointer' }}>
+                                    <WifiOff size={14} /> Desconectar
+                                </button>
+                            </>
+                        ) : (
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button onClick={handleReconnect} disabled={connecting || !isBluetoothSupported}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: '1.5px solid #6366f1', background: '#eef2ff', fontSize: '0.82rem', fontWeight: 700, color: '#6366f1', cursor: isBluetoothSupported ? 'pointer' : 'not-allowed', opacity: connecting ? 0.7 : 1 }}>
+                                    <Wifi size={14} /> {connecting ? '...' : 'Reconectar'}
+                                </button>
+                                <button onClick={handleConnect} disabled={connecting || !isBluetoothSupported}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: 'none', background: isBluetoothSupported ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : '#d1d5db', fontSize: '0.82rem', fontWeight: 700, color: '#fff', cursor: isBluetoothSupported ? 'pointer' : 'not-allowed', opacity: connecting ? 0.7 : 1 }}>
+                                    <Bluetooth size={14} /> Conectar
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            ) : (
+                /* Zebra/Network status bar */
+                <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+                    padding: '12px 16px', borderRadius: 14, marginBottom: 20,
+                    background: zebraStatus === 'connected' ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)' : zebraStatus === 'relay_offline' ? '#fef2f2' : '#fefce8',
+                    border: `1.5px solid ${zebraStatus === 'connected' ? '#6ee7b7' : zebraStatus === 'relay_offline' ? '#fca5a5' : '#fde68a'}`,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <Wifi size={20} color={zebraStatus === 'connected' ? '#059669' : '#94a3b8'} />
+                        <div>
+                            <div style={{ fontWeight: 700, fontSize: '0.88rem', color: zebraStatus === 'connected' ? '#065f46' : '#64748b' }}>
+                                {zebraStatus === 'connected' && `🟢 Zebra ZD230 — ${zebraIp}`}
+                                {zebraStatus === 'unreachable' && '🟡 Relay OK — Zebra no alcanzable'}
+                                {zebraStatus === 'relay_offline' && '🔴 Relay no detectado'}
+                                {!zebraStatus && '⏳ Verificando...'}
+                            </div>
+                            {zebraStatus === 'relay_offline' && (
+                                <div style={{ fontSize: '0.72rem', color: '#dc2626', marginTop: 2 }}>
+                                    Ejecute <code style={{ background: '#fee2e2', padding: '1px 4px', borderRadius: 4 }}>node zebra-relay.js</code> en el PC
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        <button onClick={checkZebraRelay} disabled={zebraChecking}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#059669', cursor: 'pointer', opacity: zebraChecking ? 0.6 : 1 }}>
+                            <Wifi size={14} /> {zebraChecking ? '...' : 'Verificar'}
+                        </button>
+                        {zebraStatus === 'connected' && (
+                            <button onClick={handleTestPrint} disabled={printing}
+                                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#6366f1', cursor: 'pointer' }}>
+                                <TestTube size={14} /> Test
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
 
-                <Card title="Vista Previa">
-                    {selectedBatch ? (
-                        <div className="flex flex-col items-center justify-center p-6 space-y-4">
-                            <div className="p-4 bg-white border-2 border-black">
-                                <QRCodeSVG value={selectedBatch.batchCode} size={200} />
-                            </div>
-                            <div className="text-center">
-                                <p className="font-mono text-xl font-bold">{selectedBatch.batchCode}</p>
-                                <p className="text-sm text-neutral-500">Expira: {new Date(selectedBatch.expirationDate).toLocaleDateString()}</p>
-                            </div>
-                            <Button onClick={() => window.print()}>Imprimir Etiqueta</Button>
+            {/* ── Print Message Toast ── */}
+            {printMsg && (
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderRadius: 10, marginBottom: 16,
+                    background: printMsg.type === 'success' ? '#ecfdf5' : '#fef2f2',
+                    border: `1px solid ${printMsg.type === 'success' ? '#6ee7b7' : '#fca5a5'}`,
+                    color: printMsg.type === 'success' ? '#065f46' : '#991b1b',
+                    fontSize: '0.85rem', fontWeight: 600,
+                }}>
+                    {printMsg.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                    {printMsg.text}
+                </div>
+            )}
+
+            {/* ── Main Content: Search + Preview ── */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                {/* ── Left: Lot Search ── */}
+                <div style={{ background: '#fff', borderRadius: 14, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
+                    <div style={{ padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc' }}>
+                        <div style={{ position: 'relative' }}>
+                            <Search size={16} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
+                            <input
+                                type="text"
+                                placeholder="Buscar lote, SKU o producto..."
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                style={{
+                                    width: '100%', padding: '8px 10px 8px 34px', borderRadius: 10,
+                                    border: '1.5px solid #e2e8f0', fontSize: '0.85rem', outline: 'none',
+                                    boxSizing: 'border-box',
+                                }}
+                            />
                         </div>
-                    ) : (
-                        <div className="text-center text-neutral-400 py-10">
-                            Selecciona un lote para ver su etiqueta
+                    </div>
+                    <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+                        {lotsLoading ? (
+                            <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>Cargando...</div>
+                        ) : lots.length === 0 ? (
+                            <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>Sin lotes disponibles</div>
+                        ) : (
+                            lots.map(lot => (
+                                <div
+                                    key={lot.id}
+                                    onClick={() => setSelectedLot(lot)}
+                                    style={{
+                                        padding: '10px 16px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
+                                        transition: 'background 0.15s',
+                                        background: selectedLot?.id === lot.id ? '#eef2ff' : 'transparent',
+                                        borderLeft: selectedLot?.id === lot.id ? '3px solid #6366f1' : '3px solid transparent',
+                                    }}
+                                >
+                                    <div style={{ fontWeight: 600, fontSize: '0.82rem', color: '#1e293b' }}>
+                                        {lot.siigoProductName || lot.product?.name || 'N/A'}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '0.72rem', padding: '2px 6px', borderRadius: 6, background: '#dbeafe', color: '#1e40af', fontWeight: 600 }}>
+                                            {lot.siigoProductCode || lot.product?.sku}
+                                        </span>
+                                        <span style={{ fontSize: '0.72rem', padding: '2px 6px', borderRadius: 6, background: '#f0fdf4', color: '#166534', fontWeight: 600 }}>
+                                            Lote: {lot.lotNumber}
+                                        </span>
+                                        <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                                            {fmtQty(lot.currentQuantity, lot.unit)}
+                                        </span>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Right: Label Preview + Print ── */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {/* Preview card (simulates 80×50mm label) */}
+                    <div style={{
+                        background: '#fff', borderRadius: 14, border: '2px dashed #cbd5e1', padding: 0,
+                        aspectRatio: '80/50', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                    }}>
+                        {selectedLot ? (
+                            <div style={{ padding: '10px 14px', display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+                                {/* Header */}
+                                <div style={{ textAlign: 'center', fontSize: '0.6rem', color: '#94a3b8', letterSpacing: 1, fontWeight: 600, textTransform: 'uppercase' }}>
+                                    Popping Boba International S.A.S.
+                                </div>
+                                <hr style={{ border: '0.5px solid #e2e8f0', margin: '4px 0' }} />
+
+                                {/* Product name */}
+                                <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#1e293b', lineHeight: 1.2 }}>
+                                    {selectedLot.siigoProductName || selectedLot.product?.name || 'N/A'}
+                                </div>
+
+                                {/* SKU + Lote */}
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                                    <span style={{ fontSize: '0.72rem', color: '#475569' }}>
+                                        <strong>SKU:</strong> {selectedLot.siigoProductCode || selectedLot.product?.sku}
+                                    </span>
+                                    <span style={{ fontSize: '0.72rem', color: '#475569' }}>
+                                        <strong>Lote:</strong> {selectedLot.lotNumber}
+                                    </span>
+                                </div>
+
+                                <hr style={{ border: '0.5px solid #f1f5f9', margin: '4px 0' }} />
+
+                                {/* Quantity */}
+                                <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#1e293b' }}>
+                                    Cant: {fmtQty(selectedLot.currentQuantity, selectedLot.unit)}
+                                </div>
+
+                                {/* Dates */}
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#64748b' }}>
+                                    <span>Recep: {fmtDate(selectedLot.receivedAt)}</span>
+                                    <span>Vence: {fmtDate(selectedLot.expiresAt)}</span>
+                                </div>
+
+                                {/* Footer */}
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 4 }}>
+                                    <div style={{ fontSize: '0.6rem', color: '#94a3b8' }}>
+                                        {new Date().toLocaleDateString('es-CO')}
+                                    </div>
+                                    <div style={{
+                                        width: 44, height: 44, border: '1px solid #cbd5e1', borderRadius: 4,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                        fontSize: '0.5rem', color: '#94a3b8', fontWeight: 600,
+                                    }}>
+                                        QR
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', fontSize: '0.85rem' }}>
+                                <div style={{ textAlign: 'center' }}>
+                                    <Package size={32} style={{ marginBottom: 8, opacity: 0.4 }} />
+                                    <div>Selecciona un lote para ver la vista previa</div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Copies + Print button */}
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569' }}>Copias:</label>
+                            <input
+                                type="number"
+                                min={1}
+                                max={20}
+                                value={copies}
+                                onChange={e => setCopies(Math.max(1, Math.min(20, parseInt(e.target.value) || 1)))}
+                                style={{
+                                    width: 56, padding: '6px 8px', borderRadius: 8, border: '1.5px solid #e2e8f0',
+                                    fontSize: '0.85rem', textAlign: 'center', fontWeight: 600,
+                                }}
+                            />
                         </div>
-                    )}
-                </Card>
+                        <button
+                            onClick={handlePrint}
+                            disabled={!isPrinterReady || !selectedLot || printing}
+                            style={{
+                                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                                padding: '10px 16px', borderRadius: 10, border: 'none',
+                                background: isPrinterReady && selectedLot ? 'linear-gradient(135deg, #059669, #10b981)' : '#e2e8f0',
+                                color: isPrinterReady && selectedLot ? '#fff' : '#94a3b8',
+                                fontSize: '0.9rem', fontWeight: 700, cursor: isPrinterReady && selectedLot ? 'pointer' : 'not-allowed',
+                                opacity: printing ? 0.7 : 1,
+                                transition: 'all 0.2s',
+                            }}
+                        >
+                            <Printer size={18} />
+                            {printing ? 'Imprimiendo...' : `Imprimir ${copies > 1 ? `(${copies})` : ''}`}
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     );

@@ -39,6 +39,12 @@ const ProductionZonePage = () => {
         loadHistory();
     }, []);
 
+    // Auto-filter zone stock when search changes (debounced)
+    useEffect(() => {
+        const timer = setTimeout(() => { loadZoneStock(); }, 300);
+        return () => clearTimeout(timer);
+    }, [zoneSearch]);
+
     const loadZoneStock = useCallback(async () => {
         setZoneLoading(true);
         try {
@@ -180,7 +186,8 @@ const ProductionZonePage = () => {
                                     <div>
                                         <Text strong style={{ fontSize: '0.88rem' }}>{selectedProduct.name}</Text>
                                         <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                                            <Tag color="geekblue" style={{ fontSize: '0.7rem' }}>Bodega: {fmtQty(selectedProduct.currentStock, selectedProduct.unit)}</Tag>
+                                            <Tag color="blue" style={{ fontSize: '0.7rem' }}>Stock Siigo: {fmtQty(selectedProduct.currentStock, selectedProduct.unit)}</Tag>
+                                            <Tag color="geekblue" style={{ fontSize: '0.7rem' }}>Disponible bodega: {fmtQty(Math.max(0, (selectedProduct.currentStock || 0) - (selectedProduct.productionZoneStock || 0)), selectedProduct.unit)}</Tag>
                                             <Tag color="green" style={{ fontSize: '0.7rem' }}>Zona: {fmtQty(selectedProduct.productionZoneStock, selectedProduct.unit)}</Tag>
                                         </div>
                                     </div>
@@ -205,7 +212,7 @@ const ProductionZonePage = () => {
                                                     <div className="pz-search-item-name">{p.name}</div>
                                                     <div className="pz-search-item-meta">
                                                         <Tag color="blue">{p.sku}</Tag>
-                                                        <span>Bodega: {fmtQty(p.currentStock, p.unit)}</span>
+                                                        <span>Stock: {fmtQty(p.currentStock, p.unit)} · Disp: {fmtQty(Math.max(0, (p.currentStock || 0) - (p.productionZoneStock || 0)), p.unit)}</span>
                                                     </div>
                                                 </div>
                                             ))}
@@ -240,7 +247,7 @@ const ProductionZonePage = () => {
                             <InputNumber
                                 style={{ width: '100%' }}
                                 min={1}
-                                max={selectedLot ? availableLots.find(l => l.id === selectedLot)?.currentQuantity : selectedProduct?.currentStock}
+                                max={selectedLot ? availableLots.find(l => l.id === selectedLot)?.currentQuantity : Math.max(0, (selectedProduct?.currentStock || 0) - (selectedProduct?.productionZoneStock || 0))}
                                 value={transferQty}
                                 onChange={setTransferQty}
                                 placeholder="Gramos"

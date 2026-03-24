@@ -34,8 +34,15 @@ const ConteoStep = ({
                 </div>
                 <div>
                     <div className="text-sm font-bold text-slate-400 uppercase tracking-wider">CONTEO DE PRESENTACIONES</div>
-                    <div className="text-xs text-slate-400">Lote: {batchNumber}</div>
+                    <div className="text-xs text-slate-400">Conteo por presentación</div>
                 </div>
+            </div>
+
+            {/* ── Lot banner — production must write this on the cart ── */}
+            <div className="bg-emerald-500 rounded-2xl p-5 text-center shadow-lg mb-6">
+                <div className="text-xs font-bold text-emerald-100 uppercase tracking-widest mb-2">🏷️ LOTE PARA ESCRIBIR EN EL CARRITO</div>
+                <div className="text-3xl font-black text-white tracking-wider">{batchNumber}</div>
+                <div className="text-xs text-emerald-100 mt-2 font-semibold">Escribe este lote en el carrito antes de entregar a empaque</div>
             </div>
 
             <div className="bg-white rounded-3xl shadow-2xl border-4 border-cyan-400 overflow-hidden">

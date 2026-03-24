@@ -91,7 +91,7 @@ exports.getById = async (req, res) => {
  */
 exports.create = async (req, res) => {
     try {
-        const { supplierId, supplierName, supplierNit, notes, expectedDate, items } = req.body;
+        const { supplierId, supplierName, supplierNit, notes, expectedDate, items, paymentMethod, creditDueDate } = req.body;
 
         if (!supplierId || !supplierName || !items?.length) {
             return res.status(400).json({ error: 'Faltan datos: proveedor y al menos 1 producto' });
@@ -107,6 +107,20 @@ exports.create = async (req, res) => {
         const seq = lastOrder ? parseInt(lastOrder.orderNumber.split('-')[2]) + 1 : 1;
         const orderNumber = `${prefix}-${String(seq).padStart(3, '0')}`;
 
+        // Resolve credit due date: use explicit value, or calculate from supplier paymentTermDays
+        let resolvedCreditDueDate = null;
+        const resolvedPaymentMethod = (paymentMethod || 'CONTADO').toUpperCase();
+        if (resolvedPaymentMethod === 'CREDITO') {
+            if (creditDueDate) {
+                resolvedCreditDueDate = new Date(creditDueDate);
+            } else {
+                // Auto-calculate from supplier paymentTermDays
+                const supplier = await prisma.supplier.findFirst({ where: { siigoId: supplierId } });
+                const days = supplier?.paymentTermDays || 30;
+                resolvedCreditDueDate = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+            }
+        }
+
         const order = await prisma.purchaseOrder.create({
             data: {
                 orderNumber,
@@ -117,6 +131,8 @@ exports.create = async (req, res) => {
                 expectedDate: expectedDate ? new Date(expectedDate) : null,
                 createdById: req.user.id,
                 status: 'PENDING_APPROVAL',
+                paymentMethod: resolvedPaymentMethod,
+                creditDueDate: resolvedCreditDueDate,
                 items: {
                     create: items.map(item => ({
                         siigoProductCode: item.siigoProductCode,
@@ -130,7 +146,7 @@ exports.create = async (req, res) => {
             include: { items: true }
         });
 
-        logger.info(`📋 OC creada: ${orderNumber} por ${req.user.name}`);
+        logger.info(`📋 OC creada: ${orderNumber} (${resolvedPaymentMethod}) por ${req.user.name}`);
         res.status(201).json(order);
     } catch (error) {
         logger.error('Error creating purchase order:', error.message);
@@ -200,6 +216,9 @@ exports.sendToCartera = async (req, res) => {
         if (order.status !== 'SENT') {
             return res.status(400).json({ error: 'La OC debe estar en estado "Enviada" para pasar a Cartera' });
         }
+        if (order.paymentMethod === 'CREDITO') {
+            return res.status(400).json({ error: 'Las OC a crédito no pasan por Cartera antes de recepción. La mercancía se recibe directamente.' });
+        }
 
         const quotations = order.quotationUrls || [];
         if (!Array.isArray(quotations) || quotations.length === 0) {
@@ -244,9 +263,13 @@ exports.registerPayment = async (req, res) => {
         const { itemCosts, paymentNotes } = req.body;
         const order = await prisma.purchaseOrder.findUnique({
             where: { id: req.params.id },
-            include: { items: true, supplier: { select: { ivaRate: true, reteFuenteRate: true } } }
+            include: { items: true, supplier: { select: { ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
         });
         if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+        // Block payment if supplier fiscal config not confirmed by accounting
+        if (!order.supplier?.fiscalConfigConfirmed) {
+            return res.status(400).json({ error: 'Contabilidad no ha configurado al proveedor. Vaya a Proveedores → Configuración Fiscal y confirme IVA/Retención antes de registrar el pago.' });
+        }
         if (!['SENT', 'PAYMENT_PENDING'].includes(order.status)) {
             return res.status(400).json({ error: `No se puede registrar pago en estado ${order.status}` });
         }
@@ -263,31 +286,31 @@ exports.registerPayment = async (req, res) => {
         const factor = 1 + (ivaRate / 100) - (reteRate / 100);
 
         // Build per-item audit data and update PO items
-        let totalPayAll = 0;
+        let subtotalAll = 0;
         const itemCostsAudit = {};
 
         if (itemCosts && typeof itemCosts === 'object') {
             for (const [itemId, costData] of Object.entries(itemCosts)) {
                 const item = order.items.find(i => i.id === itemId);
                 if (!item) continue;
-                const totalPay = typeof costData === 'object' ? (costData.totalPay || costData.unitCostPerKg || 0) : parseFloat(costData);
-                // Back-calculate subtotal (before taxes) then compute cost per kg
-                const subtotal = factor > 0 ? totalPay / factor : totalPay;
+                // totalPay from frontend is now the BASE price (sin IVA)
+                const basePay = typeof costData === 'object' ? (costData.totalPay || costData.unitCostPerKg || 0) : parseFloat(costData);
                 const kgs = item.quantityOrdered / 1000;
-                const unitCostPerKg = kgs > 0 ? Math.round(subtotal / kgs) : 0;
+                const unitCostPerKg = kgs > 0 ? Math.round(basePay / kgs) : 0;
                 await prisma.purchaseOrderItem.update({
                     where: { id: itemId },
                     data: { unitCost: unitCostPerKg }
                 });
-                totalPayAll += totalPay;
-                itemCostsAudit[itemId] = { totalPay, subtotal: Math.round(subtotal), unitCostPerKg, productName: item.siigoProductName, quantityG: item.quantityOrdered };
+                subtotalAll += basePay;
+                itemCostsAudit[itemId] = { totalPay: basePay, subtotal: Math.round(basePay), unitCostPerKg, productName: item.siigoProductName, quantityG: item.quantityOrdered };
             }
         }
 
-        // Calculate audit totals
-        const paymentSubtotal = factor > 0 ? totalPayAll / factor : totalPayAll;
+        // Forward-calculate total from base (sin IVA)
+        const paymentSubtotal = subtotalAll;
         const paymentIvaAmount = paymentSubtotal * (ivaRate / 100);
         const paymentReteAmount = paymentSubtotal * (reteRate / 100);
+        const paymentTotal = paymentSubtotal + paymentIvaAmount - paymentReteAmount;
 
         // Update PO status to PAID with full audit data
         const updated = await prisma.purchaseOrder.update({
@@ -300,7 +323,7 @@ exports.registerPayment = async (req, res) => {
                 paymentSubtotal: Math.round(paymentSubtotal),
                 paymentIvaAmount: Math.round(paymentIvaAmount),
                 paymentReteAmount: Math.round(paymentReteAmount),
-                paymentTotal: Math.round(totalPayAll),
+                paymentTotal: Math.round(paymentTotal),
                 paymentIvaRate: ivaRate,
                 paymentReteRate: reteRate,
                 paymentItemCosts: itemCostsAudit
@@ -308,11 +331,99 @@ exports.registerPayment = async (req, res) => {
             include: { items: true }
         });
 
-        logger.info(`💳 OC ${order.orderNumber} pagada por ${req.user.name} — Total: $${Math.round(totalPayAll).toLocaleString()}`);
+        logger.info(`💳 OC ${order.orderNumber} pagada por ${req.user.name} — Total: $${Math.round(paymentTotal).toLocaleString()}`);
         res.json(updated);
     } catch (error) {
         logger.error('Error registering payment:', error.message);
         res.status(500).json({ error: 'Error registrando pago' });
+    }
+};
+
+/**
+ * PUT /procurement/purchase-orders/:id/credit-payment — Register deferred credit payment
+ */
+exports.registerCreditPayment = async (req, res) => {
+    try {
+        const { itemCosts, paymentNotes } = req.body;
+        const order = await prisma.purchaseOrder.findUnique({
+            where: { id: req.params.id },
+            include: { items: true, supplier: { select: { ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
+        });
+        if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+        // Block credit payment if supplier fiscal config not confirmed by accounting
+        if (!order.supplier?.fiscalConfigConfirmed) {
+            return res.status(400).json({ error: 'Contabilidad no ha configurado al proveedor. Vaya a Proveedores → Configuración Fiscal y confirme IVA/Retención antes de registrar el pago.' });
+        }
+        if (order.paymentMethod !== 'CREDITO') {
+            return res.status(400).json({ error: 'Solo OCs a crédito pueden usar pago diferido' });
+        }
+        if (order.creditPaid) {
+            return res.status(400).json({ error: 'Esta OC ya fue pagada' });
+        }
+
+        // Require payment proof
+        const proofs = order.paymentProofUrls || [];
+        if (!Array.isArray(proofs) || proofs.length === 0) {
+            return res.status(400).json({ error: 'Debe subir al menos un comprobante de pago antes de registrar el pago' });
+        }
+
+        // Tax rates from supplier config
+        const ivaRate = order.supplier?.ivaRate || 0;
+        const reteRate = order.supplier?.reteFuenteRate || 0;
+        const factor = 1 + (ivaRate / 100) - (reteRate / 100);
+
+        // Build per-item audit data
+        let subtotalAll = 0;
+        const itemCostsAudit = {};
+
+        if (itemCosts && typeof itemCosts === 'object') {
+            for (const [itemId, costData] of Object.entries(itemCosts)) {
+                const item = order.items.find(i => i.id === itemId);
+                if (!item) continue;
+                // totalPay from frontend is now the BASE price (sin IVA)
+                const basePay = typeof costData === 'object' ? (costData.totalPay || costData.unitCostPerKg || 0) : parseFloat(costData);
+                const kgs = item.quantityOrdered / 1000;
+                const unitCostPerKg = kgs > 0 ? Math.round(basePay / kgs) : 0;
+                await prisma.purchaseOrderItem.update({
+                    where: { id: itemId },
+                    data: { unitCost: unitCostPerKg }
+                });
+                subtotalAll += basePay;
+                itemCostsAudit[itemId] = { totalPay: basePay, subtotal: Math.round(basePay), unitCostPerKg, productName: item.siigoProductName, quantityG: item.quantityOrdered };
+            }
+        }
+
+        // Forward-calculate total from base (sin IVA)
+        const paymentSubtotal = subtotalAll;
+        const paymentIvaAmount = paymentSubtotal * (ivaRate / 100);
+        const paymentReteAmount = paymentSubtotal * (reteRate / 100);
+        const paymentTotal = paymentSubtotal + paymentIvaAmount - paymentReteAmount;
+
+        // Mark credit as paid (does NOT change OC status)
+        const updated = await prisma.purchaseOrder.update({
+            where: { id: req.params.id },
+            data: {
+                creditPaid: true,
+                creditPaidAt: new Date(),
+                paidById: req.user.id,
+                paidAt: new Date(),
+                paymentNotes: paymentNotes || null,
+                paymentSubtotal: Math.round(paymentSubtotal),
+                paymentIvaAmount: Math.round(paymentIvaAmount),
+                paymentReteAmount: Math.round(paymentReteAmount),
+                paymentTotal: Math.round(paymentTotal),
+                paymentIvaRate: ivaRate,
+                paymentReteRate: reteRate,
+                paymentItemCosts: itemCostsAudit
+            },
+            include: { items: true }
+        });
+
+        logger.info(`💳 OC ${order.orderNumber} — crédito pagado por ${req.user.name} — Total: $${Math.round(paymentTotal).toLocaleString()}`);
+        res.json(updated);
+    } catch (error) {
+        logger.error('Error registering credit payment:', error.message);
+        res.status(500).json({ error: 'Error registrando pago de crédito' });
     }
 };
 

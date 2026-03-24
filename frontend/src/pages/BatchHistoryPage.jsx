@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, ChevronLeft, ChevronRight, Filter, X, Clock, User, Package, FlaskConical, AlertTriangle, CheckCircle2, Circle, ArrowLeft, Layers, BarChart2, Calendar } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, Filter, X, Clock, User, Package, FlaskConical, AlertTriangle, CheckCircle2, Circle, ArrowLeft, Layers, BarChart2, Calendar, Printer } from 'lucide-react';
 
 const API = (import.meta.env.VITE_API_URL || '').replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api';
 
@@ -99,6 +99,291 @@ const BatchHistoryPage = () => {
         }
     };
 
+    // ── Print Audit Sheet ──
+    const handlePrintAudit = () => {
+        if (!detail) return;
+        const d = detail;
+        const now = new Date().toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' });
+
+        const stagesHtml = (d.timeline || []).map((s, idx) => {
+            const ingredientsRows = (s.ingredients || []).map(ing => `
+                <tr>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${ing.name}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right">${fmt(ing.plannedQuantity)} ${ing.unit}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right;font-weight:bold">${ing.actualQuantity ? `${fmt(ing.actualQuantity)} ${ing.unit}` : '—'}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${ing.lotNumber || '—'}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:center">${
+                        ing.actualQuantity && ing.plannedQuantity
+                            ? `${(((ing.actualQuantity - ing.plannedQuantity) / ing.plannedQuantity) * 100).toFixed(1)}%`
+                            : '—'
+                    }</td>
+                </tr>
+            `).join('');
+
+            const lotsRows = (s.lotConsumptions || []).map(lc => `
+                <tr>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${lc.product}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${lc.lotNumber}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right;font-weight:bold">${fmt(lc.quantityUsed)} g</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${lc.expiresAt ? fmtDate(lc.expiresAt) : '—'}</td>
+                </tr>
+            `).join('');
+
+            const pvRows = (s.processVariables || []).map(pv => `
+                <span style="display:inline-block;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:2px 8px;margin:2px;font-size:10px;font-weight:bold;color:#4338ca">${pv.name}: ${pv.value} ${pv.unit || ''}</span>
+            `).join('');
+
+            const qcRows = (s.qualityChecks || []).map(qc => `
+                <tr>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${qc.parameterName}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:center;font-weight:bold">${qc.value} ${qc.unit || ''}</td>
+                    <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:center">${qc.passed ? '✅ PASA' : '❌ NO PASA'}</td>
+                </tr>
+            `).join('');
+
+            // Empaque / Conteo data
+            let empaqueHtml = '';
+            if (s.processType === 'EMPAQUE' && s.processParameters?.empaque) {
+                const emp = s.processParameters.empaque;
+                empaqueHtml = `
+                    <div style="margin-top:6px;display:flex;gap:12px">
+                        <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:6px 12px;text-align:center;flex:1">
+                            <div style="font-size:10px;color:#6b7280">Conteo</div><div style="font-size:16px;font-weight:900;color:#059669">${fmt(emp.conteo_qty)}</div>
+                        </div>
+                        <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:6px 12px;text-align:center;flex:1">
+                            <div style="font-size:10px;color:#6b7280">Defectuosos</div><div style="font-size:16px;font-weight:900;color:#e11d48">${fmt(emp.defective)}</div>
+                        </div>
+                        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:6px 12px;text-align:center;flex:1">
+                            <div style="font-size:10px;color:#6b7280">Aprobados</div><div style="font-size:16px;font-weight:900;color:#2563eb">${fmt(emp.approved)}</div>
+                        </div>
+                    </div>
+                `;
+            }
+            if (s.processType === 'CONTEO' && s.processParameters?.conteo) {
+                const rows = Object.entries(s.processParameters.conteo).map(([name, data]) => `
+                    <tr>
+                        <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${name}</td>
+                        <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right">${fmt(data.planned)}</td>
+                        <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right;font-weight:bold">${fmt(data.actual)}</td>
+                    </tr>
+                `).join('');
+                empaqueHtml = `
+                    <div style="margin-top:6px">
+                        <div style="font-size:10px;font-weight:bold;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Conteo por Referencia</div>
+                        <table style="width:100%;border-collapse:collapse">
+                            <thead><tr style="background:#ecfeff">
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Producto</th>
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Plan</th>
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Real</th>
+                            </tr></thead><tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                `;
+            }
+
+            return `
+                <div style="border:1px solid #e5e7eb;border-radius:8px;margin-bottom:12px;overflow:hidden;page-break-inside:avoid">
+                    <div style="background:#f8fafc;padding:8px 12px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center">
+                        <div>
+                            <span style="font-size:11px;font-weight:900;color:#94a3b8;margin-right:8px">${s.stageOrder}.</span>
+                            <span style="font-size:13px;font-weight:800;color:#1e293b">${s.stageName}</span>
+                            <span style="font-size:11px;color:#64748b;margin-left:8px">${s.processTypeName || ''}</span>
+                        </div>
+                        <div style="display:flex;gap:12px;font-size:10px;color:#64748b">
+                            ${s.operator ? `<span>👤 ${s.operator}</span>` : ''}
+                            ${s.durationMinutes != null ? `<span>⏱ ${fmtDuration(s.durationMinutes)}</span>` : ''}
+                            <span style="font-size:10px;font-weight:bold;padding:2px 8px;border-radius:10px;${s.status === 'COMPLETED' ? 'background:#dcfce7;color:#16a34a' : s.status === 'EXECUTING' ? 'background:#dbeafe;color:#2563eb' : 'background:#f1f5f9;color:#64748b'}">${s.status}</span>
+                        </div>
+                    </div>
+                    <div style="padding:10px 12px">
+                        <div style="display:flex;gap:16px;font-size:10px;color:#64748b;margin-bottom:8px">
+                            ${s.startedAt ? `<span>📍 Inicio: <strong>${fmtDateTime(s.startedAt)}</strong></span>` : ''}
+                            ${s.completedAt ? `<span>🏁 Fin: <strong>${fmtDateTime(s.completedAt)}</strong></span>` : ''}
+                            ${s.targetQuantity > 0 ? `<span>🎯 Meta: <strong>${fmt(s.targetQuantity)}</strong></span>` : ''}
+                            ${s.actualQuantity > 0 ? `<span>✅ Real: <strong>${fmt(s.actualQuantity)}</strong></span>` : ''}
+                        </div>
+                        ${ingredientsRows ? `
+                            <div style="font-size:10px;font-weight:bold;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Ingredientes</div>
+                            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+                                <thead><tr style="background:#f5f3ff">
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Material</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Planificado</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Real</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Lote</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:center">Desv.</th>
+                                </tr></thead><tbody>${ingredientsRows}</tbody>
+                            </table>
+                        ` : ''}
+                        ${lotsRows ? `
+                            <div style="font-size:10px;font-weight:bold;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Consumo de Lotes</div>
+                            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+                                <thead><tr style="background:#fffbeb">
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Producto</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Lote</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Consumido</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Vence</th>
+                                </tr></thead><tbody>${lotsRows}</tbody>
+                            </table>
+                        ` : ''}
+                        ${pvRows ? `<div style="font-size:10px;font-weight:bold;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Variables de Proceso</div><div style="margin-bottom:8px">${pvRows}</div>` : ''}
+                        ${qcRows ? `
+                            <div style="font-size:10px;font-weight:bold;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Control de Calidad</div>
+                            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+                                <thead><tr style="background:#f0fdf4">
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Parámetro</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:center">Valor</th>
+                                    <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:center">Resultado</th>
+                                </tr></thead><tbody>${qcRows}</tbody>
+                            </table>
+                        ` : ''}
+                        ${empaqueHtml}
+                        ${s.observations ? `<div style="font-size:11px;color:#475569;background:#f8fafc;padding:6px 10px;border-radius:6px;border:1px solid #e2e8f0;margin-top:6px">💬 ${s.observations}</div>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Output targets
+        const outputTargetsHtml = (d.outputTargets || []).map(t => `
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;flex:1">
+                <div style="font-weight:bold;font-size:12px;color:#334155">${t.product}</div>
+                <div style="font-size:11px;color:#64748b">${t.plannedUnits > 0 ? `${fmt(t.plannedUnits)} uds` : ''}${t.plannedWeightKg > 0 ? ` · ${fmt(t.plannedWeightKg, 1)} kg` : ''}</div>
+            </div>
+        `).join('');
+
+        // Production lots
+        const prodLotsHtml = (d.productionLots || []).map(lot => `
+            <tr>
+                <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${lot.product}</td>
+                <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;font-family:monospace;font-weight:bold">${lot.lotNumber}</td>
+                <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px;text-align:right;font-weight:bold;color:#059669">${fmt(lot.initialQuantity)} g</td>
+                <td style="padding:4px 8px;border:1px solid #d1d5db;font-size:11px">${lot.expiresAt ? fmtDate(lot.expiresAt) : '—'}</td>
+            </tr>
+        `).join('');
+
+        const printWindow = window.open('', '_blank');
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Auditoría Lote ${d.batchNumber}</title>
+                <style>
+                    @page { size: A4; margin: 12mm 15mm; }
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body { font-family: -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #1e293b; font-size: 12px; line-height: 1.4; }
+                    @media print {
+                        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                    }
+                </style>
+            </head>
+            <body>
+                <!-- Header -->
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #6366f1;padding-bottom:12px;margin-bottom:16px">
+                    <div>
+                        <div style="font-size:22px;font-weight:900;color:#6366f1;letter-spacing:-0.5px">LIQUIPOPS</div>
+                        <div style="font-size:10px;color:#94a3b8;margin-top:2px">Sistema de Gestión de Producción</div>
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-size:16px;font-weight:900;color:#1e293b">HOJA DE AUDITORÍA DE LOTE</div>
+                        <div style="font-size:10px;color:#94a3b8">Impreso: ${now}</div>
+                    </div>
+                </div>
+
+                <!-- Batch Summary -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                        <div style="font-size:18px;font-weight:900;color:#1e293b">${d.batchNumber}</div>
+                        <span style="font-size:11px;font-weight:bold;padding:4px 12px;border-radius:12px;${d.status === 'COMPLETED' ? 'background:#dcfce7;color:#16a34a' : 'background:#fef3c7;color:#d97706'}">${d.status}</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;font-size:11px">
+                        <div><span style="color:#64748b">Producto:</span><br/><strong>${d.product || '—'}</strong></div>
+                        <div><span style="color:#64748b">Sabor:</span><br/><strong>${d.flavor || '—'}</strong></div>
+                        <div><span style="color:#64748b">Plantilla:</span><br/><strong>${d.template || '—'}</strong></div>
+                        <div><span style="color:#64748b">Duración:</span><br/><strong>${fmtDuration(d.durationMinutes)}</strong></div>
+                        <div><span style="color:#64748b">Creado:</span><br/><strong>${fmtDateTime(d.createdAt)}</strong></div>
+                        <div><span style="color:#64748b">Inicio:</span><br/><strong>${fmtDateTime(d.startedAt)}</strong></div>
+                        <div><span style="color:#64748b">Fin:</span><br/><strong>${fmtDateTime(d.completedAt)}</strong></div>
+                        <div><span style="color:#64748b">Etapas:</span><br/><strong>${d.kpis?.stagesCompleted ?? 0}/${d.kpis?.stagesTotal ?? 0}</strong></div>
+                    </div>
+                </div>
+
+                <!-- KPIs -->
+                <div style="display:flex;gap:8px;margin-bottom:16px">
+                    <div style="flex:1;text-align:center;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px">
+                        <div style="font-size:9px;font-weight:bold;color:#3b82f6;text-transform:uppercase">Producido</div>
+                        <div style="font-size:18px;font-weight:900;color:#1e40af">${fmt(d.actualOutput || d.expectedOutput)} g</div>
+                    </div>
+                    <div style="flex:1;text-align:center;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:8px">
+                        <div style="font-size:9px;font-weight:bold;color:#10b981;text-transform:uppercase">Uds Conteo</div>
+                        <div style="font-size:18px;font-weight:900;color:#047857">${fmt(d.kpis?.unitsActual)}</div>
+                    </div>
+                    <div style="flex:1;text-align:center;background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:8px">
+                        <div style="font-size:9px;font-weight:bold;color:#f43f5e;text-transform:uppercase">Defectuosas</div>
+                        <div style="font-size:18px;font-weight:900;color:#be123c">${fmt(d.kpis?.unitsDefective)}</div>
+                    </div>
+                    <div style="flex:1;text-align:center;background:${(d.kpis?.effectiveness ?? 0) >= 95 ? '#ecfdf5' : (d.kpis?.effectiveness ?? 0) >= 80 ? '#fffbeb' : '#fff1f2'};border:1px solid ${(d.kpis?.effectiveness ?? 0) >= 95 ? '#a7f3d0' : (d.kpis?.effectiveness ?? 0) >= 80 ? '#fde68a' : '#fecdd3'};border-radius:8px;padding:8px">
+                        <div style="font-size:9px;font-weight:bold;color:#6b7280;text-transform:uppercase">Efectividad</div>
+                        <div style="font-size:18px;font-weight:900;color:${(d.kpis?.effectiveness ?? 0) >= 95 ? '#047857' : (d.kpis?.effectiveness ?? 0) >= 80 ? '#d97706' : '#be123c'}">${d.kpis?.effectiveness != null ? `${d.kpis.effectiveness}%` : '—'}</div>
+                    </div>
+                </div>
+
+                ${outputTargetsHtml ? `
+                    <div style="margin-bottom:16px">
+                        <div style="font-size:11px;font-weight:bold;color:#64748b;text-transform:uppercase;margin-bottom:6px">Productos de Salida</div>
+                        <div style="display:flex;gap:8px">${outputTargetsHtml}</div>
+                    </div>
+                ` : ''}
+
+                <!-- Timeline -->
+                <div style="margin-bottom:16px">
+                    <div style="font-size:13px;font-weight:800;color:#334155;margin-bottom:10px;border-bottom:2px solid #e2e8f0;padding-bottom:6px">📋 DETALLE POR ETAPA</div>
+                    ${stagesHtml}
+                </div>
+
+                ${prodLotsHtml ? `
+                    <div style="margin-bottom:20px;page-break-inside:avoid">
+                        <div style="font-size:11px;font-weight:bold;color:#64748b;text-transform:uppercase;margin-bottom:6px">Lotes Producidos</div>
+                        <table style="width:100%;border-collapse:collapse">
+                            <thead><tr style="background:#ecfdf5">
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Producto</th>
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Lote</th>
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:right">Cantidad</th>
+                                <th style="padding:4px 8px;border:1px solid #d1d5db;font-size:10px;text-align:left">Vence</th>
+                            </tr></thead><tbody>${prodLotsHtml}</tbody>
+                        </table>
+                    </div>
+                ` : ''}
+
+                <!-- Signatures -->
+                <div style="display:flex;gap:40px;margin-top:32px;page-break-inside:avoid">
+                    <div style="flex:1;text-align:center">
+                        <div style="border-top:2px solid #1e293b;padding-top:8px;margin-top:48px">
+                            <div style="font-size:11px;font-weight:bold;color:#1e293b">Jefe de Producción</div>
+                            <div style="font-size:10px;color:#94a3b8">Firma / Fecha</div>
+                        </div>
+                    </div>
+                    <div style="flex:1;text-align:center">
+                        <div style="border-top:2px solid #1e293b;padding-top:8px;margin-top:48px">
+                            <div style="font-size:11px;font-weight:bold;color:#1e293b">Control de Calidad</div>
+                            <div style="font-size:10px;color:#94a3b8">Firma / Fecha</div>
+                        </div>
+                    </div>
+                    <div style="flex:1;text-align:center">
+                        <div style="border-top:2px solid #1e293b;padding-top:8px;margin-top:48px">
+                            <div style="font-size:11px;font-weight:bold;color:#1e293b">Director de Planta</div>
+                            <div style="font-size:10px;color:#94a3b8">Firma / Fecha</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="text-align:center;margin-top:20px;font-size:9px;color:#94a3b8">Documento generado automáticamente por GestionPBI — LIQUIPOPS S.A.S · ${now}</div>
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+        setTimeout(() => { printWindow.print(); }, 400);
+    };
+
     // ── DETAIL VIEW ──
     if (selectedBatch) {
         return (
@@ -110,6 +395,12 @@ const BatchHistoryPage = () => {
                             className="flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-800 transition-colors">
                             <ArrowLeft size={18} /> Volver
                         </button>
+                        {detail && (
+                            <button onClick={handlePrintAudit}
+                                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 transition-all shadow-md">
+                                <Printer size={16} /> Imprimir Auditoría
+                            </button>
+                        )}
                         {detail && (
                             <div className="flex-1 flex items-center justify-between">
                                 <div>
@@ -430,6 +721,7 @@ const InfoItem = ({ label, value }) => (
 
 const TimelineCard = ({ stage, index }) => {
     const [expanded, setExpanded] = useState(index < 3); // auto-expand first 3
+    const [lightbox, setLightbox] = useState(null); // { url, label }
 
     return (
         <div className="relative">
@@ -481,7 +773,7 @@ const TimelineCard = ({ stage, index }) => {
                                             <div>
                                                 <span className="font-semibold text-slate-700">{ing.name}</span>
                                                 {ing.lotNumber && (
-                                                    <span className="ml-2 text-slate-400 font-mono text-[10px]">{ing.lotNumber}</span>
+                                                    <span className="ml-2 font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-violet-100 text-violet-700 border border-violet-200">{ing.lotNumber}</span>
                                                 )}
                                             </div>
                                             <div className="text-right">
@@ -505,14 +797,14 @@ const TimelineCard = ({ stage, index }) => {
                                         <div key={i} className="flex justify-between items-center bg-amber-50/50 rounded-lg px-3 py-2 border border-amber-100 text-xs">
                                             <div>
                                                 <span className="font-semibold text-slate-700">{lc.product}</span>
-                                                <span className="ml-2 font-mono text-slate-400 text-[10px]">{lc.lotNumber}</span>
+                                                <span className="ml-2 font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-violet-100 text-violet-700 border border-violet-200">{lc.lotNumber}</span>
                                                 {lc.expiresAt && (
                                                     <span className={`ml-2 text-[10px] ${new Date(lc.expiresAt) < new Date() ? 'text-red-500 font-bold' : 'text-slate-400'}`}>
                                                         Vence: {fmtDate(lc.expiresAt)}
                                                     </span>
                                                 )}
                                             </div>
-                                            <span className="font-bold text-amber-700">{fmt(lc.quantityUsed)} g</span>
+                                            <span className="font-bold text-amber-700">{fmt(lc.quantityUsed)} {['gramo','gramos','g','kg'].includes((lc.unit || 'gramo').toLowerCase()) ? 'g' : (lc.unit || 'g')}</span>
                                         </div>
                                     ))}
                                 </div>
@@ -592,9 +884,75 @@ const TimelineCard = ({ stage, index }) => {
                                 💬 {stage.observations}
                             </div>
                         )}
+
+                        {/* Temperature Validation */}
+                        {(stage.temperature || stage.targetTemperature) && (
+                            <div className="bg-orange-50 rounded-lg p-3 border border-orange-200">
+                                <div className="text-xs font-bold text-orange-600 uppercase mb-2">🌡️ Control de Temperatura</div>
+                                <div className="flex flex-wrap gap-4 text-sm">
+                                    {stage.targetTemperature && (
+                                        <div>
+                                            <span className="text-xs text-slate-400">Meta: </span>
+                                            <span className="font-bold text-orange-700">{stage.targetTemperature}°C</span>
+                                        </div>
+                                    )}
+                                    {stage.temperature && (
+                                        <div>
+                                            <span className="text-xs text-slate-400">Real: </span>
+                                            <span className={`font-bold ${stage.temperature >= (stage.targetTemperature || 0) ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                {stage.temperature}°C
+                                            </span>
+                                        </div>
+                                    )}
+                                    {stage.timerCompleted != null && (
+                                        <div>
+                                            <span className="text-xs text-slate-400">Cronómetro: </span>
+                                            <span className={`font-bold ${stage.timerCompleted ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                {stage.timerCompleted ? '✅ Completado' : '❌ No completado'}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Photo Evidence */}
+                        {stage.photos?.length > 0 && (
+                            <div>
+                                <div className="text-xs font-bold text-slate-400 uppercase mb-1.5">📸 Evidencia Fotográfica</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {stage.photos.map((photo, i) => (
+                                        <button key={i} onClick={() => setLightbox(photo)}
+                                            className="relative group cursor-pointer">
+                                            <img src={photo.url} alt={photo.label}
+                                                className="w-20 h-20 object-cover rounded-lg border-2 border-slate-200 group-hover:border-blue-400 transition-colors" />
+                                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] text-center py-0.5 rounded-b-lg">
+                                                {photo.label}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
+            {/* Lightbox modal */}
+            {lightbox && (
+                <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+                    onClick={() => setLightbox(null)}>
+                    <div className="relative max-w-3xl max-h-[90vh] animate-in zoom-in-95 duration-200"
+                        onClick={e => e.stopPropagation()}>
+                        <img src={lightbox.url} alt={lightbox.label}
+                            className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl" />
+                        <div className="text-center mt-2 text-white text-sm font-bold">{lightbox.label}</div>
+                        <button onClick={() => setLightbox(null)}
+                            className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center text-slate-600 hover:bg-red-50 hover:text-red-600 transition-colors">
+                            ✕
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
 import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { parseScanInput } from '../services/scannerParser';
 
 const API_URL = `${import.meta.env.VITE_API_URL}/api` || '/api';
 const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}` });
@@ -29,10 +30,21 @@ export default function OrderManagement() {
     const [invoiceFiles, setInvoiceFiles] = useState({ invoicePdf: null, accountStatement: null, invoiceNumber: '' });
     const [manualLot, setManualLot] = useState('');
     const [scanBuffer, setScanBuffer] = useState('');
+    const [lastScan, setLastScan] = useState(null); // {productName, lotNumber, status, timestamp}
+    const [unitPickPopup, setUnitPickPopup] = useState(null); // {itemId, product, qty, lot, availableLots}
     const [selectedItemId, setSelectedItemId] = useState(null);
     const [expandedOrderId, setExpandedOrderId] = useState(null);
     const scanTimeout = useRef(null);
     const queryClient = useQueryClient();
+
+    // Excel upload
+    const [excelModal, setExcelModal] = useState(false);
+    const [excelFile, setExcelFile] = useState(null);
+    const [excelDistributor, setExcelDistributor] = useState('');
+    const [excelPreview, setExcelPreview] = useState(null);
+    const [excelLoading, setExcelLoading] = useState(false);
+    const [distributors, setDistributors] = useState([]);
+    const [confirmSkipModal, setConfirmSkipModal] = useState(false);
 
     const { data: orders, isLoading } = useQuery({
         queryKey: ['admin-orders', statusFilter],
@@ -55,14 +67,14 @@ export default function OrderManagement() {
 
     // ─── Mutations ───────────────────────────────────────────────
     const approveMutation = useMutation({
-        mutationFn: async (orderId) => {
-            const response = await axios.post(`${API_URL}/orders/${orderId}/approve`, {}, { headers: AUTH() });
+        mutationFn: async ({ orderId, skipInsufficient }) => {
+            const response = await axios.post(`${API_URL}/orders/${orderId}/approve`, { skipInsufficient }, { headers: AUTH() });
             return response.data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries(['admin-orders']);
+            queryClient.invalidateQueries(['order-counts']);
             setSelectedOrder(null);
-            alert('✅ Pedido aprobado — ahora disponible para alistamiento');
         },
         onError: (error) => alert(error.response?.data?.error || 'Error al aprobar')
     });
@@ -111,8 +123,13 @@ export default function OrderManagement() {
             }));
             setManualLot('');
             loadPickingProgress(pickingOrder?.id);
+            // Flash success
+            setLastScan(prev => prev ? { ...prev, status: 'success' } : null);
+            setTimeout(() => setLastScan(prev => prev?.status === 'success' ? null : prev), 3000);
         },
-        onError: (error) => alert(error.response?.data?.error || 'Error al escanear')
+        onError: (error) => {
+            setLastScan(prev => prev ? { ...prev, status: 'error', message: error.response?.data?.error || 'Error al escanear' } : null);
+        }
     });
 
     const completePickingMutation = useMutation({
@@ -216,36 +233,6 @@ export default function OrderManagement() {
         await loadPickingProgress(order.id);
     }, [loadPickingProgress]);
 
-    // ─── QR Scanner listener (pistol sends chars fast + Enter) ───
-    useEffect(() => {
-        if (!pickingOrder) return;
-
-        const handleKeyDown = (e) => {
-            // Ignore if focused on manual input
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-            if (e.key === 'Enter' && scanBuffer.length > 10) {
-                // Try to parse QR JSON
-                try {
-                    const qrData = JSON.parse(scanBuffer);
-                    if (qrData.productCode && qrData.lotNumber) {
-                        handleQrScan(qrData);
-                    }
-                } catch {
-                    console.warn('Invalid QR data:', scanBuffer);
-                }
-                setScanBuffer('');
-            } else if (e.key.length === 1) {
-                setScanBuffer(prev => prev + e.key);
-                clearTimeout(scanTimeout.current);
-                scanTimeout.current = setTimeout(() => setScanBuffer(''), 300);
-            }
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [pickingOrder, scanBuffer, selectedItemId]);
-
     // ─── Handle QR Scan ──────────────────────────────────────────
     const handleQrScan = useCallback((qrData) => {
         if (!pickingOrder || !pickingProgress) return;
@@ -260,9 +247,13 @@ export default function OrderManagement() {
         const targetItemId = selectedItemId || matchedItem?.itemId;
 
         if (!targetItemId) {
-            alert(`⚠️ No se encontró un item para el código ${qrData.productCode}`);
+            setLastScan({ productName: qrData.productCode, lotNumber: qrData.lotNumber, status: 'error', message: 'Producto no encontrado en este pedido', timestamp: Date.now() });
             return;
         }
+
+        // Show scanning feedback
+        const matchedProduct = pickingOrder.items?.find(oi => oi.id === targetItemId)?.product;
+        setLastScan({ productName: matchedProduct?.name || qrData.productCode, lotNumber: qrData.lotNumber, status: 'scanning', timestamp: Date.now() });
 
         scanMutation.mutate({
             orderId: pickingOrder.id,
@@ -271,6 +262,99 @@ export default function OrderManagement() {
             scannedQty: qrData.unitsPerBox || 1
         });
     }, [pickingOrder, pickingProgress, selectedItemId, scanMutation]);
+
+    // ─── Scanner input ref (hidden auto-focus input captures all scanner reads) ───
+    const scannerInputRef = useRef(null);
+
+    // Auto-focus scanner input when picking modal opens
+    useEffect(() => {
+        if (!pickingOrder) return;
+        // Focus the hidden scanner input
+        const focusScanner = () => {
+            if (scannerInputRef.current && document.activeElement !== scannerInputRef.current
+                && document.activeElement?.dataset?.scannerIgnore !== 'true') {
+                scannerInputRef.current.focus();
+            }
+        };
+        focusScanner();
+        // Re-grab focus periodically (in case user clicks somewhere in the modal)
+        const interval = setInterval(focusScanner, 2000);
+        return () => clearInterval(interval);
+    }, [pickingOrder]);
+
+    // Handle scanner input (called on Enter in the hidden input)
+    const handleScannerInput = useCallback(async (rawValue) => {
+        if (!pickingOrder || !rawValue || rawValue.length < 4) return;
+
+        const scan = parseScanInput(rawValue);
+
+        // ── 1. QR JSON (full box scan from empaque) ──
+        if (scan.type === 'qr_json' && scan.sku && scan.lotNumber) {
+            handleQrScan({
+                productCode: scan.sku,
+                barcode: scan.barcode || scan.sku,
+                name: scan.name || '',
+                lotNumber: scan.lotNumber,
+                unitsPerBox: scan.unitsPerBox || 1,
+                expirationDate: scan.expirationDate || ''
+            });
+            return;
+        }
+
+        // ── 2. LOT:SKU (from thermal label QR) ──
+        if (scan.type === 'qr_lot_sku' && scan.sku) {
+            const matchedOrderItem = pickingOrder.items?.find(oi => oi.product?.sku === scan.sku);
+            const matchedIp = matchedOrderItem && pickingProgress?.itemsProgress?.find(ip => ip.itemId === matchedOrderItem.id && !ip.completed);
+
+            if (matchedOrderItem && matchedIp) {
+                // If we have a lot number from the QR, auto-fill it
+                if (scan.lotNumber) {
+                    handleQrScan({
+                        productCode: matchedOrderItem.product?.sku || scan.sku,
+                        barcode: matchedOrderItem.product?.barcode || scan.sku,
+                        name: matchedOrderItem.product?.name || '',
+                        lotNumber: scan.lotNumber,
+                        unitsPerBox: matchedOrderItem.product?.packSize || 1,
+                        expirationDate: ''
+                    });
+                } else {
+                    setUnitPickPopup({
+                        itemId: matchedOrderItem.id,
+                        product: matchedOrderItem.product,
+                        qty: 1,
+                        lot: ''
+                    });
+                    setLastScan({ productName: matchedOrderItem.product?.name, status: 'scanning', message: 'QR detectado — ingresa lote y cantidad', timestamp: Date.now() });
+                }
+            } else if (matchedOrderItem) {
+                setLastScan({ productName: matchedOrderItem.product?.name || scan.sku, status: 'success', message: 'Ya completado', timestamp: Date.now() });
+            } else {
+                setLastScan({ productName: scan.sku, status: 'error', message: `SKU ${scan.sku} no encontrado en este pedido`, timestamp: Date.now() });
+            }
+            return;
+        }
+
+        // ── 3. Plain barcode — match to product ──
+        const buffer = scan.raw;
+        const matchedOrderItem = pickingOrder.items?.find(oi => oi.product?.barcode === buffer);
+        const matchedIp = matchedOrderItem && pickingProgress?.itemsProgress?.find(ip => ip.itemId === matchedOrderItem.id && !ip.completed);
+
+        if (matchedOrderItem && matchedIp) {
+            // Fetch available lots from PT zone (non-blocking — if endpoint fails, fallback to manual)
+            const popup = { itemId: matchedOrderItem.id, product: matchedOrderItem.product, qty: 1, lot: '', availableLots: null };
+            setUnitPickPopup(popup);
+            setLastScan({ productName: matchedOrderItem.product?.name, status: 'scanning', message: 'Código de barras detectado — selecciona lote', timestamp: Date.now() });
+            try {
+                const res = await axios.get(`${API_URL}/finished-lots/available-lots/${matchedOrderItem.product?.id}`, { headers: AUTH() });
+                const lots = res.data?.lots || [];
+                setUnitPickPopup(prev => prev ? { ...prev, availableLots: lots, lot: lots.length === 1 ? lots[0].lotNumber : '' } : null);
+            } catch { /* No lots registered yet — manual entry */ }
+        } else if (matchedOrderItem) {
+            setLastScan({ productName: matchedOrderItem.product?.name || buffer, status: 'success', message: 'Ya completado', timestamp: Date.now() });
+        } else {
+            setLastScan({ productName: buffer, status: 'error', message: 'Código de barras no encontrado en este pedido', timestamp: Date.now() });
+        }
+    }, [pickingOrder, pickingProgress, handleQrScan]);
 
     // ─── Handle Manual Lot Entry ─────────────────────────────────
     const handleManualLot = useCallback((orderItemId, product) => {
@@ -326,7 +410,27 @@ export default function OrderManagement() {
     return (
         <div className="min-h-screen bg-gray-50 p-6">
             <div className="max-w-7xl mx-auto">
-                <h1 className="text-3xl font-bold text-gray-900 mb-6">Gestión de Pedidos</h1>
+                <div className="flex justify-between items-center mb-6">
+                    <h1 className="text-3xl font-bold text-gray-900">Gestión de Pedidos</h1>
+                    {canManageOrders && (
+                        <button
+                            onClick={async () => {
+                                setExcelModal(true);
+                                setExcelFile(null);
+                                setExcelPreview(null);
+                                setExcelDistributor('');
+                                try {
+                                    const res = await axios.get(`${API_URL}/admin/users`, { headers: AUTH() });
+                                    setDistributors((res.data.data || res.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
+                                } catch(e) { console.error(e); }
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
+                        >
+                            <Upload className="w-4 h-4" />
+                            Cargar Excel
+                        </button>
+                    )}
+                </div>
 
                 {/* Status Filter */}
                 <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
@@ -780,7 +884,7 @@ export default function OrderManagement() {
 
                         {/* PENDING Actions */}
                         {selectedOrder.status === 'PENDING' && (
-                            <div className="flex justify-end gap-3 border-t pt-4">
+                            <div className="flex justify-end gap-3 border-t pt-4 flex-wrap">
                                 <button
                                     onClick={() => {
                                         const reason = prompt('Razón del rechazo:');
@@ -790,8 +894,20 @@ export default function OrderManagement() {
                                 >
                                     <XCircle className="w-4 h-4" /> Rechazar
                                 </button>
+                                {(() => {
+                                    const hasInsufficient = selectedOrder.items?.some(i => (i.product?.currentStock || 0) < i.requestedQty);
+                                    return hasInsufficient ? (
+                                        <button
+                                            onClick={() => setConfirmSkipModal(true)}
+                                            disabled={approveMutation.isPending}
+                                            className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600 disabled:bg-gray-400 font-medium text-sm"
+                                        >
+                                            <CheckCircle className="w-4 h-4" /> Aprobar sin faltantes
+                                        </button>
+                                    ) : null;
+                                })()}
                                 <button
-                                    onClick={() => approveMutation.mutate(selectedOrder.id)}
+                                    onClick={() => approveMutation.mutate({ orderId: selectedOrder.id })}
                                     disabled={approveMutation.isPending}
                                     className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 font-medium"
                                 >
@@ -1057,10 +1173,10 @@ export default function OrderManagement() {
 
             {/* ════════════════ PICKING MODAL ════════════════════════════════════ */}
             {pickingOrder && (
-                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-xl max-w-4xl w-full max-h-[95vh] overflow-y-auto">
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[95vh] flex flex-col shadow-2xl">
                         {/* Header */}
-                        <div className="sticky top-0 bg-gradient-to-r from-purple-600 to-indigo-600 p-5 rounded-t-xl z-10">
+                        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-5 rounded-t-2xl">
                             <div className="flex justify-between items-center text-white">
                                 <div>
                                     <h3 className="text-xl font-bold flex items-center gap-2">
@@ -1068,135 +1184,289 @@ export default function OrderManagement() {
                                         Separación: {pickingOrder.orderNumber}
                                     </h3>
                                     <p className="text-purple-200 text-sm mt-1">
-                                        Distribuidor: {pickingOrder.distributor?.name}
+                                        {pickingOrder.distributor?.name}
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    {/* Overall progress */}
                                     <div className="text-center">
                                         <div className="text-3xl font-black">
-                                            {pickingProgress?.pickingProgress || pickingOrder.pickingProgress || 0}%
+                                            {pickingProgress?.pickingProgress || 0}%
                                         </div>
-                                        <div className="w-32 h-3 bg-purple-400 bg-opacity-40 rounded-full overflow-hidden mt-1">
+                                        <div className="w-32 h-3 bg-white/20 rounded-full overflow-hidden mt-1">
                                             <div className="h-full bg-white rounded-full transition-all duration-500"
-                                                style={{ width: `${pickingProgress?.pickingProgress || pickingOrder.pickingProgress || 0}%` }}
+                                                style={{ width: `${pickingProgress?.pickingProgress || 0}%` }}
                                             />
                                         </div>
                                     </div>
-                                    <button onClick={() => { setPickingOrder(null); setPickingProgress(null); setSelectedItemId(null); }}
+                                    <button onClick={() => { setPickingOrder(null); setPickingProgress(null); setSelectedItemId(null); setLastScan(null); }}
                                         className="text-white hover:text-purple-200 text-3xl">&times;</button>
                                 </div>
                             </div>
                         </div>
 
-                        {/* Scanner hint */}
-                        <div className="bg-purple-50 border-b border-purple-200 px-5 py-3 flex items-center gap-3">
-                            <ScanLine className="w-5 h-5 text-purple-600 animate-pulse" />
-                            <span className="text-sm text-purple-700">
-                                <strong>Escáner QR activo</strong> — Apunta la pistola al código QR de la caja, o ingresa el lote manualmente abajo.
-                            </span>
+                        {/* ── HIDDEN SCANNER INPUT (always captures barcode gun reads) ── */}
+                        <input
+                            ref={scannerInputRef}
+                            type="text"
+                            style={{ position: 'absolute', left: '-9999px', opacity: 0 }}
+                            tabIndex={-1}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const val = e.target.value;
+                                    e.target.value = '';
+                                    handleScannerInput(val);
+                                    // Re-focus after a tick
+                                    setTimeout(() => scannerInputRef.current?.focus(), 50);
+                                }
+                            }}
+                            autoComplete="off"
+                        />
+
+                        {/* ── LIVE SCAN FEED ── */}
+                        <div className={`px-5 py-3 border-b transition-all duration-300 ${
+                            lastScan?.status === 'success' ? 'bg-green-50 border-green-200' :
+                            lastScan?.status === 'error' ? 'bg-red-50 border-red-200' :
+                            lastScan?.status === 'scanning' ? 'bg-blue-50 border-blue-200' :
+                            'bg-purple-50 border-purple-100'
+                        }`}>
+                            {lastScan ? (
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm ${
+                                        lastScan.status === 'success' ? 'bg-green-500 animate-bounce' :
+                                        lastScan.status === 'error' ? 'bg-red-500' :
+                                        'bg-blue-500 animate-pulse'
+                                    }`}>
+                                        {lastScan.status === 'success' ? '✓' : lastScan.status === 'error' ? '✗' : '⟳'}
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className={`text-sm font-bold ${
+                                            lastScan.status === 'success' ? 'text-green-800' :
+                                            lastScan.status === 'error' ? 'text-red-800' :
+                                            'text-blue-800'
+                                        }`}>
+                                            {lastScan.status === 'success' ? '✅ Escaneado' :
+                                             lastScan.status === 'error' ? '❌ Error' : '🔄 Procesando...'}
+                                        </p>
+                                        <p className="text-xs text-gray-600">
+                                            {lastScan.productName}
+                                            {lastScan.lotNumber && <span className="ml-2 text-gray-400">Lote: {lastScan.lotNumber}</span>}
+                                            {lastScan.message && <span className={`ml-2 ${lastScan.status === 'error' ? 'text-red-500' : 'text-blue-500'}`}>{lastScan.message}</span>}
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-3">
+                                    <ScanLine className="w-5 h-5 text-purple-600 animate-pulse" />
+                                    <span className="text-sm text-purple-700">
+                                        <strong>Listo para escanear</strong> — Apunta la pistola al QR de cada caja. No necesitas abrir cada item.
+                                    </span>
+                                </div>
+                            )}
                         </div>
 
-                        {/* Items List */}
-                        <div className="p-5 space-y-4">
-                            {pickingProgress?.itemsProgress?.map((ip) => {
+                        {/* ── Manual input (global, not per-item) ── */}
+                        <div className="px-5 py-2 bg-gray-50 border-b flex gap-2 items-center">
+                            <span className="text-xs text-gray-500 whitespace-nowrap">Lote manual:</span>
+                            <input
+                                type="text"
+                                data-scanner-ignore="true"
+                                value={manualLot}
+                                onChange={(e) => setManualLot(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && manualLot.trim()) {
+                                        e.preventDefault();
+                                        const firstIncomplete = pickingProgress?.itemsProgress?.find(ip => !ip.completed);
+                                        if (firstIncomplete) {
+                                            const product = pickingOrder.items?.find(oi => oi.id === firstIncomplete.itemId)?.product;
+                                            handleManualLot(firstIncomplete.itemId, product);
+                                        }
+                                    }
+                                }}
+                                className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:border-purple-500 outline-none"
+                                placeholder="Ingresa número de lote y presiona Enter..."
+                            />
+                        </div>
+
+                        {/* ── UNIT PICK POPUP (barcode scan — with lot selection) ── */}
+                        {unitPickPopup && (
+                            <div className="mx-4 mt-3 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-300 rounded-xl shadow-lg animate-in">
+                                <div className="flex items-center gap-3 mb-3">
+                                    <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white text-sm font-bold">📦</div>
+                                    <div className="flex-1">
+                                        <p className="font-bold text-blue-900 text-sm">{unitPickPopup.product?.name}</p>
+                                        <p className="text-xs text-blue-600">{unitPickPopup.product?.sku} — Selecciona lote y cantidad</p>
+                                    </div>
+                                    <button onClick={() => setUnitPickPopup(null)} className="text-gray-400 hover:text-gray-600 text-lg">&times;</button>
+                                </div>
+
+                                {/* Lot selection: cards if available, fallback to text input */}
+                                {unitPickPopup.availableLots && unitPickPopup.availableLots.length > 0 ? (
+                                    <div className="mb-3">
+                                        <label className="text-xs text-gray-600 font-medium mb-1 block">Lotes disponibles (Producto Terminado)</label>
+                                        <div className="space-y-1 max-h-32 overflow-y-auto">
+                                            {unitPickPopup.availableLots.map(lot => (
+                                                <button
+                                                    key={lot.id}
+                                                    onClick={() => setUnitPickPopup(p => ({ ...p, lot: lot.lotNumber }))}
+                                                    className={`w-full flex justify-between items-center px-3 py-2 rounded-lg border-2 text-sm transition-all ${
+                                                        unitPickPopup.lot === lot.lotNumber
+                                                            ? 'border-blue-500 bg-blue-100 text-blue-900 font-bold'
+                                                            : 'border-gray-200 bg-white hover:border-blue-300 text-gray-700'
+                                                    }`}
+                                                >
+                                                    <span className="font-mono">{lot.lotNumber}</span>
+                                                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${
+                                                        lot.currentQuantity > 20 ? 'bg-green-100 text-green-700' :
+                                                        lot.currentQuantity > 5 ? 'bg-yellow-100 text-yellow-700' :
+                                                        'bg-red-100 text-red-700'
+                                                    }`}>{lot.currentQuantity} uds</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="mb-3">
+                                        <label className="text-xs text-gray-600 font-medium">Número de lote {unitPickPopup.availableLots === null ? '' : <span className="text-orange-500">(sin stock registrado)</span>}</label>
+                                        <input
+                                            type="text"
+                                            data-scanner-ignore="true"
+                                            value={unitPickPopup.lot}
+                                            onChange={(e) => setUnitPickPopup(p => ({ ...p, lot: e.target.value }))}
+                                            className="w-full mt-1 px-3 py-2 border-2 border-blue-300 rounded-lg text-sm focus:border-blue-500 outline-none"
+                                            placeholder="Lote..."
+                                            autoFocus
+                                        />
+                                    </div>
+                                )}
+
+                                <div className="flex gap-3 items-end">
+                                    <div className="w-28">
+                                        <label className="text-xs text-gray-600 font-medium">Unidades</label>
+                                        <div className="flex items-center mt-1 border-2 border-blue-300 rounded-lg overflow-hidden">
+                                            <button
+                                                onClick={() => setUnitPickPopup(p => ({ ...p, qty: Math.max(1, p.qty - 1) }))}
+                                                className="px-2 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold"
+                                            >−</button>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                value={unitPickPopup.qty}
+                                                data-scanner-ignore="true"
+                                                onChange={(e) => setUnitPickPopup(p => ({ ...p, qty: Math.max(1, parseInt(e.target.value) || 1) }))}
+                                                className="w-full text-center py-2 text-sm font-bold outline-none"
+                                            />
+                                            <button
+                                                onClick={() => setUnitPickPopup(p => ({ ...p, qty: p.qty + 1 }))}
+                                                className="px-2 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold"
+                                            >+</button>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => {
+                                            if (!unitPickPopup.lot.trim()) { alert('Selecciona o ingresa un número de lote'); return; }
+                                            const qrData = {
+                                                productCode: unitPickPopup.product?.sku || '',
+                                                barcode: unitPickPopup.product?.barcode || '',
+                                                name: unitPickPopup.product?.name || '',
+                                                lotNumber: unitPickPopup.lot.trim(),
+                                                unitsPerBox: unitPickPopup.qty,
+                                                expirationDate: new Date(Date.now() + 270 * 86400000).toISOString().split('T')[0]
+                                            };
+                                            setLastScan({ productName: unitPickPopup.product?.name, lotNumber: unitPickPopup.lot, status: 'scanning', timestamp: Date.now() });
+                                            scanMutation.mutate({
+                                                orderId: pickingOrder.id,
+                                                orderItemId: unitPickPopup.itemId,
+                                                qrData,
+                                                scannedQty: unitPickPopup.qty
+                                            });
+                                            setUnitPickPopup(null);
+                                        }}
+                                        disabled={scanMutation.isPending || !unitPickPopup.lot.trim()}
+                                        className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 font-bold text-sm whitespace-nowrap"
+                                    >
+                                        ✓ Registrar
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ── ITEMS LIST (flat, no expand needed) ── */}
+                        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                            {pickingProgress?.itemsProgress
+                                ?.map((ip) => {
                                 const orderItem = pickingOrder.items?.find(oi => oi.id === ip.itemId);
                                 const product = orderItem?.product;
                                 const packSize = product?.packSize || 1;
-                                const requestedBoxes = Math.ceil(ip.requestedQty / packSize);
-                                const scannedBoxes = Math.ceil(ip.scannedQty / packSize);
-                                const isSelected = selectedItemId === ip.itemId;
+                                const requestedUnits = ip.requestedQty;
+                                const scannedUnits = ip.scannedQty;
+                                const remainingUnits = requestedUnits - scannedUnits;
+                                const requestedBoxes = packSize > 1 ? (requestedUnits / packSize).toFixed(1) : null;
+                                const scannedBoxes = packSize > 1 ? (scannedUnits / packSize).toFixed(1) : null;
+                                const isLastScanned = lastScan?.status === 'success' && product?.name === lastScan?.productName;
 
                                 return (
                                     <div key={ip.itemId}
-                                        className={`border-2 rounded-xl overflow-hidden transition-all ${ip.completed
-                                            ? 'border-green-300 bg-green-50'
-                                            : isSelected
-                                                ? 'border-purple-400 bg-purple-50 shadow-lg'
-                                                : 'border-gray-200 hover:border-purple-200'
+                                        className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all duration-500 ${
+                                            ip.completed
+                                                ? 'border-green-200 bg-green-50 opacity-60'
+                                                : isLastScanned
+                                                    ? 'border-green-400 bg-green-50 shadow-lg shadow-green-100 scale-[1.01]'
+                                                    : 'border-gray-100 bg-white hover:border-gray-200'
                                         }`}
                                     >
-                                        {/* Item header */}
-                                        <div className="flex justify-between items-center p-4 cursor-pointer"
-                                            onClick={() => setSelectedItemId(isSelected ? null : ip.itemId)}
-                                        >
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold ${ip.completed ? 'bg-green-500' : 'bg-purple-500'}`}>
-                                                    {ip.completed ? '✓' : <Box className="w-5 h-5" />}
-                                                </div>
-                                                <div>
-                                                    <div className="font-semibold text-gray-900">{ip.productName}</div>
-                                                    <div className="text-xs text-gray-500">{product?.sku}</div>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-4">
-                                                <div className="text-right">
-                                                    <div className="text-lg font-bold text-gray-900">
-                                                        {scannedBoxes} / {requestedBoxes} cajas
-                                                    </div>
-                                                    <div className="text-xs text-gray-500">
-                                                        {ip.scannedQty} / {ip.requestedQty} unidades
-                                                    </div>
-                                                </div>
-                                                <div className="w-16 h-3 bg-gray-200 rounded-full overflow-hidden">
-                                                    <div className={`h-full rounded-full transition-all ${ip.completed ? 'bg-green-500' : 'bg-purple-500'}`}
-                                                        style={{ width: `${ip.progress}%` }}
-                                                    />
-                                                </div>
-                                                {isSelected ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                                        {/* Status icon */}
+                                        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0 ${
+                                            ip.completed ? 'bg-green-500' :
+                                            isLastScanned ? 'bg-green-500 animate-pulse' :
+                                            'bg-gray-300'
+                                        }`}>
+                                            {ip.completed ? '✓' : scannedUnits > 0 ? scannedUnits : '·'}
+                                        </div>
+
+                                        {/* Product info */}
+                                        <div className="flex-1 min-w-0">
+                                            <div className="font-semibold text-gray-900 text-sm truncate">{ip.productName}</div>
+                                            <div className="flex items-center gap-2 mt-0.5">
+                                                <span className="text-xs text-gray-400">{product?.sku}</span>
+                                                {product?.barcode && (
+                                                    <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{product.barcode}</span>
+                                                )}
                                             </div>
                                         </div>
 
-                                        {/* Expanded: lot entry + scanned lots */}
-                                        {isSelected && !ip.completed && (
-                                            <div className="border-t border-purple-200 p-4 space-y-3">
-                                                {/* Manual lot entry */}
-                                                <div className="flex gap-2">
-                                                    <input
-                                                        type="text"
-                                                        value={manualLot}
-                                                        onChange={(e) => setManualLot(e.target.value)}
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter') {
-                                                                e.preventDefault();
-                                                                handleManualLot(ip.itemId, product);
-                                                            }
-                                                        }}
-                                                        className="flex-1 px-3 py-2 border-2 border-purple-300 rounded-lg focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none"
-                                                        placeholder="Ingresar número de lote manualmente..."
-                                                        autoFocus
-                                                    />
-                                                    <button
-                                                        onClick={() => handleManualLot(ip.itemId, product)}
-                                                        disabled={!manualLot.trim() || scanMutation.isPending}
-                                                        className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 font-medium"
-                                                    >
-                                                        {scanMutation.isPending ? '...' : '+ Agregar'}
-                                                    </button>
-                                                </div>
-
-                                                <p className="text-xs text-gray-500">
-                                                    💡 Cada lote ingresado registra {packSize} unidades (1 caja). Puedes mezclar lotes diferentes.
-                                                </p>
+                                        {/* Progress + remaining */}
+                                        <div className="text-right flex-shrink-0">
+                                            <div className="text-sm font-bold text-gray-900">
+                                                <span className={ip.completed ? 'text-green-600' : ''}>{scannedUnits}</span>
+                                                <span className="text-gray-400"> / {requestedUnits}</span>
+                                                <span className="text-xs text-gray-400 ml-1">uds</span>
                                             </div>
-                                        )}
+                                            {packSize > 1 && (
+                                                <div className="text-[10px] text-gray-400">({scannedBoxes}/{requestedBoxes} cajas)</div>
+                                            )}
+                                            {!ip.completed && remainingUnits > 0 && (
+                                                <div className="mt-0.5">
+                                                    <span className="text-xs font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Faltan {remainingUnits}</span>
+                                                </div>
+                                            )}
+                                        </div>
 
-                                        {/* Scanned lots list */}
-                                        {ip.pickingItems?.length > 0 && (isSelected || ip.completed) && (
-                                            <div className="border-t border-gray-100 px-4 py-3">
-                                                <div className="text-xs font-medium text-gray-500 mb-2">
-                                                    Lotes registrados ({ip.pickingItems.length}):
-                                                </div>
-                                                <div className="flex flex-wrap gap-2">
-                                                    {ip.pickingItems.map((pi, idx) => (
-                                                        <span key={idx}
-                                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 text-xs font-mono"
-                                                        >
-                                                            🏷️ {pi.lotNumber}
-                                                            <span className="text-gray-400">×{pi.scannedQty}</span>
-                                                        </span>
-                                                    ))}
-                                                </div>
+                                        {/* Mini progress bar */}
+                                        <div className="w-12 h-2 bg-gray-200 rounded-full overflow-hidden flex-shrink-0">
+                                            <div className={`h-full rounded-full transition-all duration-500 ${ip.completed ? 'bg-green-500' : 'bg-purple-500'}`}
+                                                style={{ width: `${ip.progress}%` }}
+                                            />
+                                        </div>
+
+                                        {/* Scanned lots chips (compact) */}
+                                        {ip.pickingItems?.length > 0 && (
+                                            <div className="hidden sm:flex gap-1 flex-shrink-0 max-w-[120px] overflow-hidden">
+                                                {ip.pickingItems.slice(-2).map((pi, idx) => (
+                                                    <span key={idx} className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-500 font-mono whitespace-nowrap">
+                                                        {pi.lotNumber}
+                                                    </span>
+                                                ))}
                                             </div>
                                         )}
                                     </div>
@@ -1205,7 +1475,7 @@ export default function OrderManagement() {
                         </div>
 
                         {/* Footer */}
-                        <div className="sticky bottom-0 bg-white border-t p-4 flex justify-between items-center rounded-b-xl">
+                        <div className="sticky bottom-0 bg-white border-t p-4 flex justify-between items-center rounded-b-2xl">
                             <div className="text-sm text-gray-500">
                                 {pickingProgress?.itemsCompleted || 0} de {pickingProgress?.itemsTotal || 0} items completados
                             </div>
@@ -1225,6 +1495,241 @@ export default function OrderManagement() {
                                 </button>
                             </div>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ════════════════ CONFIRM SKIP INSUFFICIENT MODAL ════════════════ */}
+            {confirmSkipModal && selectedOrder && (() => {
+                const insufficient = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) < i.requestedQty) || [];
+                const sufficient = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) >= i.requestedQty) || [];
+                return (
+                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
+                        <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
+                            {/* Header */}
+                            <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-5 text-white">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                                        <span className="text-xl">📋</span>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold">Aprobar sin faltantes</h3>
+                                        <p className="text-sm text-white/80">Pedido {selectedOrder.orderNumber}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="p-5 max-h-[50vh] overflow-y-auto">
+                                {/* Items to REMOVE */}
+                                <div className="mb-4">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                                        <p className="text-sm font-bold text-red-700">Se eliminarán ({insufficient.length})</p>
+                                    </div>
+                                    <div className="space-y-1">
+                                        {insufficient.map((item, idx) => (
+                                            <div key={idx} className="flex justify-between items-center px-3 py-2 bg-red-50 rounded-lg border border-red-100">
+                                                <span className="text-xs font-medium text-red-900 flex-1">{item.product?.name}</span>
+                                                <div className="flex gap-3 text-xs">
+                                                    <span className="text-red-600">Pedido: <b>{item.requestedQty}</b></span>
+                                                    <span className="text-red-500">Stock: <b>{item.product?.currentStock || 0}</b></span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Items to KEEP */}
+                                <div>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                        <p className="text-sm font-bold text-green-700">Se mantendrán ({sufficient.length})</p>
+                                    </div>
+                                    <div className="space-y-1">
+                                        {sufficient.slice(0, 5).map((item, idx) => (
+                                            <div key={idx} className="flex justify-between items-center px-3 py-2 bg-green-50 rounded-lg border border-green-100">
+                                                <span className="text-xs font-medium text-green-900 flex-1">{item.product?.name}</span>
+                                                <span className="text-xs text-green-600">Cant: <b>{item.requestedQty}</b></span>
+                                            </div>
+                                        ))}
+                                        {sufficient.length > 5 && (
+                                            <p className="text-xs text-gray-500 pl-3">... y {sufficient.length - 5} productos más</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Footer */}
+                            <div className="border-t px-5 py-4 bg-gray-50 flex justify-end gap-3">
+                                <button
+                                    onClick={() => setConfirmSkipModal(false)}
+                                    className="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-100 transition"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setConfirmSkipModal(false);
+                                        approveMutation.mutate({ orderId: selectedOrder.id, skipInsufficient: true });
+                                    }}
+                                    disabled={approveMutation.isPending}
+                                    className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl font-bold hover:from-amber-600 hover:to-orange-600 disabled:from-gray-400 disabled:to-gray-400 transition shadow-md"
+                                >
+                                    {approveMutation.isPending ? 'Aprobando...' : `✅ Aprobar ${sufficient.length} productos`}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ════════════════ EXCEL UPLOAD MODAL ════════════════════════ */}
+            {excelModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-xl max-w-3xl w-full p-6 max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold text-gray-900">📤 Cargar Pedido desde Excel</h3>
+                            <button onClick={() => setExcelModal(false)} className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+                        </div>
+
+                        {/* Step 1: Select distributor */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Distribuidor</label>
+                            <select
+                                value={excelDistributor}
+                                onChange={e => setExcelDistributor(e.target.value)}
+                                className="w-full p-2.5 border border-gray-300 rounded-lg text-sm"
+                            >
+                                <option value="">Seleccionar distribuidor...</option>
+                                {distributors.map(d => (
+                                    <option key={d.id} value={d.id}>{d.name} ({d.email})</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Step 2: File upload */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Archivo Excel (.xlsx)</label>
+                            <input
+                                type="file"
+                                accept=".xlsx,.xls"
+                                onChange={e => { setExcelFile(e.target.files[0]); setExcelPreview(null); }}
+                                className="w-full p-2 border border-gray-300 rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded-md file:border-0 file:bg-emerald-50 file:text-emerald-700 file:font-semibold"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">Col B = código de barras, Col G = cantidad a facturar</p>
+                        </div>
+
+                        {/* Preview button */}
+                        {excelFile && excelDistributor && !excelPreview && (
+                            <button
+                                onClick={async () => {
+                                    setExcelLoading(true);
+                                    try {
+                                        const fd = new FormData();
+                                        fd.append('file', excelFile);
+                                        fd.append('distributorId', excelDistributor);
+                                        const res = await axios.post(`${API_URL}/orders/upload-excel?preview=1`, fd, { headers: AUTH() });
+                                        setExcelPreview(res.data);
+                                    } catch(e) {
+                                        const errData = e.response?.data;
+                                        let msg = errData?.error || 'Error al procesar Excel';
+                                        if (errData?.warnings?.length) msg += '\n\nAdvertencias:\n' + errData.warnings.join('\n');
+                                        if (errData?.debug) msg += '\n\nDebug:\n' + JSON.stringify(errData.debug, null, 2);
+                                        alert(msg);
+                                    } finally { setExcelLoading(false); }
+                                }}
+                                disabled={excelLoading}
+                                className="w-full py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold disabled:bg-gray-400"
+                            >
+                                {excelLoading ? 'Procesando...' : '🔍 Vista Previa'}
+                            </button>
+                        )}
+
+                        {/* Preview table */}
+                        {excelPreview && (
+                            <>
+                                {excelPreview.warnings?.length > 0 && (
+                                    <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                                        <p className="text-sm font-semibold text-amber-800 mb-1">⚠️ Advertencias:</p>
+                                        {excelPreview.warnings.map((w, i) => (
+                                            <p key={i} className="text-xs text-amber-700">{w}</p>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div className="border rounded-lg overflow-hidden mb-4">
+                                    <table className="w-full text-sm">
+                                        <thead className="bg-gray-100">
+                                            <tr>
+                                                <th className="text-left px-3 py-2 font-medium">Producto</th>
+                                                <th className="text-center px-3 py-2 font-medium">SKU</th>
+                                                <th className="text-center px-3 py-2 font-medium">Cantidad</th>
+                                                <th className="text-center px-3 py-2 font-medium">Cajas</th>
+                                                <th className="text-center px-3 py-2 font-medium">Stock</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {excelPreview.items?.map((item, idx) => {
+                                                const boxes = Math.ceil(item.quantity / (item.packSize || 1));
+                                                const sufficient = item.currentStock >= item.quantity;
+                                                return (
+                                                    <tr key={idx} className={`border-t ${!sufficient ? 'bg-amber-50' : ''}`}>
+                                                        <td className="px-3 py-2 font-medium text-gray-900 text-xs">{item.name}</td>
+                                                        <td className="px-3 py-2 text-center text-xs text-gray-500">{item.sku}</td>
+                                                        <td className="px-3 py-2 text-center font-bold">{item.quantity}</td>
+                                                        <td className="px-3 py-2 text-center text-gray-600">{boxes}</td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            <span className={`font-semibold ${sufficient ? 'text-green-700' : 'text-amber-600'}`}>
+                                                                {item.currentStock}
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg mb-4">
+                                    <p className="text-sm text-emerald-800 font-semibold">
+                                        ✅ {excelPreview.items?.length} productos • {excelPreview.items?.reduce((s, i) => s + Math.ceil(i.quantity / (i.packSize || 1)), 0)} cajas total
+                                    </p>
+                                </div>
+
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => setExcelPreview(null)}
+                                        className="flex-1 py-2.5 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+                                    >
+                                        ← Cambiar archivo
+                                    </button>
+                                    <button
+                                        onClick={async () => {
+                                            setExcelLoading(true);
+                                            try {
+                                                const fd = new FormData();
+                                                fd.append('file', excelFile);
+                                                fd.append('distributorId', excelDistributor);
+                                                const res = await axios.post(`${API_URL}/orders/upload-excel`, fd, { headers: AUTH() });
+                                                if (res.data.success) {
+                                                    setExcelModal(false);
+                                                    setStatusFilter('PENDING');
+                                                    queryClient.invalidateQueries(['admin-orders']);
+                                                    queryClient.invalidateQueries(['order-counts']);
+                                                    alert(`✅ Pedido ${res.data.data.orderNumber} creado con ${res.data.data.items?.length} productos`);
+                                                }
+                                            } catch(e) {
+                                                alert(e.response?.data?.error || 'Error al crear pedido');
+                                            } finally { setExcelLoading(false); }
+                                        }}
+                                        disabled={excelLoading}
+                                        className="flex-1 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-bold disabled:bg-gray-400"
+                                    >
+                                        {excelLoading ? 'Creando...' : '✅ Crear Pedido'}
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             )}

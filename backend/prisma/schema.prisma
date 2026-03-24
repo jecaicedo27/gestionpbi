@@ -50,7 +50,9 @@ model User {
   recallLotCollections RecallLotCollection[]
 
   // Micro Analysis Relations
-  microSamples        MicroSample[]   @relation("MicroSampleTaker")
+  microSamples              MicroSample[]         @relation("MicroSampleTaker")
+  microScheduleEntries      MicroScheduleEntry[]  @relation("MicroScheduleEntryCreator")
+  microInternalLogs         MicroInternalLog[]    @relation("MicroInternalLogRecorder")
 
   // Assembly System Relations
   createdTemplates          AssemblyTemplate[]        @relation("TemplateCreator")
@@ -77,6 +79,12 @@ model User {
 
   // Cart Reservation
   cartReservations          CartReservation[]  @relation("CartDistributor")
+
+  // Finished Product Lot Tracking
+  finishedLotTransfers      FinishedLotTransfer[] @relation("FinishedLotTransferUser")
+
+  // Physical Inventory Count
+  physicalCounts            PhysicalCount[]       @relation("PhysicalCountUser")
   
   @@index([email])
   @@index([role, active])
@@ -179,6 +187,12 @@ model Product {
 
   // Cart Reservation
   cartReservations          CartReservation[]       @relation("CartProduct")
+
+  // Finished Product Lot Tracking
+  finishedLotStocks         FinishedLotStock[]      @relation("FinishedLotProduct")
+  finishedLotTransfers      FinishedLotTransfer[]   @relation("FinishedLotTransferProduct")
+  pendingBoxes              PendingBox[]            @relation("PendingBoxProduct")
+  physicalCountItems        PhysicalCountItem[]     @relation("PhysicalCountProduct")
   
   @@index([siigoId])
   @@index([barcode])
@@ -452,9 +466,11 @@ model ProductionBatch {
   qrCodes             QRCode[]
   outputTargets       BatchOutputTarget[]
   assemblyNotes       AssemblyNote[]
+  finishedLotStocks   FinishedLotStock[]     @relation("FinishedLotBatch")
   
   startedAt           DateTime?
   completedAt         DateTime?
+  expiresAt           DateTime?           // Fabrication + 9 months (INVIMA)
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   
@@ -1100,15 +1116,27 @@ model RpaExecution {
 model MicroSamplingPoint {
   id            String   @id @default(uuid())
   code          String   @unique // ALG-PRE, COMP, ESF-INY, etc.
+  zoneCode      String   @unique @map("zone_code")
   name          String   // Alginato Pre-Pasteurización
   description   String?
   processArea   String?  // Pasteurización, Esferificación, Materias Primas, Ambiente
   isEnvironmental Boolean @default(false)
+  zoneName      String?  @map("zone_name")
+  allowedLaboratoryProfiles Json? @default("[]") @map("allowed_laboratory_profiles")
+  allowedWorkContexts Json? @default("[]") @map("allowed_work_contexts")
+  allowedShifts Json? @default("[]") @map("allowed_shifts")
+  allowedWorkflowTypes Json? @default("[]") @map("allowed_workflow_types")
+  defaultLaboratoryProfile String? @map("default_laboratory_profile")
+  defaultWorkContext String? @map("default_work_context")
+  defaultShift  String?  @map("default_shift")
+  defaultWorkflowType String @default("EXTERNAL") @map("default_workflow_type")
+  defaultAssignedLab String? @map("default_assigned_lab")
   sortOrder     Int      @default(0)
   isActive      Boolean  @default(true)
   
   schedules     MicroSchedule[]
   samples       MicroSample[]
+  scheduleEntries MicroScheduleEntry[]
   
   createdAt     DateTime @default(now())
   
@@ -1146,6 +1174,41 @@ model MicroSchedule {
   @@map("micro_schedules")
 }
 
+model MicroScheduleEntry {
+  id                String             @id @default(uuid())
+  samplingPointId   String             @map("sampling_point_id")
+  samplingPoint     MicroSamplingPoint @relation(fields: [samplingPointId], references: [id], onDelete: Cascade)
+  plannedDate       DateTime           @map("planned_date")
+  plannedTime       String?            @map("planned_time")
+  shift             String
+  workContext       String             @map("work_context")
+  workflowType      String             @default("EXTERNAL") @map("workflow_type")
+  laboratoryProfile String             @map("laboratory_profile")
+  assignedLab       String?            @map("assigned_lab")
+  zoneName          String?            @map("zone_name")
+  requestedParameterIds Json           @default("[]") @map("requested_parameter_ids")
+  notes             String?
+  status            String             @default("PLANNED")
+  statusReason      String?            @map("status_reason")
+  statusHistory     Json               @default("[]") @map("status_history")
+  rescheduledFromId String?            @map("rescheduled_from_id")
+  rescheduledFrom   MicroScheduleEntry? @relation("MicroScheduleEntryReschedule", fields: [rescheduledFromId], references: [id], onDelete: SetNull)
+  rescheduledEntries MicroScheduleEntry[] @relation("MicroScheduleEntryReschedule")
+  sampleId          String?            @unique @map("sample_id")
+  sample            MicroSample?       @relation("MicroSampleScheduleEntry", fields: [sampleId], references: [id], onDelete: SetNull)
+  createdById       String?            @map("created_by_id")
+  createdBy         User?              @relation("MicroScheduleEntryCreator", fields: [createdById], references: [id])
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  @@unique([samplingPointId, plannedDate, shift, workContext, laboratoryProfile], map: "micro_schedule_entries_point_date_shift_context_profile_key")
+  @@index([plannedDate])
+  @@index([status])
+  @@index([samplingPointId, plannedDate])
+  @@index([rescheduledFromId])
+  @@map("micro_schedule_entries")
+}
+
 model MicroSample {
   id              String            @id @default(uuid())
   sampleNumber    String            @unique // MIC-001, MIC-002...
@@ -1159,6 +1222,26 @@ model MicroSample {
   lotNumber       String?
   batchCode       String?
   sampleDescription String?
+  workflowType    String            @default("EXTERNAL") @map("workflow_type")
+  workContext     String?           @map("work_context")
+  shift           String?
+  zoneName        String?           @map("zone_name")
+  laboratoryProfile String?         @map("laboratory_profile")
+  requestedParameterIds Json        @default("[]") @map("requested_parameter_ids")
+  dispatchAt      DateTime?         @map("dispatch_at")
+  dispatchReference String?         @map("dispatch_reference")
+  dispatchObservations String?      @map("dispatch_observations")
+  resultsReceivedAt DateTime?       @map("results_received_at")
+  receivedAt      DateTime?         @map("received_at")
+  resultsCapturedAt DateTime?       @map("results_captured_at")
+  reviewedAt      DateTime?         @map("reviewed_at")
+  productionContextData Json?       @map("production_context_data")
+  acceptanceData  Json?             @map("acceptance_data")
+  sampleTypeData  Json?             @map("sample_type_data")
+  analysisExecutionData Json?       @map("analysis_execution_data")
+  technicalReviewData Json?         @map("technical_review_data")
+  approvalData    Json?             @map("approval_data")
+  deviationData   Json?             @map("deviation_data")
   
   lab             String?           // Biotrends, Confía Control, UniNacional
   reportNumber    String?           // M-26-27561-0
@@ -1166,8 +1249,16 @@ model MicroSample {
   
   status          String            @default("PENDING") // PENDING, RECEIVED, COMPLETED
   notes           String?
+  startedAt       DateTime?         @map("started_at")
+  completedAt     DateTime?         @map("completed_at")
+  closedAt        DateTime?         @map("closed_at")
+  finalConclusion String?           @map("final_conclusion")
+  finalReportData Json?             @map("final_report_data")
   
   results         MicroResult[]
+  attachments     MicroSampleAttachment[]
+  scheduleEntry   MicroScheduleEntry? @relation("MicroSampleScheduleEntry")
+  internalLogs    MicroInternalLog[]
   
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
@@ -1175,7 +1266,47 @@ model MicroSample {
   @@index([samplingPointId])
   @@index([takenAt])
   @@index([status])
+  @@index([workflowType])
+  @@index([closedAt])
   @@map("micro_samples")
+}
+
+model MicroInternalLog {
+  id            String      @id @default(uuid())
+  sampleId      String      @map("sample_id")
+  sample        MicroSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  logDate       DateTime    @map("log_date")
+  dayNumber     Int?        @map("day_number")
+  observations  String?
+  readings      Json        @default("[]")
+  recordedById  String      @map("recorded_by_id")
+  recordedBy    User        @relation("MicroInternalLogRecorder", fields: [recordedById], references: [id])
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  @@unique([sampleId, logDate])
+  @@index([sampleId])
+  @@index([logDate])
+  @@map("micro_internal_logs")
+}
+
+model MicroSampleAttachment {
+  id            String      @id @default(uuid())
+  sampleId       String      @map("sample_id")
+  sample         MicroSample @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+
+  category       String
+  originalName   String      @map("original_name")
+  storedName     String      @map("stored_name")
+  mimeType       String?     @map("mime_type")
+  sizeBytes      Int?        @map("size_bytes")
+  url            String
+
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  @@index([sampleId])
+  @@index([sampleId, category])
+  @@map("micro_sample_attachments")
 }
 
 model MicroResult {
@@ -1235,6 +1366,11 @@ model Supplier {
   reteFuenteRate  Float?   // RetefUente % (e.g. 2.5), null = not applicable
   paymentTermDays Int?     @default(30) // Payment term in days
   
+  // Fiscal confirmation by accounting (security code required)
+  fiscalConfigConfirmed  Boolean   @default(false)
+  fiscalConfigAt         DateTime? @map("fiscal_config_at")
+  fiscalConfigById       String?   @map("fiscal_config_by_id")
+  
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -1278,6 +1414,12 @@ model PurchaseOrder {
   paymentIvaRate  Float?              @map("payment_iva_rate")     // IVA % used
   paymentReteRate Float?              @map("payment_rete_rate")    // Retefuente % used
   paymentItemCosts Json?              @map("payment_item_costs")   // Per-item {itemId: {totalPay, unitCostPerKg}}
+  
+  // Credit purchase flow
+  paymentMethod   String              @default("CONTADO") @map("payment_method")  // "CONTADO" | "CREDITO"
+  creditDueDate   DateTime?           @map("credit_due_date")      // Payment deadline for credit purchases
+  creditPaid      Boolean             @default(false) @map("credit_paid")
+  creditPaidAt    DateTime?           @map("credit_paid_at")
   
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
@@ -1404,6 +1546,8 @@ model MaterialLot {
   expiresAt             DateTime?         // Expiration date
   status                LotStatus         @default(AVAILABLE)
   zone                  String            @default("WAREHOUSE")  // WAREHOUSE | PRODUCTION
+  labelPrinted          Boolean           @default(false)
+  labelPrintedAt        DateTime?
 
   zoneTransfers         ZoneTransfer[]    @relation("ZoneTransferLot")
   
@@ -1568,4 +1712,135 @@ model ZoneTransfer {
   @@index([createdAt])
   @@index([transferredById])
   @@map("zone_transfers")
+}
+
+// ============================================
+// FINISHED PRODUCT LOT TRACKING
+// ============================================
+
+enum FinishedProductZone {
+  PRODUCCION
+  PRODUCTO_TERMINADO
+  NO_CONFORME
+  BODEGA
+  CUARENTENA
+  MAQUILA
+}
+
+enum FinishedLotStatus {
+  AVAILABLE
+  LOW
+  DEPLETED
+}
+
+model FinishedLotStock {
+  id                String               @id @default(uuid())
+  productId         String
+  product           Product              @relation("FinishedLotProduct", fields: [productId], references: [id])
+  lotNumber         String
+  batchId           String?
+  batch             ProductionBatch?     @relation("FinishedLotBatch", fields: [batchId], references: [id])
+  zone              FinishedProductZone  @default(PRODUCCION)
+  initialQuantity   Int                  @default(0)
+  currentQuantity   Int                  @default(0)
+  expiresAt         DateTime?
+  status            FinishedLotStatus    @default(AVAILABLE)
+  labelPrinted      Boolean              @default(false)
+  labelPrintedAt    DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  transfers         FinishedLotTransfer[] @relation("TransferFromStock")
+
+  @@unique([productId, lotNumber, zone])
+  @@index([productId, zone])
+  @@index([zone, status])
+  @@index([lotNumber])
+  @@map("finished_lot_stock")
+}
+
+model FinishedLotTransfer {
+  id                    String               @id @default(uuid())
+  finishedLotStockId    String?
+  finishedLotStock      FinishedLotStock?    @relation("TransferFromStock", fields: [finishedLotStockId], references: [id])
+  productId             String
+  product               Product              @relation("FinishedLotTransferProduct", fields: [productId], references: [id])
+  lotNumber             String
+  fromZone              FinishedProductZone
+  toZone                FinishedProductZone
+  quantity              Int
+  reason                String?              // "Entrega a logística", "Producto dañado", etc.
+  orderId               String?              // If consumed for an order (picking)
+  transferredById       String
+  transferredBy         User                 @relation("FinishedLotTransferUser", fields: [transferredById], references: [id])
+  observations          String?
+  createdAt             DateTime             @default(now())
+
+  @@index([productId, lotNumber])
+  @@index([fromZone, toZone])
+  @@index([orderId])
+  @@index([createdAt])
+  @@map("finished_lot_transfers")
+}
+
+// ============================================
+// PENDING BOX — Multi-Lot Label System
+// ============================================
+
+model PendingBox {
+  id          String   @id @default(uuid())
+  productId   String
+  product     Product  @relation("PendingBoxProduct", fields: [productId], references: [id])
+  boxSize     Int      // units per box (e.g. 6, 40)
+  isMaquila   Boolean  @default(false)
+  entries     Json     // [{lot, qty, expiry}]
+  currentQty  Int      // sum of all entry quantities
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([productId, boxSize])
+  @@map("pending_boxes")
+}
+
+// ============================================
+// PHYSICAL INVENTORY COUNT
+// ============================================
+
+enum PhysicalCountStatus {
+  IN_PROGRESS
+  CLOSED
+}
+
+model PhysicalCount {
+  id            String               @id @default(uuid())
+  zone          FinishedProductZone  @default(PRODUCTO_TERMINADO)
+  status        PhysicalCountStatus  @default(IN_PROGRESS)
+  countedById   String
+  countedBy     User                 @relation("PhysicalCountUser", fields: [countedById], references: [id])
+  checklist     Json                 // { empaqueConfirmed, pedidosSeparated, noTransfersPending }
+  observations  String?
+  startedAt     DateTime             @default(now())
+  closedAt      DateTime?
+  items         PhysicalCountItem[]
+
+  @@index([zone, status])
+  @@index([startedAt])
+  @@map("physical_counts")
+}
+
+model PhysicalCountItem {
+  id              String         @id @default(uuid())
+  physicalCountId String
+  physicalCount   PhysicalCount  @relation(fields: [physicalCountId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product        @relation("PhysicalCountProduct", fields: [productId], references: [id])
+  systemQuantity  Int            // Stock del sistema al momento del conteo
+  countedBoxes    Int            @default(0)
+  countedLoose    Int            @default(0)
+  countedTotal    Int            @default(0) // boxes * packSize + loose
+  difference      Int            @default(0) // countedTotal - systemQuantity
+  observations    String?
+
+  @@unique([physicalCountId, productId])
+  @@map("physical_count_items")
 }

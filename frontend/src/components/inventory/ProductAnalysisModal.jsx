@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, TrendingUp, Package, AlertCircle, Save, Settings, Layers, Clock, ShieldCheck } from 'lucide-react';
+import { X, TrendingUp, Package, AlertCircle, Save, Settings, Layers, Clock, ShieldCheck, Warehouse } from 'lucide-react';
 import api from '../../services/api';
 import LotManagementModal from './LotManagementModal';
 
@@ -23,6 +23,7 @@ const ProductAnalysisModal = ({ product, onClose, onUpdate }) => {
     const [saving, setSaving] = useState(false);
     const [hasChanges, setHasChanges] = useState(false);
     const [showLots, setShowLots] = useState(false);
+    const [zoneBreakdown, setZoneBreakdown] = useState(null);
 
     useEffect(() => {
         if (product) {
@@ -31,6 +32,26 @@ const ProductAnalysisModal = ({ product, onClose, onUpdate }) => {
                 packSize: product.packSize || 1
             });
             setHasChanges(false);
+            // Fetch zone breakdown — MaterialLot + FinishedLotStock
+            Promise.all([
+                api.get(`/inventory/lots?productId=${product.id}&status=AVAILABLE,LOW_STOCK`),
+                api.get(`/finished-lots/zone-summary?productId=${product.id}`).catch(() => ({ data: { summary: {} } })),
+            ]).then(([lotRes, flsRes]) => {
+                const lots = lotRes.data?.data || lotRes.data || [];
+                const zones = {};
+                lots.forEach(l => {
+                    const z = l.zone || 'WAREHOUSE';
+                    zones[z] = (zones[z] || 0) + (l.currentQuantity || 0);
+                });
+                // Merge FinishedLotStock zones
+                const flsZones = flsRes.data?.summary || {};
+
+                Object.entries(flsZones).forEach(([z, qty]) => {
+                    zones[z] = (zones[z] || 0) + qty;
+                });
+
+                setZoneBreakdown(zones);
+            }).catch(() => setZoneBreakdown(null));
         }
     }, [product]);
 
@@ -128,6 +149,49 @@ const ProductAnalysisModal = ({ product, onClose, onUpdate }) => {
                             <div className="text-[10px] opacity-60 mt-0.5">días</div>
                         </div>
                     </div>
+
+                    {/* Warehouse distribution — all zones */}
+                    {zoneBreakdown && Object.keys(zoneBreakdown).length > 0 && (() => {
+                        const ZONE_CFG = [
+                            { key: 'WAREHOUSE', label: 'Bodega', color: '#3b82f6', grad: 'linear-gradient(90deg, #3b82f6, #60a5fa)' },
+                            { key: 'PRODUCTION', label: 'Producción', color: '#10b981', grad: 'linear-gradient(90deg, #10b981, #34d399)' },
+                            { key: 'PRODUCCION', label: 'Producción (PT)', color: '#10b981', grad: 'linear-gradient(90deg, #10b981, #6ee7b7)' },
+                            { key: 'PRODUCTO_TERMINADO', label: 'Prod. Terminado', color: '#8b5cf6', grad: 'linear-gradient(90deg, #8b5cf6, #a78bfa)' },
+                            { key: 'NO_CONFORME', label: 'No Conforme', color: '#ef4444', grad: 'linear-gradient(90deg, #ef4444, #f87171)' },
+                            { key: 'MAQUILA', label: 'Maquila', color: '#f97316', grad: 'linear-gradient(90deg, #f97316, #fb923c)' },
+                            { key: 'CUARENTENA', label: 'Cuarentena', color: '#eab308', grad: 'linear-gradient(90deg, #eab308, #facc15)' },
+                        ];
+                        const zones = ZONE_CFG.filter(z => (zoneBreakdown[z.key] || 0) > 0);
+                        const total = zones.reduce((s, z) => s + (zoneBreakdown[z.key] || 0), 0);
+                        if (total === 0) return null;
+                        return (
+                            <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-100">
+                                <h3 className="text-[10px] font-bold text-slate-500 uppercase mb-1.5 flex items-center gap-1">
+                                    <Warehouse className="w-3 h-3" />
+                                    Distribución por Zona
+                                </h3>
+                                <div className="flex rounded-full overflow-hidden h-3 mb-1.5" style={{ border: '1px solid #e2e8f0' }}>
+                                    {zones.map(z => {
+                                        const pct = Math.max(Math.round((zoneBreakdown[z.key] / total) * 100), 2);
+                                        return <div key={z.key} style={{ width: `${pct}%`, background: z.grad }} title={`${z.label} ${pct}%`} />;
+                                    })}
+                                </div>
+                                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px]">
+                                    {zones.map(z => {
+                                        const v = zoneBreakdown[z.key];
+                                        const fmt = fmtQty(v, unit);
+                                        return (
+                                            <span key={z.key} className="flex items-center gap-1">
+                                                <span className="w-2 h-2 rounded-full inline-block" style={{ background: z.color }} />
+                                                <span className="font-semibold text-slate-700">{z.label}</span>
+                                                <span className="text-slate-500">{fmt.value} {fmt.suffix}</span>
+                                            </span>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Config Section — inline */}
                     <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-100">

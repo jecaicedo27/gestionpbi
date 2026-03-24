@@ -407,15 +407,17 @@ exports.uploadBillingDocument = async (req, res) => {
         return res.status(403).json({ error: 'No autorizado.' });
     }
 
-    // Handle files from upload.fields()
-    const mainFile = req.files?.file?.[0];
-    const accountStatementFile = req.files?.accountStatement?.[0];
+    // Handle files from upload.fields() — may be multiple
+    const mainFiles = req.files?.file || [];
+    const accountStatementFiles = req.files?.accountStatement || [];
 
-    if (!mainFile) {
-        return res.status(400).json({ error: 'Debe subir el documento PDF.' });
+    if (mainFiles.length === 0) {
+        return res.status(400).json({ error: 'Debe subir al menos un documento.' });
     }
 
-    const fileUrl = `/uploads/pqr/${mainFile.filename}`;
+    // Store first file URL for backward compat, all URLs as JSON if multiple
+    const mainUrls = mainFiles.map(f => `/uploads/pqr/${f.filename}`);
+    const fileUrl = mainUrls.length === 1 ? mainUrls[0] : JSON.stringify(mainUrls);
 
     try {
         const currentPQR = await prisma.pQR.findUnique({ where: { id } });
@@ -427,13 +429,13 @@ exports.uploadBillingDocument = async (req, res) => {
         };
 
         if (documentType === 'credit_note' && ['ADMIN', 'CONTABILIDAD'].includes(userRole)) {
-            // Require account statement for credit notes
-            if (!accountStatementFile) {
+            if (accountStatementFiles.length === 0) {
                 return res.status(400).json({ error: 'Debe subir el estado de cuenta del cliente.' });
             }
 
+            const acctUrls = accountStatementFiles.map(f => `/uploads/pqr/${f.filename}`);
             updateData.creditNoteUrl = fileUrl;
-            updateData.accountStatementUrl = `/uploads/pqr/${accountStatementFile.filename}`;
+            updateData.accountStatementUrl = acctUrls.length === 1 ? acctUrls[0] : JSON.stringify(acctUrls);
 
             if (currentPQR.refundMethod === 'PHYSICAL_REPLACEMENT') {
                 updateData.stage = 'PENDING_INVOICE';
@@ -468,14 +470,20 @@ exports.uploadBillingDocument = async (req, res) => {
 exports.dispatchPQR = async (req, res) => {
     const { id } = req.params;
     const reviewerId = req.user.id;
+    const { notes } = req.body;
 
-    if (!req.file) {
-        return res.status(400).json({ error: 'Debe subir la evidencia del despacho (Guía o Foto).' });
+    const files = req.files || [];
+    if (files.length === 0) {
+        return res.status(400).json({ error: 'Debe subir al menos una evidencia del despacho (Guía o Foto).' });
     }
 
-    const evidenceUrl = `/uploads/pqr/${req.file.filename}`;
+    const urls = files.map(f => `/uploads/pqr/${f.filename}`);
+    const evidenceUrl = urls.length === 1 ? urls[0] : JSON.stringify(urls);
 
     try {
+        const currentPQR = await prisma.pQR.findUnique({ where: { id } });
+        if (!currentPQR) return res.status(404).json({ error: 'PQR no encontrado' });
+
         const updatedPQR = await prisma.pQR.update({
             where: { id },
             data: {
@@ -483,6 +491,7 @@ exports.dispatchPQR = async (req, res) => {
                 stage: 'COMPLETED',
                 dispatchEvidenceUrl: evidenceUrl,
                 managedById: reviewerId,
+                internalNotes: notes || currentPQR.internalNotes,
                 resolvedAt: new Date()
             }
         });
@@ -491,5 +500,93 @@ exports.dispatchPQR = async (req, res) => {
     } catch (error) {
         console.error('Error dispatching PQR:', error);
         res.status(500).json({ error: 'Error al registrar despacho.' });
+    }
+};
+
+/**
+ * Bulk billing — apply same credit note + account statement to multiple PQRs
+ * POST /api/pqr/bulk-billing
+ */
+exports.bulkBilling = async (req, res) => {
+    const reviewerId = req.user.id;
+    const userRole = req.user.role;
+
+    if (!['ADMIN', 'CONTABILIDAD'].includes(userRole)) {
+        return res.status(403).json({ error: 'No autorizado.' });
+    }
+
+    let pqrIds;
+    try {
+        pqrIds = JSON.parse(req.body.pqrIds || '[]');
+    } catch {
+        return res.status(400).json({ error: 'pqrIds inválido' });
+    }
+
+    if (!Array.isArray(pqrIds) || pqrIds.length === 0) {
+        return res.status(400).json({ error: 'Debe seleccionar al menos un PQR.' });
+    }
+
+    const mainFiles = req.files?.file || [];
+    const accountStatementFiles = req.files?.accountStatement || [];
+
+    if (mainFiles.length === 0) {
+        return res.status(400).json({ error: 'Debe subir la nota crédito.' });
+    }
+
+    if (accountStatementFiles.length === 0) {
+        return res.status(400).json({ error: 'Debe subir el estado de cuenta.' });
+    }
+
+    const mainUrls = mainFiles.map(f => `/uploads/pqr/${f.filename}`);
+    const creditNoteUrl = mainUrls.length === 1 ? mainUrls[0] : JSON.stringify(mainUrls);
+
+    const acctUrls = accountStatementFiles.map(f => `/uploads/pqr/${f.filename}`);
+    const accountStatementUrl = acctUrls.length === 1 ? acctUrls[0] : JSON.stringify(acctUrls);
+
+    try {
+        // Fetch all selected PQRs
+        const pqrs = await prisma.pQR.findMany({
+            where: { id: { in: pqrIds } },
+            select: { id: true, refundMethod: true, ticketNumber: true }
+        });
+
+        if (pqrs.length === 0) {
+            return res.status(404).json({ error: 'No se encontraron PQRs con los IDs proporcionados.' });
+        }
+
+        // Update each PQR with same files, transitioning stage based on refundMethod
+        const results = [];
+        for (const pqr of pqrs) {
+            const updateData = {
+                creditNoteUrl,
+                accountStatementUrl,
+                managedById: reviewerId
+            };
+
+            if (pqr.refundMethod === 'PHYSICAL_REPLACEMENT') {
+                updateData.stage = 'PENDING_INVOICE';
+                updateData.status = 'IN_REVIEW';
+            } else {
+                updateData.stage = 'COMPLETED';
+                updateData.status = 'PROCESSED';
+                updateData.resolvedAt = new Date();
+            }
+
+            await prisma.pQR.update({
+                where: { id: pqr.id },
+                data: updateData
+            });
+
+            results.push({ id: pqr.id, ticket: pqr.ticketNumber, newStage: updateData.stage });
+        }
+
+        res.json({
+            success: true,
+            message: `Nota crédito y estado de cuenta aplicados a ${results.length} PQRs`,
+            results
+        });
+    } catch (error) {
+        console.error('Error in bulk billing:', error);
+        res.status(500).json({ error: 'Error al aplicar documentos masivamente.' });
     }
 };

@@ -7,6 +7,7 @@ import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop';
 import 'react-big-calendar/lib/addons/dragAndDrop/styles.css';
 
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { Loader, AlertTriangle, CheckCircle, Save, Trash2 } from 'lucide-react'; // Added Trash2
 
 const locales = {
@@ -24,6 +25,8 @@ const localizer = dateFnsLocalizer({
 const DnDCalendar = withDragAndDrop(Calendar);
 
 const ProductionScheduler = ({ readOnly = false }) => {
+    const { user } = useAuth();
+    const isAdmin = user?.role === 'ADMIN';
     const [events, setEvents] = useState([]);
     const [suggestions, setSuggestions] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -46,7 +49,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
     }, []);
 
     // Auto-select best template for a batch (most stages wins = master template)
-    const handleLaunchBatch = async (batchId, title, flavor, mix) => {
+    const handleLaunchBatch = async (batchId, title, flavor, mix, baseWeight) => {
         setIsLaunching(true);
         try {
             // 1. Check if notes already exist for this batch
@@ -63,16 +66,22 @@ const ProductionScheduler = ({ readOnly = false }) => {
             const allTemplates = (templatesRes.data || []).filter(t => t.isActive);
             const flavorKey = (flavor || title || '').toUpperCase().replace('SABOR A ', '').trim(); // e.g. "MANGO BICHE"
 
-            // Prefer the generic BATCH template (uses quickStart with flavor resolution)
-            const batchTemplate = allTemplates.find(t => t.templateCode === 'BATCH-LIQUIPOPS');
+            // Prefer the generic BATCH template ONLY for Liquipops (perlas)
+            // Geniality (siropes) uses its own BATCH-GENIALITY template
+            const batchTemplateCode = activeLine === 'geniality' ? 'BATCH-GENIALITY' : 'BATCH-LIQUIPOPS';
+            const batchTemplate = allTemplates.find(t => t.templateCode === batchTemplateCode);
 
             if (batchTemplate && flavorKey) {
+                // Compute lot count from baseWeight for Geniality
+                const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
+                const lotCount = baseWeight ? Math.max(1, Math.round(baseWeight / BATCH_SIZE)) : 1;
+
                 // 3a. Use quickStart with flavor resolution for BATCH template
                 const userId = localStorage.getItem('userId');
                 const qsRes = await api.post('/assembly-notes/quick-start', {
                     templateId: batchTemplate.id,
                     userId,
-                    quantity: 1,
+                    quantity: lotCount,
                     flavorKey,
                     existingBatchId: batchId, // Reuse the scheduler's ProductionBatch
                     outputTargets: (mix || []).filter(m => m.productId).map(m => ({
@@ -133,13 +142,16 @@ const ProductionScheduler = ({ readOnly = false }) => {
         if (!selectedTemplateId) return alert('Selecciona una plantilla primero.');
         setIsLaunching(true);
         try {
-            const genRes = await api.post('/assembly-notes/generate', {
-                batchId: launchModal.batchId,
-                templateId: selectedTemplateId
+            const userId = localStorage.getItem('userId');
+            const qsRes = await api.post('/assembly-notes/quick-start', {
+                templateId: selectedTemplateId,
+                userId,
+                quantity: 1,
+                existingBatchId: launchModal.batchId
             });
-            if (genRes.data?.notes?.length > 0) {
+            if (qsRes.data?.firstNoteId) {
                 setLaunchModal(null);
-                window.location.href = `/assembly-execution/${genRes.data.notes[0].id}`;
+                window.location.href = `/assembly-execution/${qsRes.data.firstNoteId}`;
             } else {
                 alert('No se generaron notas.');
             }
@@ -155,7 +167,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
         if (!modalData || modalData.readOnly) return null;
         if (modalData.targetBatchCount) return modalData.targetBatchCount;
 
-        const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+        const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
         const totalKg = modalData.totalSyrupKg || modalData.totalPlannedKg || 0;
         const safeTotalKg = Math.round(totalKg * 100) / 100;
         let num = Math.round(safeTotalKg / BATCH_SIZE);
@@ -302,31 +314,40 @@ const ProductionScheduler = ({ readOnly = false }) => {
             const res = await api.get(`/production/liquipops/mix/${flavor}?line=${activeLine}`);
 
             // CONSTANTS Based on Line
-            const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+            const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
             const DURATION = config.batchDuration || (activeLine === 'geniality' ? 160 : 140);
 
-            // FIXED: always schedule 1 batch at a time (BATCH_SIZE kg)
-            // User can manually set units — do NOT auto-multiply by total demand
-            const calculatedEndDate = new Date(start.getTime() + DURATION * 60000);
-
-            // Scale the suggested mix proportionally to fill 1 batch
+            // For Geniality: calculate how many lots are needed (capped at 7, large kettle)
+            // For Liquipops: always 1 batch at a time
             const totalSyrupKg = res.data.totalSyrupKg || res.data.totalPlannedKg || 0;
-            const scaleFactor = totalSyrupKg > 0 ? (BATCH_SIZE / totalSyrupKg) : 1;
+            let defaultLots = 1;
+            if (activeLine === 'geniality') {
+                defaultLots = Math.min(7, Math.max(1, Math.ceil(totalSyrupKg / BATCH_SIZE)));
+            }
+
+            const targetWeight = defaultLots * BATCH_SIZE;
+            const scaleFactor = totalSyrupKg > 0 ? (targetWeight / totalSyrupKg) : 1;
             const scaledMix = (res.data.mix || []).map(m => ({
                 ...m,
                 plannedUnits: Math.round((m.plannedUnits || 0) * scaleFactor),
                 plannedWeightKg: ((m.plannedWeightKg || 0) * scaleFactor)
             }));
 
+            // For Geniality: duration scales with lots (base + extra per lot)
+            const batchDuration = activeLine === 'geniality'
+                ? DURATION + (defaultLots - 1) * 40  // 160min base + 40min per extra lot
+                : DURATION;
+            const calculatedEndDate = new Date(start.getTime() + batchDuration * 60000);
+
             setModalData({
                 ...res.data,
                 mix: scaledMix,
                 totalPlannedKg: scaledMix.reduce((a, m) => a + (m.plannedWeightKg || 0), 0),
-                totalSyrupKg: BATCH_SIZE,
+                totalSyrupKg: targetWeight,
                 scheduledStart: start,
                 scheduledEnd: calculatedEndDate,
-                baseWeight: BATCH_SIZE,
-                targetBatchCount: 1, // Always start with 1 batch
+                baseWeight: targetWeight,
+                targetBatchCount: defaultLots,
                 readOnly: false
             });
         } catch (error) {
@@ -398,38 +419,81 @@ const ProductionScheduler = ({ readOnly = false }) => {
             }
 
             // DYNAMIC BATCH SIZE
-            const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+            const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
             const DURATION = config.batchDuration || (activeLine === 'geniality' ? 160 : 140);
 
-            // FIXED: always use exactly the number of batches the user requested (default 1)
-            // Do NOT auto-calculate from totalKg — that caused massive over-scheduling
             let numBatches = modalData.targetBatchCount || 1;
             if (numBatches === 0) numBatches = 1;
 
+            // ═══════════════════════════════════════════════════════
+            // GENIALITY: Single batch with N lots (large kettle)
+            // ═══════════════════════════════════════════════════════
+            if (activeLine === 'geniality') {
+                const totalWeight = numBatches * BATCH_SIZE; // e.g. 3 lots × 100kg = 300kg
+                const batchDuration = DURATION + (numBatches - 1) * 40;
+                let currentStartDate = new Date(modalData.scheduledStart);
+                let currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
+
+                // Collision resolution
+                let hasCollision = true, iterations = 0;
+                while (hasCollision && iterations < 50) {
+                    iterations++; hasCollision = false;
+                    for (const ev of events) {
+                        if (currentStartDate < new Date(ev.end) && currentEndDate > new Date(ev.start)) {
+                            currentStartDate = new Date(ev.end);
+                            currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
+                            hasCollision = true; break;
+                        }
+                    }
+                }
+
+                const res = await api.post('/production/liquipops/schedule', {
+                    flavor: modalData.flavor,
+                    scheduledStart: currentStartDate,
+                    scheduledEnd: currentEndDate,
+                    baseWeight: totalWeight,
+                    mix: modalData.mix, // Full mix, not split
+                    batchIndex: 1,
+                    totalBatches: 1
+                });
+
+                setEvents(prev => [...prev, {
+                    id: res.data.id,
+                    title: `${modalData.flavor} (${totalWeight}kg · ${numBatches} ${numBatches === 1 ? 'lote' : 'lotes'})`,
+                    start: new Date(currentStartDate),
+                    end: new Date(currentEndDate),
+                    flavor: modalData.flavor,
+                    mix: modalData.mix,
+                    status: 'PENDING',
+                    baseWeight: totalWeight
+                }]);
+
+                setIsSaving(false);
+                setModalData(null);
+                await fetchEvents();
+                fetchSuggestions();
+                return;
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // LIQUIPOPS: N separate batches (small kettle, 1 lot each)
+            // ═══════════════════════════════════════════════════════
             const eventsToAdd = [];
             let currentStartDate = new Date(modalData.scheduledStart);
 
             for (let i = 0; i < numBatches; i++) {
-                // Calculate initial end time
                 let currentEndDate = new Date(currentStartDate.getTime() + DURATION * 60000);
 
                 // Collision Detection & Auto-Resolution
-                let hasCollision = true;
-                let maxIterations = 50;
-                let iterations = 0;
-
+                let hasCollision = true, maxIterations = 50, iterations = 0;
                 while (hasCollision && iterations < maxIterations) {
-                    iterations++;
-                    hasCollision = false;
+                    iterations++; hasCollision = false;
                     const allEvents = [...events, ...eventsToAdd];
                     for (const ev of allEvents) {
-                        const evStart = new Date(ev.start);
-                        const evEnd = new Date(ev.end);
-                        if (currentStartDate < evEnd && currentEndDate > evStart) {
-                            currentStartDate = new Date(evEnd);
+                        if (currentStartDate < new Date(ev.end) && currentEndDate > new Date(ev.start)) {
+                            currentStartDate = new Date(ev.end);
                             currentEndDate.setTime(currentStartDate.getTime() + DURATION * 60000);
-                            hasCollision = true;
-                            break;
+                            hasCollision = true; break;
                         }
                     }
                 }
@@ -439,7 +503,6 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     continue;
                 }
 
-                // Scale the mix for this batch
                 const ratio = 1 / numBatches;
                 const scaledMix = modalData.mix.map(item => ({
                     ...item,
@@ -502,6 +565,20 @@ const ProductionScheduler = ({ readOnly = false }) => {
                 })}
             </span>
         );
+    };
+
+    // Status label mapping for calendar events
+    const getStatusLabel = (status) => {
+        const labels = {
+            'STAGE_1_BASE': 'Base',
+            'STAGE_2_JARABE': 'Jarabe',
+            'STAGE_3_ESFERIFICACION': 'Esferificación',
+            'STAGE_4_PRODUCTO_FINAL': 'Prod. Final',
+            'LABELING': 'Etiquetado',
+            'PENDING': 'Pendiente',
+            'COMPLETED': 'Finalizado',
+        };
+        return labels[status] || 'En Proceso';
     };
 
     // Color Mapping
@@ -902,21 +979,29 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             components={{
                                 event: ({ event }) => {
                                     const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA');
+                                    const isCompleted = event.status === 'COMPLETED';
+                                    const isInProgress = event.status && event.status !== 'PENDING' && !isCompleted;
+                                    const statusLabel = getStatusLabel(event.status);
                                     return (
-                                        <div className="flex justify-between items-center h-full px-1 overflow-hidden" title={event.title}>
+                                        <div className="flex justify-between items-center h-full px-1.5 overflow-hidden" title={event.title}>
                                             <div className="flex-1 min-w-0">
-                                                <div className="font-bold truncate">{event.title}</div>
-                                                {!isAuxEvent && <div className="text-[10px] opacity-90 truncate">{event.mix?.length || 0} ingredientes</div>}
+                                                <div className="font-bold truncate" style={{ fontSize: '11px' }}>{event.title}</div>
+                                                {!isAuxEvent && (
+                                                    <div className="text-[10px] truncate" style={{ opacity: 0.95 }}>
+                                                        {isCompleted ? '🏁 Finalizado' : isInProgress ? `⚙ ${statusLabel}` : `${event.mix?.length || 0} ingredientes`}
+                                                    </div>
+                                                )}
                                             </div>
-                                            {!isAuxEvent && (
+                                            {!isAuxEvent && !isCompleted && (
                                                 <button
-                                                    className="ml-1 p-1 bg-white/20 hover:bg-white/40 rounded text-white shrink-0 z-10"
+                                                    className="ml-1.5 w-7 h-7 flex items-center justify-center bg-white/90 hover:bg-white rounded-md shadow-sm shrink-0 z-10 transition-all hover:scale-110"
+                                                    style={{ color: isInProgress ? '#059669' : '#2563eb', fontSize: '14px', fontWeight: 'bold' }}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix);
+                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
                                                     }}
-                                                    title="Iniciar Producción"
+                                                    title={isInProgress ? 'Continuar' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
                                                 >
                                                     {isLaunching ? '⏳' : '▶'}
@@ -927,20 +1012,31 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                 }
                             }}
                             eventPropGetter={(event) => {
-                                let bgColor = '#3b82f6';
-                                if (event.status === 'PENDING') {
+                                const isCompleted = event.status === 'COMPLETED';
+                                const isPending = event.status === 'PENDING';
+                                const isInProgress = !isCompleted && !isPending && event.status;
+
+                                let bgColor, border = 'none', opacity = 1;
+                                if (isCompleted) {
+                                    bgColor = 'linear-gradient(135deg, #059669, #047857)';
+                                    border = '2px solid #34d399';
+                                    opacity = 0.75;
+                                } else if (isInProgress) {
                                     bgColor = getFlavorColor(event.flavor);
+                                    border = '2px solid rgba(255,255,255,0.5)';
                                 } else {
-                                    bgColor = '#10b981';
+                                    bgColor = getFlavorColor(event.flavor);
                                 }
+
                                 return {
                                     style: {
-                                        backgroundColor: bgColor,
-                                        borderRadius: '4px',
-                                        border: 'none',
+                                        background: bgColor,
+                                        borderRadius: '6px',
+                                        border,
                                         color: 'white',
                                         fontSize: '12px',
-                                        padding: '0px'
+                                        padding: '0px',
+                                        opacity
                                     }
                                 };
                             }}
@@ -980,24 +1076,32 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             components={{
                                 event: ({ event }) => {
                                     const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA');
+                                    const isCompleted = event.status === 'COMPLETED';
+                                    const isInProgress = event.status && event.status !== 'PENDING' && !isCompleted;
+                                    const statusLabel = getStatusLabel(event.status);
 
                                     return (
-                                        <div className="flex justify-between items-center h-full px-1 overflow-hidden" title={event.title}>
+                                        <div className="flex justify-between items-center h-full px-1.5 overflow-hidden" title={event.title}>
                                             <div className="flex-1 min-w-0">
-                                                <div className="font-bold truncate">{event.title}</div>
-                                                {!isAuxEvent && <div className="text-[10px] opacity-90 truncate">{event.mix?.length || 0} ingredientes</div>}
+                                                <div className="font-bold truncate" style={{ fontSize: '11px' }}>{event.title}</div>
+                                                {!isAuxEvent && (
+                                                    <div className="text-[10px] truncate" style={{ opacity: 0.95 }}>
+                                                        {isCompleted ? '🏁 Finalizado' : isInProgress ? `⚙ ${statusLabel}` : `${event.mix?.length || 0} ingredientes`}
+                                                    </div>
+                                                )}
                                             </div>
 
-                                            {!isAuxEvent && (
+                                            {!isAuxEvent && !isCompleted && (
                                                 <button
-                                                    className="ml-1 p-1 bg-white/20 hover:bg-white/40 rounded text-white shrink-0 z-10"
+                                                    className="ml-1.5 w-7 h-7 flex items-center justify-center bg-white/90 hover:bg-white rounded-md shadow-sm shrink-0 z-10 transition-all hover:scale-110"
+                                                    style={{ color: isInProgress ? '#059669' : '#2563eb', fontSize: '14px', fontWeight: 'bold' }}
                                                     onMouseDown={(e) => e.stopPropagation()}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix);
+                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
                                                     }}
-                                                    title="Iniciar Producción"
+                                                    title={isInProgress ? 'Continuar' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
                                                 >
                                                     {isLaunching ? '⏳' : '▶'}
@@ -1008,24 +1112,32 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                 }
                             }}
                             eventPropGetter={(event) => {
-                                let bgColor = '#3b82f6'; // Default Blue
+                                const isCompleted = event.status === 'COMPLETED';
+                                const isPending = event.status === 'PENDING';
+                                const isInProgress = !isCompleted && !isPending && event.status;
+                                let bgColor, border = 'none', opacity = 1;
 
                                 if (event.status === 'PREVIEW' || event.isDragging) {
-                                    bgColor = '#10b981'; // Green for drag preview (User preference)
-                                } else if (event.status === 'PENDING') {
+                                    bgColor = '#10b981';
+                                } else if (isCompleted) {
+                                    bgColor = 'linear-gradient(135deg, #059669, #047857)';
+                                    border = '2px solid #34d399';
+                                    opacity = 0.75;
+                                } else if (isInProgress) {
                                     bgColor = getFlavorColor(event.flavor);
+                                    border = '2px solid rgba(255,255,255,0.5)';
                                 } else {
-                                    bgColor = '#10b981'; // Completed?
+                                    bgColor = getFlavorColor(event.flavor);
                                 }
 
                                 return {
                                     style: {
-                                        backgroundColor: bgColor,
-                                        borderRadius: '4px',
-                                        border: 'none',
+                                        background: bgColor,
+                                        borderRadius: '6px',
+                                        border,
                                         color: 'white',
                                         fontSize: '12px',
-                                        padding: '0px' // Override padding for custom component
+                                        padding: '0px'
                                     }
                                 };
                             }}
@@ -1090,23 +1202,27 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                             {/* Stats */}
                                             <div className="flex gap-4 mb-4">
                                                 <div className="flex-1 bg-blue-50 p-3 rounded-lg border border-blue-100">
-                                                    <div className="text-xs text-blue-500 font-bold uppercase">Jarabe Necesario</div>
+                                                    <div className="text-xs text-blue-500 font-bold uppercase">
+                                                        {activeLine === 'geniality' ? 'Peso Total Marmita' : 'Jarabe Necesario'}
+                                                    </div>
                                                     <div className="text-2xl font-bold text-blue-700">{Math.round(modalData.totalSyrupKg || modalData.totalPlannedKg)} Kg</div>
                                                     {!modalData.readOnly && (
                                                         <div className="flex items-center gap-2 mt-2">
-                                                            <span className="text-xs text-blue-500 font-bold">Baches a Generar:</span>
+                                                            <span className="text-xs text-blue-500 font-bold">
+                                                                {activeLine === 'geniality' ? 'Lotes en Marmita:' : 'Baches a Generar:'}
+                                                            </span>
                                                             <input
                                                                 type="number"
                                                                 min="1"
-                                                                max="5"
+                                                                max={activeLine === 'geniality' ? 7 : 5}
                                                                 className="w-16 p-1 text-center text-sm border border-blue-300 rounded text-blue-700 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
                                                                 value={modalData.targetBatchCount || getProjectedBatches()}
                                                                 onChange={(e) => {
-                                                                    const newVal = parseInt(e.target.value) || 1;
+                                                                    const maxVal = activeLine === 'geniality' ? 7 : 5;
+                                                                    const newVal = Math.min(maxVal, Math.max(1, parseInt(e.target.value) || 1));
 
                                                                     setModalData(prev => {
                                                                         const currentVal = prev.targetBatchCount || getProjectedBatches() || 1;
-                                                                        // Avoid division by zero
                                                                         if (currentVal === 0) return { ...prev, targetBatchCount: newVal };
 
                                                                         const ratio = newVal / currentVal;
@@ -1122,43 +1238,85 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                         });
 
                                                                         const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                        // Syrup scales linearly with target batches (line-specific batch size)
-                                                                        const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+                                                                        const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
                                                                         const newTotalSyrupKg = newVal * BATCH_SIZE;
+
+                                                                        // For Geniality: update duration based on lots
+                                                                        let newEnd = prev.scheduledEnd;
+                                                                        if (activeLine === 'geniality') {
+                                                                            const baseDuration = 160;
+                                                                            const totalDuration = baseDuration + (newVal - 1) * 40;
+                                                                            newEnd = new Date(new Date(prev.scheduledStart).getTime() + totalDuration * 60000);
+                                                                        }
 
                                                                         return {
                                                                             ...prev,
                                                                             targetBatchCount: newVal,
                                                                             mix: updatedMix,
                                                                             totalPlannedKg: newTotalPlannedKg,
-                                                                            totalSyrupKg: newTotalSyrupKg
+                                                                            totalSyrupKg: newTotalSyrupKg,
+                                                                            baseWeight: newTotalSyrupKg,
+                                                                            scheduledEnd: newEnd
                                                                         };
                                                                     });
                                                                 }}
                                                             />
+                                                            {activeLine === 'geniality' && (
+                                                                <span className="text-[10px] text-blue-400 font-semibold">máx 7</span>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {/* Geniality: Capacity bar */}
+                                                    {activeLine === 'geniality' && !modalData.readOnly && (
+                                                        <div className="mt-2">
+                                                            <div className="flex justify-between text-[10px] text-blue-500 font-semibold mb-0.5">
+                                                                <span>Capacidad Marmita</span>
+                                                                <span>{Math.round(modalData.totalSyrupKg || 0)}/700 kg</span>
+                                                            </div>
+                                                            <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                                                                <div
+                                                                    className="h-full rounded-full transition-all duration-300"
+                                                                    style={{
+                                                                        width: `${Math.min(100, ((modalData.totalSyrupKg || 0) / 700) * 100)}%`,
+                                                                        background: (modalData.totalSyrupKg || 0) > 700 ? '#ef4444' : 'linear-gradient(90deg, #3b82f6, #06b6d4)'
+                                                                    }}
+                                                                />
+                                                            </div>
                                                         </div>
                                                     )}
                                                 </div>
                                                 {/* Capacity Check */}
                                                 <div className={`flex-1 p-3 rounded-lg border ${(() => {
-                                                    const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+                                                    const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
                                                     const total = modalData.totalSyrupKg || modalData.totalPlannedKg || 0;
+                                                    if (activeLine === 'geniality') {
+                                                        // For geniality: optimal if within kettle capacity
+                                                        return total <= 700 ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100';
+                                                    }
                                                     const remainder = total % BATCH_SIZE;
-                                                    // Allow +/- 2kg tolerance or strict? Strict for now as per logic
                                                     const isOptimal = total >= (BATCH_SIZE * 0.95) && (remainder < 2 || remainder > (BATCH_SIZE - 2));
                                                     return isOptimal ? 'bg-green-50 border-green-100' : 'bg-orange-50 border-orange-100';
                                                 })()}`}>
-                                                    <div className="text-xs font-bold uppercase text-gray-500">Estado Capacidad</div>
+                                                    <div className="text-xs font-bold uppercase text-gray-500">
+                                                        {activeLine === 'geniality' ? 'Marmita Grande' : 'Estado Capacidad'}
+                                                    </div>
                                                     <div className="flex items-center gap-2">
                                                         {(() => {
-                                                            const BATCH_SIZE = activeLine === 'geniality' ? 300 : 120;
+                                                            const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
                                                             const total = modalData.totalSyrupKg || modalData.totalPlannedKg || 0;
+
+                                                            if (activeLine === 'geniality') {
+                                                                const lots = modalData.targetBatchCount || 1;
+                                                                return total <= 700
+                                                                    ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">{lots} {lots === 1 ? 'lote' : 'lotes'} · {Math.round(total)}kg</span></>
+                                                                    : <><AlertTriangle className="w-5 h-5 text-red-600" /><span className="text-red-700 font-bold">Excede 700kg</span></>;
+                                                            }
+
                                                             const remainder = total % BATCH_SIZE;
                                                             const isOptimal = total >= (BATCH_SIZE * 0.95) && (remainder < 2 || remainder > (BATCH_SIZE - 2));
-
                                                             return isOptimal
                                                                 ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">Óptimo (x{BATCH_SIZE})</span></>
-                                                                : <><AlertTriangle className="w-5 h-5 text-orange-600" /><span className="text-orange-700 font-bold">No es Múltiplo de {BATCH_SIZE}</span></>
+                                                                : <><AlertTriangle className="w-5 h-5 text-orange-600" /><span className="text-orange-700 font-bold">No es Múltiplo de {BATCH_SIZE}</span></>;
                                                         })()}
                                                     </div>
                                                 </div>
@@ -1270,7 +1428,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                     >
                                         {modalData.readOnly ? 'Cerrar' : 'Cancelar'}
                                     </button>
-                                    {modalData.readOnly && !readOnly && (
+                                    {modalData.readOnly && (!readOnly || isAdmin) && (
                                         <button
                                             onClick={handleDeleteBatch}
                                             className="px-4 py-2 bg-red-100 text-red-600 font-bold rounded-lg hover:bg-red-200 flex items-center gap-2"
@@ -1282,7 +1440,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                         <button
                                             onClick={() => {
                                                 const cleanId = String(modalData.originalId || modalData.id).split('-p')[0];
-                                                handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix);
+                                                handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix, modalData.baseWeight);
                                             }}
                                             disabled={isLaunching}
                                             className="px-5 py-2 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 shadow-sm flex items-center gap-2 disabled:opacity-50"
@@ -1316,11 +1474,11 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Selecciona la Plantilla de Producción</label>
 
-                        {templates.length === 0 ? (
+                        {(launchModal.filteredTemplates || templates).length === 0 ? (
                             <p className="text-sm text-red-500">No hay plantillas activas. Crea una en el menú de Plantillas.</p>
                         ) : (
                             <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                                {templates.map(t => (
+                                {(launchModal.filteredTemplates || templates).map(t => (
                                     <label
                                         key={t.id}
                                         className={`flex items-start gap-3 p-3 border-2 rounded-xl cursor-pointer transition-all ${selectedTemplateId === t.id ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-blue-300'}`}

@@ -101,22 +101,37 @@ const QRGeneratorPage = () => {
             return;
         }
 
-        // Create QR data object
+        // Create QR data as pipe-separated plain text
+        // Format: productCode|barcode|name|unitsPerBox|lotNumber|expirationDate
+        // This avoids JSON special chars ({}": etc.) that get mangled by
+        // barcode scanners in keyboard-HID mode with Spanish keyboard layout
+        const unitsPerBox = parseInt(formData.unitsPerBox) || 1;
+        const qrString = [
+            formData.productCode,
+            formData.barcode,
+            formData.productName,
+            unitsPerBox,
+            formData.lotNumber,
+            formData.expirationDate
+        ].join('|');
+
+        // Keep structured object for display purposes
         const qrData = {
             productCode: formData.productCode,
             barcode: formData.barcode,
             name: formData.productName,
-            unitsPerBox: parseInt(formData.unitsPerBox) || 1,
+            unitsPerBox,
             lotNumber: formData.lotNumber,
-            lot: formData.lotNumber, // Alias for compatibility
+            lot: formData.lotNumber,
             expirationDate: formData.expirationDate
         };
 
         try {
-            // Generate QR code as data URL
-            const dataUrl = await QRCode.toDataURL(JSON.stringify(qrData), {
+            // Generate QR code as data URL using plain text (not JSON)
+            const dataUrl = await QRCode.toDataURL(qrString, {
                 width: 400,
                 margin: 2,
+                errorCorrectionLevel: 'M',
                 color: {
                     dark: '#000000',
                     light: '#FFFFFF'
@@ -460,10 +475,11 @@ const QRGeneratorPage = () => {
                             </div>
 
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
-                                <div className="font-medium text-blue-900 mb-2">Datos JSON del QR:</div>
+                                <div className="font-medium text-blue-900 mb-2">Contenido del QR (texto plano):</div>
                                 <pre className="bg-white p-2 rounded text-xs overflow-auto max-h-40">
-                                    {JSON.stringify(generatedData, null, 2)}
+                                    {[generatedData?.productCode, generatedData?.barcode, generatedData?.name, generatedData?.unitsPerBox, generatedData?.lotNumber, generatedData?.expirationDate].join('|')}
                                 </pre>
+                                <div className="text-xs text-blue-700 mt-1">Formato: SKU|Barcode|Nombre|Cantidad|Lote|Vencimiento</div>
                             </div>
 
                             <div className="flex gap-2">

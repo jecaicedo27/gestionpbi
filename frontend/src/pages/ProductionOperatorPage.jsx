@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { RefreshCw, Play, RotateCcw, CheckCircle, Clock, Layers, ChevronRight, Timer, Factory, Warehouse } from 'lucide-react';
@@ -76,7 +77,7 @@ const StageProgress = ({ notes }) => {
 };
 
 // ─── Batch Card (Redesigned) ──────────────────────────────────────────────────
-const BatchCard = ({ batch, onStart }) => {
+const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
     const [showSummary, setShowSummary] = useState(false);
     const isDone = batch.allDone;
     const isStarted = batch.completed > 0;
@@ -84,14 +85,33 @@ const BatchCard = ({ batch, onStart }) => {
     const progressPct = batch.total > 0 ? Math.round((batch.completed / batch.total) * 100) : 0;
 
     const currentStage = batch.notes.find(n => n.status === 'EXECUTING');
-    const currentStageName = currentStage?.stageName
-        ?.replace(/Ensamble Siigo\s*/i, 'Ens. ')
-        .replace(/Pesaje de\s*/i, '')
-        .replace(/Formación de\s*/i, 'Form. ')
-        .replace(/Empaque\s*/i, 'Emp. ')
-        .replace(/Conteo de\s*/i, 'Conteo ')
-        .trim()
-        .slice(0, 30);
+    const nextStage = currentStage || batch.notes.find(n => n.status === 'PENDING');
+    const displayStage = currentStage || nextStage;
+    const isEmpaqueWaiting = !currentStage && displayStage?.processType?.code === 'EMPAQUE';
+    const currentStageName = isEmpaqueWaiting
+        ? '📋 Recepción de Carrito'
+        : displayStage?.stageName
+            ?.replace(/Ensamble Siigo\s*/i, 'Ens. ')
+            .replace(/Pesaje de\s*/i, '')
+            .replace(/Formación de\s*/i, 'Form. ')
+            .replace(/Empaque\s*/i, 'Emp. ')
+            .replace(/Conteo de\s*/i, 'Conteo ')
+            .trim()
+            .slice(0, 30);
+
+    // OPERARIO_PICKING can act on CONTEO / EMPAQUE / ETIQUETADO / ENSAMBLE (Siigo post-empaque)
+    const PICKING_STAGES = ['CONTEO', 'EMPAQUE', 'ETIQUETADO', 'ENSAMBLE'];
+    const isPickingRole = userRole === 'OPERARIO_PICKING';
+    const nextStageCode = nextStage?.processType?.code || '';
+    const canPickingAct = !isPickingRole || PICKING_STAGES.includes(nextStageCode);
+
+    // PRODUCCION stops after CONTEO — EMPAQUE/ETIQUETADO belong to empaque team
+    const EMPAQUE_ONLY_STAGES = ['EMPAQUE', 'ETIQUETADO'];
+    const isProduccionRole = userRole === 'PRODUCCION';
+    const canProduccionAct = !isProduccionRole || !EMPAQUE_ONLY_STAGES.includes(nextStageCode);
+
+    // Combined: both restrictions must pass
+    const canAct = canPickingAct && canProduccionAct;
 
     const batchStartedAt = batch.notes
         .filter(n => n.startedAt)
@@ -139,7 +159,7 @@ const BatchCard = ({ batch, onStart }) => {
 
             {/* Top section */}
             <div className="p-5 pb-3">
-                {/* Status badge + time */}
+                {/* Status badge + time + LOT */}
                 <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                         <div className={`w-2 h-2 rounded-full flex-shrink-0 ${accent.dot} ${isRunning ? 'animate-pulse' : ''}`} />
@@ -147,31 +167,80 @@ const BatchCard = ({ batch, onStart }) => {
                             {isDone ? '✓ Completado' : isRunning ? 'En Proceso' : 'Pendiente'}
                         </span>
                     </div>
-                    {batchStartedAt && !isDone && (
-                        <div className="flex items-center gap-1 text-[11px] text-blue-500 font-semibold">
-                            <Timer size={10} />
-                            <LiveTimer startedAt={batchStartedAt} />
-                        </div>
-                    )}
-                    {isDone && batchStartedAt && batchCompletedAt && (
-                        <span className="text-[11px] text-emerald-600 font-semibold">
-                            ⏱ {fmtDuration(batchCompletedAt - batchStartedAt)}
-                        </span>
-                    )}
-                    {!isDone && batch.scheduledStart && (
-                        <span className="text-[11px] text-slate-400">
-                            Prog. {fmtTime(batch.scheduledStart)}
-                        </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                        {batchStartedAt && !isDone && (
+                            <div className="flex items-center gap-1 text-[11px] text-blue-500 font-semibold">
+                                <Timer size={10} />
+                                <LiveTimer startedAt={batchStartedAt} />
+                            </div>
+                        )}
+                        {isDone && batchStartedAt && batchCompletedAt && (
+                            <span className="text-[11px] text-emerald-600 font-semibold">
+                                ⏱ {fmtDuration(batchCompletedAt - batchStartedAt)}
+                            </span>
+                        )}
+                        {!isDone && batch.scheduledStart && (
+                            <span className="text-[11px] text-slate-400">
+                                Prog. {fmtTime(batch.scheduledStart)}
+                            </span>
+                        )}
+                        {isAdmin && !isDone && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onDelete(batch); }}
+                                className="text-xs font-bold text-white bg-red-500 hover:bg-red-600 rounded-lg px-2.5 py-1 transition-colors shadow-sm"
+                                title="Eliminar proceso (Admin)"
+                            >
+                                🗑 Eliminar
+                            </button>
+                        )}
+                    </div>
                 </div>
 
-                {/* Product name */}
-                <h3 className="text-lg font-extrabold text-slate-800 leading-tight mb-0.5">
-                    {batch.productName}
-                </h3>
-                <div className="text-xs text-slate-400 font-mono tracking-tight">
-                    {batch.batchNumber}
+                {/* Flavor + Product name + Lot badge */}
+                <div className="flex items-start justify-between">
+                    <div>
+                        {(() => {
+                            const bn = batch.batchNumber || '';
+                            const flavorMatch = bn.match(/^([A-ZÑ]+(?:\s+[A-ZÑ]+)*)-\d{6}/);
+                            const flavor = flavorMatch ? flavorMatch[1] : '';
+                            const flavorEmojis = { FRESA: '🍓', CEREZA: '🍒', BLUEBERRY: '🫐', MARACUYA: '🥭', UVA: '🍇', MANGO: '🥭', LIMON: '🍋', MORA: '🫐', DURAZNO: '🍑', PIÑA: '🍍' };
+                            const emoji = flavorEmojis[flavor] || '🧪';
+                            return (
+                                <>
+                                    {flavor && (
+                                        <div className="inline-flex items-center gap-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg px-3 py-1 mb-1 shadow-sm">
+                                            <span className="text-base">{emoji}</span>
+                                            <span className="text-base font-extrabold tracking-wide">{flavor}</span>
+                                        </div>
+                                    )}
+                                    <h3 className={`${flavor ? 'text-sm text-slate-500 font-semibold' : 'text-lg font-extrabold text-slate-800'} leading-tight mb-0.5`}>
+                                        {batch.productName}
+                                    </h3>
+                                </>
+                            );
+                        })()}
+                    </div>
+                    <div className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 flex-shrink-0 ml-2">
+                        <span className="text-xs">🏷️</span>
+                        <span className="text-xs font-bold text-emerald-700 font-mono">{batch.batchNumber}</span>
+                    </div>
                 </div>
+
+                {/* Output Targets — what tarros were programmed */}
+                {batch.outputTargets?.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                        {batch.outputTargets.map((t, i) => {
+                            // Shorten name: extract size (e.g. "3400 GR", "1150 GR", "350 GR")
+                            const sizeMatch = t.name.match(/(\d+)\s*(GR|ML|G|L|KG)/i);
+                            const sizeLabel = sizeMatch ? `${sizeMatch[1]}${sizeMatch[2].toLowerCase()}` : '';
+                            return (
+                                <span key={i} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-md px-1.5 py-0.5">
+                                    📦 {t.plannedUnits} × {sizeLabel || t.name.slice(0, 20)}
+                                </span>
+                            );
+                        })}
+                    </div>
+                )}
 
                 {/* Current stage label */}
                 {currentStageName && (
@@ -276,13 +345,19 @@ const BatchCard = ({ batch, onStart }) => {
 
             {/* CTA */}
             {!isDone ? (
-                <button
-                    onClick={() => onStart(batch)}
-                    className="w-full py-3 flex items-center justify-center gap-2 font-bold text-sm bg-slate-800 hover:bg-slate-900 text-white transition-colors group-hover:bg-blue-600">
-                    {isStarted ? <RotateCcw size={14} /> : <Play size={14} />}
-                    {isStarted ? 'Continuar proceso' : 'Iniciar proceso'}
-                    <ChevronRight size={14} className="ml-1 opacity-50" />
-                </button>
+                canAct ? (
+                    <button
+                        onClick={() => onStart(batch)}
+                        className="w-full py-3 flex items-center justify-center gap-2 font-bold text-sm bg-slate-800 hover:bg-slate-900 text-white transition-colors group-hover:bg-blue-600">
+                        {isStarted ? <RotateCcw size={14} /> : <Play size={14} />}
+                        {isStarted ? 'Continuar proceso' : 'Iniciar proceso'}
+                        <ChevronRight size={14} className="ml-1 opacity-50" />
+                    </button>
+                ) : (
+                    <div className="w-full py-3 flex items-center justify-center gap-2 font-bold text-sm bg-slate-200 text-slate-400 cursor-not-allowed">
+                        {isProduccionRole ? '🔒 Etapa de empaque' : '🔒 Esperando tu turno'}
+                    </div>
+                )
             ) : (
                 <div className="w-full py-2.5 bg-emerald-50 flex items-center justify-center gap-2 text-emerald-600 text-xs font-semibold border-t border-emerald-100">
                     <CheckCircle size={14} /> Finalizado
@@ -295,11 +370,14 @@ const BatchCard = ({ batch, onStart }) => {
 // ─── Main Page ─────────────────────────────────────────────────────────────
 const ProductionOperatorPage = () => {
     const navigate = useNavigate();
+    const { user } = useAuth();
+    const isAdmin = user?.role === 'ADMIN';
     const [loading, setLoading] = useState(true);
     const [batches, setBatches] = useState([]);
     const [lastRefresh, setLastRefresh] = useState(new Date());
     const [refreshing, setRefreshing] = useState(false);
     const [activeTab, setActiveTab] = useState('active');
+    const [activeLine, setActiveLine] = useState('perlas'); // 'perlas' | 'siropes'
 
     const fetchData = useCallback(async (showSpinner = false) => {
         if (showSpinner) setRefreshing(true);
@@ -318,9 +396,17 @@ const ProductionOperatorPage = () => {
                         productName: note.product?.name || 'Producto',
                         scheduledStart: note.productionBatch?.scheduledStart,
                         status: note.productionBatch?.status,
+                        outputTargets: (note.productionBatch?.outputTargets || []).map(t => ({
+                            name: t.product?.name || '',
+                            sku: t.product?.sku || '',
+                            plannedUnits: t.plannedUnits || 0,
+                            plannedWeightKg: t.plannedWeightKg || 0
+                        })),
+                        allProductNames: [],
                         notes: []
                     };
                 }
+                if (note.product?.name) batchMap[bId].allProductNames.push(note.product.name);
                 batchMap[bId].notes.push(note);
             }
 
@@ -336,6 +422,17 @@ const ProductionOperatorPage = () => {
                 })
                 .sort((a, c) => {
                     if (a.allDone !== c.allDone) return a.allDone ? 1 : -1;
+
+                    // OPERARIO_PICKING: actionable batches first
+                    if (user?.role === 'OPERARIO_PICKING') {
+                        const PICKING_STAGES = ['CONTEO', 'EMPAQUE', 'ETIQUETADO'];
+                        const aNext = (a.notes.find(n => n.status === 'EXECUTING') || a.notes.find(n => n.status === 'PENDING'))?.processType?.code || '';
+                        const cNext = (c.notes.find(n => n.status === 'EXECUTING') || c.notes.find(n => n.status === 'PENDING'))?.processType?.code || '';
+                        const aCanAct = PICKING_STAGES.includes(aNext);
+                        const cCanAct = PICKING_STAGES.includes(cNext);
+                        if (aCanAct !== cCanAct) return aCanAct ? -1 : 1;
+                    }
+
                     if (a.inProgress !== c.inProgress) return a.inProgress ? -1 : 1;
                     return new Date(c.scheduledStart || 0) - new Date(a.scheduledStart || 0);
                 });
@@ -360,13 +457,39 @@ const ProductionOperatorPage = () => {
         if (batch.firstPending) navigate(`/assembly-execution/${batch.firstPending.id}`);
     };
 
-    const total = batches.length;
-    const inProgress = batches.filter(b => !b.allDone && b.completed > 0).length;
-    const completedCount = batches.filter(b => b.allDone).length;
-    const pending = batches.filter(b => b.completed === 0 && !b.allDone).length;
+    const handleDelete = async (batch) => {
+        if (!confirm(`¿Eliminar el proceso "${batch.productName}" (${batch.batchNumber})?\n\nEsta acción no se puede deshacer.`)) return;
+        try {
+            await api.delete(`/production/liquipops/${batch.id}`);
+            setBatches(prev => prev.filter(b => b.id !== batch.id));
+        } catch (err) {
+            console.error('Error deleting batch:', err);
+            alert('Error al eliminar: ' + (err.response?.data?.error || err.message));
+        }
+    };
 
-    const activeBatches = batches.filter(b => !b.allDone);
-    const completedBatches = batches.filter(b => b.allDone);
+    // Classify batch as sirope or perla — check ALL stage products, not just the first
+    const isSirope = (b) => {
+        const bn = (b.batchNumber || '').toUpperCase();
+        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY')) return true;
+        return (b.allProductNames || []).some(p => {
+            const u = p.toUpperCase();
+            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY');
+        });
+    };
+
+    const lineBatches = batches.filter(b => activeLine === 'siropes' ? isSirope(b) : !isSirope(b));
+    const total = lineBatches.length;
+    const inProgress = lineBatches.filter(b => !b.allDone && b.completed > 0).length;
+    const completedCount = lineBatches.filter(b => b.allDone).length;
+    const pending = lineBatches.filter(b => b.completed === 0 && !b.allDone).length;
+
+    const activeBatches = lineBatches.filter(b => !b.allDone);
+    const completedBatches = lineBatches.filter(b => b.allDone);
+
+    // Counts for line tabs
+    const perlaCount = batches.filter(b => !b.allDone && !isSirope(b)).length;
+    const siropeCount = batches.filter(b => !b.allDone && isSirope(b)).length;
 
     const stats = [
         { label: 'Total', value: total, icon: Factory, color: 'text-slate-700', bg: 'bg-white', border: 'border-slate-200' },
@@ -380,18 +503,23 @@ const ProductionOperatorPage = () => {
         { key: 'completed', label: 'Completados', count: completedBatches.length, icon: '✅' },
     ];
 
+    const lineTabs = [
+        { key: 'perlas', label: 'Perlas', count: perlaCount, icon: '🔵', color: '#3b82f6', bg: '#eff6ff' },
+        { key: 'siropes', label: 'Siropes', count: siropeCount, icon: '🍯', color: '#d97706', bg: '#fffbeb' },
+    ];
+
     const visibleBatches = activeTab === 'active' ? activeBatches : completedBatches;
 
     return (
         <div className="min-h-screen" style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #f0f4ff 100%)' }}>
             {/* Header */}
-            <div className="bg-white/80 backdrop-blur-sm border-b border-slate-200 px-6 py-5 sticky top-0 z-10">
+            <div className="bg-white/80 backdrop-blur-sm border-b border-slate-200 px-4 py-3 sticky top-0 z-10">
                 <div>
                     <div className="flex items-center justify-between mb-4">
                         <div>
                             <div className="flex items-center gap-2.5 mb-0.5">
                                 <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
-                                    <Layers size={16} className="text-white" />
+                                     <Layers size={16} className="text-white" />
                                 </div>
                                 <h1 className="text-xl font-extrabold text-slate-800">Panel de Producción</h1>
                             </div>
@@ -417,16 +545,61 @@ const ProductionOperatorPage = () => {
                     </div>
 
                     {/* Stats row */}
-                    <div className="grid grid-cols-4 gap-3">
+                    <div className="grid grid-cols-4 gap-2">
                         {stats.map(s => (
-                            <div key={s.label} className={`${s.bg} border ${s.border} rounded-xl px-4 py-3 flex items-center gap-3`}>
-                                <s.icon size={18} className={`${s.color} opacity-60`} />
+                            <div key={s.label} className={`${s.bg} border ${s.border} rounded-xl px-3 py-2.5 flex items-center gap-2`}>
+                                <s.icon size={16} className={`${s.color} opacity-60 hidden sm:block`} />
                                 <div>
-                                    <div className={`text-2xl font-extrabold leading-none ${s.color}`}>{s.value}</div>
-                                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5">{s.label}</div>
+                                    <div className={`text-xl font-extrabold leading-none ${s.color}`}>{s.value}</div>
+                                    <div className="text-[9px] text-slate-400 font-semibold uppercase tracking-wider mt-0.5">{s.label}</div>
                                 </div>
                             </div>
                         ))}
+                    </div>
+
+                    {/* Line Tabs - full width, PremixQuickPanel style */}
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+                        {lineTabs.map(lt => {
+                            const isActive = activeLine === lt.key;
+                            return (
+                                <button
+                                    key={lt.key}
+                                    onClick={() => { setActiveLine(lt.key); setActiveTab('active'); }}
+                                    style={{
+                                        flex: 1,
+                                        padding: '0.7rem 1rem',
+                                        borderRadius: 14,
+                                        border: 'none',
+                                        background: isActive
+                                            ? (lt.key === 'perlas' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'linear-gradient(135deg, #f59e0b, #d97706)')
+                                            : '#f1f5f9',
+                                        color: isActive ? '#fff' : '#94a3b8',
+                                        fontWeight: 800,
+                                        fontSize: '1rem',
+                                        cursor: 'pointer',
+                                        transition: 'all .25s',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '0.5rem',
+                                        boxShadow: isActive ? '0 4px 12px rgba(0,0,0,0.15)' : 'none',
+                                    }}
+                                >
+                                    <span style={{ fontSize: '1.15rem' }}>{lt.icon}</span>
+                                    {lt.label}
+                                    <span style={{
+                                        background: isActive ? 'rgba(255,255,255,0.25)' : '#cbd5e1',
+                                        color: isActive ? '#fff' : '#64748b',
+                                        borderRadius: 20,
+                                        padding: '0.1rem 0.6rem',
+                                        fontSize: '0.8rem',
+                                        fontWeight: 900,
+                                        minWidth: 24,
+                                        textAlign: 'center',
+                                    }}>{lt.count}</span>
+                                </button>
+                            );
+                        })}
                     </div>
 
                     <div className="mt-2 text-[10px] text-slate-400 flex items-center gap-1 ml-1">
@@ -437,8 +610,8 @@ const ProductionOperatorPage = () => {
             </div>
 
             {/* Content */}
-            <div className="px-6 py-6">
-                {/* Tabs */}
+            <div className="px-4 py-4">
+                {/* Status Tabs */}
                 <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
                     {tabs.map(tab => (
                         <button
@@ -491,9 +664,9 @@ const ProductionOperatorPage = () => {
                         </div>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
                         {visibleBatches.map(batch => (
-                            <BatchCard key={batch.id} batch={batch} onStart={handleStart} />
+                            <BatchCard key={batch.id} batch={batch} onStart={handleStart} onDelete={handleDelete} isAdmin={isAdmin} userRole={user?.role} />
                         ))}
                     </div>
                 )}

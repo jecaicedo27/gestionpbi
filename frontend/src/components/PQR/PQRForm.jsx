@@ -148,6 +148,32 @@ const PQRForm = ({ onClose, onSuccess }) => {
         setFiles([...files, ...selectedFiles]);
     };
 
+    const handlePaste = (e) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        const pastedFiles = [];
+        for (const item of items) {
+            if (item.type.startsWith('image/') || item.type.startsWith('video/')) {
+                const file = item.getAsFile();
+                if (file) pastedFiles.push(file);
+            }
+        }
+        if (pastedFiles.length === 0) return;
+        e.preventDefault();
+        if (pastedFiles.length + files.length > 5) {
+            alert('Máximo 5 archivos permitidos');
+            return;
+        }
+        setFiles(prev => [...prev, ...pastedFiles]);
+    };
+
+    // Global paste listener — Ctrl+V works from anywhere in the form
+    useEffect(() => {
+        const onPaste = (e) => handlePaste(e);
+        document.addEventListener('paste', onPaste);
+        return () => document.removeEventListener('paste', onPaste);
+    }, [files]);
+
     const removeFile = (index) => {
         setFiles(files.filter((_, i) => i !== index));
     };
@@ -295,22 +321,22 @@ const PQRForm = ({ onClose, onSuccess }) => {
             <div className="bg-white rounded-2xl shadow-xl w-[95%] max-w-[1600px] max-h-[95vh] overflow-hidden flex flex-col">
 
                 {/* HEADER */}
-                <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-blue-600 to-indigo-700">
+                <div className="px-5 py-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-blue-600 to-indigo-700">
                     <div className="flex items-center gap-3 text-white">
-                        <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm">
-                            <FileText size={24} className="text-white" />
+                        <div className="p-1.5 bg-white/20 rounded-lg backdrop-blur-sm">
+                            <FileText size={20} className="text-white" />
                         </div>
                         <div>
-                            <h2 className="text-xl font-bold">Nueva Solicitud de Garantía</h2>
-                            <p className="text-blue-100 text-sm">Reporte de Novedades y Calidad (PQR)</p>
+                            <h2 className="text-lg font-bold leading-tight">Nueva Solicitud de Garantía</h2>
+                            <p className="text-blue-100 text-xs">Reporte de Novedades y Calidad (PQR)</p>
                         </div>
                     </div>
                     <button onClick={onClose} className="text-blue-100 hover:text-white hover:bg-white/10 p-2 rounded-full transition-colors">
-                        <X size={24} />
+                        <X size={20} />
                     </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto bg-gray-50/50 p-6 space-y-8">
+                <div className="flex-1 overflow-y-auto bg-gray-50/50 p-4 space-y-4">
                     {/* Error Banner */}
                     {error && (
                         <div className="bg-red-50 text-red-700 p-4 rounded-xl border border-red-100 flex items-center gap-3 shadow-sm">
@@ -326,17 +352,17 @@ const PQRForm = ({ onClose, onSuccess }) => {
                         <div className="lg:col-span-7 space-y-6">
 
                             {/* ADD PRODUCT CARD */}
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden group">
-                                <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
-                                    <Package size={120} />
+                            <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 relative overflow-hidden group">
+                                <div className="absolute top-0 right-0 p-3 opacity-5 group-hover:opacity-10 transition-opacity">
+                                    <Package size={80} />
                                 </div>
 
-                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-6 text-lg">
-                                    <span className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-sm">1</span>
+                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-3 text-base">
+                                    <span className="w-6 h-6 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xs">1</span>
                                     Detalle del Producto
                                 </h3>
 
-                                <div className="space-y-5 relative z-10">
+                                <div className="space-y-3 relative z-10">
                                     <div>
                                         <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
                                             Subdistribuidor / Cliente Final (Opcional)
@@ -354,12 +380,12 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                             filterOption={false}
                                             notFoundContent={reportingPartyLoading ? 'Buscando...' : 'Sin coincidencias. Puede registrar un nombre nuevo'}
                                         />
-                                        <p className="text-xs text-gray-400 mt-1.5">
+                                        <p className="text-xs text-gray-400 mt-1">
                                             Este nombre quedará guardado en su lista para próximas solicitudes.
                                         </p>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
+                                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
                                         <div className="md:col-span-3">
                                             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Categoría</label>
                                             <select
@@ -397,7 +423,7 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                         </div>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                         <div>
                                             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Tipo de Reporte</label>
                                             <select
@@ -462,18 +488,12 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                                                 : 'bg-amber-50/50 border-2 border-amber-300 focus:ring-4 focus:ring-amber-500/20'
                                                             }`}
                                                     />
-                                                    <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center justify-between">
-                                                        <div className="flex items-center gap-2">
-                                                            <AlertCircle size={16} className="text-amber-600 shrink-0" />
-                                                            <div>
-                                                                <p className="text-sm font-semibold text-amber-800">Ingreso manual de lote</p>
-                                                                <p className="text-xs text-amber-600">Formato: <span className="font-mono font-bold">AAMMDD-HHMM</span> (ej: 260205-1400)</p>
-                                                            </div>
-                                                        </div>
+                                                    <div className="mt-1.5 flex items-center justify-between text-xs">
+                                                        <span className="text-amber-600">Formato: <span className="font-mono font-bold">AAMMDD-HHMM</span></span>
                                                         <button
                                                             type="button"
                                                             onClick={() => { setManualLotMode(false); setLotNumber(''); }}
-                                                            className="text-sm text-blue-600 hover:text-blue-800 font-medium hover:underline transition-colors whitespace-nowrap ml-3"
+                                                            className="text-blue-600 hover:text-blue-800 font-medium hover:underline transition-colors"
                                                         >
                                                             ← Volver a la lista
                                                         </button>
@@ -501,23 +521,23 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                         <textarea
                                             value={description}
                                             onChange={(e) => setDescription(e.target.value)}
-                                            rows="3"
+                                            rows="2"
                                             className="w-full rounded-xl border-gray-200 bg-gray-50/50 px-4 py-2.5 text-gray-700 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-shadow outline-none resize-none"
                                             placeholder="Describa el problema detalladamente..."
                                         />
                                     </div>
 
-                                    <div className="mt-6 mb-6">
-                                        <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-4 text-sm uppercase tracking-wider">
-                                            Evidencia (Obligatorio)
-                                        </h3>
-
-                                        <div className="bg-blue-50 text-blue-800 text-xs p-3 rounded-lg mb-4 flex gap-2">
-                                            <Info size={16} className="shrink-0 mt-0.5" />
-                                            <p>Por este producto, suba al menos una foto o video. <span className="font-bold">El número de Lote debe ser visible.</span></p>
+                                    <div className="mt-3 mb-3">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h3 className="font-bold text-gray-800 flex items-center gap-2 text-sm uppercase tracking-wider">
+                                                Evidencia (Obligatorio)
+                                            </h3>
+                                            <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Lote debe ser visible · Ctrl+V para pegar</span>
                                         </div>
 
-                                        <div className="border-2 border-dashed border-blue-200 hover:border-blue-400 bg-blue-50/30 hover:bg-blue-50/50 transition-colors rounded-xl p-6 text-center group cursor-pointer relative">
+                                        <div
+                                            className="border-2 border-dashed border-blue-200 hover:border-blue-400 bg-blue-50/30 hover:bg-blue-50/50 transition-colors rounded-xl p-3 text-center group cursor-pointer relative"
+                                        >
                                             <input
                                                 type="file"
                                                 id="evidence"
@@ -526,12 +546,14 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                                                 onChange={handleFileChange}
                                             />
-                                            <div className="pointer-events-none">
-                                                <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform">
-                                                    <Upload size={24} />
+                                            <div className="pointer-events-none flex items-center justify-center gap-3">
+                                                <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                                                    <Upload size={20} />
                                                 </div>
-                                                <p className="text-sm font-semibold text-blue-900">Click para subir evidencia</p>
-                                                <p className="text-xs text-blue-600/70 mt-1">Fotos o Videos del daño (Max 5)</p>
+                                                <div className="text-left">
+                                                    <p className="text-sm font-semibold text-blue-900">Click para subir evidencia</p>
+                                                    <p className="text-xs text-blue-600/70">Fotos o Videos del daño (Max 5)</p>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -580,17 +602,17 @@ const PQRForm = ({ onClose, onSuccess }) => {
                         <div className="lg:col-span-5 space-y-6">
 
                             {/* BASKET SUMMARY */}
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 h-fit">
-                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-4 text-lg">
-                                    <span className="w-8 h-8 rounded-full bg-green-50 text-green-600 flex items-center justify-center text-sm">2</span>
+                            <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 h-fit">
+                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-3 text-base">
+                                    <span className="w-6 h-6 rounded-full bg-green-50 text-green-600 flex items-center justify-center text-xs">2</span>
                                     Productos Agregados
                                 </h3>
 
                                 {basket.length === 0 ? (
-                                    <div className="text-center py-10 px-4 border-2 border-dashed border-gray-100 rounded-xl bg-gray-50/30">
-                                        <Package size={48} className="mx-auto text-gray-300 mb-3" />
-                                        <p className="text-gray-500 font-medium">Su lista está vacía</p>
-                                        <p className="text-xs text-gray-400 mt-1">Complete el formulario y haga click en "Agregar"</p>
+                                    <div className="text-center py-6 px-4 border-2 border-dashed border-gray-100 rounded-xl bg-gray-50/30">
+                                        <Package size={36} className="mx-auto text-gray-300 mb-2" />
+                                        <p className="text-gray-500 font-medium text-sm">Su lista está vacía</p>
+                                        <p className="text-xs text-gray-400 mt-0.5">Complete el formulario y haga click en "Agregar"</p>
                                     </div>
                                 ) : (
                                     <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
@@ -630,17 +652,17 @@ const PQRForm = ({ onClose, onSuccess }) => {
                             </div>
 
                             {/* REFUND METHOD SETTINGS */}
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 h-fit">
-                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-4 text-lg">
-                                    <span className="w-8 h-8 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center text-sm">3</span>
+                            <div className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 h-fit">
+                                <h3 className="font-bold text-gray-800 flex items-center gap-2 mb-3 text-base">
+                                    <span className="w-6 h-6 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center text-xs">3</span>
                                     Preferencia de Garantía
                                 </h3>
-                                <p className="text-sm text-gray-500 mb-4">
+                                <p className="text-xs text-gray-500 mb-3">
                                     En caso de aprobación, ¿cómo prefiere recibir la compensación?
                                 </p>
 
-                                <div className="space-y-3">
-                                    <label className={`flex items-start gap-3 p-4 rounded-xl border-2 transition-all cursor-pointer ${refundMethod === 'WALLET_BALANCE' ? 'border-blue-500 bg-blue-50/50' : 'border-gray-100 hover:border-gray-200'}`}>
+                                <div className="space-y-2">
+                                    <label className={`flex items-start gap-3 p-3 rounded-xl border-2 transition-all cursor-pointer ${refundMethod === 'WALLET_BALANCE' ? 'border-blue-500 bg-blue-50/50' : 'border-gray-100 hover:border-gray-200'}`}>
                                         <div className="pt-0.5">
                                             <input
                                                 type="radio"
@@ -657,22 +679,27 @@ const PQRForm = ({ onClose, onSuccess }) => {
                                         </div>
                                     </label>
 
-                                    <label className={`flex items-start gap-3 p-4 rounded-xl border-2 transition-all cursor-pointer ${refundMethod === 'PHYSICAL_REPLACEMENT' ? 'border-blue-500 bg-blue-50/50' : 'border-gray-100 hover:border-gray-200'}`}>
-                                        <div className="pt-0.5">
-                                            <input
-                                                type="radio"
-                                                name="refundMethod"
-                                                value="PHYSICAL_REPLACEMENT"
-                                                checked={refundMethod === 'PHYSICAL_REPLACEMENT'}
-                                                onChange={(e) => setRefundMethod(e.target.value)}
-                                                className="w-4 h-4 text-blue-600 focus:ring-blue-500"
-                                            />
+                                    <div className="relative p-3 rounded-xl border-2 border-gray-100 bg-gray-50/50 opacity-60 cursor-not-allowed">
+                                        <div className="flex items-start gap-3">
+                                            <div className="pt-0.5">
+                                                <input
+                                                    type="radio"
+                                                    name="refundMethod"
+                                                    value="PHYSICAL_REPLACEMENT"
+                                                    disabled
+                                                    className="w-4 h-4 text-gray-300"
+                                                />
+                                            </div>
+                                            <div>
+                                                <span className="block font-semibold text-gray-400 text-sm line-through">Reposición Física</span>
+                                                <p className="text-xs text-gray-400 mt-1">Se enviará el producto nuevamente. Sujeto a disponibilidad y tiempos de logística.</p>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <span className="block font-semibold text-gray-800 text-sm">Reposición Física</span>
-                                            <p className="text-xs text-gray-500 mt-1">Se enviará el producto nuevamente. Sujeto a disponibilidad y tiempos de logística.</p>
+                                        <div className="mt-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                                            <AlertCircle size={14} className="text-amber-500 shrink-0" />
+                                            <p className="text-xs text-amber-700 font-medium">Por disponibilidad de inventario esta opción no está habilitada. La nota crédito es el método más ágil.</p>
                                         </div>
-                                    </label>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -680,7 +707,7 @@ const PQRForm = ({ onClose, onSuccess }) => {
                 </div>
 
                 {/* FOOTER */}
-                <div className="p-6 border-t border-gray-100 bg-white flex justify-between items-center sticky bottom-0 z-10 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                <div className="px-5 py-3 border-t border-gray-100 bg-white flex justify-between items-center sticky bottom-0 z-10 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
                     <p className="text-xs text-gray-400 hidden sm:block">
                         <Info size={14} className="inline mr-1 align-sub" />
                         Asegúrese de subir evidencia clara para agilizar el proceso.

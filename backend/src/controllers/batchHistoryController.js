@@ -89,7 +89,7 @@ const batchHistoryController = {
                     ? new Date(lastCompleted) - new Date(firstStarted) : null;
 
                 // Conteo/Empaque data from processParameters
-                let totalPlanned = 0, totalActual = 0, totalDefective = 0;
+                let totalPlanned = 0, totalActual = 0, totalDefective = 0, totalProducedGrams = 0;
                 for (const n of notes) {
                     if (n.processType?.code === 'CONTEO' && n.processParameters?.conteo) {
                         for (const [, data] of Object.entries(n.processParameters.conteo)) {
@@ -98,7 +98,12 @@ const batchHistoryController = {
                         }
                     }
                     if (n.processType?.code === 'EMPAQUE' && n.processParameters?.empaque) {
-                        totalDefective += n.processParameters.empaque.defective_qty || n.processParameters.empaque.defective || 0;
+                        const emp = n.processParameters.empaque;
+                        // targetQuantity has the unit count (71, 13), conteo_qty has grams
+                        totalActual += n.targetQuantity || 0;
+                        totalPlanned += n.targetQuantity || 0;
+                        totalDefective += emp.defective_qty || emp.defective || 0;
+                        totalProducedGrams += emp.conteo_qty || 0;
                     }
                 }
 
@@ -201,23 +206,41 @@ const batchHistoryController = {
                     lotNumber: lc.materialLot?.lotNumber,
                     expiresAt: lc.materialLot?.expiresAt,
                     quantityUsed: lc.quantityUsed,
+                    unit: lc.materialLot?.unit || 'gramo',
                     usedAt: lc.usedAt,
                     observations: lc.observations
                 });
             }
 
+            // Build notes array (needed for production lot query and timeline)
+            const notes = batch.assemblyNotes || [];
+
             // Fetch output production lots created by this batch
-            const batchPrefix = batch.batchNumber || 'NONE';
-            const productionLots = await prisma.materialLot.findMany({
-                where: {
-                    lotNumber: { startsWith: batchPrefix }
-                },
-                include: { product: { select: { name: true } } },
-                orderBy: { receivedAt: 'asc' }
-            });
+            // Strategy: find lots whose productId matches any assembly note product
+            // and were created during the batch's time window (no purchaseOrderItemId = production lot)
+            const noteProductIds = [...new Set(notes.map(n => n.productId).filter(Boolean))];
+            const batchStart = notes.reduce((min, n) =>
+                n.startedAt && (!min || n.startedAt < min) ? n.startedAt : min, null);
+            const batchEnd = notes.reduce((max, n) =>
+                n.completedAt && (!max || n.completedAt > max) ? n.completedAt : max, null);
+
+            let productionLots = [];
+            if (noteProductIds.length > 0 && batchStart) {
+                productionLots = await prisma.materialLot.findMany({
+                    where: {
+                        productId: { in: noteProductIds },
+                        purchaseOrderItemId: null,
+                        receivedAt: {
+                            gte: new Date(new Date(batchStart).getTime() - 60000),
+                            ...(batchEnd ? { lte: new Date(new Date(batchEnd).getTime() + 60000) } : {})
+                        }
+                    },
+                    include: { product: { select: { name: true } } },
+                    orderBy: { receivedAt: 'asc' }
+                });
+            }
 
             // Build timeline
-            const notes = batch.assemblyNotes || [];
             const firstStarted = notes.reduce((min, n) =>
                 n.startedAt && (!min || n.startedAt < min) ? n.startedAt : min, null);
             const lastCompleted = notes.reduce((max, n) =>
@@ -228,6 +251,32 @@ const batchHistoryController = {
             const timeline = notes.map(note => {
                 const noteDuration = note.startedAt && note.completedAt
                     ? Math.round((new Date(note.completedAt) - new Date(note.startedAt)) / 60000) : null;
+
+                // Extract photos from processParameters
+                const photos = [];
+                const pp = note.processParameters || {};
+                // QC verification photo
+                if (pp.qc_result?.verificationPhoto) photos.push({ url: pp.qc_result.verificationPhoto, label: 'Verificación QC' });
+                // QC individual photos
+                if (pp.qc_result?.photos) {
+                    Object.entries(pp.qc_result.photos).forEach(([key, url]) => {
+                        if (url) photos.push({ url, label: key });
+                    });
+                }
+                // Cocción / Timer photos (temperature validation)
+                if (pp.timerState?.photoUrl) photos.push({ url: pp.timerState.photoUrl, label: '🌡️ Foto Temperatura' });
+                if (pp.coccion_result?.photoUrl && pp.coccion_result.photoUrl !== pp.timerState?.photoUrl) {
+                    photos.push({ url: pp.coccion_result.photoUrl, label: '🌡️ Cocción Completada' });
+                }
+                // Empaque photos
+                if (pp.empaque?.photo_urls?.length > 0) {
+                    pp.empaque.photo_urls.forEach((url, i) => photos.push({ url, label: `Empaque ${i + 1}` }));
+                }
+                // Temperature & sensory data from QC or cocción
+                const temperature = pp.coccion_result?.realTemperature || pp.qc_result?.temperature || null;
+                const targetTemperature = pp.coccion_result?.targetTemperature || pp.targetTemperature || null;
+                const timerCompleted = pp.coccion_result?.timerCompleted ?? null;
+                const sensoryChecks = pp.qc_result?.sensoryChecks || null;
 
                 return {
                     id: note.id,
@@ -244,6 +293,11 @@ const batchHistoryController = {
                     actualQuantity: note.actualQuantity,
                     observations: note.observations,
                     processParameters: note.processParameters,
+                    photos,
+                    temperature,
+                    targetTemperature,
+                    timerCompleted,
+                    sensoryChecks,
                     ingredients: (note.items || []).map(item => ({
                         name: item.component?.name,
                         plannedQuantity: item.plannedQuantity,
@@ -280,7 +334,11 @@ const batchHistoryController = {
                     }
                 }
                 if (n.processType?.code === 'EMPAQUE' && n.processParameters?.empaque) {
-                    totalDefective += n.processParameters.empaque.defective_qty || n.processParameters.empaque.defective || 0;
+                    const emp = n.processParameters.empaque;
+                    // targetQuantity has the unit count (71, 13), conteo_qty has grams
+                    unitsActual += n.targetQuantity || 0;
+                    unitsPlanned += n.targetQuantity || 0;
+                    totalDefective += emp.defective_qty || emp.defective || 0;
                 }
             }
 

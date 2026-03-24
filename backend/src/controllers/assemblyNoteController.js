@@ -97,11 +97,14 @@ const assemblyNoteController = {
 
                     // For PESAJE: SKIP recalculation — quickStart already computed correct
                     // scaled values (handles both absolute and per-gram ratio inputs).
+                    // For ENSAMBLE: SKIP recalculation — template quantityPerUnit stores
+                    // absolute grams (already scaled), NOT per-unit ratios. Multiplying
+                    // again by targetQuantity would produce wildly inflated values.
                     // Live recalc would lose the scaling and show raw template values.
-                    // For ENSAMBLE and EMPAQUE: qpu is per-unit, multiply by targetQuantity.
                     const isPesajeNote = note.processType?.code === 'PESAJE';
-                    if (isPesajeNote) {
-                        // Keep stored DB values for PESAJE — they are already correct
+                    const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
+                    if (isPesajeNote || isEnsambleNote) {
+                        // Keep stored DB values — they are already correct
                         // Just re-sort items to match template order (below)
                     } else {
                     note.items = note.items.map(item => {
@@ -124,10 +127,10 @@ const assemblyNoteController = {
                     // operator sees it with its planned quantity (no DB write, read-only display).
                     // Skip for PESAJE — quickStart creates all items with correct scaling.
                     const existingComponentIds = new Set(note.items.map(i => i.componentId));
-                    // Skip virtual item injection for flavor-substituted notes or PESAJE
+                    // Skip virtual item injection for flavor-substituted notes, PESAJE, or ENSAMBLE
                     // (their items intentionally differ from the template inputs)
                     const isFlavorSubstituted = note.processParameters?.flavorKey;
-                    if (!isFlavorSubstituted && !isPesajeNote) {
+                    if (!isFlavorSubstituted && !isPesajeNote && !isEnsambleNote) {
                         for (const ti of templateInputs) {
                             if (!existingComponentIds.has(ti.productId)) {
                                 note.items.unshift({
@@ -356,6 +359,31 @@ const assemblyNoteController = {
         try {
             const { id } = req.params;
             const operatorId = req.body.operatorId || req.user?.id;
+
+            // ── Role restriction on START: only OPERARIO_PICKING / ADMIN can start EMPAQUE / final ENSAMBLE ──
+            // Final ENSAMBLE = comes AFTER EMPAQUE steps in the same batch
+            const noteForStart = await prisma.assemblyNote.findUnique({
+                where: { id },
+                select: { processType: { select: { code: true } }, stageOrder: true, productionBatchId: true }
+            });
+            const startStageCode = noteForStart?.processType?.code;
+            const startRole = req.user?.role;
+            let startRestricted = startStageCode === 'EMPAQUE';
+            if (startStageCode === 'ENSAMBLE') {
+                const empBefore = await prisma.assemblyNote.count({
+                    where: {
+                        productionBatchId: noteForStart.productionBatchId,
+                        processType: { code: 'EMPAQUE' },
+                        stageOrder: { lt: noteForStart.stageOrder }
+                    }
+                });
+                startRestricted = empBefore > 0;
+            }
+            if (startRestricted && startRole && !['OPERARIO_PICKING', 'ADMIN'].includes(startRole)) {
+                console.log(`[startNote] ⛔ BLOCKED — role ${startRole} cannot start ${startStageCode} stage (post-empaque)`);
+                return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede iniciar etapas de ${startStageCode}` });
+            }
+
             const result = await assemblyService.consumeMaterialsAndStart(id, operatorId);
             res.json(result);
         } catch (error) {
@@ -430,6 +458,33 @@ const assemblyNoteController = {
             const operatorId = req.body.operatorId || req.user?.id;
             console.log(`[completeNote] 🎯 ENTRY — noteId=${id}, actualQuantity=${actualQuantity}, operatorId=${operatorId}`);
 
+            // ── Role restriction: only OPERARIO_PICKING / ADMIN can complete EMPAQUE / final ENSAMBLE ──
+            // Final ENSAMBLE = one that comes AFTER EMPAQUE stages in the same batch (product final)
+            // All other ENSAMBLE (BASE, COMPUESTO, PROTONICO, SIROPE) = production, allowed for all
+            const noteForRoleCheck = await prisma.assemblyNote.findUnique({
+                where: { id },
+                select: { processType: { select: { code: true } }, stageOrder: true, productionBatchId: true }
+            });
+            const stageCode = noteForRoleCheck?.processType?.code;
+            const callerRole = req.user?.role;
+            let isRestricted = stageCode === 'EMPAQUE';
+            if (stageCode === 'ENSAMBLE') {
+                // Check if there are EMPAQUE siblings with lower stageOrder → this is a post-empaque ENSAMBLE
+                const empaqueBeforeCount = await prisma.assemblyNote.count({
+                    where: {
+                        productionBatchId: noteForRoleCheck.productionBatchId,
+                        processType: { code: 'EMPAQUE' },
+                        stageOrder: { lt: noteForRoleCheck.stageOrder }
+                    }
+                });
+                isRestricted = empaqueBeforeCount > 0;
+            }
+            const allowedRoles = ['OPERARIO_PICKING', 'ADMIN'];
+            if (isRestricted && callerRole && !allowedRoles.includes(callerRole)) {
+                console.log(`[completeNote] ⛔ BLOCKED — role ${callerRole} cannot complete ${stageCode} stage (post-empaque: ${isRestricted})`);
+                return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede finalizar etapas de ${stageCode}` });
+            }
+
             const result = await assemblyService.completeNote(id, {
                 actualQuantity: parseFloat(actualQuantity) || 0,
                 observations,
@@ -487,16 +542,17 @@ const assemblyNoteController = {
                             });
                         }
 
-                        // Scale and auto-consume EMPAQUE items
+                        // Scale EMPAQUE items by conteo actual (but do NOT consume inventory here).
+                        // Inventory consumption happens when EMPAQUE itself completes via
+                        // assemblyService.js auto-consume logic. Pre-consuming here caused
+                        // double-deduction bugs and premature stock depletion.
                         if (isEmpaque) {
-                            const consumedItems = [];
                             for (const item of sibling.items) {
                                 const pq = item.plannedQuantity;
                                 if (pq == null || pq <= 0) continue;
 
                                 // Scale quantity by conteo actual
                                 const scaledQty = Math.abs(scaleFactor - 1) < 0.001 ? pq : pq * scaleFactor;
-                                const roundedQty = Math.round(scaledQty);
 
                                 // Update plannedQuantity + set actualQuantity = planned (auto-filled)
                                 await prisma.assemblyNoteItem.update({
@@ -506,133 +562,25 @@ const assemblyNoteController = {
                                         actualQuantity: scaledQty
                                     }
                                 });
-
-                                // Auto-consume from MaterialLot in PRODUCTION zone
-                                if (item.componentId) {
-                                    // Try PRODUCTION zone first, then any zone
-                                    let lot = await prisma.materialLot.findFirst({
-                                        where: {
-                                            productId: item.componentId,
-                                            currentQuantity: { gt: 0 },
-                                            status: { in: ['AVAILABLE', 'LOW_STOCK'] },
-                                            zone: 'PRODUCTION'
-                                        },
-                                        orderBy: { receivedAt: 'desc' }
-                                    });
-                                    if (!lot) {
-                                        // Fallback: any zone with stock
-                                        lot = await prisma.materialLot.findFirst({
-                                            where: {
-                                                productId: item.componentId,
-                                                currentQuantity: { gt: 0 },
-                                                status: { in: ['AVAILABLE', 'LOW_STOCK'] }
-                                            },
-                                            orderBy: { receivedAt: 'desc' }
-                                        });
-                                    }
-
-                                    if (lot) {
-                                        const newQty = Math.max(0, lot.currentQuantity - roundedQty);
-                                        await prisma.materialLot.update({
-                                            where: { id: lot.id },
-                                            data: {
-                                                currentQuantity: newQty,
-                                                status: newQty <= 0 ? 'DEPLETED'
-                                                    : newQty < (lot.initialQuantity * 0.1) ? 'LOW_STOCK'
-                                                        : 'AVAILABLE'
-                                            }
-                                        });
-
-                                        await prisma.lotConsumption.create({
-                                            data: {
-                                                materialLotId: lot.id,
-                                                assemblyNoteId: sibling.id,
-                                                quantityUsed: roundedQty,
-                                                usedById: req.body.operatorId || null,
-                                                observations: `Post-CONTEO auto: ${sibling.stageName} — ${item.component?.name || 'Material'}`
-                                            }
-                                        });
-
-                                        await prisma.assemblyNoteItem.update({
-                                            where: { id: item.id },
-                                            data: { lotNumber: lot.lotNumber }
-                                        });
-
-                                        consumedItems.push(`${item.component?.name}: ${roundedQty} from ${lot.lotNumber}`);
-                                    } else {
-                                        // No lot exists anywhere — create a virtual lot for traceability
-                                        const now = new Date();
-                                        const co = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
-                                        const yy = String(co.getFullYear()).slice(-2);
-                                        const mm = String(co.getMonth() + 1).padStart(2, '0');
-                                        const dd = String(co.getDate()).padStart(2, '0');
-                                        const virtualLotNumber = `AUTO-${(item.component?.name || 'MATERIAL').replace(/\s+/g, '-').toUpperCase().slice(0, 30)}-${yy}${mm}${dd}`;
-
-                                        const virtualLot = await prisma.materialLot.create({
-                                            data: {
-                                                productId: item.componentId,
-                                                siigoProductCode: item.component?.sku || '',
-                                                siigoProductName: item.component?.name || '',
-                                                lotNumber: virtualLotNumber,
-                                                initialQuantity: roundedQty,
-                                                currentQuantity: 0,
-                                                unit: item.unit || item.component?.unit || 'unidad',
-                                                receivedAt: now,
-                                                status: 'DEPLETED',
-                                                zone: 'PRODUCTION'
-                                            }
-                                        });
-
-                                        await prisma.lotConsumption.create({
-                                            data: {
-                                                materialLotId: virtualLot.id,
-                                                assemblyNoteId: sibling.id,
-                                                quantityUsed: roundedQty,
-                                                usedById: req.body.operatorId || null,
-                                                observations: `Post-CONTEO auto (sin lote): ${sibling.stageName} — ${item.component?.name || 'Material'}`
-                                            }
-                                        });
-
-                                        await prisma.assemblyNoteItem.update({
-                                            where: { id: item.id },
-                                            data: { lotNumber: virtualLotNumber }
-                                        });
-
-                                        consumedItems.push(`${item.component?.name}: ${roundedQty} (virtual lot: ${virtualLotNumber})`);
-                                    }
-
-                                    // Decrement productionZoneStock for non-exempt items
-                                    const nameUpper = (item.component?.name || '').toUpperCase();
-                                    const isExempt = nameUpper === 'AGUA' || nameUpper.includes('ETIQUETA') || nameUpper.includes('SELLO') || nameUpper.includes('CAJA');
-                                    if (!isExempt) {
-                                        await prisma.product.update({
-                                            where: { id: item.componentId },
-                                            data: { productionZoneStock: { decrement: roundedQty } }
-                                        });
-                                    }
-                                }
                             }
 
-                            // Mark EMPAQUE note as pre-consumed + store empaqueData
+                            // Store conteo reference data inside processParameters (empaqueData is not a DB column)
                             const existingParams = sibling.processParameters || {};
                             await prisma.assemblyNote.update({
                                 where: { id: sibling.id },
                                 data: {
                                     processParameters: {
                                         ...existingParams,
-                                        materialsPreConsumed: true,
-                                        preConsumedAt: new Date().toISOString()
-                                    },
-                                    empaqueData: {
-                                        ...(sibling.empaqueData || {}),
-                                        conteo_qty: actualCount,
-                                        planned_qty: oldTarget
+                                        empaqueRef: {
+                                            ...(existingParams.empaqueRef || {}),
+                                            conteo_qty: actualCount,
+                                            planned_qty: oldTarget
+                                        }
                                     }
                                 }
                             });
 
-                            console.log(`[completeNote] CONTEO → EMPAQUE pre-consumed ${sibling.stageName}: ${consumedItems.length} items consumed. Scale: ${scaleFactor.toFixed(3)}`);
-                            consumedItems.forEach(c => console.log(`  ✅ ${c}`));
+                            console.log(`[completeNote] CONTEO → EMPAQUE scaled ${sibling.stageName}: ${sibling.items.length} items. Scale: ${scaleFactor.toFixed(3)} (consumption deferred to EMPAQUE completion)`);
                         } else {
                             // ENSAMBLE: just log the scale update
                             console.log(`[completeNote] CONTEO → Updated ${sibling.stageName}: target ${oldTarget} → ${actualCount} (×${scaleFactor.toFixed(3)}) [${noteProcessType?.code}]`);
@@ -780,10 +728,160 @@ const assemblyNoteController = {
             const mm = String(co.getMinutes()).padStart(2, '0');
 
             // ── Flavor resolution for generic templates ──
+            const isGeniality = template.templateCode === 'BATCH-GENIALITY';
             let flavorProductId = null; // resolved output product (ESFERAS [SABOR])
             let flavorCompuestoId = null; // resolved input product (COMPUESTO [SABOR])
             let sizeMap = {}; // resolved output products per size (3400, 1150, 350)
-            if (flavorKey) {
+            if (flavorKey && isGeniality) {
+                // ── GENIALITY flavor resolution: just replace {SABOR} in stage names ──
+                const flavorNorm = stripAccents(flavorKey).toUpperCase();
+                console.log(`[quickStart] Geniality flavor resolution: ${flavorKey}`);
+
+                for (const stage of flatStages) {
+                    if (stage.stageName) {
+                        stage.stageName = stage.stageName
+                            .replace(/\{SABOR\}/g, flavorKey.toUpperCase())
+                            .replace(/MARACUYA/gi, flavorKey.toUpperCase());
+                    }
+                }
+
+                // ── Swap SABORIZACION sub-template to the correct flavor ──
+                // BATCH-GENIALITY defaults to TMPL065 (MARACUYA). Each flavor has its own
+                // SABORIZACION sub-template with different colors and sabores.
+                const defaultSaborCode = 'TMPL065'; // MARACUYA default
+                const hasDefaultSabor = flatStages.some(s => s._fromSubTemplate === defaultSaborCode);
+                if (hasDefaultSabor && flavorNorm !== 'MARACUYA') {
+                    // Find the correct SABORIZACION sub-template by matching product name
+                    const correctSaborTemplate = await prisma.assemblyTemplate.findFirst({
+                        where: {
+                            product: { name: { contains: `SABORIZACION ${flavorKey}`, mode: 'insensitive' } }
+                        },
+                        include: {
+                            product: true,
+                            stages: {
+                                include: {
+                                    processType: true,
+                                    inputs: { include: { product: true }, orderBy: { displayOrder: 'asc' } }
+                                },
+                                orderBy: { stageOrder: 'asc' }
+                            }
+                        }
+                    });
+
+                    if (correctSaborTemplate?.stages?.length > 0) {
+                        console.log(`[quickStart] Geniality SABORIZACION swap: ${defaultSaborCode} → ${correctSaborTemplate.templateCode} (${correctSaborTemplate.product?.name})`);
+                        const startIdx = flatStages.findIndex(s => s._fromSubTemplate === defaultSaborCode);
+                        if (startIdx >= 0) {
+                            const endIdx = flatStages.findLastIndex(s => s._fromSubTemplate === defaultSaborCode);
+                            const count = endIdx - startIdx + 1;
+                            const newSubStages = correctSaborTemplate.stages.map(subStage => ({
+                                ...subStage,
+                                stageName: subStage.stageName?.replace(/MARACUYA/gi, flavorKey.toUpperCase()),
+                                _fromSubTemplate: correctSaborTemplate.templateCode,
+                                _subTemplateProductId: correctSaborTemplate.productId
+                            }));
+                            flatStages.splice(startIdx, count, ...newSubStages);
+                            console.log(`[quickStart] Replaced ${count} SABORIZACION stages with ${newSubStages.length} from ${correctSaborTemplate.templateCode}`);
+                        }
+                    } else {
+                        console.warn(`[quickStart] ⚠️ No SABORIZACION sub-template found for flavor "${flavorKey}" — keeping MARACUYA defaults`);
+                    }
+                }
+
+                // ── Swap LLENADO (EMPAQUE) sub-templates to the correct flavor ──
+                // TMPL066 (1000ml) and TMPL067 (360ml) are MARACUYA defaults.
+                // Each flavor has its own LLENADO sub-templates with different items.
+                const defaultLlenadoCodes = ['TMPL066', 'TMPL067'];
+                for (const defCode of defaultLlenadoCodes) {
+                    const hasDefault = flatStages.some(s => s._fromSubTemplate === defCode);
+                    if (!hasDefault || flavorNorm === 'MARACUYA') continue;
+
+                    // Find corresponding flavor sub-template by size
+                    const sizeMatch = defCode === 'TMPL066' ? '1000' : '360';
+                    const correctLlenado = await prisma.assemblyTemplate.findFirst({
+                        where: {
+                            product: {
+                                name: { contains: `SIROPE GENIALITY`, mode: 'insensitive' },
+                                AND: [
+                                    { name: { contains: flavorKey, mode: 'insensitive' } },
+                                    { name: { contains: sizeMatch, mode: 'insensitive' } }
+                                ]
+                            }
+                        },
+                        include: {
+                            product: true,
+                            stages: {
+                                include: {
+                                    processType: true,
+                                    inputs: { include: { product: true }, orderBy: { displayOrder: 'asc' } }
+                                },
+                                orderBy: { stageOrder: 'asc' }
+                            }
+                        }
+                    });
+
+                    if (correctLlenado?.stages?.length > 0) {
+                        console.log(`[quickStart] Geniality LLENADO swap: ${defCode} → ${correctLlenado.templateCode} (${correctLlenado.product?.name})`);
+                        const startIdx = flatStages.findIndex(s => s._fromSubTemplate === defCode);
+                        if (startIdx >= 0) {
+                            const endIdx = flatStages.findLastIndex(s => s._fromSubTemplate === defCode);
+                            const count = endIdx - startIdx + 1;
+                            const newSubStages = correctLlenado.stages.map(subStage => ({
+                                ...subStage,
+                                stageName: subStage.stageName?.replace(/MARACUYA/gi, flavorKey.toUpperCase()),
+                                _fromSubTemplate: correctLlenado.templateCode,
+                                _subTemplateProductId: correctLlenado.productId
+                            }));
+                            flatStages.splice(startIdx, count, ...newSubStages);
+                            console.log(`[quickStart] Replaced ${count} LLENADO stages with ${newSubStages.length} from ${correctLlenado.templateCode}`);
+                        }
+                    }
+                }
+
+                // Resolve SIROPE GENIALITY output products per size for output targets
+                const allSirope = await prisma.product.findMany({
+                    where: {
+                        name: { contains: 'SIROPE GENIALITY', mode: 'insensitive' },
+                    },
+                    select: { id: true, name: true }
+                });
+                for (const size of ['1000', '360']) {
+                    const target = stripAccents(`SIROPE GENIALITY SABOR A ${flavorKey} X ${size}`).toUpperCase();
+                    const prod = allSirope.find(p =>
+                        stripAccents(p.name).toUpperCase().includes(target)
+                    );
+                    if (prod) {
+                        sizeMap[size] = prod;
+                        console.log(`[quickStart] Geniality size ${size}ml → ${prod.name} (${prod.id})`);
+                    }
+                }
+
+                // ── Resolve outputProductId for Geniality EMPAQUE/ENSAMBLE sub-template stages ──
+                // Sub-templates (TMPL066=1000ml, TMPL067=360ml) have default MARACUYA outputProductId.
+                // Replace with the correct flavor product from sizeMap so EMPAQUE target resolution works.
+                for (const stage of flatStages) {
+                    const code = stage.processType?.code;
+                    if (code !== 'EMPAQUE' && code !== 'ENSAMBLE') continue;
+                    const name = (stage.stageName || '').toUpperCase();
+                    for (const [size, prod] of Object.entries(sizeMap)) {
+                        if (name.includes(size)) {
+                            stage.outputProductId = prod.id;
+                            console.log(`[quickStart] Geniality ${code} "${stage.stageName}" → outputProductId=${prod.id} (${prod.name})`);
+                            break;
+                        }
+                    }
+                    // Also check if this size has 0 planned units → skip
+                    if (stage.outputProductId) {
+                        const schedulerTarget = (reqOutputTargets || []).find(t => t.productId === stage.outputProductId);
+                        if (schedulerTarget && schedulerTarget.plannedUnits === 0) {
+                            stage._skipStage = true;
+                            console.log(`[quickStart] Geniality ${code} "${stage.stageName}" → skipped (0 planned units)`);
+                        }
+                    }
+                }
+
+                console.log(`[quickStart] After Geniality substitution, ${flatStages.length} flat stages`);
+            } else if (flavorKey) {
                 // Use accent-insensitive JS matching (CAFE matches CAFÉ)
                 const flavorNorm = stripAccents(flavorKey).toUpperCase();
                 const allEsferas = await prisma.product.findMany({
@@ -921,9 +1019,6 @@ const assemblyNoteController = {
                     }
 
                     // ── Substitute EMPAQUE/ENSAMBLE inputs from the correct flavor's formula ──
-                    // When a EMPAQUE/ENSAMBLE stage has flavorDependent=true and an outputProductId,
-                    // reload its inputs from the formula of that product (e.g. LIQUIPOPS MARACUYA X 350)
-                    // to replace the default FRESA/CAFÉ template inputs with the correct flavor's ones.
                     if (params.flavorDependent && stage.outputProductId) {
                         const stageRole = params.flavorRole || '';
                         if (stageRole.startsWith('empaque_') || stageRole.startsWith('ensamble_')) {
@@ -950,12 +1045,7 @@ const assemblyNoteController = {
                 }
 
                 // ── Resolve Compuesto sub-template in template.stages (pre-flattening) ──
-                // If a compuesto sub-template exists for this flavor and differs from default,
-                // we need to re-flatten with the correct sub-template stages
                 if (compuestoTemplate) {
-                    // Find and replace the compuesto sub-template stages in flatStages
-                    // The compuesto stages are already flattened from the default (FRESA) template
-                    // We need to reload them from the correct flavor template
                     const correctSubTemplate = await prisma.assemblyTemplate.findUnique({
                         where: { id: compuestoTemplate.id },
                         include: {
@@ -971,7 +1061,6 @@ const assemblyNoteController = {
                     });
 
                     if (correctSubTemplate?.stages?.length > 0) {
-                        // Find indices of compuesto stages (marked with _fromSubTemplate matching default compuesto code)
                         const defaultCompuestoCode = 'TMPL008'; // Default FRESA compuesto
                         const startIdx = flatStages.findIndex(s => s._fromSubTemplate === defaultCompuestoCode);
                         if (startIdx >= 0) {
@@ -1013,16 +1102,17 @@ const assemblyNoteController = {
             let batch;
 
             if (existingBatchId) {
-                // Reuse the existing batch (from scheduler) instead of creating a new one
+                // Reuse the existing batch (from scheduler) — regenerate batchNumber with actual start date
                 batch = await prisma.productionBatch.update({
                     where: { id: existingBatchId },
                     data: {
+                        batchNumber,  // ← regenerated with current date/time (production start)
                         status: 'STAGE_1_BASE',
                         startedAt: now,
                         currentStage: 1,
                     }
                 });
-                console.log(`[quickStart] Reusing existing batch ${batch.batchNumber} (${existingBatchId})`);
+                console.log(`[quickStart] Reusing existing batch → new batchNumber=${batchNumber} (was ${batch.batchNumber}, id=${existingBatchId})`);
             } else {
                 try {
                     batch = await prisma.productionBatch.create({
@@ -1322,17 +1412,25 @@ const assemblyNoteController = {
                     let itemsToCreate = [];
                     const stageInputs = (stage.inputs && stage.inputs.length > 0) ? stage.inputs : formulaInputs;
                     if (stageInputs && stageInputs.length > 0) {
+                        // Detect if ENSAMBLE inputs are per-gram ratios vs absolute quantities
+                        const ensambleInputsAreRatios = isEnsamble &&
+                            stageInputs.length > 0 &&
+                            Math.max(...stageInputs.map(i => Math.abs(i.quantityPerUnit || 0)), 0) < 2;
+
                         itemsToCreate = stageInputs.map((input) => ({
                             componentId: input.productId,
                             componentType: input.inputType || 'RAW_MATERIAL',
                             // PESAJE ratios: quantityPerUnit = per-gram ratio → × formula.baseQuantity × baseQty
                             // PESAJE absolute: quantityPerUnit = absolute qty → × baseQty only
-                            // ENSAMBLE: quantityPerUnit = absolute qty → × baseQty
+                            // ENSAMBLE ratios: quantityPerUnit = per-gram ratio → × noteQty (formula.baseQuantity × baseQty)
+                            // ENSAMBLE absolute: quantityPerUnit = absolute qty → × baseQty
                             // FORMACION from formula: already scaled by baseQty.
                             // Other: quantityPerUnit × noteQty for scaling.
                             plannedQuantity: formulaInputs ? input.quantityPerUnit
                                 : isPesaje && pesajeBaseQuantity ? input.quantityPerUnit * pesajeBaseQuantity * baseQty
-                                : (isPesaje || isEnsamble) ? input.quantityPerUnit * baseQty
+                                : isPesaje ? input.quantityPerUnit * baseQty
+                                : isEnsamble && ensambleInputsAreRatios ? input.quantityPerUnit * noteQty
+                                : isEnsamble ? input.quantityPerUnit * baseQty
                                 : input.quantityPerUnit * noteQty,
                             unit: input.unit || 'gramo',
                             notes: null

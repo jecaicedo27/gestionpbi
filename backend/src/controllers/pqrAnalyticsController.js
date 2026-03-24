@@ -113,6 +113,71 @@ const medianAbsoluteDeviation = (values, med = null) => {
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 const sigmoidSafe = (z) => 1 / (1 + Math.exp(-clampValue(z, -35, 35)));
+const FOLLOW_UP_RECENT_DAYS = 7;
+const FOLLOW_UP_MONITOR_DAYS = 14;
+const FOLLOW_UP_STOPPED_DAYS = 21;
+const CONTINUATION_LOOKBACK_DAYS = 14;
+const CONTINUATION_HORIZON_DAYS = 14;
+const FINAL_COVERAGE_WINDOW_DAYS = 45;
+const SEVERITY_PRIORITY_WEIGHT = {
+    recall: 1.45,
+    critical: 1.3,
+    warning: 1.12,
+    review: 1,
+    normal: 0.92
+};
+const CONTINUITY_PRIORITY_WEIGHT = {
+    nuevo_riesgo: 1.18,
+    activo_recurrente: 1.25,
+    vigilancia: 1,
+    enfriando: 0.78,
+    sin_reporte_reciente: 0.58,
+    sin_datos: 0.65
+};
+
+const LOT_CONTINUITY_BUCKETS = [
+    {
+        key: 'nuevo_riesgo',
+        label: 'Nuevos en riesgo',
+        description: 'Lotes nuevos con reportes recientes y alta continuidad probable.',
+        color: '#7c3aed'
+    },
+    {
+        key: 'activo_recurrente',
+        label: 'Siguen dañandose',
+        description: 'Lotes con reportes recientes que siguen activos en reclamo.',
+        color: '#dc2626'
+    },
+    {
+        key: 'vigilancia',
+        label: 'En vigilancia',
+        description: 'Lotes con continuidad moderada o en ventana de observacion.',
+        color: '#f59e0b'
+    },
+    {
+        key: 'enfriando',
+        label: 'En enfriamiento',
+        description: 'Lotes cuya presion de reportes ya viene bajando.',
+        color: '#06b6d4'
+    },
+    {
+        key: 'sin_reporte_reciente',
+        label: 'Sin reporte reciente',
+        description: 'Lotes con mas de 21 dias sin reporte; candidatos a cierre.',
+        color: '#10b981'
+    },
+    {
+        key: 'sin_datos',
+        label: 'Sin datos',
+        description: 'Lotes sin datos suficientes para clasificar continuidad.',
+        color: '#94a3b8'
+    }
+];
+
+const LOT_CONTINUITY_BUCKET_META = LOT_CONTINUITY_BUCKETS.reduce((acc, bucket) => {
+    acc[bucket.key] = bucket;
+    return acc;
+}, {});
 
 const DEFECT_ALIAS_MAP = {
     INFLADO: 'INFLADO',
@@ -776,6 +841,182 @@ const buildLotSnapshotAtDate = ({ reportEvents, firstReportDate, asOfDate, produ
     };
 };
 
+const resolveOperationalContinuityBucket = ({
+    status,
+    daysSinceLastReport,
+    isNewLot
+}) => {
+    const daysSinceLast = toFiniteNumber(daysSinceLastReport);
+    if (daysSinceLast === null) return LOT_CONTINUITY_BUCKET_META.sin_datos;
+    if (daysSinceLast > FOLLOW_UP_STOPPED_DAYS || status === 'detenida') {
+        return LOT_CONTINUITY_BUCKET_META.sin_reporte_reciente;
+    }
+    if (status === 'nuevo') return LOT_CONTINUITY_BUCKET_META.nuevo_riesgo;
+    if (status === 'continua') return LOT_CONTINUITY_BUCKET_META.activo_recurrente;
+    if (status === 'observacion') return LOT_CONTINUITY_BUCKET_META.vigilancia;
+    if (status === 'enfriando') return LOT_CONTINUITY_BUCKET_META.enfriando;
+    if (isNewLot && daysSinceLast <= FOLLOW_UP_RECENT_DAYS) {
+        return LOT_CONTINUITY_BUCKET_META.nuevo_riesgo;
+    }
+    return LOT_CONTINUITY_BUCKET_META.vigilancia;
+};
+
+const resolvePredictionFallbackMeta = (fallbackReason) => {
+    const minimumMatureHistoryDays = CONTINUATION_LOOKBACK_DAYS + CONTINUATION_HORIZON_DAYS;
+    if (fallbackReason === 'insufficient_mature_history') {
+        return {
+            label: 'Historial aun inmaduro',
+            detail: `Todavia no existen lotes con al menos ${minimumMatureHistoryDays} dias entre ventana de observacion y horizonte de continuidad.`
+        };
+    }
+    if (fallbackReason === 'insufficient_snapshot_activity') {
+        return {
+            label: 'Snapshots insuficientes',
+            detail: 'Existe historia temporal, pero aun no hay suficiente densidad de reportes para construir snapshots supervisados utiles.'
+        };
+    }
+    if (fallbackReason === 'insufficient_samples') {
+        return {
+            label: 'Muestra insuficiente',
+            detail: 'La cobertura historica disponible todavia no aporta el volumen minimo para estabilizar un modelo supervisado.'
+        };
+    }
+    return {
+        label: 'Cobertura historica limitada',
+        detail: 'La prediccion opera con la mejor evidencia disponible, pero todavia no cuenta con una base supervisada madura.'
+    };
+};
+
+const buildPredictionModelNarrative = ({
+    trained,
+    fallbackReason,
+    trainingSamples,
+    trainingDiagnostics,
+    reliabilityScorePct,
+    calibration
+}) => {
+    const minimumMatureHistoryDays = CONTINUATION_LOOKBACK_DAYS + CONTINUATION_HORIZON_DAYS;
+    const reliability = toQuantityNumber(reliabilityScorePct);
+    const samples = toQuantityNumber(trainingSamples);
+    const candidateLots = toQuantityNumber(trainingDiagnostics?.candidateLots);
+    const lookbackEligibleLots = toQuantityNumber(trainingDiagnostics?.lookbackEligibleLots);
+    const horizonEligibleLots = toQuantityNumber(trainingDiagnostics?.horizonEligibleLots);
+    const usableSnapshotLots = toQuantityNumber(trainingDiagnostics?.usableSnapshotLots);
+    const fallbackMeta = resolvePredictionFallbackMeta(fallbackReason);
+
+    let readinessLevel = 'baja';
+    let readinessLabel = 'Lectura exploratoria';
+    if (trained && reliability >= 72) {
+        readinessLevel = 'alta';
+        readinessLabel = 'Modelo supervisado confiable';
+    } else if (trained || reliability >= 46 || lookbackEligibleLots >= 25) {
+        readinessLevel = 'media';
+        readinessLabel = trained ? 'Modelo supervisado util' : 'Cold-start controlado';
+    }
+
+    let summary = `Modelo supervisado entrenado con ${samples} muestras y soporte de evidencia temporal para estabilizar la lectura lote a lote.`;
+    let limitation = calibration?.isCalibrated
+        ? 'La cobertura final ya cuenta con calibracion historica adicional.'
+        : 'La cobertura final aun no tiene calibracion historica suficiente.';
+    let nextMilestone = calibration?.isCalibrated
+        ? 'Mantener el monitoreo del error de calibracion y ampliar la muestra supervisada.'
+        : 'Ampliar lotes maduros para calibrar mejor la cobertura final esperada.';
+    let recommendedUse = 'Use probabilidad, impacto ajustado y confianza en conjunto para priorizar acciones operativas.';
+
+    if (!trained) {
+        summary = fallbackReason === 'insufficient_mature_history'
+            ? `El motor opera en evidencia temporal porque ${horizonEligibleLots} de ${candidateLots} lotes alcanzan hoy el horizonte minimo de ${minimumMatureHistoryDays} dias para entrenamiento supervisado.`
+            : `El motor opera con evidencia temporal porque solo ${usableSnapshotLots} snapshots utiles estan disponibles para entrenamiento supervisado.`;
+        limitation = fallbackMeta.detail;
+        nextMilestone = fallbackReason === 'insufficient_mature_history'
+            ? `A medida que los lotes completen ${minimumMatureHistoryDays}+ dias desde su primer reporte, el sistema podra activar entrenamiento supervisado.`
+            : 'Incrementar densidad de reportes observables y snapshots utiles para habilitar el entrenamiento supervisado.';
+        recommendedUse = 'Use la proyeccion ajustada como ranking operativo, siempre leyendo junto con recencia, severidad y cobertura abierta.';
+    }
+
+    return {
+        executionMode: trained ? 'supervised_blended' : 'evidence_engine_cold_start',
+        methodologyLabel: trained
+            ? 'Modelo supervisado + evidencia temporal'
+            : 'Motor de evidencia temporal',
+        readiness: {
+            level: readinessLevel,
+            label: readinessLabel
+        },
+        summary,
+        limitation,
+        nextMilestone,
+        recommendedUse,
+        minimumMatureHistoryDays,
+        coverageStatus: calibration?.isCalibrated ? 'calibrated' : 'uncalibrated',
+        fallbackLabel: trained ? null : fallbackMeta.label
+    };
+};
+
+const classifyContinuityAnalysisQuality = ({
+    predictionModel,
+    confidenceValues,
+    totalLots
+}) => {
+    const values = Array.isArray(confidenceValues)
+        ? confidenceValues.filter((value) => Number.isFinite(value))
+        : [];
+    const sortedValues = [...values].sort((a, b) => a - b);
+    const avgConfidence = values.length
+        ? roundNumber(values.reduce((sum, value) => sum + value, 0) / values.length, 1)
+        : null;
+    const medianConfidence = values.length
+        ? roundNumber(percentile(sortedValues, 0.5), 1)
+        : null;
+    const trained = Boolean(predictionModel?.trained);
+    const reliabilityScorePct = toQuantityNumber(predictionModel?.reliabilityScorePct);
+    const fallbackReason = predictionModel?.fallbackReason || null;
+    const minimumMatureHistoryDays = toQuantityNumber(predictionModel?.minimumMatureHistoryDays)
+        || (CONTINUATION_LOOKBACK_DAYS + CONTINUATION_HORIZON_DAYS);
+
+    let level = 'baja';
+    let label = 'Proyeccion orientativa';
+    let hint = 'Use la proyeccion como ranking exploratorio y priorice la evidencia observada reciente.';
+    let recommendedLens = 'observado_primero';
+
+    if (trained && (avgConfidence || 0) >= 62 && reliabilityScorePct >= 68 && totalLots >= 60) {
+        level = 'alta';
+        label = 'Proyeccion confiable';
+        hint = 'La proyeccion puede usarse como soporte fuerte de priorizacion.';
+        recommendedLens = 'proyeccion_confiable';
+    } else if ((trained && (avgConfidence || 0) >= 48 && reliabilityScorePct >= 50) || (avgConfidence || 0) >= 38) {
+        level = 'media';
+        label = 'Proyeccion util con cautela';
+        hint = 'Combine tendencia reciente, severidad y proyeccion ajustada por confianza.';
+        recommendedLens = 'mixto';
+    }
+
+    if (!trained && fallbackReason === 'insufficient_mature_history' && (avgConfidence || 0) >= 46 && totalLots >= 40) {
+        level = 'media';
+        label = 'Lectura observacional estable';
+        hint = `La priorizacion es util, pero todavia no existen lotes con ${minimumMatureHistoryDays}+ dias para activar entrenamiento supervisado.`;
+        recommendedLens = 'observado_con_proyeccion_ajustada';
+    } else if (!trained && fallbackReason === 'insufficient_snapshot_activity') {
+        level = level === 'alta' ? 'media' : level;
+        label = 'Lectura parcial';
+        hint = 'Existe historia temporal, pero faltan snapshots con suficiente actividad para consolidar un modelo supervisado.';
+        recommendedLens = 'observado_primero';
+    }
+
+    return {
+        level,
+        label,
+        hint,
+        recommendedLens,
+        trained,
+        fallbackReason,
+        reliabilityScorePct,
+        averageConfidencePct: avgConfidence,
+        medianConfidencePct: medianConfidence,
+        sampleSize: values.length
+    };
+};
+
 const extractContinuationFeatures = (snapshot) => {
     if (!snapshot) return null;
     return [
@@ -1220,6 +1461,282 @@ const heuristicContinuationProbability = ({ snapshot, coveragePct, missingUnitsT
     if (missingUnitsTotal !== null && missingUnitsTotal <= 0) score -= 30;
 
     return Math.round(clampValue(50 + score, 1, 99));
+};
+
+const normalizeRangeScore = (value, min, max, options = {}) => {
+    const { invert = false, fallback = 0 } = options;
+    const numericValue = toFiniteNumber(value);
+    if (numericValue === null) return fallback;
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+        return clampValue(numericValue, 0, 1);
+    }
+    const normalized = clampValue((numericValue - min) / (max - min), 0, 1);
+    return invert ? (1 - normalized) : normalized;
+};
+
+const computePredictionModelReliabilityScore = (model) => {
+    if (!model?.isTrained || !model.validation) return 0.34;
+    const f1 = clampValue(toQuantityNumber(model.validation.f1), 0, 1);
+    const auc = clampValue(toQuantityNumber(model.validation.aucRoc), 0.5, 1);
+    const aucNormalized = clampValue((auc - 0.5) / 0.5, 0, 1);
+    const brier = clampValue(toQuantityNumber(model.validation.brier), 0, 0.35);
+    const brierNormalized = clampValue(1 - (brier / 0.35), 0, 1);
+    return roundNumber(
+        clampValue(
+            0.22 + (f1 * 0.36) + (aucNormalized * 0.26) + (brierNormalized * 0.16),
+            0.34,
+            0.94
+        ),
+        4
+    );
+};
+
+const computeEvidenceBasedContinuationProbability = ({
+    snapshot,
+    missingUnitsTotal,
+    producedUnitsTotal,
+    defectProfile,
+    defectUnits,
+    defectPressure
+}) => {
+    if (!snapshot) {
+        return {
+            probabilityPct: 50,
+            weightedSignal: 0.5,
+            components: []
+        };
+    }
+
+    const policy = getDefectAlertPolicy(defectProfile?.defectType || 'OTRO');
+    const recencyScore = normalizeRangeScore(snapshot.daysSinceLastReport, 0, FOLLOW_UP_STOPPED_DAYS, { invert: true, fallback: 0.35 });
+    const densityScore = normalizeRangeScore(snapshot.uniqueReportDays14d, 1, 6, { fallback: 0.18 });
+    const volumeScore = normalizeRangeScore(snapshot.reports14d, 1, 6, { fallback: 0.16 });
+    const momentumScore = normalizeRangeScore(snapshot.trend7vPrev7, 0.65, 1.9, { fallback: 0.45 });
+    const cadenceScore = normalizeRangeScore(snapshot.cadenceAvgDays14d, 1, 9, { invert: true, fallback: 0.4 });
+    const coverageOpenScore = snapshot.coveragePct !== null && snapshot.coveragePct !== undefined
+        ? normalizeRangeScore(snapshot.coveragePct, 18, 92, { invert: true, fallback: 0.45 })
+        : 0.45;
+    const missingCoverageRatio = producedUnitsTotal > 0
+        ? safeDivideNumber(Math.max(0, toQuantityNumber(missingUnitsTotal)), producedUnitsTotal, 0)
+        : null;
+    const missingOpenScore = missingCoverageRatio !== null
+        ? normalizeRangeScore(missingCoverageRatio, 0.02, 0.72, { fallback: 0.42 })
+        : 0.42;
+    const persistenceScore = normalizeRangeScore(snapshot.daysSinceFirstReportAtAsOf, 2, 21, { fallback: 0.4 });
+
+    let defectRiskScore = 0.5;
+    if (defectProfile?.riskBand === 'alto_arrastre') defectRiskScore = 0.84;
+    else if (defectProfile?.riskBand === 'arrastre_medio') defectRiskScore = 0.67;
+    else if (defectProfile?.riskBand === 'autolimitado') defectRiskScore = 0.3;
+
+    let pressureScore = 0.5;
+    if (defectPressure?.hasGoodReference) {
+        pressureScore = normalizeRangeScore(
+            defectPressure.defectVsGoodPct ?? defectPressure.defectRatePct,
+            Math.max(0.01, toQuantityNumber(policy.warningRatePct) * 0.6),
+            Math.max(toQuantityNumber(policy.recallRatePct) * 1.15, toQuantityNumber(policy.warningRatePct) * 2.2),
+            { fallback: 0.5 }
+        );
+    } else {
+        pressureScore = normalizeRangeScore(
+            defectUnits,
+            Math.max(1, toQuantityNumber(policy.warningUnits) * 0.4),
+            Math.max(toQuantityNumber(policy.recallUnits), toQuantityNumber(policy.warningUnits) * 2),
+            { fallback: 0.5 }
+        );
+    }
+
+    const weightedSignal = (
+        (recencyScore * 0.24) +
+        (densityScore * 0.12) +
+        (volumeScore * 0.1) +
+        (momentumScore * 0.08) +
+        (cadenceScore * 0.08) +
+        (coverageOpenScore * 0.1) +
+        (missingOpenScore * 0.09) +
+        (persistenceScore * 0.07) +
+        (defectRiskScore * 0.06) +
+        (pressureScore * 0.06)
+    );
+
+    let probabilityPct = Math.round(
+        clampValue(
+            sigmoidSafe((weightedSignal - 0.46) * 5.4) * 100,
+            8,
+            94
+        )
+    );
+
+    if (toQuantityNumber(snapshot.reports7d) > 0 && toQuantityNumber(snapshot.uniqueReportDays14d) >= 2) {
+        probabilityPct = Math.min(95, probabilityPct + 3);
+    }
+    if (toQuantityNumber(snapshot.daysSinceLastReport) > FOLLOW_UP_STOPPED_DAYS) {
+        probabilityPct = Math.min(probabilityPct, 42);
+    }
+    if (missingUnitsTotal !== null && toQuantityNumber(missingUnitsTotal) <= 0) {
+        probabilityPct = Math.max(8, probabilityPct - 18);
+    }
+
+    return {
+        probabilityPct,
+        weightedSignal: roundNumber(weightedSignal, 4),
+        components: [
+            { key: 'recency', label: 'Recencia', score: roundNumber(recencyScore, 4) },
+            { key: 'density', label: 'Frecuencia dias', score: roundNumber(densityScore, 4) },
+            { key: 'volume', label: 'Volumen reportes', score: roundNumber(volumeScore, 4) },
+            { key: 'momentum', label: 'Momentum', score: roundNumber(momentumScore, 4) },
+            { key: 'cadence', label: 'Cadencia', score: roundNumber(cadenceScore, 4) },
+            { key: 'coverage_open', label: 'Cobertura abierta', score: roundNumber(coverageOpenScore, 4) },
+            { key: 'missing_open', label: 'Pendiente por reportar', score: roundNumber(missingOpenScore, 4) },
+            { key: 'persistence', label: 'Persistencia', score: roundNumber(persistenceScore, 4) },
+            { key: 'defect_risk', label: 'Riesgo defecto', score: roundNumber(defectRiskScore, 4) },
+            { key: 'pressure', label: 'Presion defecto', score: roundNumber(pressureScore, 4) }
+        ]
+    };
+};
+
+const computePredictionConfidenceScore = ({
+    snapshot,
+    producedUnitsTotal,
+    defectProfile,
+    defectPressure,
+    predictionModel
+}) => {
+    if (!snapshot) {
+        return {
+            confidenceScore: 20,
+            modelReliabilityScorePct: roundNumber(computePredictionModelReliabilityScore(predictionModel) * 100, 1),
+            components: []
+        };
+    }
+
+    const modelReliability = computePredictionModelReliabilityScore(predictionModel);
+    const uniqueDaysScore = normalizeRangeScore(snapshot.uniqueReportDays14d, 1, 5, { fallback: 0.16 });
+    const reportVolumeScore = normalizeRangeScore(snapshot.reports14d, 1, 6, { fallback: 0.14 });
+    const maturityScore = normalizeRangeScore(snapshot.daysSinceFirstReportAtAsOf, 2, 18, { fallback: 0.2 });
+    const cadenceObservabilityScore = normalizeRangeScore(snapshot.cadenceAvgDays14d, 1, 10, { invert: true, fallback: 0.38 });
+    const productionLinkScore = producedUnitsTotal > 0 ? 1 : 0.34;
+    const coverageLinkScore = snapshot.coveragePct !== null && snapshot.coveragePct !== undefined ? 1 : 0.4;
+    const defectSupportScore = normalizeRangeScore(defectProfile?.sampleSize || 0, 0, 18, { fallback: 0.18 });
+    const defectReferenceScore = defectPressure?.hasGoodReference ? 1 : 0.46;
+
+    const baseConfidence = (
+        15 +
+        (uniqueDaysScore * 12) +
+        (reportVolumeScore * 10) +
+        (maturityScore * 8) +
+        (cadenceObservabilityScore * 7) +
+        (productionLinkScore * 8) +
+        (coverageLinkScore * 7) +
+        (defectSupportScore * 7) +
+        (defectReferenceScore * 6) +
+        (modelReliability * 18)
+    );
+    const maxConfidence = predictionModel?.isTrained ? 92 : (producedUnitsTotal > 0 ? 58 : 52);
+    const confidenceScore = Math.round(clampValue(baseConfidence, 20, maxConfidence));
+
+    return {
+        confidenceScore,
+        modelReliabilityScorePct: roundNumber(modelReliability * 100, 1),
+        components: [
+            { key: 'unique_days', label: 'Dias observados', score: roundNumber(uniqueDaysScore, 4) },
+            { key: 'report_volume', label: 'Volumen', score: roundNumber(reportVolumeScore, 4) },
+            { key: 'maturity', label: 'Madurez temporal', score: roundNumber(maturityScore, 4) },
+            { key: 'cadence', label: 'Observabilidad cadencia', score: roundNumber(cadenceObservabilityScore, 4) },
+            { key: 'production_link', label: 'Cruce produccion', score: roundNumber(productionLinkScore, 4) },
+            { key: 'coverage_link', label: 'Cobertura', score: roundNumber(coverageLinkScore, 4) },
+            { key: 'defect_support', label: 'Soporte defecto', score: roundNumber(defectSupportScore, 4) },
+            { key: 'defect_reference', label: 'Referencia buenos', score: roundNumber(defectReferenceScore, 4) },
+            { key: 'model_reliability', label: 'Confiabilidad modelo', score: roundNumber(modelReliability, 4) }
+        ]
+    };
+};
+
+const blendContinuationProbabilityPct = ({
+    modelProbability,
+    evidenceProbabilityPct,
+    confidenceScore,
+    predictionModel
+}) => {
+    if (modelProbability === null || !predictionModel?.isTrained) return evidenceProbabilityPct;
+    const modelReliability = computePredictionModelReliabilityScore(predictionModel);
+    const confidenceFactor = clampValue(toQuantityNumber(confidenceScore) / 100, 0.24, 0.92);
+    const modelWeight = clampValue(0.28 + (modelReliability * 0.42) + (confidenceFactor * 0.08), 0.34, 0.76);
+    return Math.round(
+        clampValue(
+            ((modelProbability * 100) * modelWeight) + (toQuantityNumber(evidenceProbabilityPct) * (1 - modelWeight)),
+            1,
+            99
+        )
+    );
+};
+
+const estimateCoverageProjection = ({
+    snapshot,
+    probabilityPct,
+    confidenceScore,
+    defectProfile,
+    producedUnitsTotal,
+    reportedUnitsTotal
+}) => {
+    if (!snapshot || producedUnitsTotal <= 0) {
+        return {
+            expectedFinalCoveragePct: null,
+            expectedFinalReportedUnits: null,
+            expectedAdditionalUnitsToReport: null,
+            expectedFinalCoverageRangePct: null
+        };
+    }
+
+    const currentCoverage = clampValue(toQuantityNumber(snapshot.coveragePct), 0, 100);
+    const remainingCoverage = Math.max(100 - currentCoverage, 0);
+    const continuationFactor = clampValue(toQuantityNumber(probabilityPct) / 100, 0.05, 0.95);
+    const confidenceFactor = clampValue(0.24 + (toQuantityNumber(confidenceScore) / 100 * 0.56), 0.24, 0.82);
+    const recentActivityFactor = toQuantityNumber(snapshot.reports7d) > 0
+        ? 1
+        : (toQuantityNumber(snapshot.reports14d) > 0 ? 0.8 : 0.55);
+    const daysSinceLast = toQuantityNumber(snapshot.daysSinceLastReport);
+    const latencyDecay = daysSinceLast <= FOLLOW_UP_RECENT_DAYS
+        ? 1
+        : (daysSinceLast <= FOLLOW_UP_MONITOR_DAYS
+            ? 0.82
+            : (daysSinceLast <= FOLLOW_UP_STOPPED_DAYS ? 0.62 : 0.4));
+    const cadenceSupport = snapshot.cadenceAvgDays14d !== null && snapshot.cadenceAvgDays14d !== undefined
+        ? clampValue(0.55 + (normalizeRangeScore(snapshot.cadenceAvgDays14d, 1, 10, { invert: true, fallback: 0.4 }) * 0.45), 0.45, 1)
+        : 0.72;
+    const defectGrowthFactor = clampValue(toQuantityNumber(defectProfile?.growthFactor || 1), 0.84, 1.18);
+
+    let growthShare = continuationFactor * confidenceFactor * recentActivityFactor * latencyDecay * cadenceSupport * defectGrowthFactor;
+    growthShare = clampValue(growthShare, 0.02, 0.88);
+
+    const uncertaintyFactor = clampValue(0.12 + ((1 - (toQuantityNumber(confidenceScore) / 100)) * 0.34), 0.14, 0.42);
+    const lowerGrowthShare = clampValue(growthShare * (1 - uncertaintyFactor), 0.01, 1);
+    const upperGrowthShare = clampValue(growthShare * (1 + uncertaintyFactor), 0.02, 1);
+
+    const expectedFinalCoveragePct = roundNumber(
+        clampValue(currentCoverage + (remainingCoverage * growthShare), currentCoverage, 100),
+        2
+    );
+    const lowerCoveragePct = roundNumber(
+        clampValue(currentCoverage + (remainingCoverage * lowerGrowthShare), currentCoverage, 100),
+        2
+    );
+    const upperCoveragePct = roundNumber(
+        clampValue(currentCoverage + (remainingCoverage * upperGrowthShare), currentCoverage, 100),
+        2
+    );
+    const expectedFinalReportedUnits = Math.round((producedUnitsTotal * expectedFinalCoveragePct) / 100);
+    const expectedAdditionalUnitsToReport = Math.max(expectedFinalReportedUnits - reportedUnitsTotal, 0);
+
+    return {
+        expectedFinalCoveragePct,
+        expectedFinalReportedUnits,
+        expectedAdditionalUnitsToReport,
+        expectedFinalCoverageRangePct: {
+            min: lowerCoveragePct,
+            max: upperCoveragePct
+        }
+    };
 };
 
 const calibrateCoverageGrowthExponent = ({ samples, model }) => {
@@ -3093,10 +3610,6 @@ exports.getPQRAnalytics = async (req, res) => {
             lot.productionDate = prodDate.toISOString();
         });
 
-        const CONTINUATION_LOOKBACK_DAYS = 14;
-        const CONTINUATION_HORIZON_DAYS = 14;
-        const FINAL_COVERAGE_WINDOW_DAYS = 45;
-
         const lotPredictionContexts = byLotData
             .map((lot) => {
                 if (!lot.firstReportDate) return null;
@@ -3147,13 +3660,23 @@ exports.getPQRAnalytics = async (req, res) => {
 
         const continuationTrainingSamples = [];
         const coverageCalibrationSamples = [];
+        const trainingDiagnostics = {
+            candidateLots: lotPredictionContexts.length,
+            lookbackEligibleLots: 0,
+            horizonEligibleLots: 0,
+            usableSnapshotLots: 0,
+            labeledSamples: 0,
+            coverageCalibrationEligibleLots: 0
+        };
 
         lotPredictionContexts.forEach((ctx) => {
             const snapshotDate = new Date(ctx.firstReportDate.getTime() + (CONTINUATION_LOOKBACK_DAYS * DAY_MS));
             if (snapshotDate > now) return;
+            trainingDiagnostics.lookbackEligibleLots += 1;
 
             const horizonEndDate = new Date(snapshotDate.getTime() + (CONTINUATION_HORIZON_DAYS * DAY_MS));
             if (horizonEndDate > now) return;
+            trainingDiagnostics.horizonEligibleLots += 1;
 
             const snapshot = buildLotSnapshotAtDate({
                 reportEvents: ctx.reportEvents,
@@ -3162,6 +3685,7 @@ exports.getPQRAnalytics = async (req, res) => {
                 producedUnitsTotal: ctx.producedUnitsTotal
             });
             if (!snapshot || toQuantityNumber(snapshot.reports14d) <= 0) return;
+            trainingDiagnostics.usableSnapshotLots += 1;
 
             const continuedInHorizon = ctx.reportEvents.some((event) => {
                 const d = new Date(event.date);
@@ -3178,6 +3702,7 @@ exports.getPQRAnalytics = async (req, res) => {
                     : null,
                 label: continuedInHorizon ? 1 : 0
             });
+            trainingDiagnostics.labeledSamples += 1;
 
             const matureDate = new Date(ctx.firstReportDate.getTime() + (FINAL_COVERAGE_WINDOW_DAYS * DAY_MS));
             if (matureDate > now || ctx.producedUnitsTotal <= 0) return;
@@ -3200,6 +3725,7 @@ exports.getPQRAnalytics = async (req, res) => {
                 snapshot,
                 additionalShare
             });
+            trainingDiagnostics.coverageCalibrationEligibleLots += 1;
         });
 
         const trainedContinuationModel = trainContinuationProbabilityModel(continuationTrainingSamples);
@@ -3207,6 +3733,31 @@ exports.getPQRAnalytics = async (req, res) => {
         const coverageGrowthCalibration = calibrateCoverageGrowthExponent({
             samples: coverageCalibrationSamples,
             model: trainedContinuationModel
+        });
+        const predictionModelReliabilityPct = roundNumber(
+            computePredictionModelReliabilityScore(trainedContinuationModel) * 100,
+            1
+        );
+        const resolvedFallbackReason = !trainedContinuationModel.isTrained
+            ? (
+                continuationTrainingSamples.length === 0
+                    ? (
+                        trainingDiagnostics.horizonEligibleLots === 0
+                            ? 'insufficient_mature_history'
+                            : (trainingDiagnostics.usableSnapshotLots === 0
+                                ? 'insufficient_snapshot_activity'
+                                : trainedContinuationModel.reason || 'insufficient_samples')
+                    )
+                    : trainedContinuationModel.reason
+            )
+            : null;
+        const predictionMethodology = buildPredictionModelNarrative({
+            trained: Boolean(trainedContinuationModel.isTrained),
+            fallbackReason: resolvedFallbackReason,
+            trainingSamples: trainedContinuationModel.sampleSize,
+            trainingDiagnostics,
+            reliabilityScorePct: predictionModelReliabilityPct,
+            calibration: coverageGrowthCalibration
         });
 
         lotPredictionContexts.forEach((ctx) => {
@@ -3219,23 +3770,38 @@ exports.getPQRAnalytics = async (req, res) => {
             if (!snapshotNow) return;
 
             const modelProbability = predictContinuationProbability(trainedContinuationModel, snapshotNow);
-            const heuristicProbabilityPct = heuristicContinuationProbability({
-                snapshot: snapshotNow,
-                coveragePct: snapshotNow.coveragePct,
-                missingUnitsTotal: ctx.missingUnitsTotal
-            });
             const defectProfile = resolveDefectContinuationProfile(defectContinuationModel, ctx.primaryDefect);
             const defectAdjustmentPct = toQuantityNumber(defectProfile.adjustmentPct);
-            const baseProbabilityPct = modelProbability === null
-                ? heuristicProbabilityPct
-                : Math.round(clampValue(
-                    ((modelProbability * 100) * 0.85) + (heuristicProbabilityPct * 0.15),
-                    1,
-                    99
-                ));
+            const evidenceProbability = computeEvidenceBasedContinuationProbability({
+                snapshot: snapshotNow,
+                missingUnitsTotal: ctx.missingUnitsTotal,
+                producedUnitsTotal: ctx.producedUnitsTotal,
+                defectProfile,
+                defectUnits: ctx.primaryDefectUnits,
+                defectPressure: computeDefectPressureAgainstGood({
+                    defectUnits: ctx.primaryDefectUnits,
+                    producedUnitsTotal: ctx.producedUnitsTotal
+                })
+            });
+            const confidenceProfile = computePredictionConfidenceScore({
+                snapshot: snapshotNow,
+                producedUnitsTotal: ctx.producedUnitsTotal,
+                defectProfile,
+                defectPressure: computeDefectPressureAgainstGood({
+                    defectUnits: ctx.primaryDefectUnits,
+                    producedUnitsTotal: ctx.producedUnitsTotal
+                }),
+                predictionModel: trainedContinuationModel
+            });
+            const blendedBaseProbabilityPct = blendContinuationProbabilityPct({
+                modelProbability,
+                evidenceProbabilityPct: evidenceProbability.probabilityPct,
+                confidenceScore: confidenceProfile.confidenceScore,
+                predictionModel: trainedContinuationModel
+            });
             const defectReviewGuard = applyDefectReviewGuard({
                 defectType: ctx.primaryDefect,
-                baseProbabilityPct: baseProbabilityPct + defectAdjustmentPct,
+                baseProbabilityPct: blendedBaseProbabilityPct + defectAdjustmentPct,
                 defectUnits: ctx.primaryDefectUnits,
                 producedUnitsTotal: ctx.producedUnitsTotal
             });
@@ -3258,13 +3824,13 @@ exports.getPQRAnalytics = async (req, res) => {
 
             let followUpStatus = 'detenida';
             let followUpStatusLabel = 'No se volvió a reportar';
-            if (isNewLot && daysSinceLast <= 7 && blendedProbabilityPct >= continueThreshold) {
+            if (isNewLot && daysSinceLast <= FOLLOW_UP_RECENT_DAYS && blendedProbabilityPct >= continueThreshold) {
                 followUpStatus = 'nuevo';
                 followUpStatusLabel = 'Lote nuevo en observación';
-            } else if (daysSinceLast <= 7 && blendedProbabilityPct >= continueThreshold) {
+            } else if (daysSinceLast <= FOLLOW_UP_RECENT_DAYS && blendedProbabilityPct >= continueThreshold) {
                 followUpStatus = 'continua';
                 followUpStatusLabel = 'Sigue reportándose';
-            } else if (daysSinceLast <= 14 && blendedProbabilityPct >= observationThreshold) {
+            } else if (daysSinceLast <= FOLLOW_UP_MONITOR_DAYS && blendedProbabilityPct >= observationThreshold) {
                 followUpStatus = 'observacion';
                 followUpStatusLabel = 'Aún en ventana de seguimiento';
             } else if (daysSinceLast <= 30) {
@@ -3279,32 +3845,40 @@ exports.getPQRAnalytics = async (req, res) => {
             let expectedFinalCoveragePct = null;
             let expectedFinalReportedUnits = null;
             let expectedAdditionalUnitsToReport = null;
+            let expectedFinalCoverageRangePct = null;
             let predictedOutcome = 'indeterminado';
             let predictedOutcomeLabel = 'Sin suficiente producción para proyectar';
 
             if (ctx.producedUnitsTotal > 0) {
-                const currentCoverage = clampValue(toQuantityNumber(snapshotNow.coveragePct), 0, 100);
-                const remainingCoverage = Math.max(100 - currentCoverage, 0);
-                let growthShare = Math.pow(blendedProbabilityPct / 100, coverageGrowthCalibration.gamma || 1);
-                growthShare *= toQuantityNumber(defectProfile.growthFactor || 1);
+                const projection = estimateCoverageProjection({
+                    snapshot: snapshotNow,
+                    probabilityPct: blendedProbabilityPct,
+                    confidenceScore: confidenceProfile.confidenceScore,
+                    defectProfile: {
+                        ...defectProfile,
+                        growthFactor: coverageGrowthCalibration.isCalibrated
+                            ? roundNumber(
+                                clampValue(
+                                    toQuantityNumber(defectProfile.growthFactor || 1) * toQuantityNumber(coverageGrowthCalibration.gamma || 1),
+                                    0.78,
+                                    1.22
+                                ),
+                                3
+                            )
+                            : defectProfile.growthFactor
+                    },
+                    producedUnitsTotal: ctx.producedUnitsTotal,
+                    reportedUnitsTotal: ctx.reportedUnitsTotal
+                });
+                expectedFinalCoveragePct = projection.expectedFinalCoveragePct;
+                expectedFinalReportedUnits = projection.expectedFinalReportedUnits;
+                expectedAdditionalUnitsToReport = projection.expectedAdditionalUnitsToReport;
+                expectedFinalCoverageRangePct = projection.expectedFinalCoverageRangePct;
 
-                if (daysSinceLast > 21) growthShare *= 0.55;
-                else if (daysSinceLast > 14) growthShare *= 0.75;
-                if (toQuantityNumber(snapshotNow.reports7d) > 0) growthShare = Math.min(1, growthShare + 0.12);
-                if (toQuantityNumber(snapshotNow.reports14d) === 0) growthShare *= 0.7;
-
-                growthShare = clampValue(growthShare, 0, 1);
-                expectedFinalCoveragePct = roundNumber(
-                    clampValue(currentCoverage + (remainingCoverage * growthShare), currentCoverage, 100),
-                    2
-                );
-                expectedFinalReportedUnits = Math.round((ctx.producedUnitsTotal * expectedFinalCoveragePct) / 100);
-                expectedAdditionalUnitsToReport = Math.max(expectedFinalReportedUnits - ctx.reportedUnitsTotal, 0);
-
-                if (expectedFinalCoveragePct >= 88) {
+                if (expectedFinalCoveragePct >= 86) {
                     predictedOutcome = 'todo_lote';
                     predictedOutcomeLabel = 'Probable reporte de casi todo el lote';
-                } else if (expectedFinalCoveragePct >= 55) {
+                } else if (expectedFinalCoveragePct >= 52) {
                     predictedOutcome = 'parcial_alta';
                     predictedOutcomeLabel = 'Probable reporte parcial alto';
                 } else {
@@ -3313,29 +3887,20 @@ exports.getPQRAnalytics = async (req, res) => {
                 }
             }
 
-            const modelValidation = trainedContinuationModel.validation || null;
-            let confidenceScore = 45;
-            if (trainedContinuationModel.isTrained && modelValidation) {
-                confidenceScore = clampValue(
-                    32 +
-                    (toQuantityNumber(modelValidation.f1) * 34) +
-                    (toQuantityNumber(modelValidation.aucRoc) * 24) +
-                    Math.min(10, toQuantityNumber(snapshotNow.uniqueReportDays14d) * 2),
-                    28,
-                    96
-                );
-            } else {
-                confidenceScore = clampValue(
-                    28 + Math.min(20, toQuantityNumber(snapshotNow.uniqueReportDays14d) * 3),
-                    20,
-                    65
-                );
-            }
-            if (ctx.producedUnitsTotal <= 0) confidenceScore = Math.max(20, confidenceScore - 12);
+            const confidenceScore = confidenceProfile.confidenceScore;
+
+            const operationalBucket = resolveOperationalContinuityBucket({
+                status: followUpStatus,
+                daysSinceLastReport: daysSinceLast,
+                isNewLot
+            });
 
             ctx.lot.followUp = {
                 status: followUpStatus,
                 statusLabel: followUpStatusLabel,
+                operationalBucket: operationalBucket.key,
+                operationalBucketLabel: operationalBucket.label,
+                operationalBucketDescription: operationalBucket.description,
                 hasContinuedReporting: toQuantityNumber(snapshotNow.reports14d) > 0 && toQuantityNumber(snapshotNow.uniqueReportDays14d) > 1,
                 timeline: {
                     uniqueReportDays: toQuantityNumber(snapshotNow.uniqueReportDays14d),
@@ -3354,6 +3919,7 @@ exports.getPQRAnalytics = async (req, res) => {
                     expectedFinalCoveragePct,
                     expectedFinalReportedUnits,
                     expectedAdditionalUnitsToReport,
+                    expectedFinalCoverageRangePct,
                     predictedOutcome,
                     predictedOutcomeLabel,
                     defectType: defectProfile.defectType,
@@ -3367,18 +3933,29 @@ exports.getPQRAnalytics = async (req, res) => {
                     goodUnitsReference: hasGoodReference ? roundNumber(defectPressure.goodUnits, 2) : null,
                     defectVsGoodPct: hasGoodReference ? roundNumber(defectVsGoodPct, 4) : null,
                     modelProbabilityPct: modelProbability !== null ? roundNumber(modelProbability * 100, 2) : null,
-                    source: trainedContinuationModel.isTrained ? 'trained_model' : 'heuristic_fallback'
+                    evidenceProbabilityPct: evidenceProbability.probabilityPct,
+                    evidenceSignalScore: evidenceProbability.weightedSignal,
+                    evidenceComponents: evidenceProbability.components,
+                    confidenceComponents: confidenceProfile.components,
+                    methodology: trainedContinuationModel.isTrained ? 'supervised_blended' : 'evidence_engine_cold_start',
+                    modelReliabilityScorePct: confidenceProfile.modelReliabilityScorePct,
+                    source: trainedContinuationModel.isTrained ? 'trained_model_blended' : 'evidence_engine_cold_start'
                 }
             };
         });
 
         const predictionModel = {
-            strategy: 'temporal_logistic_regression',
+            strategy: 'hybrid_continuity_engine',
+            supervisedStrategy: 'temporal_logistic_regression',
+            evidenceStrategy: 'temporal_evidence_engine',
+            executionMode: predictionMethodology.executionMode,
+            methodologyLabel: predictionMethodology.methodologyLabel,
             lookbackDays: CONTINUATION_LOOKBACK_DAYS,
             horizonDays: CONTINUATION_HORIZON_DAYS,
             coverageWindowDays: FINAL_COVERAGE_WINDOW_DAYS,
+            minimumMatureHistoryDays: predictionMethodology.minimumMatureHistoryDays,
             trained: Boolean(trainedContinuationModel.isTrained),
-            fallbackReason: trainedContinuationModel.isTrained ? null : trainedContinuationModel.reason,
+            fallbackReason: trainedContinuationModel.isTrained ? null : resolvedFallbackReason,
             trainingSamples: toQuantityNumber(trainedContinuationModel.sampleSize),
             positives: toQuantityNumber(trainedContinuationModel.positives),
             negatives: toQuantityNumber(trainedContinuationModel.negatives),
@@ -3393,7 +3970,16 @@ exports.getPQRAnalytics = async (req, res) => {
                 sampleSize: defectContinuationModel.sampleSize,
                 topDefects: defectContinuationModel.topDefects
             },
-            calibration: coverageGrowthCalibration
+            calibration: coverageGrowthCalibration,
+            reliabilityScorePct: predictionModelReliabilityPct,
+            trainingDiagnostics,
+            readiness: predictionMethodology.readiness,
+            summary: predictionMethodology.summary,
+            limitation: predictionMethodology.limitation,
+            nextMilestone: predictionMethodology.nextMilestone,
+            recommendedUse: predictionMethodology.recommendedUse,
+            fallbackLabel: predictionMethodology.fallbackLabel,
+            coverageStatus: predictionMethodology.coverageStatus
         };
 
         const windowSummary = {
@@ -3537,6 +4123,287 @@ exports.getPQRAnalytics = async (req, res) => {
             })
             .sort((a, b) => b.defectiveUnits - a.defectiveUnits)
             .slice(0, 10);
+
+        const lotContinuityOverviewAcc = LOT_CONTINUITY_BUCKETS.reduce((acc, bucket) => {
+            acc[bucket.key] = {
+                ...bucket,
+                lots: 0,
+                reportedUnits: 0,
+                projectedAdditionalUnits: 0,
+                weightedProjectedAdditionalUnits: 0,
+                rawImpactUnits: 0,
+                impactUnits: 0,
+                avgProbabilitySum: 0,
+                avgConfidenceSum: 0,
+                avgDaysSinceLastReportSum: 0,
+                avgDaysSinceFirstReportSum: 0,
+                highSeverityLots: 0
+            };
+            return acc;
+        }, {});
+        const defectContinuityBreakdownMap = {};
+        const lotContinuityMap = [];
+
+        followUpLots.forEach((lot) => {
+            const followUp = lot.followUp || {};
+            const prediction = followUp.prediction || {};
+            const timeline = followUp.timeline || {};
+            const bucketKey = followUp.operationalBucket || 'sin_datos';
+            const bucketMeta = LOT_CONTINUITY_BUCKET_META[bucketKey] || LOT_CONTINUITY_BUCKET_META.sin_datos;
+            const reportedUnits = roundNumber(toQuantityNumber(lot.quantity), 2) || 0;
+            const projectedAdditionalUnits = roundNumber(
+                Math.max(0, toQuantityNumber(prediction.expectedAdditionalUnitsToReport)),
+                2
+            ) || 0;
+            const probability = clampValue(toQuantityNumber(prediction.continueReportingProbabilityPct), 0, 100);
+            const confidenceScore = clampValue(toQuantityNumber(prediction.confidenceScore), 0, 100);
+            const confidenceFactor = clampValue(confidenceScore / 100, 0, 1);
+            const weightedProjectedAdditionalUnits = roundNumber(projectedAdditionalUnits * confidenceFactor, 2) || 0;
+            const rawImpactUnits = roundNumber(Math.max(reportedUnits + projectedAdditionalUnits, 0), 2) || 0;
+            const impactUnits = roundNumber(Math.max(reportedUnits + weightedProjectedAdditionalUnits, 0), 2) || 0;
+            const daysSinceLastReport = toFiniteNumber(timeline.daysSinceLastReport);
+            const daysSinceFirstReport = toFiniteNumber(timeline.daysSinceFirstReport);
+            const defectType = resolveDefectAlias(prediction.defectType || lot.defectSummary?.primaryDefect) || 'OTRO';
+            const defectLabel = prediction.defectLabel || formatDefectLabel(defectType);
+            const defectiveUnits = roundNumber(
+                Math.max(
+                    0,
+                    toQuantityNumber(
+                        prediction.primaryDefectUnits
+                        ?? lot.defectSummary?.primaryDefectUnits
+                        ?? lot.quantity
+                    )
+                ),
+                2
+            ) || 0;
+            const severityWeight = SEVERITY_PRIORITY_WEIGHT[lot.severity] || SEVERITY_PRIORITY_WEIGHT.normal;
+            const continuityWeight = CONTINUITY_PRIORITY_WEIGHT[bucketKey] || CONTINUITY_PRIORITY_WEIGHT.sin_datos;
+            const probabilityWeight = 0.6 + (probability / 100 * 0.4);
+            const priorityScore = roundNumber(impactUnits * severityWeight * continuityWeight * probabilityWeight, 2) || 0;
+
+            lotContinuityOverviewAcc[bucketKey].lots += 1;
+            lotContinuityOverviewAcc[bucketKey].reportedUnits += reportedUnits;
+            lotContinuityOverviewAcc[bucketKey].projectedAdditionalUnits += projectedAdditionalUnits;
+            lotContinuityOverviewAcc[bucketKey].weightedProjectedAdditionalUnits += weightedProjectedAdditionalUnits;
+            lotContinuityOverviewAcc[bucketKey].rawImpactUnits += rawImpactUnits;
+            lotContinuityOverviewAcc[bucketKey].impactUnits += impactUnits;
+            lotContinuityOverviewAcc[bucketKey].avgProbabilitySum += probability;
+            lotContinuityOverviewAcc[bucketKey].avgConfidenceSum += confidenceScore;
+            lotContinuityOverviewAcc[bucketKey].avgDaysSinceLastReportSum += daysSinceLastReport ?? 0;
+            lotContinuityOverviewAcc[bucketKey].avgDaysSinceFirstReportSum += daysSinceFirstReport ?? 0;
+            if (['critical', 'recall'].includes(lot.severity)) {
+                lotContinuityOverviewAcc[bucketKey].highSeverityLots += 1;
+            }
+
+            if (!defectContinuityBreakdownMap[defectType]) {
+                defectContinuityBreakdownMap[defectType] = {
+                    defectType,
+                    defectLabel,
+                    totalLots: 0,
+                    defectiveUnits: 0,
+                    projectedAdditionalUnits: 0,
+                    weightedProjectedAdditionalUnits: 0,
+                    impactUnits: 0,
+                    avgProbabilitySum: 0,
+                    avgConfidenceSum: 0,
+                    avgDaysSinceLastReportSum: 0
+                };
+                LOT_CONTINUITY_BUCKETS.forEach((bucket) => {
+                    defectContinuityBreakdownMap[defectType][bucket.key] = 0;
+                    defectContinuityBreakdownMap[defectType][`${bucket.key}Units`] = 0;
+                });
+            }
+
+            defectContinuityBreakdownMap[defectType].totalLots += 1;
+            defectContinuityBreakdownMap[defectType].defectiveUnits += defectiveUnits;
+            defectContinuityBreakdownMap[defectType].projectedAdditionalUnits += projectedAdditionalUnits;
+            defectContinuityBreakdownMap[defectType].weightedProjectedAdditionalUnits += weightedProjectedAdditionalUnits;
+            defectContinuityBreakdownMap[defectType].impactUnits += impactUnits;
+            defectContinuityBreakdownMap[defectType].avgProbabilitySum += probability;
+            defectContinuityBreakdownMap[defectType].avgConfidenceSum += confidenceScore;
+            defectContinuityBreakdownMap[defectType].avgDaysSinceLastReportSum += daysSinceLastReport ?? 0;
+            defectContinuityBreakdownMap[defectType][bucketKey] += 1;
+            defectContinuityBreakdownMap[defectType][`${bucketKey}Units`] += defectiveUnits;
+
+            lotContinuityMap.push({
+                lot: lot.lot,
+                flavors: Array.isArray(lot.flavors) ? lot.flavors : [],
+                severity: lot.severity,
+                defectType,
+                defectLabel,
+                operationalBucket: bucketMeta.key,
+                operationalBucketLabel: bucketMeta.label,
+                continueReportingProbabilityPct: probability,
+                confidenceScore,
+                daysSinceLastReport,
+                daysSinceFirstReport,
+                reportedUnits,
+                projectedAdditionalUnits,
+                weightedProjectedAdditionalUnits,
+                rawImpactUnits,
+                impactUnits,
+                priorityScore,
+                isNewLot: Boolean(timeline.isNewLot),
+                predictedOutcome: prediction.predictedOutcome || null,
+                predictedOutcomeLabel: prediction.predictedOutcomeLabel || null
+            });
+        });
+
+        lotContinuityMap.sort((a, b) => b.priorityScore - a.priorityScore);
+
+        const lotContinuityBuckets = LOT_CONTINUITY_BUCKETS.map((bucket) => {
+            const entry = lotContinuityOverviewAcc[bucket.key];
+            const lots = entry.lots;
+            const safeLots = Math.max(lots, 1);
+            return {
+                key: bucket.key,
+                label: bucket.label,
+                description: bucket.description,
+                color: bucket.color,
+                lots,
+                reportedUnits: roundNumber(entry.reportedUnits, 2),
+                projectedAdditionalUnits: roundNumber(entry.projectedAdditionalUnits, 2),
+                weightedProjectedAdditionalUnits: roundNumber(entry.weightedProjectedAdditionalUnits, 2),
+                rawImpactUnits: roundNumber(entry.rawImpactUnits, 2),
+                impactUnits: roundNumber(entry.impactUnits, 2),
+                highSeverityLots: entry.highSeverityLots,
+                avgProbabilityPct: lots > 0 ? roundNumber(entry.avgProbabilitySum / safeLots, 1) : null,
+                avgConfidencePct: lots > 0 ? roundNumber(entry.avgConfidenceSum / safeLots, 1) : null,
+                avgDaysSinceLastReport: lots > 0 ? roundNumber(entry.avgDaysSinceLastReportSum / safeLots, 1) : null,
+                avgDaysSinceFirstReport: lots > 0 ? roundNumber(entry.avgDaysSinceFirstReportSum / safeLots, 1) : null,
+                lotSharePct: followUpLots.length > 0 ? roundNumber((lots / followUpLots.length) * 100, 1) : 0
+            };
+        });
+
+        const getContinuityBucketLots = (key) => (
+            lotContinuityBuckets.find((bucket) => bucket.key === key)?.lots || 0
+        );
+
+        const lotContinuityOverview = {
+            totalLots: followUpLots.length,
+            thresholds: {
+                recentDays: FOLLOW_UP_RECENT_DAYS,
+                monitorDays: FOLLOW_UP_MONITOR_DAYS,
+                stoppedDays: FOLLOW_UP_STOPPED_DAYS
+            },
+            recentActiveLots: getContinuityBucketLots('nuevo_riesgo') + getContinuityBucketLots('activo_recurrente'),
+            monitoringLots: getContinuityBucketLots('vigilancia'),
+            coolingLots: getContinuityBucketLots('enfriando'),
+            stoppedRecentLots: getContinuityBucketLots('sin_reporte_reciente'),
+            buckets: lotContinuityBuckets
+        };
+
+        const defectContinuityBreakdown = Object.values(defectContinuityBreakdownMap)
+            .map((entry) => {
+                const safeLots = Math.max(entry.totalLots, 1);
+                const activeLotsForDefect = toQuantityNumber(entry.nuevo_riesgo) + toQuantityNumber(entry.activo_recurrente);
+                const coolingOrStoppedLots = toQuantityNumber(entry.enfriando) + toQuantityNumber(entry.sin_reporte_reciente);
+                return {
+                    defectType: entry.defectType,
+                    defectLabel: entry.defectLabel,
+                    totalLots: entry.totalLots,
+                    defectiveUnits: roundNumber(entry.defectiveUnits, 2),
+                    projectedAdditionalUnits: roundNumber(entry.projectedAdditionalUnits, 2),
+                    weightedProjectedAdditionalUnits: roundNumber(entry.weightedProjectedAdditionalUnits, 2),
+                    impactUnits: roundNumber(entry.impactUnits, 2),
+                    avgProbabilityPct: roundNumber(entry.avgProbabilitySum / safeLots, 1),
+                    avgConfidencePct: roundNumber(entry.avgConfidenceSum / safeLots, 1),
+                    avgDaysSinceLastReport: roundNumber(entry.avgDaysSinceLastReportSum / safeLots, 1),
+                    activeSharePct: roundNumber((activeLotsForDefect / safeLots) * 100, 1),
+                    coolingSharePct: roundNumber((coolingOrStoppedLots / safeLots) * 100, 1),
+                    ...LOT_CONTINUITY_BUCKETS.reduce((acc, bucket) => {
+                        acc[bucket.key] = entry[bucket.key];
+                        acc[`${bucket.key}Units`] = roundNumber(entry[`${bucket.key}Units`], 2);
+                        return acc;
+                    }, {})
+                };
+            })
+            .sort((a, b) => {
+                if (b.totalLots !== a.totalLots) return b.totalLots - a.totalLots;
+                return toQuantityNumber(b.defectiveUnits) - toQuantityNumber(a.defectiveUnits);
+            })
+            .slice(0, 8);
+
+        const confidenceValues = lotContinuityMap
+            .map((row) => toFiniteNumber(row.confidenceScore))
+            .filter((value) => value !== null);
+        const analysisQuality = classifyContinuityAnalysisQuality({
+            predictionModel,
+            confidenceValues,
+            totalLots: followUpLots.length
+        });
+
+        const observedUnitsTotal = roundNumber(
+            lotContinuityMap.reduce((sum, row) => sum + toQuantityNumber(row.reportedUnits), 0),
+            2
+        ) || 0;
+        const projectedAdditionalUnitsTotal = roundNumber(
+            lotContinuityMap.reduce((sum, row) => sum + toQuantityNumber(row.projectedAdditionalUnits), 0),
+            2
+        ) || 0;
+        const weightedProjectedAdditionalUnitsTotal = roundNumber(
+            lotContinuityMap.reduce((sum, row) => sum + toQuantityNumber(row.weightedProjectedAdditionalUnits), 0),
+            2
+        ) || 0;
+        const weightedImpactUnitsTotal = roundNumber(
+            lotContinuityMap.reduce((sum, row) => sum + toQuantityNumber(row.impactUnits), 0),
+            2
+        ) || 0;
+        const activeBucketKeys = new Set(['nuevo_riesgo', 'activo_recurrente']);
+        const closureBucketKeys = new Set(['enfriando', 'sin_reporte_reciente']);
+        const activeHighSeverityLots = lotContinuityMap.filter((row) => (
+            activeBucketKeys.has(row.operationalBucket)
+            && ['critical', 'recall'].includes(row.severity)
+        )).length;
+        const topDefectDriver = defectContinuityBreakdown[0] || null;
+        const topPriorityLots = [...lotContinuityMap]
+            .sort((a, b) => b.priorityScore - a.priorityScore)
+            .slice(0, 6);
+        const closureCandidates = lotContinuityMap
+            .filter((row) => closureBucketKeys.has(row.operationalBucket))
+            .sort((a, b) => {
+                if (toQuantityNumber(b.daysSinceLastReport) !== toQuantityNumber(a.daysSinceLastReport)) {
+                    return toQuantityNumber(b.daysSinceLastReport) - toQuantityNumber(a.daysSinceLastReport);
+                }
+                return toQuantityNumber(b.reportedUnits) - toQuantityNumber(a.reportedUnits);
+            })
+            .slice(0, 6);
+
+        let pressureLevel = 'media';
+        let pressureLabel = 'Presion activa contenida';
+        if (lotContinuityOverview.recentActiveLots >= 40 || activeHighSeverityLots >= 12) {
+            pressureLevel = 'alta';
+            pressureLabel = 'Presion activa alta';
+        } else if (lotContinuityOverview.recentActiveLots <= 18 && activeHighSeverityLots <= 5) {
+            pressureLevel = 'baja';
+            pressureLabel = 'Presion activa baja';
+        }
+
+        const executiveSummary = {
+            pressureLevel,
+            pressureLabel,
+            headline: `${pressureLabel}: ${lotContinuityOverview.recentActiveLots} lotes con actividad reciente`,
+            narrative: topDefectDriver
+                ? `${topDefectDriver.defectLabel} concentra ${topDefectDriver.totalLots} lotes y ${topDefectDriver.defectiveUnits} unidades defectuosas. ${lotContinuityOverview.coolingLots + lotContinuityOverview.stoppedRecentLots} lotes ya muestran salida progresiva del problema.`
+                : `${lotContinuityOverview.recentActiveLots} lotes tienen actividad reciente y ${lotContinuityOverview.coolingLots + lotContinuityOverview.stoppedRecentLots} ya muestran salida del problema.`,
+            observedUnitsTotal,
+            projectedAdditionalUnitsTotal,
+            weightedProjectedAdditionalUnitsTotal,
+            weightedImpactUnitsTotal,
+            activeHighSeverityLots,
+            closureOpportunityLots: lotContinuityOverview.coolingLots + lotContinuityOverview.stoppedRecentLots,
+            priorityFocus: topDefectDriver
+                ? `${topDefectDriver.defectLabel} es el defecto dominante y concentra la mayor presion activa.`
+                : 'No hay un defecto dominante claro con la informacion actual.',
+            qualityNote: analysisQuality.hint,
+            nextActions: [
+                `Priorizar ${activeHighSeverityLots} lotes criticos o recall con actividad reciente.`,
+                `Mantener vigilancia sobre ${lotContinuityOverview.monitoringLots} lotes intermedios, especialmente ${topDefectDriver?.defectLabel || 'los defectos dominantes'}.`,
+                `Revisar cierre controlado de ${lotContinuityOverview.coolingLots + lotContinuityOverview.stoppedRecentLots} lotes en salida o sin reporte reciente.`
+            ],
+            topPriorityLots,
+            closureCandidates
+        };
 
         const unitsTrendPct = windowSummary.previous14d.units > 0
             ? roundNumber(((windowSummary.recent14d.units - windowSummary.previous14d.units) / windowSummary.previous14d.units) * 100, 1)
@@ -3744,8 +4611,16 @@ exports.getPQRAnalytics = async (req, res) => {
             newLotsActive,
             residualLotsActive,
             residualBacklogLots,
+            recentActiveLots: lotContinuityOverview.recentActiveLots,
+            monitoringLots: lotContinuityOverview.monitoringLots,
+            coolingLots: lotContinuityOverview.coolingLots,
+            stoppedRecentLots: lotContinuityOverview.stoppedRecentLots,
+            lotContinuityOverview,
+            analysisQuality,
+            executiveSummary,
             calmLight,
             defectFollowUpProjection,
+            defectContinuityBreakdown,
             predictionModel
         };
 
@@ -3790,7 +4665,12 @@ exports.getPQRAnalytics = async (req, res) => {
             lotAgeAnalysis,
             lotFollowUpSummary,
             reportTemperature,
-            defectFollowUpProjection
+            defectFollowUpProjection,
+            lotContinuityOverview,
+            analysisQuality,
+            executiveSummary,
+            defectContinuityBreakdown,
+            lotContinuityMap
         });
     } catch (error) {
         console.error('PQR Analytics error:', error);

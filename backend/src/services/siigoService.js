@@ -313,7 +313,7 @@ class SiigoService {
                     taxes: siigoProduct.taxes || [],
                     warehouses: siigoProduct.warehouses || [],
                     classification: classification,
-                    unit: siigoProduct.unit_label === 'gramo' ? 'gramo' : (siigoProduct.unit_label || 'unidad'),
+                    unit: siigoProduct.unit?.name || siigoProduct.unit_label || 'unidad',
                 },
                 create: {
                     siigoId: siigoProduct.id,
@@ -323,7 +323,7 @@ class SiigoService {
                     barcode: siigoProduct.additional_fields?.barcode || siigoProduct.code,
                     price: price,
                     currentStock: siigoProduct.available_quantity || 0,
-                    unit: siigoProduct.unit_label || 'und', // Default unit
+                    unit: siigoProduct.unit?.name || siigoProduct.unit_label || 'unidad',
                     groupId: group.id,
                     accountGroup: siigoProduct.account_group?.id || null,
                     flavor: flavor,
@@ -684,15 +684,43 @@ class SiigoService {
             let hasMore = true;
 
             while (hasMore) {
-                const response = await this.client.get(`/customers?type=Supplier&page=${page}&page_size=100`);
+                let response;
+                // Retry loop for rate limits (429) — Siigo resets limit every ~60s
+                for (let attempt = 0; attempt < 5; attempt++) {
+                    try {
+                        response = await this.client.get(`/customers?type=Supplier&page=${page}&page_size=100`);
+                        break; // success
+                    } catch (err) {
+                        if (err.response?.status === 429 && attempt < 4) {
+                            const wait = 30 + (attempt * 10); // 30s, 40s, 50s, 60s
+                            logger.warn(`⚠️ Siigo rate limit on suppliers page ${page}, waiting ${wait}s (attempt ${attempt + 1}/5)...`);
+                            await new Promise(resolve => setTimeout(resolve, wait * 1000));
+                        } else if (err.response?.status === 401) {
+                            await this.authenticate();
+                        } else {
+                            throw err;
+                        }
+                    }
+                }
+
+                if (!response) throw new Error('Siigo supplier sync failed after retries');
+
                 const results = response.data.results || [];
+
+                // Stop if empty page (no more data)
+                if (results.length === 0) {
+                    hasMore = false;
+                    break;
+                }
+
                 allSuppliers = allSuppliers.concat(results);
+                logger.info(`📡 Suppliers page ${page}: ${results.length} fetched (${allSuppliers.length} total)`);
 
                 if (!response.data.pagination || response.data.pagination.page >= response.data.pagination.total_pages) {
                     hasMore = false;
                 } else {
                     page++;
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
 
@@ -717,10 +745,6 @@ class SiigoService {
             return suppliers;
         } catch (error) {
             logger.error('Error fetching suppliers from Siigo:', error.message);
-            if (error.response && error.response.status === 401) {
-                await this.authenticate();
-                return this.getSuppliers(search);
-            }
             throw error;
         }
     }

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 // QueryClientProvider moved to main.jsx
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
@@ -20,7 +20,6 @@ import ProductionScheduler from './pages/ProductionScheduler'; // New
 import AdminConfig from './pages/AdminConfig';
 import DistributorPortal from './pages/DistributorPortal'; // NEW
 import OrderManagement from './pages/OrderManagement'; // NEW
-import QRGeneratorPage from './pages/QRGeneratorPage'; // NEW
 
 import AssemblyTemplatesPage from './pages/AssemblyTemplatesPage';
 import TemplateEditorPage from './pages/TemplateEditorPage';
@@ -33,6 +32,9 @@ import MRPDashboard from './pages/MRPDashboard';
 import ProductionKpiPage from './pages/ProductionKpiPage';
 import BatchHistoryPage from './pages/BatchHistoryPage';
 import ProductionZonePage from './pages/ProductionZonePage';
+import FinishedProductZonePage from './pages/FinishedProductZonePage';
+import RecallReportPage from './pages/RecallReportPage';
+import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
 
 import MovementsPage from './pages/MovementsPage';
 import LotTraceabilityPage from './pages/LotTraceabilityPage';
@@ -44,13 +46,14 @@ import PQRAdvancedValidation from './pages/PQR/PQRAdvancedValidation';
 import InternalPQRManagement from './pages/PQR/InternalPQRManagement';
 import InternalPQRCreate from './pages/PQR/InternalPQRCreate';
 
-import MicroDashboard from './pages/Micro/MicroDashboard';
-import MicroTrending from './pages/Micro/MicroTrending';
+import MicroModulePage from './pages/Micro/MicroModulePage';
 
 import ForecastPage from './pages/ForecastPage';
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage';
 import SuppliersPage from './pages/SuppliersPage';
 import PremixQuickPanel from './pages/PremixQuickPanel';
+import ReconciliationPage from './pages/ReconciliationPage';
+import PhysicalCountPage from './pages/PhysicalCountPage';
 
 import { useEffect } from 'react';
 import { io } from 'socket.io-client';
@@ -103,7 +106,7 @@ function App() {
                             <Route path="production/view" element={<ProductionScheduler readOnly />} />
                             <Route path="admin/config" element={<AdminConfig />} />
                             <Route path="labeling" element={<Labeling />} />
-                            <Route path="qr-generator" element={<QRGeneratorPage />} /> {/* NEW */}
+
 
                             {/* Assembly System */}
                             <Route path="assembly-templates" element={<AssemblyTemplatesPage />} />
@@ -117,6 +120,9 @@ function App() {
                             <Route path="production/kpis" element={<ProductionKpiPage />} />
                             <Route path="production/batch-history" element={<BatchHistoryPage />} />
                             <Route path="production/zone" element={<ProductionZonePage />} />
+                            <Route path="production/finished-zone" element={<FinishedProductZonePage />} />
+                            <Route path="production/physical-count" element={<PhysicalCountPage />} />
+                            <Route path="recall-report" element={<RecallReportPage />} />
 
                             <Route path="admin/users" element={<Users />} />
                             <Route path="admin/reports" element={<Reports />} />
@@ -132,14 +138,17 @@ function App() {
                             <Route path="pqr/advanced-validation" element={<PQRAdvancedValidation />} />
                             <Route path="internal-pqr/create" element={<InternalPQRCreate />} />
                             <Route path="internal-pqr/manage" element={<InternalPQRManagement />} />
+                            <Route path="quality/productive-traceability" element={<ProductiveTraceabilityPage />} />
 
-                            <Route path="micro/dashboard" element={<MicroDashboard />} />
-                            <Route path="micro/trends" element={<MicroTrending />} />
+                            <Route path="micro" element={<Navigate to="/micro/dashboard" replace />} />
+                            <Route path="micro/dashboard" element={<MicroModulePage />} />
+                            <Route path="micro/trends" element={<Navigate to="/micro/dashboard?tab=trends" replace />} />
 
                             {/* Procurement System */}
                             <Route path="procurement/forecast" element={<ForecastPage />} />
                             <Route path="procurement/purchase-orders" element={<PurchaseOrdersPage />} />
                             <Route path="procurement/suppliers" element={<SuppliersPage />} />
+                            <Route path="reconciliation" element={<ReconciliationPage />} />
                         </Route>
                     </Route>
                 </Routes>

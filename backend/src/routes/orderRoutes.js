@@ -3,10 +3,18 @@ const router = express.Router();
 const orderController = require('../controllers/orderController');
 const distributorController = require('../controllers/distributorController');
 const { auth, roles } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 // Legacy routes (kept for compatibility)
 router.get('/catalog', auth, distributorController.getCatalog);
 router.post('/', auth, roles(['DISTRIBUIDOR', 'ADMIN', 'LOGISTICA']), orderController.createOrder);
+
+// Excel upload — uses memory storage (xlsx reads from buffer)
+const excelUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+router.post('/upload-excel', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']),
+    excelUpload.single('file'), orderController.createOrderFromExcel);
 
 // Admin/Logistics Routes
 router.get('/counts', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getOrderCounts);
@@ -26,9 +34,6 @@ router.post('/:id/invoice', auth, roles(['ADMIN', 'COMERCIAL']), orderController
 router.post('/:id/dispatch', auth, roles(['ADMIN', 'LOGISTICA']), orderController.dispatchOrder);
 
 // Delivery confirmation — distributor or logistics can confirm, with optional signed guide upload
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const SIGNED_DIR = path.join(__dirname, '../../uploads/signed-guides');
 if (!fs.existsSync(SIGNED_DIR)) fs.mkdirSync(SIGNED_DIR, { recursive: true });
 const signedGuideUpload = multer({

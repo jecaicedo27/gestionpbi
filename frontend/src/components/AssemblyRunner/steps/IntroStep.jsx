@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 /**
@@ -13,6 +13,8 @@ const IntroStep = ({
     onTargetQtyChange,
     esferaOutputFactor = 1.1,
     onSkipToEmpaque,
+    empaqueReceptionConfirmed = false,
+    onReceptionConfirm,
 }) => {
     const navigate = useNavigate();
     const noteData = note;
@@ -92,13 +94,125 @@ const IntroStep = ({
         empaqueConteo = noteData.empaqueData?.conteo_qty ?? null;
     }
 
+    // ── EMPAQUE material availability check ─────────────────────────────────
+    const [materialStatus, setMaterialStatus] = useState(null); // null=loading, []=all ok, [{name, required, available}]=missing
+    useEffect(() => {
+        if (!isEmpaque || !noteData.items?.length) return;
+        const exemptKeywords = ['ETIQUETA', 'SELLO', 'CAJA'];
+        const itemsToCheck = noteData.items.filter(item => {
+            const name = (item.component?.name || '').toUpperCase();
+            return !exemptKeywords.some(kw => name.includes(kw));
+        });
+        if (itemsToCheck.length === 0) { setMaterialStatus([]); return; }
+
+        const token = localStorage.getItem('token');
+        Promise.all(itemsToCheck.map(item =>
+            fetch(`/api/inventory/lots?productId=${item.componentId || item.component?.id}&status=AVAILABLE,LOW_STOCK&zone=PRODUCTION`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            })
+            .then(r => r.json())
+            .then(lots => {
+                const available = Array.isArray(lots)
+                    ? lots.reduce((sum, l) => sum + (l.currentQuantity || 0), 0)
+                    : 0;
+                return { name: item.component?.name, required: item.plannedQuantity || 0, unit: item.unit, available };
+            })
+            .catch(() => ({ name: item.component?.name, required: item.plannedQuantity || 0, unit: item.unit, available: 0 }))
+        )).then(results => {
+            const missing = results.filter(r => r.available < r.required);
+            setMaterialStatus(missing);
+        });
+    }, [isEmpaque, noteData.id]);
+
     // ── EMPAQUE multi-presentation selector ─────────────────────────────────
     if (isEmpaque) {
         const empaqueNotes = allBatchNotes
             .filter(n => n.processType?.code === 'EMPAQUE')
             .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
 
-        if (empaqueNotes.length > 1) {
+        // ── Reception screen (before selection) ──
+        // Auto-skip if any EMPAQUE note has already been started or completed
+        const anyEmpaqueStarted = empaqueNotes.some(n => n.status === 'COMPLETED' || n.status === 'EXECUTING');
+        const showReception = !empaqueReceptionConfirmed && !anyEmpaqueStarted;
+        if (showReception) {
+            const batchNumber = noteData.productionBatch?.batchNumber || '';
+            const productName = noteData.product?.name || noteData.stageName || '';
+            // Gather conteo data for each presentation
+            const conteoNotes = allBatchNotes.filter(n => n.processType?.code === 'CONTEO');
+            return (
+                <div className="flex flex-col h-full max-w-4xl mx-auto pt-6 pb-36 px-4 animate-in fade-in duration-300">
+                    {/* Reception Header */}
+                    <div className="rounded-3xl overflow-hidden shadow-2xl mb-6"
+                        style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #ea580c 100%)' }}>
+                        <div className="px-8 pt-7 pb-5">
+                            <div className="flex items-center gap-2 mb-1">
+                                <span className="text-2xl">📋</span>
+                                <span className="text-white/70 text-xs font-bold uppercase tracking-[0.2em]">Recepción de Producción</span>
+                            </div>
+                            <h2 className="text-white font-black text-2xl leading-tight">
+                                {productName || 'Empaque'}
+                            </h2>
+                            <div className="mt-2 inline-block bg-white/20 backdrop-blur rounded-xl px-4 py-2">
+                                <span className="text-white/80 text-xs font-semibold">🏷️ Lote: </span>
+                                <span className="text-white font-black text-lg tracking-wide">{batchNumber}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Summary per presentation */}
+                    <div className="bg-white rounded-3xl shadow-lg border-2 border-amber-200 overflow-hidden mb-6">
+                        <div className="bg-amber-50 px-6 py-4 border-b border-amber-100">
+                            <div className="text-sm font-bold text-amber-800">📦 Resumen del Conteo de Producción</div>
+                            <div className="text-xs text-amber-600 mt-0.5">Verifique que las cantidades correspondan con lo entregado en el carrito</div>
+                        </div>
+                        <div className="p-6 space-y-3">
+                            {empaqueNotes.map(en => {
+                                const empData = en.empaqueData || {};
+                                const empRef = en.processParameters?.empaqueRef || {};
+                                const planned = empData.planned_qty ?? empRef.planned_qty ?? en.targetQuantity ?? null;
+                                const conteo = empData.conteo_qty ?? empRef.conteo_qty ?? null;
+                                const deviation = planned && conteo ? conteo - planned : 0;
+                                return (
+                                    <div key={en.id} className="flex items-center justify-between p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                                        <div className="flex-1">
+                                            <div className="font-bold text-slate-700 text-sm">{en.product?.name || en.stageName}</div>
+                                            <div className="flex items-center gap-3 mt-1">
+                                                <span className="text-xs text-slate-400">Plan: <b className="text-slate-600">{planned?.toLocaleString('es-CO') ?? '—'}</b></span>
+                                                <span className="text-xs text-cyan-600">Real: <b>{conteo?.toLocaleString('es-CO') ?? '—'}</b></span>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            {conteo !== null && deviation === 0 && (
+                                                <span className="text-xs font-bold bg-emerald-100 text-emerald-700 px-2.5 py-1 rounded-full">✅ OK</span>
+                                            )}
+                                            {conteo !== null && deviation !== 0 && (
+                                                <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${deviation > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                                                    {deviation > 0 ? '+' : ''}{deviation}
+                                                </span>
+                                            )}
+                                            {conteo === null && (
+                                                <span className="text-xs font-bold bg-slate-100 text-slate-400 px-2.5 py-1 rounded-full">Pendiente</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Confirm Reception Button */}
+                    <button
+                        onClick={() => onReceptionConfirm && onReceptionConfirm()}
+                        className="w-full py-5 rounded-2xl text-white font-extrabold text-lg uppercase tracking-wider shadow-lg transition-all active:scale-[0.98]"
+                        style={{ background: 'linear-gradient(135deg, #16a34a 0%, #059669 100%)' }}
+                    >
+                        ✅ Confirmar Recepción del Carrito
+                    </button>
+                </div>
+            );
+        }
+
+        if (empaqueNotes.length >= 1) {
             const completedCount = empaqueNotes.filter(n => n.status === 'COMPLETED').length;
             const allDone = completedCount === empaqueNotes.length;
             return (
@@ -130,7 +244,11 @@ const IntroStep = ({
                         </div>
 
                         <div className="flex-1 p-6 space-y-3">
-                            <p className="text-sm text-slate-400 font-medium">Lote {noteData.productionBatch?.batchNumber}</p>
+                            <div className="bg-emerald-500 rounded-2xl p-5 text-center shadow-lg">
+                                <div className="text-xs font-bold text-emerald-100 uppercase tracking-widest mb-2">🏷️ LOTE PARA ROTULAR EN TARROS</div>
+                                <div className="text-3xl font-black text-white tracking-wider">{noteData.productionBatch?.batchNumber}</div>
+                                <div className="text-xs text-emerald-100 mt-2 font-semibold">Escribe este lote en cada tarro antes de empacar</div>
+                            </div>
                             {empaqueNotes.map(en => {
                                 const isCompleted = en.status === 'COMPLETED';
                                 const isExecuting = en.status === 'EXECUTING';
@@ -231,9 +349,18 @@ const IntroStep = ({
         ? postPesajeCompleted[postPesajeCompleted.length - 1].actualQuantity
         : null;
 
+    // ── CONTEO meta ──────────────────────────────────────────────────────────
+    let conteoMeta = null;
+    if (isConteo && outputTargets.length > 0) {
+        const totalPlanned = outputTargets.reduce((sum, t) => sum + (t.plannedUnits || 0), 0);
+        if (totalPlanned > 0) conteoMeta = totalPlanned;
+    }
+
     const metaValue = isEnsamble && ensambleMeta
         ? `${Number(ensambleMeta).toLocaleString('es-CO')} ${ensambleMetaUnit}`
-        : isEmpaque
+        : isConteo && conteoMeta
+            ? `${conteoMeta.toLocaleString('es-CO')} uds`
+            : isEmpaque
                 ? `${empaqueConteo?.toLocaleString('es-CO') ?? empaquePlanned?.toLocaleString('es-CO') ?? '—'} tarros`
                 : isFormacion && formacionMeta
                     ? `${Number(formacionMeta).toLocaleString('es-CO')} g`
@@ -308,9 +435,9 @@ const IntroStep = ({
                         )}
 
                         {/* Lote chip */}
-                        <div className="bg-slate-50 rounded-2xl p-3 text-center border border-slate-200">
-                            <div className="text-xs font-bold text-slate-500 uppercase mb-1">Lote</div>
-                            <div className="text-sm font-black text-slate-800 break-all leading-tight">
+                        <div className="bg-emerald-500 rounded-2xl p-3 text-center shadow-md">
+                            <div className="text-xs font-bold text-emerald-100 uppercase mb-1">🏷️ Lote</div>
+                            <div className="text-base font-black text-white break-all leading-tight">
                                 {noteData.productionBatch?.batchNumber || '—'}
                             </div>
                         </div>
@@ -343,12 +470,45 @@ const IntroStep = ({
                         <div className="grid grid-cols-2 gap-3">
                             <div className="bg-slate-50 rounded-2xl p-3 text-center border border-slate-200">
                                 <div className="text-xs font-bold text-slate-500 uppercase mb-1">Planificado</div>
-                                <div className="text-xl font-black text-slate-700">{empaquePlanned?.toLocaleString('es-CO') ?? '—'}</div>
+                                <div className="text-xl font-black text-slate-700">{empaquePlanned?.toLocaleString('es-CO') ?? noteData.targetQuantity ?? '—'}</div>
                             </div>
                             <div className="bg-rose-50 rounded-2xl p-3 text-center border border-rose-200">
                                 <div className="text-xs font-bold text-rose-500 uppercase mb-1">Del Conteo</div>
                                 <div className="text-xl font-black text-rose-700">{empaqueConteo?.toLocaleString('es-CO') ?? '—'}</div>
                             </div>
+                        </div>
+                    )}
+
+                    {/* EMPAQUE: material availability validation */}
+                    {isEmpaque && materialStatus !== null && materialStatus.length > 0 && (
+                        <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="text-lg">⚠️</span>
+                                <span className="text-sm font-black text-red-700 uppercase">Materiales faltantes en zona de Producción</span>
+                            </div>
+                            <div className="space-y-2">
+                                {materialStatus.map((m, i) => (
+                                    <div key={i} className="flex justify-between items-center bg-white/80 px-3 py-2 rounded-xl border border-red-200">
+                                        <span className="text-sm font-semibold text-red-800">{m.name}</span>
+                                        <div className="text-right">
+                                            <span className="text-xs font-bold text-red-600">
+                                                Necesita: {m.required.toLocaleString('es-CO')} {m.unit}
+                                            </span>
+                                            <span className="text-xs text-red-400 ml-2">
+                                                | Disponible: {m.available.toLocaleString('es-CO')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="mt-3 text-xs text-red-600 font-bold text-center">
+                                ⬆ Traslade estos materiales a producción antes de iniciar
+                            </div>
+                        </div>
+                    )}
+                    {isEmpaque && materialStatus !== null && materialStatus.length === 0 && (
+                        <div className="bg-green-50 border border-green-200 rounded-2xl p-3 text-center">
+                            <span className="text-sm font-bold text-green-700">✅ Todos los materiales disponibles en producción</span>
                         </div>
                     )}
 
