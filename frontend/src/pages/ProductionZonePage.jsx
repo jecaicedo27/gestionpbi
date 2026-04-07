@@ -111,6 +111,18 @@ const ProductionZonePage = () => {
             message.error('Debe adjuntar al menos una foto del material');
             return;
         }
+        // Pack-size minimum validation — ONLY for large bulk bags (>= 50kg = 50,000 g), e.g. AZUCAR
+        // Smaller packSizes (sabores, colores, cajas) are informational only — do NOT block
+        const packSize = selectedProduct?.packSize || 0;
+        const selectedLotData = selectedLot ? availableLots.find(l => l.id === selectedLot) : null;
+        const lotBalance = selectedLotData?.currentQuantity ?? Infinity;
+        if (packSize >= 50000 && transferQty < packSize && transferQty < lotBalance) {
+            message.error(
+                `Mínimo de ingreso: 1 bolsa completa (${packSize.toLocaleString('es-CO')} ${selectedProduct.unit || 'und'} = ${(packSize/1000).toFixed(0)} kg). ` +
+                `Si el lote tiene menos de una bolsa, selecciónelo y transfiera el saldo completo.`
+            );
+            return;
+        }
         setTransferring(true);
         try {
             await api.post('/zone-transfers/transfer-in', {
@@ -183,17 +195,25 @@ const ProductionZonePage = () => {
                             <label className="pz-label">Producto</label>
                             {selectedProduct ? (
                                 <div className="pz-selected-inline">
-                                    <div>
-                                        <Text strong style={{ fontSize: '0.88rem' }}>{selectedProduct.name}</Text>
-                                        <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                                            <Tag color="blue" style={{ fontSize: '0.7rem' }}>Stock Siigo: {fmtQty(selectedProduct.currentStock, selectedProduct.unit)}</Tag>
-                                            <Tag color="geekblue" style={{ fontSize: '0.7rem' }}>Disponible bodega: {fmtQty(Math.max(0, (selectedProduct.currentStock || 0) - (selectedProduct.productionZoneStock || 0)), selectedProduct.unit)}</Tag>
+                                    <div style={{ flex: 1 }}>
+                                        <Text strong style={{ fontSize: '0.95rem' }}>{selectedProduct.name}</Text>
+                                        <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                                            <Tag color="blue" style={{ fontSize: '0.7rem' }} className="pz-hide-tablet">Stock Siigo: {fmtQty(selectedProduct.currentStock, selectedProduct.unit)}</Tag>
+                                            <Tag color="geekblue" style={{ fontSize: '0.7rem' }} className="pz-hide-tablet">Disponible bodega: {fmtQty(Math.max(0, (selectedProduct.currentStock || 0) - (selectedProduct.productionZoneStock || 0)), selectedProduct.unit)}</Tag>
                                             <Tag color="green" style={{ fontSize: '0.7rem' }}>Zona: {fmtQty(selectedProduct.productionZoneStock, selectedProduct.unit)}</Tag>
+                                            {selectedProduct.packSize > 1 && (
+                                                <Tag color="orange" style={{ fontSize: '0.7rem' }}>Mín: {fmtQty(selectedProduct.packSize, selectedProduct.unit)}/paq</Tag>
+                                            )}
                                         </div>
                                     </div>
-                                    <Button size="small" type="link" danger onClick={() => { setSelectedProduct(null); setAvailableLots([]); }}>
-                                        Cambiar
-                                    </Button>
+                                    <Button
+                                        size="middle"
+                                        danger
+                                        icon={<X size={16} />}
+                                        onClick={() => { setSelectedProduct(null); setAvailableLots([]); setTransferQty(null); }}
+                                        style={{ minWidth: 44, minHeight: 44 }}
+                                        title="Cambiar producto"
+                                    />
                                 </div>
                             ) : (
                                 <div style={{ position: 'relative' }}>
@@ -250,8 +270,9 @@ const ProductionZonePage = () => {
                                 max={selectedLot ? availableLots.find(l => l.id === selectedLot)?.currentQuantity : Math.max(0, (selectedProduct?.currentStock || 0) - (selectedProduct?.productionZoneStock || 0))}
                                 value={transferQty}
                                 onChange={setTransferQty}
-                                placeholder="Gramos"
+                                placeholder={selectedProduct?.unit === 'gramo' || selectedProduct?.unit === 'g' ? 'Gramos' : 'Cantidad'}
                                 disabled={!selectedProduct}
+                                status={selectedProduct?.packSize > 1 && transferQty > 0 && transferQty < selectedProduct.packSize ? 'warning' : ''}
                             />
                             {transferQty > 0 && selectedProduct && (
                                 <div className="pz-qty-inline">
@@ -260,6 +281,9 @@ const ProductionZonePage = () => {
                                     )}
                                     {selectedProduct.packSize > 1 && (
                                         <Tag color="purple" style={{ fontSize: '0.68rem' }}>≈ {(transferQty / selectedProduct.packSize).toFixed(1)} packs</Tag>
+                                    )}
+                                    {selectedProduct.packSize > 1 && transferQty < selectedProduct.packSize && (
+                                        <Tag color="warning" style={{ fontSize: '0.68rem' }}>⚠️ Menos de 1 paquete</Tag>
                                     )}
                                 </div>
                             )}

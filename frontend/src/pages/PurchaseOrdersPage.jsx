@@ -35,6 +35,40 @@ const statusLabels = {
     CANCELLED: 'Cancelada'
 };
 
+const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
+const extractSiigoPurchaseNumber = (value) => {
+    const matches = String(value || '').match(/\d+/g);
+    if (!matches || matches.length === 0) return '';
+    return String(parseInt(matches[matches.length - 1], 10));
+};
+const supplierNamesMatch = (left, right) => {
+    const a = String(left || '').trim().toUpperCase();
+    const b = String(right || '').trim().toUpperCase();
+    if (!a || !b) return false;
+    return a.includes(b) || b.includes(a) || a.split(' ')[0] === b.split(' ')[0];
+};
+const getSiigoValidationState = (order, requestedCode, syncData) => {
+    const requestedNumber = extractSiigoPurchaseNumber(requestedCode);
+    const returnedNumber = extractSiigoPurchaseNumber(syncData?.number ?? syncData?.name);
+    const exactMatch = !!requestedNumber && !!returnedNumber && requestedNumber === returnedNumber;
+
+    const orderNit = normalizeDigits(order?.supplierNit || order?.supplier?.identification);
+    const syncedNit = normalizeDigits(syncData?.supplier?.identification);
+    const supplierMatch = syncData
+        ? (orderNit && syncedNit
+            ? orderNit === syncedNit
+            : supplierNamesMatch(order?.supplierName, syncData?.supplier?.name))
+        : false;
+
+    return {
+        requestedNumber,
+        returnedNumber,
+        exactMatch,
+        supplierMatch,
+        isValid: !!syncData && exactMatch && supplierMatch
+    };
+};
+
 const PurchaseOrdersPage = () => {
     const { user } = useAuth();
     const userRole = (user?.role || '').toUpperCase();
@@ -109,6 +143,7 @@ const PurchaseOrdersPage = () => {
 
     // Detail tab control
     const [detailActiveTab, setDetailActiveTab] = useState('info');
+    const siigoValidation = getSiigoValidationState(selectedOrder, siigoCompraCode, siigoSyncData);
 
     const loadOrders = useCallback(async () => {
         setLoading(true);
@@ -364,6 +399,11 @@ const PurchaseOrdersPage = () => {
     };
 
     const submitAccounting = async () => {
+        if (!siigoValidation.isValid) {
+            message.error('La compra sincronizada de Siigo no coincide exactamente con la OC o con el proveedor.');
+            return;
+        }
+
         setSubmittingAccounting(true);
         try {
             const res = await api.put(`/procurement/receptions/${accountingReception.id}/validate`, {
@@ -423,7 +463,7 @@ const PurchaseOrdersPage = () => {
             message.success(`🏷️ ${lotEntries.length} lote(s) creados`);
             setLotModalVisible(false);
             viewDetail(selectedOrder.id);
-        } catch (err) { message.error('Error creando lotes'); }
+        } catch (err) { message.error(err.response?.data?.error || 'Error creando lotes'); }
         setSubmittingLots(false);
     };
 
@@ -1106,7 +1146,7 @@ const PurchaseOrdersPage = () => {
 
                         {/* ── TAB: Cartera ── */}
                         <Tabs.TabPane tab={`💳 Cartera`} key="cartera">
-                            {['PAYMENT_PENDING', 'SENT'].includes(selectedOrder.status) ? (
+                            {(['PAYMENT_PENDING', 'SENT'].includes(selectedOrder.status) || (selectedOrder.status === 'COMPLETED' && selectedOrder.paymentMethod === 'CREDITO' && !selectedOrder.creditPaid)) ? (
                                 <div tabIndex={0} onPaste={async (e) => {
                                     e.preventDefault(); e.stopPropagation();
                                     const items = e.clipboardData?.items;
@@ -1246,10 +1286,13 @@ const PurchaseOrdersPage = () => {
                                         onClick={async () => {
                                             setSubmittingCartera(true);
                                             try {
-                                                await api.put(`/procurement/purchase-orders/${selectedOrder.id}/payment`, {
+                                                const endpoint = selectedOrder.paymentMethod === 'CREDITO'
+                                                    ? `/procurement/purchase-orders/${selectedOrder.id}/credit-payment`
+                                                    : `/procurement/purchase-orders/${selectedOrder.id}/payment`;
+                                                await api.put(endpoint, {
                                                     itemCosts: carteraCosts, paymentNotes: carteraNotes
                                                 });
-                                                message.success('💳 Pago registrado — OC pasa a PAGADA');
+                                                message.success('💳 Pago registrado');
                                                 viewDetail(selectedOrder.id); loadOrders();
                                             } catch (err) { message.error(err.response?.data?.error || 'Error registrando pago'); }
                                             setSubmittingCartera(false);
@@ -1751,7 +1794,7 @@ const PurchaseOrdersPage = () => {
                             width={1000} footer={[
                                 <Button key="cancel" onClick={() => setAccountingMode(false)}>Cancelar</Button>,
                                 <Button key="validate" type="primary" loading={submittingAccounting} onClick={submitAccounting} icon={<CheckOutlined />}
-                                    disabled={!(accountingReception.invoiceImageUrls && accountingReception.invoiceImageUrls.length > 0) || !providerInvoiceNumber?.trim() || !siigoSyncData}>
+                                    disabled={!(accountingReception.invoiceImageUrls && accountingReception.invoiceImageUrls.length > 0) || !providerInvoiceNumber?.trim() || !siigoSyncData || !siigoValidation.isValid}>
                                     ✅ Validar Contabilidad
                                 </Button>
                             ]}>
@@ -1944,18 +1987,18 @@ const PurchaseOrdersPage = () => {
                                                         {siigoSyncData.dueDate && <Text type="secondary" style={{ marginLeft: 8 }}>Vence: {siigoSyncData.dueDate}</Text>}
                                                     </div>
                                                 </div>
-                                                {(() => {
-                                                    const siigoSupplier = siigoSyncData.supplier?.name?.toUpperCase() || '';
-                                                    const orderSupplier = selectedOrder?.supplierName?.toUpperCase() || '';
-                                                    const match = siigoSupplier.includes(orderSupplier) || orderSupplier.includes(siigoSupplier) || (siigoSupplier && orderSupplier && siigoSupplier.split(' ')[0] === orderSupplier.split(' ')[0]);
-                                                    return (
-                                                        <div style={{ padding: '4px 8px', borderRadius: 4, background: match ? '#f6ffed' : '#fff2e8', border: `1px solid ${match ? '#b7eb8f' : '#ffbb96'}`, marginBottom: 6 }}>
-                                                            <Text>{match ? '✅' : '⚠️'} Proveedor: <strong>{siigoSyncData.supplier?.name}</strong></Text>
-                                                            {siigoSyncData.supplier?.identification && <Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>NIT: {siigoSyncData.supplier.identification}</Text>}
-                                                            {!match && <Text type="danger" style={{ display: 'block', fontSize: 11 }}>OC dice: {selectedOrder?.supplierName}</Text>}
-                                                        </div>
-                                                    );
-                                                })()}
+                                                {!siigoValidation.exactMatch && (
+                                                    <div style={{ padding: '4px 8px', borderRadius: 4, background: '#fff1f0', border: '1px solid #ffa39e', marginBottom: 6 }}>
+                                                        <Text type="danger">
+                                                            ⚠️ Se solicitó la compra #{siigoValidation.requestedNumber || siigoCompraCode}, pero Siigo devolvió #{siigoValidation.returnedNumber || siigoSyncData.name}.
+                                                        </Text>
+                                                    </div>
+                                                )}
+                                                <div style={{ padding: '4px 8px', borderRadius: 4, background: siigoValidation.supplierMatch ? '#f6ffed' : '#fff2e8', border: `1px solid ${siigoValidation.supplierMatch ? '#b7eb8f' : '#ffbb96'}`, marginBottom: 6 }}>
+                                                    <Text>{siigoValidation.supplierMatch ? '✅' : '⚠️'} Proveedor: <strong>{siigoSyncData.supplier?.name}</strong></Text>
+                                                    {siigoSyncData.supplier?.identification && <Text type="secondary" style={{ marginLeft: 6, fontSize: 11 }}>NIT: {siigoSyncData.supplier.identification}</Text>}
+                                                    {!siigoValidation.supplierMatch && <Text type="danger" style={{ display: 'block', fontSize: 11 }}>OC dice: {selectedOrder?.supplierName}</Text>}
+                                                </div>
                                                 <div style={{ marginBottom: 6 }}>
                                                     <Text strong style={{ fontSize: 11 }}>Productos registrados en Siigo:</Text>
                                                     {siigoSyncData.items?.map((item, idx) => (
@@ -2041,6 +2084,11 @@ const PurchaseOrdersPage = () => {
                 const exceeds = lotsTotal > maxQty;
                 const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0 && l.expiresAtRaw?.trim());
                 const canSubmit = allValid && !exceeds && lotsTotal > 0;
+                // Detect unit: packaging materials use units, raw materials use grams
+                const itemUnit = selectedPOItem?.siigoProductCode ? getProductUnit(selectedPOItem.siigoProductCode) : 'gramo';
+                const isGram = itemUnit === 'gramo';
+                const unitLabel = isGram ? 'g' : 'und';
+                const fmtQty = (v) => isGram ? `${v?.toLocaleString()}g (${(v / 1000).toFixed(2)} kg)` : `${v?.toLocaleString()} und`;
                 return (
             <Modal title={`📦 Registrar Lotes — ${selectedPOItem?.siigoProductName || ''}`} open={lotModalVisible}
                 onCancel={() => setLotModalVisible(false)} onOk={submitLots} confirmLoading={submittingLots}
@@ -2048,11 +2096,11 @@ const PurchaseOrdersPage = () => {
                 okButtonProps={{ disabled: !canSubmit }}>
                 {selectedPOItem && (
                     <div>
-                        <Alert message={`Recibido: ${selectedPOItem.quantityReceived?.toLocaleString()}g (${(selectedPOItem.quantityReceived / 1000).toFixed(2)} kg) — Clasifica según los lotes que llegaron del proveedor`} type="info" showIcon style={{ marginBottom: 16 }} />
+                        <Alert message={`Recibido: ${fmtQty(selectedPOItem.quantityReceived)} — Clasifica según los lotes que llegaron del proveedor`} type="info" showIcon style={{ marginBottom: 16 }} />
                         {/* Column headers */}
                         <div style={{ display: 'flex', gap: 8, padding: '0 8px', marginBottom: 4 }}>
                             <Text strong style={{ flex: 2, fontSize: 12 }}>N° Lote proveedor</Text>
-                            <Text strong style={{ flex: 1, fontSize: 12 }}>Cantidad (g)</Text>
+                            <Text strong style={{ flex: 1, fontSize: 12 }}>Cantidad ({unitLabel})</Text>
                             <Text strong style={{ flex: 1, fontSize: 12 }}>Vencimiento</Text>
                             <div style={{ width: 24 }} />
                         </div>
@@ -2062,9 +2110,9 @@ const PurchaseOrdersPage = () => {
                                     <Input placeholder="Ej: LOT-2024-001" value={lot.lotNumber} onChange={e => updateLotEntry(idx, 'lotNumber', e.target.value)} style={{ flex: 2 }} />
                                     <div style={{ flex: 1 }}>
                                         <InputNumber placeholder="0" value={lot.quantity} onChange={v => updateLotEntry(idx, 'quantity', v)}
-                                            min={0} style={{ width: '100%' }} formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} addonAfter="g"
+                                            min={0} style={{ width: '100%' }} formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} addonAfter={unitLabel}
                                             status={exceeds ? 'error' : ''} />
-                                        {lot.quantity > 0 && (
+                                        {isGram && lot.quantity > 0 && (
                                             <div style={{ fontSize: 11, color: '#1890ff', marginTop: 2, textAlign: 'center' }}>= {(lot.quantity / 1000).toFixed(2)} kg</div>
                                         )}
                                     </div>
@@ -2101,15 +2149,15 @@ const PurchaseOrdersPage = () => {
                         ))}
                         {/* Total summary */}
                         <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 8px', background: exceeds ? '#fff1f0' : lotsTotal === maxQty ? '#f6ffed' : '#e6f7ff', border: `1px solid ${exceeds ? '#ffa39e' : lotsTotal === maxQty ? '#b7eb8f' : '#91d5ff'}`, borderRadius: 6, marginBottom: 8 }}>
-                            <Text strong style={{ fontSize: 12 }}>Total lotes: {lotsTotal.toLocaleString()} g ({(lotsTotal / 1000).toFixed(2)} kg)</Text>
+                            <Text strong style={{ fontSize: 12 }}>Total lotes: {fmtQty(lotsTotal)}</Text>
                             <Text type={lotsTotal === maxQty ? 'success' : 'danger'} strong style={{ fontSize: 12 }}>
                                 {lotsTotal === maxQty ? '✅ Cuadra exacto' : exceeds
-                                    ? `🚫 Excede por ${((lotsTotal - maxQty) / 1000).toLocaleString()} kg`
-                                    : `⚠ Faltan: ${((maxQty - lotsTotal) / 1000).toLocaleString()} kg`}
+                                    ? `🚫 Excede por ${isGram ? ((lotsTotal - maxQty) / 1000).toLocaleString() + ' kg' : (lotsTotal - maxQty).toLocaleString() + ' und'}`
+                                    : `⚠ Faltan: ${isGram ? ((maxQty - lotsTotal) / 1000).toLocaleString() + ' kg' : (maxQty - lotsTotal).toLocaleString() + ' und'}`}
                             </Text>
                         </div>
                         {exceeds && (
-                            <Alert message={`No se puede registrar más de lo recibido (${(maxQty / 1000).toFixed(2)} kg)`} type="error" showIcon style={{ marginBottom: 8 }} />
+                            <Alert message={`No se puede registrar más de lo recibido (${fmtQty(maxQty)})`} type="error" showIcon style={{ marginBottom: 8 }} />
                         )}
                         <Button type="dashed" icon={<PlusOutlined />} onClick={addLotEntry} block>Agregar otro lote</Button>
                     </div>

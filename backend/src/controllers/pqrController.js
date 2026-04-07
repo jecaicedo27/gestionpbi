@@ -240,13 +240,19 @@ exports.getPQRs = async (req, res) => {
         // Role-based stage filtering: each role only sees PQRs they need to act on
         const roleStageMap = {
             'CALIDAD': ['PENDING_REVIEW'],
-            'CONTABILIDAD': ['PENDING_BILLING'],
-            'COMERCIAL': ['PENDING_INVOICE'],
+            'COMERCIAL': ['PENDING_BILLING'],   // Comercial sube la NC manualmente
             'LOGISTICA': ['PENDING_LOGISTICS']
         };
 
         if (roleStageMap[userRole]) {
             where.stage = { in: roleStageMap[userRole] };
+        }
+
+        // CONTABILIDAD: solo ve PQRs COMPLETED con ajuste de inventario pendiente
+        if (userRole === 'CONTABILIDAD') {
+            where.OR = [
+                { stage: 'COMPLETED', pendingAdjustment: true }
+            ];
         }
 
         if (status && status !== 'ALL') where.status = status;
@@ -468,6 +474,8 @@ exports.uploadBillingDocument = async (req, res) => {
 };
 
 exports.dispatchPQR = async (req, res) => {
+
+
     const { id } = req.params;
     const reviewerId = req.user.id;
     const { notes } = req.body;
@@ -504,9 +512,138 @@ exports.dispatchPQR = async (req, res) => {
 };
 
 /**
+ * Create a Siigo credit note directly from Siigo API for a PQR
+ * POST /api/pqr/:id/siigo-credit-note
+ */
+exports.createSiigoCreditNote = async (req, res) => {
+    const { id } = req.params;
+    const reviewerId = req.user.id;
+
+    try {
+        // Load PQR with full product data needed for price/tax calculation
+        const pqr = await prisma.pQR.findUnique({
+            where: { id },
+            include: {
+                user: { select: { id: true, name: true, nit: true, email: true, idType: true, discountPercent: true } },
+                items: {
+                    include: {
+                        product: {
+                            select: {
+                                id: true, sku: true, name: true,
+                                price: true, taxes: true, taxIncluded: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!pqr) return res.status(404).json({ error: 'PQR no encontrado' });
+        if (pqr.stage !== 'PENDING_BILLING') {
+            return res.status(400).json({ error: 'El PQR no está en etapa de facturación (PENDING_BILLING)' });
+        }
+
+        // Create credit note in Siigo
+        let ncResult;
+        try {
+            ncResult = await siigoService.createCreditNote(pqr);
+        } catch (siigoErr) {
+            logger.error('Siigo NC error:', JSON.stringify(siigoErr));
+            return res.status(500).json({
+                error: 'Error creando nota crédito en Siigo',
+                siigoError: siigoErr.error || siigoErr.message || 'Error desconocido',
+                details: siigoErr.details || []
+            });
+        }
+
+        // Store NC reference and advance stage
+        const ncRef = ncResult?.name || ncResult?.number?.toString() || 'NC generada';
+
+        const updateData = {
+            creditNoteUrl: ncRef,   // Store the NC number (e.g. "NC-2-78") as reference
+            managedById: reviewerId,
+            internalNotes: `Nota Crédito Siigo: ${ncRef} (ID: ${ncResult?.id}) — ${new Date().toLocaleDateString('es-CO')}`
+        };
+
+        // Advance stage based on refund method
+        if (pqr.refundMethod === 'PHYSICAL_REPLACEMENT') {
+            updateData.stage = 'PENDING_INVOICE';
+            updateData.status = 'IN_REVIEW';
+        } else {
+            // WALLET_BALANCE → completed for distributor, but admin still needs adjustment
+            updateData.stage = 'COMPLETED';
+            updateData.status = 'PROCESSED';
+            updateData.resolvedAt = new Date();
+            updateData.pendingAdjustment = true; // Admin must still register damage write-off
+        }
+
+        const updatedPQR = await prisma.pQR.update({ where: { id }, data: updateData });
+
+        logger.info(`✅ PQR ${pqr.ticketNumber} → NC Siigo ${ncRef} creada por ${req.user.email}`);
+
+        res.json({
+            success: true,
+            pqr: updatedPQR,
+            creditNote: {
+                id: ncResult?.id,
+                name: ncResult?.name,
+                number: ncResult?.number,
+                url: ncResult?.public_url || null
+            }
+        });
+    } catch (error) {
+        logger.error('Create Siigo Credit Note Error:', error);
+        res.status(500).json({ error: 'Error al crear nota crédito.' });
+    }
+};
+
+/**
+ * Admin: mark inventory damage adjustment as done.
+ * POST /api/pqr/:id/adjustment-done
+ */
+exports.markAdjustmentDone = async (req, res) => {
+    const { id } = req.params;
+    const { notes } = req.body;
+    const userRole = req.user?.role;
+
+    if (!['ADMIN', 'CONTABILIDAD', 'CARTERA'].includes(userRole)) {
+        return res.status(403).json({ error: 'No autorizado.' });
+    }
+
+    try {
+        const pqr = await prisma.pQR.findUnique({ where: { id }, select: { id: true, ticketNumber: true, pendingAdjustment: true } });
+        if (!pqr) return res.status(404).json({ error: 'PQR no encontrado' });
+        if (!pqr.pendingAdjustment) return res.status(400).json({ error: 'Este PQR no tiene ajuste pendiente' });
+        if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el documento de ajuste para registrar' });
+
+        // Build file URL if a document was uploaded
+        let adjustmentDocUrl = undefined;
+        if (req.file) {
+            adjustmentDocUrl = `/uploads/pqr/${req.file.filename}`;
+        }
+
+        const updateData = {
+            pendingAdjustment: false,
+            adjustmentDoneAt: new Date(),
+            adjustmentNotes: notes || 'Ajuste de inventario registrado'
+        };
+        if (adjustmentDocUrl) updateData.adjustmentDocUrl = adjustmentDocUrl;
+
+        const updated = await prisma.pQR.update({ where: { id }, data: updateData });
+
+        logger.info(`✅ Ajuste de inventario registrado: PQR ${pqr.ticketNumber} por ${req.user.email}`);
+        res.json({ success: true, pqr: updated, adjustmentDocUrl });
+    } catch (error) {
+        logger.error('markAdjustmentDone error:', error);
+        res.status(500).json({ error: 'Error al registrar ajuste.' });
+    }
+};
+
+/**
  * Bulk billing — apply same credit note + account statement to multiple PQRs
  * POST /api/pqr/bulk-billing
  */
+
 exports.bulkBilling = async (req, res) => {
     const reviewerId = req.user.id;
     const userRole = req.user.role;

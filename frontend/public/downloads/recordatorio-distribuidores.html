@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recordatorio Modelo de Distribución — POPPING BOBA INTERNATIONAL</title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #0f0f0f; color: #e8e8e8; overflow: hidden; }
+        .slide {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            padding: 60px 100px; opacity: 0; transition: opacity 0.7s ease; pointer-events: none;
+        }
+        .slide.active { opacity: 1; pointer-events: all; }
+
+        .bg-1 { background: #0f0f0f; }
+        .bg-2 { background: linear-gradient(180deg, #0f0f0f 0%, #1a1710 100%); }
+        .bg-3 { background: #fafaf8; color: #1a1a1a; }
+
+        .gold { color: #c9a84c; }
+        .muted { color: rgba(255,255,255,0.35); }
+        .red { color: #e85d5d; }
+        .green { color: #5dba7d; }
+
+        .line { width: 48px; height: 1px; background: #c9a84c; margin: 20px auto; }
+        .title { font-family: 'Playfair Display', serif; font-size: 52px; font-weight: 700; line-height: 1.2; letter-spacing: -0.5px; }
+        .small { font-size: 14px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+
+        /* Table */
+        .price-table { border-collapse: collapse; max-width: 700px; width: 100%; }
+        .price-table th { text-align: left; padding: 12px 16px; font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.3); border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .price-table td { padding: 16px 18px; font-size: 18px; font-weight: 500; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(255,255,255,0.7); }
+        .price-table td strong { color: #e8e8e8; font-weight: 700; }
+        .bg-3 .price-table th { color: rgba(0,0,0,0.3); border-bottom-color: rgba(0,0,0,0.08); }
+        .bg-3 .price-table td { color: rgba(0,0,0,0.6); border-bottom-color: rgba(0,0,0,0.06); }
+        .bg-3 .price-table td strong { color: #1a1a1a; }
+
+        /* Grid */
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; max-width: 800px; width: 100%; background: rgba(255,255,255,0.06); }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; max-width: 900px; width: 100%; background: rgba(255,255,255,0.06); }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; max-width: 900px; width: 100%; background: rgba(255,255,255,0.06); }
+        .cell { background: #0f0f0f; padding: 28px 20px; text-align: center; }
+        .bg-2 .cell { background: #141210; }
+        .bg-3 .cell { background: #fafaf8; }
+        .cell-title { font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #c9a84c; margin-bottom: 8px; }
+        .cell-value { font-family: 'Playfair Display', serif; font-size: 32px; font-weight: 700; }
+        .cell-desc { font-size: 15px; color: rgba(255,255,255,0.40); margin-top: 6px; line-height: 1.5; }
+        .bg-3 .cell-desc { color: rgba(0,0,0,0.45); }
+
+        /* Rule blocks */
+        .rule-list { max-width: 680px; width: 100%; }
+        .rule-item { display: flex; gap: 16px; padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.05); align-items: flex-start; }
+        .rule-num { font-family: 'Playfair Display', serif; font-size: 18px; font-weight: 700; color: #c9a84c; min-width: 28px; padding-top: 2px; }
+        .rule-text { font-size: 18px; line-height: 1.7; color: rgba(255,255,255,0.65); }
+        .rule-text strong { color: #e8e8e8; }
+        .bg-3 .rule-item { border-bottom-color: rgba(0,0,0,0.06); }
+        .bg-3 .rule-text { color: rgba(0,0,0,0.55); }
+        .bg-3 .rule-text strong { color: #1a1a1a; }
+
+        /* Stat */
+        .stat-row { display: flex; gap: 50px; justify-content: center; }
+        .stat-item { text-align: center; }
+        .stat-num { font-family: 'Playfair Display', serif; font-size: 40px; font-weight: 700; color: #c9a84c; }
+        .stat-label { font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.3); margin-top: 6px; }
+
+        /* Quote */
+        .quote-text { font-family: 'Playfair Display', serif; font-size: 30px; font-weight: 400; line-height: 1.6; font-style: italic; max-width: 620px; text-align: center; }
+
+        .highlight-box { max-width: 680px; width: 100%; border: 1px solid rgba(201,168,76,0.2); padding: 20px 28px; text-align: center; }
+        .bg-3 .highlight-box { border-color: rgba(201,168,76,0.3); }
+
+        /* Nav */
+        .nav { position: fixed; bottom: 28px; right: 36px; display: flex; gap: 6px; z-index: 100; }
+        .nav button { width: 40px; height: 40px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); background: rgba(15,15,15,0.9); color: rgba(255,255,255,0.4); font-size: 16px; cursor: pointer; transition: all 0.2s; }
+        .nav button:hover { border-color: #c9a84c; color: #c9a84c; }
+        .progress-bar { position: fixed; top: 0; left: 0; height: 2px; background: #c9a84c; transition: width 0.5s ease; z-index: 100; }
+        .counter { position: fixed; bottom: 32px; left: 36px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.12); z-index: 100; letter-spacing: 2px; }
+
+        .slide.active .fade { animation: up 0.7s ease forwards; opacity: 0; }
+        .slide.active .fade.f1 { animation-delay: 0.15s; }
+        .slide.active .fade.f2 { animation-delay: 0.4s; }
+        .slide.active .fade.f3 { animation-delay: 0.65s; }
+        .slide.active .fade.f4 { animation-delay: 0.9s; }
+        @keyframes up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="progress-bar" id="progress"></div>
+    <div class="counter" id="counter"></div>
+
+    <!-- SLIDE 1: Portada -->
+    <div class="slide bg-1 active">
+        <div style="text-align:center;">
+            <p class="small muted fade f1">POPPING BOBA INTERNATIONAL S.A.S — Recordatorio</p>
+            <div class="line fade f2"></div>
+            <h1 class="title fade f3">Modelo de<br><span class="gold">Distribución</span></h1>
+            <p class="muted fade f4" style="margin-top:20px;font-size:14px;">Reglas, precios y compromisos vigentes</p>
+        </div>
+    </div>
+
+    <!-- SLIDE 2: Objetivo -->
+    <div class="slide bg-2">
+        <p class="small gold fade f1">Objetivo de la empresa</p>
+        <div class="line fade f2"></div>
+        <div class="rule-list fade f3">
+            <div class="rule-item"><span class="rule-num">01</span><p class="rule-text"><strong>Que los socios generen utilidades</strong> por medio de la distribución de los productos fabricados.</p></div>
+            <div class="rule-item"><span class="rule-num">02</span><p class="rule-text"><strong>Identificar y negociar con distribuidores alternos</strong> que no hayan sido identificados por los socios distribuidores.</p></div>
+            <div class="rule-item"><span class="rule-num">03</span><p class="rule-text"><strong>Crear comercializadoras</strong> en diferentes países de América Latina donde la empresa o los socios podrán vender a distribuidores.</p></div>
+            <div class="rule-item"><span class="rule-num">04</span><p class="rule-text"><strong>Robustecer infraestructura y capital.</strong> La empresa solo atiende clientes B2B.</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 3: Bases de competencia -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1">Bases de Competencia</p>
+        <div class="line fade f2"></div>
+        <div class="grid-4 fade f3">
+            <div class="cell">
+                <p class="cell-title">Calidad</p>
+                <p style="font-size:15px;font-weight:500;color:rgba(255,255,255,0.6);">Sabor, color, textura, explosión, uniformidad</p>
+            </div>
+            <div class="cell">
+                <p class="cell-title">Diseño</p>
+                <p style="font-size:15px;font-weight:500;color:rgba(255,255,255,0.6);">Etiquetas profesionales y marca registrada</p>
+            </div>
+            <div class="cell">
+                <p class="cell-title">Marca</p>
+                <p style="font-size:15px;font-weight:500;color:rgba(255,255,255,0.6);">Redes sociales, página web, presencia digital</p>
+            </div>
+            <div class="cell">
+                <p class="cell-title">Atención</p>
+                <p style="font-size:15px;font-weight:500;color:rgba(255,255,255,0.6);">Inventario disponible, rapidez, amabilidad</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- SLIDE 4: Tabla de precios -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1">Precios al Público</p>
+        <div class="line fade f2"></div>
+        <table class="price-table fade f3">
+            <thead>
+                <tr><th>Presentación</th><th style="text-align:right;">Precio al Público</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><strong>Perlas 300 gr</strong></td><td style="text-align:right;">$16,000</td></tr>
+                <tr><td><strong>Perlas 1,100 gr</strong></td><td style="text-align:right;">$37,500</td></tr>
+                <tr><td><strong>Perlas 2,300 gr</strong></td><td style="text-align:right;">$73,000</td></tr>
+                <tr><td><strong>Perlas 3,400 gr</strong></td><td style="text-align:right;">$99,000</td></tr>
+                <tr><td><strong>Sirope 1,000 ml</strong></td><td style="text-align:right;">$28,500</td></tr>
+                <tr><td><strong>Sirope 360 ml</strong></td><td style="text-align:right;">$15,000</td></tr>
+            </tbody>
+        </table>
+        <p class="fade f4 muted" style="margin-top:20px;font-size:13px;">Sabores: Blueberry, Cereza, Fresa, Maracuyá, Sandía, Lychee, Mango Biche, Manzana Verde, Ice Pink, Chicle</p>
+    </div>
+
+    <!-- SLIDE 5: Estructura de descuentos -->
+    <div class="slide bg-2">
+        <p class="small gold fade f1">Estructura de Descuentos</p>
+        <div class="line fade f2"></div>
+        <div class="grid-3 fade f3" style="max-width:900px;">
+            <div class="cell">
+                <p class="cell-title">Socios Distribuidores</p>
+                <p class="cell-value gold">30%</p>
+                <p class="cell-desc">Descuento especial. Puede variar según crecimiento de la empresa.</p>
+            </div>
+            <div class="cell">
+                <p class="cell-title">Distribuidores</p>
+                <p class="cell-value" style="color:#60a5fa;">25%</p>
+                <p class="cell-desc">Personas o empresas dedicadas a compra y venta en el canal horeca.</p>
+            </div>
+            <div class="cell">
+                <p class="cell-title">Mayoristas</p>
+                <p class="cell-value" style="color:rgba(255,255,255,0.5);">13%</p>
+                <p class="cell-desc">Descuento máximo autorizado. No dar más sin notificación previa.</p>
+            </div>
+        </div>
+        <div class="highlight-box fade f4" style="margin-top:24px;">
+            <p style="font-size:14px;font-weight:600;color:rgba(255,255,255,0.5);">Pedido mínimo para mantener el descuento de socio: <strong style="color:#c9a84c;">$8,000,000 COP</strong></p>
+        </div>
+    </div>
+
+    <!-- SLIDE 6: Definiciones -->
+    <div class="slide bg-3">
+        <p class="small fade f1" style="color:#c9a84c;">Definiciones Importantes</p>
+        <div class="line fade f2"></div>
+        <div class="grid-2 fade f3" style="background:rgba(0,0,0,0.06);">
+            <div class="cell" style="text-align:left;">
+                <p class="cell-title">Distribuidor</p>
+                <p style="font-size:14px;line-height:1.7;color:rgba(0,0,0,0.55);">Persona o empresa dedicada a la compra y venta de productos relacionados a <strong style="color:#1a1a1a;">helados, bares, restaurantes, coctelería.</strong></p>
+            </div>
+            <div class="cell" style="text-align:left;">
+                <p class="cell-title">Mayorista</p>
+                <p style="font-size:14px;line-height:1.7;color:rgba(0,0,0,0.55);">Local de venta directa al público que busca abaratar costos. <strong style="color:#1a1a1a;">No aplica precio de distribuidor.</strong></p>
+            </div>
+            <div class="cell" style="text-align:left;">
+                <p class="cell-title" style="color:#e85d5d;">No permitido</p>
+                <p style="font-size:14px;line-height:1.7;color:rgba(0,0,0,0.55);">Dar descuento de distribuidor a un local que solo vende al público final. <strong style="color:#1a1a1a;">No se debe dar más descuento del autorizado.</strong></p>
+            </div>
+            <div class="cell" style="text-align:left;">
+                <p class="cell-title" style="color:#5dba7d;">Permitido</p>
+                <p style="font-size:14px;line-height:1.7;color:rgba(0,0,0,0.55);">Socios pueden buscar distribuidores y mayoristas. <strong style="color:#1a1a1a;">Respetando las definiciones de cada categoría.</strong></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- SLIDE 7: Protección de clientes -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1">Protección de Clientes</p>
+        <div class="line fade f2"></div>
+        <div class="rule-list fade f3">
+            <div class="rule-item"><span class="rule-num">01</span><p class="rule-text">A la empresa <strong>no le interesa quedarse con los clientes</strong> que ustedes con tanto esfuerzo han conseguido.</p></div>
+            <div class="rule-item"><span class="rule-num">02</span><p class="rule-text"><strong>Envíen su lista de clientes</strong> mayoristas, subdistribuidores y clientes grandes para identificarlos y asignarlos a su distribuidora.</p></div>
+            <div class="rule-item"><span class="rule-num">03</span><p class="rule-text">Si un cliente conocido quiere comprar directo, <strong>se le redirige al socio distribuidor</strong> correspondiente.</p></div>
+            <div class="rule-item" style="border:none;"><span class="rule-num">04</span><p class="rule-text"><strong>La responsabilidad de mantener y dar seguimiento</strong> a sus clientes es de cada distribuidor. La dinámica del mercado es muy cambiante.</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 8: Socios con mayor inversión -->
+    <div class="slide bg-2">
+        <p class="small gold fade f1">Beneficio por Inversión</p>
+        <div class="line fade f2"></div>
+        <h2 class="title fade f3" style="font-size:32px;text-align:center;margin-bottom:24px;">Socios con mayor <span class="gold">participación</span></h2>
+        <div class="rule-list fade f3" style="max-width:640px;">
+            <div class="rule-item"><span class="rule-num">—</span><p class="rule-text">Socios con más del <strong>2% de participación</strong> reciben un porcentaje adicional de descuento.</p></div>
+            <div class="rule-item"><span class="rule-num">—</span><p class="rule-text">Beneficio adicional: <strong>0.4% más en descuento por cada 1% de participación</strong> en la empresa.</p></div>
+            <div class="rule-item" style="border:none;"><span class="rule-num">—</span><p class="rule-text">Este beneficio tiene <strong>vigencia de 1 año.</strong> Después, todos los socios distribuidores quedan en igualdad de condiciones.</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 9: Expectativa -->
+    <div class="slide bg-1">
+        <div style="text-align:center;">
+            <div class="line fade f1"></div>
+            <p class="quote-text fade f2" style="margin:24px 0;">"Con esfuerzo y dedicación, llegaremos a dar durante periodos de tiempo un porcentaje donde los distribuidores podrán recuperar rápidamente su inversión."</p>
+            <div class="line fade f3"></div>
+            <p class="fade f4" style="margin-top:16px;font-size:14px;color:rgba(255,255,255,0.35);max-width:480px;">Antes de llegar a ese punto, debemos estabilizar la operación, la producción y la infraestructura.</p>
+        </div>
+    </div>
+
+    <!-- SLIDE 10: Resumen -->
+    <div class="slide bg-3">
+        <div style="text-align:center;">
+            <p class="small fade f1" style="color:#c9a84c;">Resumen</p>
+            <div class="line fade f2"></div>
+            <h2 class="title fade f3" style="font-size:36px;color:#1a1a1a;">Reglas que nos <span class="gold">fortalecen</span></h2>
+            <div class="grid-3 fade f4" style="margin-top:28px;background:rgba(0,0,0,0.06);">
+                <div class="cell">
+                    <p class="cell-title">Respetar precios</p>
+                    <p style="font-size:13px;color:rgba(0,0,0,0.45);">No dar más descuento del autorizado sin aprobación</p>
+                </div>
+                <div class="cell">
+                    <p class="cell-title">Registrar clientes</p>
+                    <p style="font-size:13px;color:rgba(0,0,0,0.45);">Enviar lista de clientes para protección territorial</p>
+                </div>
+                <div class="cell">
+                    <p class="cell-title">Pedido mínimo</p>
+                    <p style="font-size:13px;color:rgba(0,0,0,0.45);">$8M para mantener condiciones de socio distribuidor</p>
+                </div>
+            </div>
+            <p class="fade f4" style="margin-top:24px;font-size:15px;color:rgba(0,0,0,0.4);max-width:460px;">Estas reglas existen para proteger a todos los socios y garantizar un crecimiento ordenado.</p>
+        </div>
+    </div>
+
+    <div class="nav">
+        <button onclick="prev()">←</button>
+        <button onclick="next()">→</button>
+    </div>
+
+    <script>
+        let c = 0;
+        const s = document.querySelectorAll('.slide'), t = s.length;
+        function show(n) { s.forEach((x,i) => { x.classList.toggle('active', i===n); }); document.getElementById('progress').style.width=((n+1)/t*100)+'%'; document.getElementById('counter').textContent=(n+1)+' / '+t; }
+        function next() { if(c<t-1){c++;show(c);} }
+        function prev() { if(c>0){c--;show(c);} }
+        document.addEventListener('keydown', e => { if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();next();} if(e.key==='ArrowLeft'){e.preventDefault();prev();} });
+        show(0);
+    </script>
+</body>
+</html>

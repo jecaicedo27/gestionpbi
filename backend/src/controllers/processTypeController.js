@@ -9,7 +9,10 @@ async function listProcessTypes(req, res) {
     try {
         const { active, category } = req.query;
 
-        const where = {};
+        const where = {
+            // Liquipops endpoint: never show Geniality-exclusive G_* process types
+            NOT: { code: { startsWith: 'G_' } }
+        };
         if (active !== undefined) {
             where.active = active === 'true';
         }

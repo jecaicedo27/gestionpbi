@@ -87,10 +87,33 @@ const SAMPLE_DETAIL_INCLUDE = {
         include: {
             recordedBy: {
                 select: { id: true, name: true }
+            },
+            logReadings: {
+                include: { parameter: true }
             }
         }
     },
-    scheduleEntry: true
+    scheduleEntry: {
+        include: {
+            requestedParameters: {
+                include: { parameter: true }
+            }
+        }
+    },
+    requestedParameters: {
+        include: { parameter: true }
+    }
+};
+
+// Standard include for schedule entry reads — includes junction table to support relational read path
+const SCHEDULE_ENTRY_INCLUDE = {
+    samplingPoint: true,
+    requestedParameters: {
+        include: { parameter: true }
+    },
+    sample: {
+        include: SAMPLE_DETAIL_INCLUDE
+    }
 };
 
 const respondWithError = (res, error, logPrefix, defaultMessage) => {
@@ -142,6 +165,32 @@ const loadRequestedParameters = async (parameterIds = []) => {
 
     const parameterMap = new Map(parameters.map(parameter => [parameter.id, parameter]));
     return normalizedIds.map(parameterId => parameterMap.get(parameterId)).filter(Boolean);
+};
+
+/**
+ * Resolves requestedParameterIds from relational junction if available,
+ * falling back to the legacy JSON field for historical records.
+ */
+const resolveRequestedParameterIds = (entity) => {
+    // Prefer normalized junction table (new records)
+    if (Array.isArray(entity?.requestedParameters) && entity.requestedParameters.length > 0) {
+        return entity.requestedParameters
+            .map(jp => jp.parameterId || jp.parameter?.id)
+            .filter(Boolean);
+    }
+    // Fallback: legacy JSON field (historical records pre-migration)
+    return normalizeRequestedParameterIdList(entity?.requestedParameterIds);
+};
+
+const resolveRequestedParameterObjects = (entity) => {
+    // Prefer pre-loaded objects from junction table includes
+    if (Array.isArray(entity?.requestedParameters) && entity.requestedParameters.length > 0) {
+        return entity.requestedParameters
+            .map(jp => jp.parameter)
+            .filter(Boolean)
+            .sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+    }
+    return null; // signals caller to do a DB lookup via loadRequestedParameters
 };
 
 const validateRequestedParametersExist = async (tx, parameterIds = []) => {
@@ -281,8 +330,11 @@ const assertRequestedResultCoverage = ({
 const buildSampleResponse = async (sample) => {
     if (!sample) return null;
 
-    const requestedParameterIds = normalizeRequestedParameterIdList(sample.requestedParameterIds);
-    const requestedParameters = await loadRequestedParameters(requestedParameterIds);
+    const requestedParameterIds = resolveRequestedParameterIds(sample);
+    const preloadedParams = resolveRequestedParameterObjects(sample);
+    const requestedParameters = preloadedParams !== null
+        ? preloadedParams
+        : await loadRequestedParameters(requestedParameterIds);
     const hydratedSample = sample.workflowType === 'INTERNAL'
         ? {
             ...sample,
@@ -568,6 +620,9 @@ const buildScheduleEntryResponse = (entry, source = 'PLANNED') => {
         : getScheduleDisplayStatus(entry, sample);
     const rawStatus = entry.status || 'PLANNED';
 
+    // Prefer relational junction, fallback to JSON for historical records
+    const requestedParameterIds = resolveRequestedParameterIds(entry);
+
     return {
         id: entry.id,
         source,
@@ -579,7 +634,7 @@ const buildScheduleEntryResponse = (entry, source = 'PLANNED') => {
         laboratoryProfile: entry.laboratoryProfile || null,
         assignedLab: entry.assignedLab || null,
         zoneName: entry.zoneName || point?.zoneName || null,
-        requestedParameterIds: normalizeRequestedParameterIdList(entry.requestedParameterIds),
+        requestedParameterIds,
         notes: entry.notes || null,
         status,
         rawStatus,
@@ -1463,12 +1518,7 @@ exports.getWeekSchedule = async (req, res) => {
                     lte: endDate
                 }
             },
-            include: {
-                samplingPoint: true,
-                sample: {
-                    include: SAMPLE_DETAIL_INCLUDE
-                }
-            },
+            include: SCHEDULE_ENTRY_INCLUDE,
             orderBy: [
                 { plannedDate: 'asc' },
                 { plannedTime: 'asc' },
@@ -1696,13 +1746,19 @@ exports.createScheduleEntry = async (req, res) => {
                         }),
                         createdById: req.user.id
                     },
-                    include: {
-                        samplingPoint: true,
-                        sample: {
-                            include: SAMPLE_DETAIL_INCLUDE
-                        }
-                    }
+                    include: SCHEDULE_ENTRY_INCLUDE
                 });
+
+                // Dual-write: sync junction table
+                if (normalizedRequestedParameterIds.length > 0) {
+                    await tx.microScheduleEntryParameter.createMany({
+                        data: normalizedRequestedParameterIds.map(parameterId => ({
+                            entryId: createdEntry.id,
+                            parameterId
+                        })),
+                        skipDuplicates: true
+                    });
+                }
 
                 createdEntries.push(createdEntry);
             }
@@ -1840,13 +1896,17 @@ exports.updateScheduleEntry = async (req, res) => {
                     statusReason: nextStatusReason,
                     statusHistory: nextStatusHistory
                 },
-                include: {
-                    samplingPoint: true,
-                    sample: {
-                        include: SAMPLE_DETAIL_INCLUDE
-                    }
-                }
+                include: SCHEDULE_ENTRY_INCLUDE
             });
+
+            // Dual-write: re-sync junction table (delete + recreate)
+            await tx.microScheduleEntryParameter.deleteMany({ where: { entryId: id } });
+            if (nextRequestedParameterIds.length > 0) {
+                await tx.microScheduleEntryParameter.createMany({
+                    data: nextRequestedParameterIds.map(parameterId => ({ entryId: id, parameterId })),
+                    skipDuplicates: true
+                });
+            }
 
             if (existingEntry.sampleId) {
                 await tx.microSample.update({
@@ -1863,6 +1923,15 @@ exports.updateScheduleEntry = async (req, res) => {
                             : normalized.assignedLab
                     }
                 });
+
+                // Dual-write: re-sync sample junction table when entry has linked sample
+                await tx.microSampleParameter.deleteMany({ where: { sampleId: existingEntry.sampleId } });
+                if (nextRequestedParameterIds.length > 0) {
+                    await tx.microSampleParameter.createMany({
+                        data: nextRequestedParameterIds.map(parameterId => ({ sampleId: existingEntry.sampleId, parameterId })),
+                        skipDuplicates: true
+                    });
+                }
             }
 
             return entry;
@@ -1882,12 +1951,7 @@ exports.cancelScheduleEntry = async (req, res) => {
         const { id } = req.params;
         const entry = await prisma.microScheduleEntry.findUnique({
             where: { id },
-            include: {
-                samplingPoint: true,
-                sample: {
-                    include: SAMPLE_DETAIL_INCLUDE
-                }
-            }
+            include: SCHEDULE_ENTRY_INCLUDE
         });
 
         if (!entry) {
@@ -1930,12 +1994,7 @@ exports.cancelScheduleEntry = async (req, res) => {
                     }
                 }))
             },
-            include: {
-                samplingPoint: true,
-                sample: {
-                    include: SAMPLE_DETAIL_INCLUDE
-                }
-            }
+            include: SCHEDULE_ENTRY_INCLUDE
         });
 
         res.json({
@@ -1952,12 +2011,7 @@ exports.rescheduleScheduleEntry = async (req, res) => {
         const { id } = req.params;
         const existingEntry = await prisma.microScheduleEntry.findUnique({
             where: { id },
-            include: {
-                samplingPoint: true,
-                sample: {
-                    include: SAMPLE_DETAIL_INCLUDE
-                }
-            }
+            include: SCHEDULE_ENTRY_INCLUDE
         });
 
         if (!existingEntry) {
@@ -2095,12 +2149,7 @@ exports.rescheduleScheduleEntry = async (req, res) => {
                         }
                     }))
                 },
-                include: {
-                    samplingPoint: true,
-                    sample: {
-                        include: SAMPLE_DETAIL_INCLUDE
-                    }
-                }
+                include: SCHEDULE_ENTRY_INCLUDE
             });
 
             res.status(200).json({
@@ -2203,12 +2252,7 @@ exports.rescheduleScheduleEntry = async (req, res) => {
                         })),
                         createdById: req.user.id
                     },
-                    include: {
-                        samplingPoint: true,
-                        sample: {
-                            include: SAMPLE_DETAIL_INCLUDE
-                        }
-                    }
+                    include: SCHEDULE_ENTRY_INCLUDE
                 });
 
                 newEntries.push(newEntry);
@@ -2539,6 +2583,17 @@ exports.createSample = async (req, res) => {
                 });
             }
 
+            // Dual-write: populate sample junction table
+            if (mergedRequestedParameterIds.length > 0) {
+                await tx.microSampleParameter.createMany({
+                    data: mergedRequestedParameterIds.map(parameterId => ({
+                        sampleId: sample.id,
+                        parameterId
+                    })),
+                    skipDuplicates: true
+                });
+            }
+
             return sample.id;
         });
         const createdSample = await prisma.microSample.findUnique({
@@ -2758,6 +2813,15 @@ exports.updateSampleResults = async (req, res) => {
                 }
             });
 
+            // Dual-write: re-sync sample junction table
+            await tx.microSampleParameter.deleteMany({ where: { sampleId: id } });
+            if (nextRequestedParameterIds.length > 0) {
+                await tx.microSampleParameter.createMany({
+                    data: nextRequestedParameterIds.map(parameterId => ({ sampleId: id, parameterId })),
+                    skipDuplicates: true
+                });
+            }
+
             if (sample.scheduleEntry?.id) {
                 await tx.microScheduleEntry.update({
                     where: { id: sample.scheduleEntry.id },
@@ -2765,6 +2829,16 @@ exports.updateSampleResults = async (req, res) => {
                         requestedParameterIds: nextRequestedParameterIds
                     }
                 });
+
+                // Dual-write: re-sync schedule entry junction table
+                await tx.microScheduleEntryParameter.deleteMany({ where: { entryId: sample.scheduleEntry.id } });
+                if (nextRequestedParameterIds.length > 0) {
+                    await tx.microScheduleEntryParameter.createMany({
+                        data: nextRequestedParameterIds.map(parameterId => ({ entryId: sample.scheduleEntry.id, parameterId })),
+                        skipDuplicates: true
+                    });
+                }
+
                 await syncScheduleEntryStatus(tx, sample.scheduleEntry.id, id);
             }
         });
@@ -3571,7 +3645,7 @@ exports.addInternalLog = async (req, res) => {
         const dayNumber = Math.max(1, Math.floor((logDate.getTime() - sampleStartDate.getTime()) / (24 * 60 * 60 * 1000)) + 1);
 
         await prisma.$transaction(async (tx) => {
-            await tx.microInternalLog.upsert({
+            const upsertedLog = await tx.microInternalLog.upsert({
                 where: {
                     sampleId_logDate: {
                         sampleId: id,
@@ -3593,6 +3667,21 @@ exports.addInternalLog = async (req, res) => {
                     recordedById: req.user.id
                 }
             });
+
+            // Dual-write: sync MicroLogReading table (delete + recreate on upsert)
+            await tx.microLogReading.deleteMany({ where: { logId: upsertedLog.id } });
+            if (readings.length > 0) {
+                await tx.microLogReading.createMany({
+                    data: readings.map(r => ({
+                        logId: upsertedLog.id,
+                        parameterId: r.parameterId || null,
+                        value: r.value !== undefined && r.value !== null && r.value !== '' ? String(r.value) : null,
+                        valueText: r.valueText || null,
+                        isDetected: r.isDetected !== undefined ? r.isDetected : null
+                    })),
+                    skipDuplicates: true
+                });
+            }
 
             await recalculateSampleStatus(tx, id, { currentStatus: 'IN_PROCESS' });
             await logMicroAuditEvent(tx, {

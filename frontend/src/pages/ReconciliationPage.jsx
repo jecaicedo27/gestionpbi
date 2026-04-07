@@ -60,6 +60,21 @@ export default function ReconciliationPage() {
     const [search, setSearch] = useState('');
     const [classification, setClassification] = useState('');
     const [onlyDiff, setOnlyDiff] = useState(false);
+    const [consuming, setConsuming] = useState(null); // productId currently being consumed
+
+    const consumeDiff = async (r) => {
+        const qty = Math.abs(r.diff);
+        if (!window.confirm(`¿Registrar ${qty} unidades de ${r.sku} como consumidas (vendidas/ajuste)?\nEsto reducirá el stock de la app para cuadrar con Siigo.`)) return;
+        setConsuming(r.id);
+        try {
+            await api.post('/reconciliation/stock/consume-diff', { productId: r.id, qty });
+            await fetchData();
+        } catch (err) {
+            alert(err.response?.data?.error || 'Error al consumir diferencia');
+        } finally {
+            setConsuming(null);
+        }
+    };
 
     const fetchData = useCallback(async () => {
         setLoading(true);
@@ -90,7 +105,7 @@ export default function ReconciliationPage() {
     const summary = data?.summary || {};
 
     return (
-        <div style={{ padding: '24px 32px', maxWidth: 1400, margin: '0 auto' }}>
+        <div style={{ padding: '24px 32px', maxWidth: 1600, margin: '0 auto' }}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                 <div>
@@ -226,13 +241,14 @@ export default function ReconciliationPage() {
                                                     <th style={{ ...thStyle, textAlign: 'right' }}>Total App</th>
                                                     <th style={{ ...thStyle, textAlign: 'right' }}>Diferencia</th>
                                                     <th style={thStyle}>Estado</th>
+                                                    <th style={thStyle}>Acción</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {gRows.map(r => (
                                                     <tr key={r.id} style={{ borderBottom: '1px solid #f1f5f9', background: r.status === 'ERROR' ? '#fff1f2' : r.status === 'WARN' ? '#fefce8' : '#fff' }}>
                                                         <td style={tdStyle}><span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#4f46e5' }}>{r.sku}</span></td>
-                                                        <td style={{ ...tdStyle, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</td>
+                                                        <td style={{ ...tdStyle, minWidth: 280 }} title={r.name}>{r.name}</td>
                                                         <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 800, color: '#0369a1' }}>{r.siigoStock.toLocaleString('es-CO')}</td>
                                                         <td style={{ ...tdStyle, textAlign: 'right', color: '#475569' }}>{r.appZones.warehouse || '—'}</td>
                                                         <td style={{ ...tdStyle, textAlign: 'right', color: '#7c3aed' }}>{(r.appZones.terminado + r.appZones.produccion) || '—'}</td>
@@ -240,6 +256,17 @@ export default function ReconciliationPage() {
                                                         <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 800, color: '#1e293b' }}>{r.totalApp.toLocaleString('es-CO')}</td>
                                                         <td style={{ ...tdStyle, textAlign: 'right' }}><DiffCell value={r.diff} /></td>
                                                         <td style={tdStyle}><StatusBadge status={r.status} /></td>
+                                                        <td style={tdStyle}>
+                                                            {r.diff < 0 && (
+                                                                <button
+                                                                    onClick={() => consumeDiff(r)}
+                                                                    disabled={consuming === r.id}
+                                                                    style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: consuming === r.id ? '#e2e8f0' : '#f97316', color: '#fff', fontSize: '0.72rem', fontWeight: 700, cursor: consuming === r.id ? 'wait' : 'pointer', whiteSpace: 'nowrap' }}
+                                                                >
+                                                                    {consuming === r.id ? '⏳...' : `🧹 Consumir ${Math.abs(r.diff)}`}
+                                                                </button>
+                                                            )}
+                                                        </td>
                                                     </tr>
                                                 ))}
                                             </tbody>
@@ -333,7 +360,7 @@ export default function ReconciliationPage() {
                                             {groups[gName].map(r => (
                                                 <tr key={r.id} style={{ borderBottom: '1px solid #f1f5f9', background: r.status === 'ERROR' ? '#fff1f2' : '#fff' }}>
                                                     <td style={tdStyle}><span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#4f46e5' }}>{r.sku}</span></td>
-                                                    <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</td>
+                                                    <td style={{ ...tdStyle, minWidth: 280 }} title={r.name}>{r.name}</td>
                                                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 800, color: '#0369a1' }}>{r.sold.toLocaleString('es-CO')}</td>
                                                     <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b' }}>{r.invoiceCount}</td>
                                                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, color: '#7c3aed' }}>{r.consumed.toLocaleString('es-CO')}</td>

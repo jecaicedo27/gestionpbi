@@ -63,20 +63,36 @@ export function parseScanInput(rawValue) {
         }
     }
 
-    // ── 2. Try LOT:xxx|SKU:xxx (tsplLabelBuilder / thermal labels) ──
+    // ── 2. Try LOT:xxx|SKU:xxx|BAR:xxx|QTY:xxx|BOX:x/x (tsplLabelBuilder / thermal labels) ──
     if (buffer.includes('LOT:') || buffer.includes('SKU:')) {
         const parts = buffer.split('|');
-        const lotPart = parts.find(p => p.startsWith('LOT:'));
-        const skuPart = parts.find(p => p.startsWith('SKU:'));
+        const lotPart  = parts.find(p => p.startsWith('LOT:'));
+        const skuPart  = parts.find(p => p.startsWith('SKU:'));
+        const barPart  = parts.find(p => p.startsWith('BAR:'));
+        const qtyPart  = parts.find(p => p.startsWith('QTY:'));
+        const boxPart  = parts.find(p => p.startsWith('BOX:'));
 
         if (lotPart || skuPart) {
+            const qty = qtyPart ? parseInt(qtyPart.replace('QTY:', '').trim(), 10) : null;
+            // Parse BOX:1/5 → boxNumber=1, totalBoxes=5
+            let boxNumber = null, totalBoxes = null;
+            if (boxPart) {
+                const boxVal = boxPart.replace('BOX:', '').trim();
+                const boxMatch = boxVal.match(/^(\d+)\/(\d+)$/);
+                if (boxMatch) {
+                    boxNumber = parseInt(boxMatch[1], 10);
+                    totalBoxes = parseInt(boxMatch[2], 10);
+                }
+            }
             return {
                 type: 'qr_lot_sku',
                 sku: skuPart ? skuPart.replace('SKU:', '').trim() : null,
-                barcode: null,
+                barcode: barPart ? barPart.replace('BAR:', '').trim() : null,
                 lotNumber: lotPart ? lotPart.replace('LOT:', '').trim() : null,
                 name: null,
-                unitsPerBox: null,
+                unitsPerBox: (!isNaN(qty) && qty > 0) ? qty : null,
+                boxNumber,
+                totalBoxes,
                 expirationDate: null,
                 raw: buffer,
             };

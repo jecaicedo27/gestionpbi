@@ -51,6 +51,17 @@
     }
 }
 
+/* Order Result Modal animations */
+@keyframes modalIn {
+    from { opacity: 0; transform: scale(0.9) translateY(20px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes iconPop {
+    0% { opacity: 0; transform: scale(0.3); }
+    60% { transform: scale(1.15); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
 /* ═══════════════════════════════════════════════════════════
    Bottom Nav Bar — Tablet-optimized for PRODUCCION role
    ═══════════════════════════════════════════════════════════ */
@@ -61,16 +72,38 @@
     right: 0;
     z-index: 50;
     display: flex;
-    justify-content: space-around;
-    align-items: center;
-    height: 64px;
-    background: rgba(255, 255, 255, 0.92);
+    justify-content: flex-start;
+    align-items: stretch;
+    height: 60px;
+    background: rgba(255, 255, 255, 0.96);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border-top: 1px solid #e5e7eb;
-    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
-    padding: 0 4px;
+    box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.08);
+    padding: 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; /* Firefox */
+}
+
+.btm-nav::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
+}
+
+/* Fade hint at right edge to indicate horizontal scroll */
+.btm-nav::after {
+    content: '';
+    position: sticky;
+    right: 0;
+    flex-shrink: 0;
+    width: 28px;
+    min-width: 28px;
+    background: linear-gradient(to right, transparent, rgba(255,255,255,0.95));
+    pointer-events: none;
+    z-index: 1;
 }
 
 .btm-nav__tab {
@@ -78,23 +111,26 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
-    flex: 1;
+    gap: 3px;
+    flex: 0 0 auto;
+    min-width: 56px;
     height: 100%;
+    padding: 0 6px;
     color: #9ca3af;
     text-decoration: none;
     transition: color 0.15s, transform 0.15s;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
-    min-width: 44px;
+    scroll-snap-align: start;
 }
 
 .btm-nav__tab:active {
-    transform: scale(0.92);
+    transform: scale(0.90);
 }
 
 .btm-nav__tab--active {
     color: #6366f1;
+    background: rgba(99, 102, 241, 0.05);
 }
 
 .btm-nav__tab--active .btm-nav__label {
@@ -102,10 +138,11 @@
 }
 
 .btm-nav__label {
-    font-size: 10px;
+    font-size: 9.5px;
     line-height: 1;
     font-weight: 500;
     letter-spacing: 0.01em;
+    white-space: nowrap;
 }
 
 /* ── Tablet layout mode (PRODUCCION) ── */
@@ -122,4 +159,13 @@
 
 .layout--tablet .layout__header h2 {
     font-size: 15px;
+}
+
+/* ─── Animations ─── */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fadeIn {
+    animation: fadeIn 0.3s ease-out;
 }

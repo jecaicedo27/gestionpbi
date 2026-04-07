@@ -213,8 +213,12 @@ async function calculateForecast() {
         const recentWeeklyAvg = (recentMap[c.productId] || 0) / 4;
 
         // Adaptive forecast: 40% recent + 60% historical adjusted
+        // FIX: When recent is 0 but the product has been consumed historically,
+        // use 100% historical adjusted to avoid artificially low forecasts.
         const adjustedHistorical = historicalWeeklyAvg * seasonalIndex * growthFactor;
-        const forecastWeekly = (recentWeeklyAvg * 0.4) + (adjustedHistorical * 0.6);
+        const forecastWeekly = (recentWeeklyAvg === 0 && historicalWeeklyAvg > 0)
+            ? adjustedHistorical  // Don't let zero recent drag down a historically active product
+            : (recentWeeklyAvg * 0.4) + (adjustedHistorical * 0.6);
 
         // Check for per-product inventory week override
         const overrideKey = Object.keys(PRODUCT_WEEK_OVERRIDES).find(k => product.name.toUpperCase().includes(k));
@@ -285,6 +289,47 @@ async function calculateForecast() {
                     : Math.round(deficit)
             });
         }
+    }
+
+    // ── FORECAST ALERTS: persist deficit dates for accountability ──────────
+    try {
+        const deficitSkus = new Set(products.filter(p => p.deficit > 0).map(p => p.sku));
+        const existingAlerts = await prisma.forecastAlert.findMany();
+        const alertMap = {};
+        existingAlerts.forEach(a => { alertMap[a.sku] = a; });
+
+        // Upsert alerts: create new ones for new deficits, resolve old ones
+        for (const p of products) {
+            if (p.deficit > 0 && !alertMap[p.sku]) {
+                // New deficit — record alert date
+                const alert = await prisma.forecastAlert.create({
+                    data: { sku: p.sku, name: p.name }
+                });
+                alertMap[p.sku] = alert;
+            } else if (p.deficit > 0 && alertMap[p.sku]?.resolved) {
+                // Was resolved but deficit is back — re-open
+                const alert = await prisma.forecastAlert.update({
+                    where: { sku: p.sku },
+                    data: { resolved: false, resolvedAt: null, alertDate: new Date() }
+                });
+                alertMap[p.sku] = alert;
+            } else if (p.deficit === 0 && alertMap[p.sku] && !alertMap[p.sku].resolved) {
+                // Deficit resolved
+                await prisma.forecastAlert.update({
+                    where: { sku: p.sku },
+                    data: { resolved: true, resolvedAt: new Date() }
+                });
+            }
+        }
+
+        // Attach alertSince to each product
+        products.forEach(p => {
+            const alert = alertMap[p.sku];
+            p.alertSince = (alert && !alert.resolved) ? alert.alertDate : null;
+        });
+    } catch (alertErr) {
+        logger.error('[Forecast] Error managing alerts:', alertErr.message);
+        // Non-fatal: forecast still returns
     }
 
     // Sort by deficit (most needed first)

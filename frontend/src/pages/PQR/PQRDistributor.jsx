@@ -27,7 +27,7 @@ const PQRDistributor = () => {
     const [showForm, setShowForm] = useState(false);
     const [selectedPQR, setSelectedPQR] = useState(null);
     const [recallLots, setRecallLots] = useState([]);
-    const [recallDismissed, setRecallDismissed] = useState(false);
+    const [recallDismissed, setRecallDismissed] = useState(true);
     const [updatingLots, setUpdatingLots] = useState({});
     const [lotAnimations, setLotAnimations] = useState({});
     const [recallActionError, setRecallActionError] = useState('');

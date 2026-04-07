@@ -22,7 +22,7 @@ const lotController = {
                 where,
                 orderBy: [{ expiresAt: 'asc' }, { receivedAt: 'desc' }],
                 include: {
-                    product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true } },
+                    product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true, warehouses: true, accountGroup: true } },
                     _count: { select: { consumptions: true } }
                 }
             });
@@ -47,14 +47,61 @@ const lotController = {
             const qty = parseInt(quantity);
             if (qty <= 0) return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
 
-            // Look up product for SKU/name and current Siigo stock
+            // Look up product for SKU/name and group
             const product = await prisma.product.findUnique({
                 where: { id: productId },
-                select: { sku: true, name: true, currentStock: true }
+                select: { sku: true, name: true, currentStock: true, group: { select: { name: true } } }
             });
             if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
 
-            // ── Validation: total lots cannot exceed Siigo stock ──
+            // ── Route finished products (LIQUIPOPS/GENIALITY) → FinishedLotStock ──
+            const FINISHED_GROUPS = ['LIQUIPOPS', 'GENIALITY'];
+            const isFinishedProduct = FINISHED_GROUPS.includes(product.group?.name?.toUpperCase());
+
+            if (isFinishedProduct) {
+                // Check for active duplicate: productId + lotNumber + zone (the unique constraint)
+                const existing = await prisma.finishedLotStock.findFirst({
+                    where: { productId, lotNumber, zone: 'PRODUCCION' }
+                });
+                if (existing && existing.currentQuantity > 0) {
+                    return res.status(400).json({ error: `Ya existe un lote activo con número ${lotNumber} en zona Producción` });
+                }
+
+                // Upsert: reactivate depleted record OR create new
+                let fls;
+                if (existing) {
+                    fls = await prisma.finishedLotStock.update({
+                        where: { id: existing.id },
+                        data: {
+                            initialQuantity: qty,
+                            currentQuantity: qty,
+                            status: 'AVAILABLE',
+                            expiresAt: expiresAt ? new Date(expiresAt) : null,
+                        },
+                        include: { product: { select: { id: true, name: true, sku: true } } }
+                    });
+                } else {
+                    fls = await prisma.finishedLotStock.create({
+                        data: {
+                            productId,
+                            lotNumber,
+                            zone: 'PRODUCCION',
+                            initialQuantity: qty,
+                            currentQuantity: qty,
+                            status: 'AVAILABLE',
+                            expiresAt: expiresAt ? new Date(expiresAt) : null,
+                        },
+                        include: { product: { select: { id: true, name: true, sku: true } } }
+                    });
+                }
+
+                return res.status(201).json({ ...fls, _type: 'FinishedLotStock' });
+            }
+
+
+            // ── Raw materials / intermediates → MaterialLot (original behavior) ──
+            // Note: We allow creating lots even if they exceed Siigo stock.
+            // Siigo sync can lag behind physical receipts, so hard-blocking is too restrictive.
             const existingLots = await prisma.materialLot.findMany({
                 where: { productId, currentQuantity: { gt: 0 } },
                 select: { currentQuantity: true }
@@ -64,12 +111,7 @@ const lotController = {
             const available = Math.max(0, siigoStock - totalAssigned);
 
             if (qty > available) {
-                return res.status(400).json({
-                    error: `No se puede crear lote de ${qty.toLocaleString()}g. ` +
-                        `Stock Siigo: ${siigoStock.toLocaleString()}g, ` +
-                        `ya asignado en lotes: ${totalAssigned.toLocaleString()}g, ` +
-                        `disponible para lotear: ${available.toLocaleString()}g.`
-                });
+                console.warn(`⚠️ Lote excede stock disponible: ${qty}g > ${available}g (Siigo: ${siigoStock}g, asignado: ${totalAssigned}g) — producto: ${product.name}`);
             }
 
             const lot = await prisma.materialLot.create({
@@ -80,7 +122,7 @@ const lotController = {
                     lotNumber,
                     initialQuantity: qty,
                     currentQuantity: qty,
-                    unit: unit || 'gramo',
+                    unit: product.unit || unit || 'gramo',
                     expiresAt: expiresAt ? new Date(expiresAt) : null,
                     status: 'AVAILABLE'
                 },
@@ -94,6 +136,7 @@ const lotController = {
             res.status(500).json({ error: error.message });
         }
     },
+
 
     /**
      * POST /lots/:id/consume — register partial consumption

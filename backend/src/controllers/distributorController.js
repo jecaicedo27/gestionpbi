@@ -73,6 +73,15 @@ exports.getAvailableInventory = async (req, res) => {
 
         console.log('[Distributor] Production Map:', Object.keys(nextProductionMap));
 
+        // ═══ FETCH PHYSICAL STOCK FROM PRODUCTO_TERMINADO ═══
+        const finishedStocks = await prisma.finishedLotStock.groupBy({
+            by: ['productId'],
+            where: { zone: 'PRODUCTO_TERMINADO', currentQuantity: { gt: 0 } },
+            _sum: { currentQuantity: true }
+        });
+        const physicalStockMap = {};
+        finishedStocks.forEach(s => { physicalStockMap[s.productId] = s._sum.currentQuantity || 0; });
+
         // ═══ FETCH ACTIVE RESERVATIONS AND PENDING ORDERS ═══
         const now = new Date();
         const currentDistributorId = req.user?.id;
@@ -88,15 +97,17 @@ exports.getAvailableInventory = async (req, res) => {
         const cartReservedMap = {};
         cartReservations.forEach(r => { cartReservedMap[r.productId] = r._sum.quantity || 0; });
 
-        // Sum pending/approved order items per product (findMany + manual aggregate, groupBy doesn't support nested relation filters)
+        // Sum pending/approved order items per product
         const pendingOrderItems = await prisma.orderItem.findMany({
             where: {
                 order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] } }
             },
-            select: { productId: true, requestedQty: true }
+            select: { productId: true, requestedQty: true, allocatedQty: true, pendingQty: true }
         });
         const orderReservedMap = {};
         pendingOrderItems.forEach(item => {
+            // Se resta la totalidad de lo pedido dado que el FinishedLotStock 
+            // aún los contiene (hasta que el pedido se facture y salga de bodega).
             orderReservedMap[item.productId] = (orderReservedMap[item.productId] || 0) + item.requestedQty;
         });
 
@@ -131,10 +142,11 @@ exports.getAvailableInventory = async (req, res) => {
                 };
             }
 
-            // Calculate REAL available: stock - cart reservations - pending orders
+            // Calculate REAL available: physical stock - cart reservations - pending orders
+            const physicalStock = physicalStockMap[product.id] || 0;
             const cartReserved = cartReservedMap[product.id] || 0;
             const orderReserved = orderReservedMap[product.id] || 0;
-            const realAvailable = Math.max(0, product.currentStock - cartReserved - orderReserved);
+            const realAvailable = Math.max(0, physicalStock - cartReserved - orderReserved);
 
             grouped[category][flavor][size].availableQty += realAvailable;
 
@@ -148,7 +160,7 @@ exports.getAvailableInventory = async (req, res) => {
                 sku: product.sku,
                 name: product.name,
                 qty: realAvailable,
-                totalStock: product.currentStock,
+                totalStock: physicalStock,
                 barcode: product.barcode,
                 packSize: product.packSize || 1,
                 nextProductionDate: nextDate
@@ -195,119 +207,104 @@ exports.createOrder = async (req, res) => {
             });
         }
 
-        // Verify all products exist and have enough stock
+        // Require getAvailableQty locally to avoid circular dependencies if any
+        const { getAvailableQty } = require('./cartController');
+
+        // Validate products and check stock BEFORE the create loop
         const productIds = items.map(item => item.productId);
-        const products = await prisma.product.findMany({
-            where: {
-                id: {
-                    in: productIds
-                }
-            },
-            select: {
-                id: true,
-                name: true,
-                currentStock: true
-            }
-        });
-
-        if (products.length !== productIds.length) {
-            return res.status(400).json({
-                success: false,
-                error: 'Algunos productos no existen'
-            });
-        }
-
-        // Stock check removed to allow backorders for production planning
         const stockIssues = [];
-        /* 
-        // Disabled per user request
-        items.forEach(item => {
-            const product = products.find(p => p.id === item.productId);
-            if (item.requestedQty > product.currentStock) {
+
+        for (const item of items) {
+            const product = await prisma.product.findUnique({
+                where: { id: item.productId },
+                select: { name: true }
+            });
+            if (!product) {
+                throw new Error(`Producto con ID ${item.productId} no existe`);
+            }
+            const available = await getAvailableQty(item.productId, distributorId);
+            if (item.requestedQty > available) {
                 stockIssues.push({
                     product: product.name,
                     requested: item.requestedQty,
-                    available: product.currentStock
+                    available,
+                    backorderQty: item.requestedQty - available
                 });
             }
-        });
+        }
 
         if (stockIssues.length > 0) {
-            return res.status(400).json({
-                success: false,
-                error: 'Stock insuficiente para algunos productos',
-                stockIssues
-            });
+            console.log(`[Order Creation] Order includes backordered items:`, stockIssues);
         }
-        */
 
-        // Generate order number: ORD-[USERNAME]-[DDMMYYYY]-[sequence]
+        // Resolve order prefix once
         const user = await prisma.user.findUnique({
             where: { id: distributorId },
             select: { username: true }
         });
-
         const today = new Date();
         const dateStr = String(today.getDate()).padStart(2, '0') +
             String(today.getMonth() + 1).padStart(2, '0') +
             today.getFullYear();
+        const orderPrefix = `ORD-${user.username.toUpperCase()}-${dateStr}`;
 
-        // Count orders from this user today
-        const startOfDay = new Date(today);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(today);
-        endOfDay.setHours(23, 59, 59, 999);
+        // Retry loop: handles P2002 race conditions on orderNumber
+        let order = null;
+        const MAX_RETRIES = 5;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                order = await prisma.$transaction(async (tx) => {
+                    const existingCount = await tx.order.count({
+                        where: { orderNumber: { startsWith: orderPrefix } }
+                    });
+                    const sequence = existingCount + 1 + attempt; // offset by attempt to avoid re-collision
+                    const orderNumber = `${orderPrefix}-${sequence}`;
 
-        const todayOrderCount = await prisma.order.count({
-            where: {
-                distributorId,
-                createdAt: {
-                    gte: startOfDay,
-                    lte: endOfDay
-                }
-            }
-        });
-
-        const sequence = todayOrderCount + 1;
-        const orderNumber = `ORD-${user.username.toUpperCase()}-${dateStr}-${sequence}`;
-
-        // Create order with items
-        const order = await prisma.order.create({
-            data: {
-                orderNumber,
-                distributorId,
-                notes,
-                status: 'PENDING',
-                items: {
-                    create: items.map(item => ({
-                        productId: item.productId,
-                        requestedQty: item.requestedQty,
-                        pendingQty: item.requestedQty,
-                        allocatedQty: 0
-                    }))
-                }
-            },
-            include: {
-                items: {
-                    include: {
-                        product: {
-                            select: {
-                                id: true,
-                                name: true,
-                                sku: true
+                    const newOrder = await tx.order.create({
+                        data: {
+                            orderNumber,
+                            distributorId,
+                            notes,
+                            status: 'PENDING',
+                            items: {
+                                create: items.map(item => ({
+                                    productId: item.productId,
+                                    requestedQty: item.requestedQty,
+                                    pendingQty: item.requestedQty,
+                                    allocatedQty: 0
+                                }))
+                            }
+                        },
+                        include: {
+                            items: {
+                                include: {
+                                    product: {
+                                        select: { id: true, name: true, sku: true }
+                                    }
+                                }
+                            },
+                            distributor: {
+                                select: { id: true, name: true, email: true }
                             }
                         }
-                    }
-                },
-                distributor: {
-                    select: {
-                        id: true,
-                        name: true,
-                        email: true
-                    }
+                    });
+
+                    // Clean up cart reservations
+                    await tx.cartReservation.deleteMany({
+                        where: { distributorId, productId: { in: productIds } }
+                    });
+
+                    return newOrder;
+                });
+                break; // success — exit retry loop
+            } catch (txErr) {
+                if (txErr.code === 'P2002' && attempt < MAX_RETRIES - 1) {
+                    console.warn(`[Order] orderNumber collision on attempt ${attempt + 1}, retrying...`);
+                    continue;
                 }
+                throw txErr; // non-retryable or exhausted retries
             }
-        });
+        }
 
         // TODO: Send notification to admin/logística
         // notificationService.notifyNewOrder(order);
@@ -319,9 +316,18 @@ exports.createOrder = async (req, res) => {
 
     } catch (error) {
         console.error('Error creating order:', error);
+        
+        if (error.code === 'INSUFFICIENT_STOCK') {
+            return res.status(409).json({
+                success: false,
+                error: error.message,
+                stockIssues: error.stockIssues
+            });
+        }
+        
         res.status(500).json({
             success: false,
-            error: 'Error al crear el pedido'
+            error: error.message || 'Error al crear el pedido'
         });
     }
 };

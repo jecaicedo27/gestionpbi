@@ -4,7 +4,7 @@ const rpaController = require('../controllers/rpaController');
 const { auth, roles } = require('../middleware/auth');
 
 // Siigo Assembly Note RPA
-router.post('/siigo-assembly', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.createSiigoAssemblyNote);
+router.post('/siigo-assembly', auth, roles(['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING']), rpaController.createSiigoAssemblyNote);
 
 // RPA History
 router.get('/history', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.getHistory);

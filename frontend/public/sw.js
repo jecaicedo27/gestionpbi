@@ -1,6 +1,6 @@
 // Service Worker for GestiónPBI PWA
 // Handles: caching, push notifications
-const CACHE_NAME = 'gestionpbi-v3';
+const CACHE_NAME = 'gestionpbi-v4';
 
 self.addEventListener('install', (event) => {
     self.skipWaiting();
@@ -11,12 +11,23 @@ self.addEventListener('activate', (event) => {
 });
 
 // Network-first strategy: try network, fall back to cache
+// IMPORTANT: Only intercept same-origin requests. Local network calls
+// (Zebra printer, relay services) must NOT be intercepted to avoid
+// Mixed Content errors and TypeError when running on HTTPS.
 self.addEventListener('fetch', (event) => {
+    const url = new URL(event.request.url);
+
+    // Skip non-same-origin requests (printer IPs, localhost relay, etc.)
+    if (url.origin !== self.location.origin) return;
+
+    // Skip non-GET requests (POST uploads, etc.) — they can't be cached
+    if (event.request.method !== 'GET') return;
+
     event.respondWith(
         fetch(event.request)
             .then((response) => {
                 // Cache successful responses
-                if (response.status === 200 && event.request.method === 'GET') {
+                if (response.status === 200) {
                     const clone = response.clone();
                     caches.open(CACHE_NAME).then((cache) => {
                         cache.put(event.request, clone);
@@ -24,7 +35,15 @@ self.addEventListener('fetch', (event) => {
                 }
                 return response;
             })
-            .catch(() => caches.match(event.request))
+            .catch(() =>
+                caches.match(event.request).then((cached) => {
+                    // Return cached response or a proper offline fallback
+                    return cached || new Response('Offline', {
+                        status: 503,
+                        statusText: 'Service Unavailable',
+                    });
+                })
+            )
     );
 });
 

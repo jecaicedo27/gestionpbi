@@ -25,9 +25,67 @@ function computeStatus(currentQty, initialQty) {
  * Create or increment stock when empaque/MarcadoCajas completes.
  * Stock goes to PRODUCCION zone initially.
  */
-async function ingestFromProduction({ productId, lotNumber, quantity, batchId, expiresAt, userId, zone }) {
+async function ingestFromProduction({ productId, lotNumber, quantity, batchId, expiresAt, userId, zone, reason: customReason, perCarrito }) {
     const targetZone = zone || 'PRODUCCION';
     return prisma.$transaction(async (tx) => {
+        // ── DUPLICATE GUARD: block re-ingestion of the same lot within 3 minutes ──
+        // Per-carrito calls use a unique reason string per carrito, so they don't block each other.
+        const ingestReason = customReason || 'Ingreso desde producción';
+        const threeMinutesAgo = new Date(Date.now() - 3 * 60 * 1000);
+        const recentIngestion = await tx.finishedLotTransfer.findFirst({
+            where: {
+                productId,
+                lotNumber,
+                fromZone: targetZone,
+                toZone: targetZone,
+                reason: ingestReason, // scoped to exact reason — per-carrito reasons are unique
+                createdAt: { gte: threeMinutesAgo },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (recentIngestion) {
+            const secsAgo = Math.round((Date.now() - new Date(recentIngestion.createdAt).getTime()) / 1000);
+            throw new Error(
+                `DUPLICATE_INGESTION:Ya se registró un ingreso de ${recentIngestion.quantity} uds ` +
+                `para el lote ${lotNumber} hace ${secsAgo}s. ` +
+                `Si es un ingreso adicional real, espera 3 minutos o contacta al administrador.`
+            );
+        }
+
+        // ── ASSEMBLY COMPLETION GUARD (per-product) ─────────────────────────────────
+        // Block ingestion if THIS specific product still has pending ENSAMBLE SIIGO
+        // stages. Other products in the same batch that are already assembled can
+        // be ingested independently (auto-ingested at ENSAMBLE completion).
+        // EXCEPTION: per-carrito calls skip this guard — products are ingested progressively
+        // as each carrito is assembled, before the full batch ENSAMBLE note is completed.
+        if (!perCarrito) {
+            const batch = await tx.productionBatch.findFirst({
+                where: { batchNumber: lotNumber },
+                select: { id: true, batchNumber: true },
+            });
+            if (batch) {
+                const pendingEnsamble = await tx.assemblyNote.findMany({
+                    where: {
+                        productionBatchId: batch.id,
+                        productId: productId, // ← per-product check
+                        status: { not: 'COMPLETED' },
+                        processType: { code: { in: ['ENSAMBLE', 'ENSAMBLE_SIIGO'] } },
+                        product: { accountGroup: { in: [1401, 1402] } },
+                    },
+                    include: { product: { select: { name: true } } },
+                });
+                if (pendingEnsamble.length > 0) {
+                    const stageNames = [...new Set(pendingEnsamble.map(n => n.product?.name || n.stageName))].join(', ');
+                    throw new Error(
+                        `ASSEMBLY_INCOMPLETE:El producto ${stageNames} del lote ${lotNumber} aún tiene etapas de Ensamble Siigo ` +
+                        `sin completar. ` +
+                        `Finaliza el ensamble antes de registrar el ingreso a logística.`
+                    );
+                }
+            }
+        }
+
+
         // Upsert: if same product+lot+zone already exists, increment
         const existing = await tx.finishedLotStock.findUnique({
             where: {
@@ -77,7 +135,7 @@ async function ingestFromProduction({ productId, lotNumber, quantity, batchId, e
                 fromZone: targetZone,
                 toZone: targetZone,
                 quantity,
-                reason: targetZone === 'PRODUCCION' ? 'Ingreso desde producción' : `Ingreso manual a ${targetZone}`,
+                reason: ingestReason,
                 transferredById: userId,
             },
         });
@@ -97,11 +155,35 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
 
     return prisma.$transaction(async (tx) => {
         // 1. Validate source has enough stock
-        const source = await tx.finishedLotStock.findUnique({
+        // 1. Validate source has enough stock
+        let source = await tx.finishedLotStock.findUnique({
             where: {
                 productId_lotNumber_zone: { productId, lotNumber, zone: fromZone },
             },
         });
+
+        let isMaterialLot = false;
+        let matSource = null;
+
+        if ((!source || source.currentQuantity < quantity) && fromZone === 'PRODUCCION') {
+            // Fallback: Check MaterialLot in PRODUCTION
+            matSource = await tx.materialLot.findFirst({
+                where: { productId, lotNumber, zone: 'PRODUCTION' },
+            });
+            if (matSource && matSource.currentQuantity >= quantity) {
+                isMaterialLot = true;
+                source = {
+                    id: matSource.id,
+                    productId: matSource.productId,
+                    lotNumber: matSource.lotNumber,
+                    zone: 'PRODUCCION', // virtual map
+                    initialQuantity: matSource.initialQuantity,
+                    currentQuantity: matSource.currentQuantity,
+                    batchId: null,
+                    expiresAt: matSource.expiresAt
+                };
+            }
+        }
 
         if (!source || source.currentQuantity < quantity) {
             const available = source?.currentQuantity || 0;
@@ -110,13 +192,20 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
 
         // 2. Decrement source
         const newSourceQty = source.currentQuantity - quantity;
-        await tx.finishedLotStock.update({
-            where: { id: source.id },
-            data: {
-                currentQuantity: newSourceQty,
-                status: computeStatus(newSourceQty, source.initialQuantity),
-            },
-        });
+        if (isMaterialLot) {
+            await tx.materialLot.update({
+                where: { id: matSource.id },
+                data: { currentQuantity: newSourceQty }
+            });
+        } else {
+            await tx.finishedLotStock.update({
+                where: { id: source.id },
+                data: {
+                    currentQuantity: newSourceQty,
+                    status: computeStatus(newSourceQty, source.initialQuantity),
+                },
+            });
+        }
 
         // 3. Upsert destination
         const destKey = { productId, lotNumber, zone: toZone };
@@ -154,7 +243,7 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
         // 4. Log transfer
         await tx.finishedLotTransfer.create({
             data: {
-                finishedLotStockId: source.id,
+                finishedLotStockId: isMaterialLot ? dest.id : source.id, // Use destination if source is MaterialLot (to avoid FK error)
                 productId,
                 lotNumber,
                 fromZone,
@@ -225,18 +314,109 @@ async function consumeForOrder({ productId, lotNumber, quantity, orderId, userId
  * Get finished lot stock by zone, optionally filtered by product.
  */
 async function getStockByZone(zone, productId) {
-    const where = { zone, product: { accountGroup: { in: [1401, 1402] } } };
+    const where = {
+        zone,
+        product: {
+            accountGroup: { in: [1401, 1402] },
+            // Exclude work-in-process products (SKU prefix 'PROCE' = PROCEso Empresa Liquipops)
+            // These premixes are consumed in production and must NOT appear in empaque handoffs
+            sku: { not: { startsWith: 'PROCE' } },
+        },
+    };
     if (productId) where.productId = productId;
     // Only show lots with stock > 0 or recently depleted
     where.currentQuantity = { gte: 0 };
 
-    return prisma.finishedLotStock.findMany({
+    const finished = await prisma.finishedLotStock.findMany({
         where,
         include: {
             product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true } },
         },
         orderBy: [{ product: { name: 'asc' } }, { lotNumber: 'asc' }],
     });
+
+    // Also fetch from MaterialLot
+    let matZone = zone;
+    if (zone === 'PRODUCCION') matZone = 'PRODUCTION';
+    if (zone === 'BODEGA') matZone = 'WAREHOUSE';
+
+    const matWhere = {
+        zone: matZone,
+        currentQuantity: { gt: 0 },
+        product: {
+            accountGroup: { in: [1401, 1402] },
+            sku: { not: { startsWith: 'PROCE' } },
+        },
+    };
+    if (productId) matWhere.productId = productId;
+
+    const matLots = await prisma.materialLot.findMany({
+        where: matWhere,
+        include: {
+            product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true } }
+        },
+        orderBy: [{ siigoProductName: 'asc' }, { lotNumber: 'asc' }]
+    });
+
+    const mappedMat = matLots.map(l => ({
+        id: l.id,
+        productId: l.productId,
+        product: l.product,
+        lotNumber: l.lotNumber,
+        zone: zone, // Keep standard format
+        initialQuantity: l.initialQuantity,
+        currentQuantity: l.currentQuantity,
+        status: computeStatus(l.currentQuantity, l.initialQuantity),
+        createdAt: l.receivedAt,
+        updatedAt: l.receivedAt,
+        expiresAt: l.expiresAt,
+        labelPrinted: l.labelPrinted,
+        labelPrintedAt: l.labelPrintedAt,
+        _source: 'materialLot'
+    }));
+
+    // ── DEDUP: hide materialLot entries that already have a finishedLotStock record
+    // (avoids double-row when assembly automation AND manual ingestion both exist)
+    const existingKeys = new Set(
+        finished.map(f => `${f.productId}_${f.lotNumber}`)
+    );
+    const dedupedMat = mappedMat.filter(
+        m => !existingKeys.has(`${m.productId}_${m.lotNumber}`)
+    );
+
+    const allStocks = [...finished, ...dedupedMat];
+
+    // ── ASSEMBLY STATUS ENRICHMENT (PRODUCCION zone only, per-product) ─────
+    // For each stock record, check if THAT specific product still has pending
+    // ENSAMBLE/ENSAMBLE_SIIGO stages. This lets the frontend disable only those
+    // products that haven't completed assembly, not the entire batch.
+    if (zone === 'PRODUCCION' && allStocks.length > 0) {
+        const lotNumbers = [...new Set(allStocks.map(s => s.lotNumber))];
+
+        // Get all pending ENSAMBLE notes for batches matching our lot numbers
+        const pendingNotes = await prisma.assemblyNote.findMany({
+            where: {
+                productionBatch: { batchNumber: { in: lotNumbers } },
+                status: { not: 'COMPLETED' },
+                processType: { code: { in: ['ENSAMBLE', 'ENSAMBLE_SIIGO'] } },
+                product: { accountGroup: { in: [1401, 1402] } },
+            },
+            select: {
+                productId: true,
+                productionBatch: { select: { batchNumber: true } },
+            },
+        });
+
+        // Build a Set of "productId_lotNumber" keys that are still pending
+        const pendingKeys = new Set(
+            pendingNotes.map(n => `${n.productId}_${n.productionBatch?.batchNumber}`)
+        );
+        for (const s of allStocks) {
+            s.assemblyPending = pendingKeys.has(`${s.productId}_${s.lotNumber}`);
+        }
+    }
+
+    return allStocks;
 }
 
 /**
@@ -267,7 +447,7 @@ async function getStockSummary() {
 
     for (const zone of zones) {
         const stocks = await prisma.finishedLotStock.findMany({
-            where: { zone, currentQuantity: { gt: 0 }, product: { accountGroup: { in: [1401, 1402] } } },
+            where: { zone, currentQuantity: { gt: 0 }, product: { accountGroup: { in: [1401, 1402] }, sku: { not: { startsWith: 'PROCE' } } } },
             include: {
                 product: { select: { id: true, name: true, sku: true } },
             },
@@ -295,6 +475,31 @@ async function getStockSummary() {
             totalLots: stocks.length,
             totalUnits: stocks.reduce((sum, s) => sum + s.currentQuantity, 0),
         };
+
+        // If PRODUCCION, inject MaterialLots in PRODUCTION
+        if (zone === 'PRODUCCION') {
+            const matLots = await prisma.materialLot.findMany({
+                where: { zone: 'PRODUCTION', currentQuantity: { gt: 0 }, product: { accountGroup: { in: [1401, 1402] }, sku: { not: { startsWith: 'PROCE' } } } },
+                include: { product: { select: { id: true, name: true, sku: true } } },
+            });
+            for (const l of matLots) {
+                const key = l.productId || l.siigoProductCode;
+                if (!byProduct[key]) {
+                    byProduct[key] = {
+                        productId: l.productId,
+                        productName: l.product?.name || l.siigoProductName,
+                        sku: l.product?.sku || l.siigoProductCode,
+                        totalUnits: 0,
+                        lotCount: 0,
+                    };
+                }
+                byProduct[key].totalUnits += l.currentQuantity;
+                byProduct[key].lotCount += 1;
+            }
+            result[zone].products = Object.values(byProduct);
+            result[zone].totalLots += matLots.length;
+            result[zone].totalUnits += matLots.reduce((sum, l) => sum + l.currentQuantity, 0);
+        }
     }
 
     // Add BODEGA summary from MaterialLot (finished products in main warehouse)

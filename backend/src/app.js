@@ -8,7 +8,7 @@ const app = express();
 const path = require('path');
 
 // Middleware
-app.use(cors());
+app.use(cors({ exposedHeaders: ['Content-Disposition'] }));
 
 // Serve static files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));

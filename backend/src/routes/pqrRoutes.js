@@ -50,5 +50,8 @@ router.get('/:id', protect, pqrController.getPQRById);
 router.patch('/:id/status', protect, authorize('ADMIN', 'CALIDAD', 'LOGISTICA', 'CONTABILIDAD'), pqrController.updatePQRStatus);
 router.post('/:id/billing', protect, authorize('ADMIN', 'CONTABILIDAD', 'COMERCIAL'), upload.fields([{ name: 'file', maxCount: 5 }, { name: 'accountStatement', maxCount: 5 }]), pqrController.uploadBillingDocument);
 router.post('/:id/dispatch', protect, authorize('ADMIN', 'LOGISTICA'), upload.array('file', 10), pqrController.dispatchPQR);
+router.post('/:id/siigo-credit-note', protect, authorize('ADMIN', 'CONTABILIDAD'), pqrController.createSiigoCreditNote);
+router.post('/:id/adjustment-done', protect, authorize('ADMIN', 'CONTABILIDAD', 'CARTERA'), upload.single('adjustmentDoc'), pqrController.markAdjustmentDone);
 
 module.exports = router;
+

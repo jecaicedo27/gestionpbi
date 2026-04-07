@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reconocimiento Socios Fundadores — POPPING BOBA INTERNATIONAL 2025</title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #0f0f0f; color: #e8e8e8; overflow: hidden; }
+        .slide {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            padding: 60px 100px; opacity: 0; transition: opacity 0.7s ease; pointer-events: none;
+        }
+        .slide.active { opacity: 1; pointer-events: all; }
+
+        .bg-1 { background: #0f0f0f; }
+        .bg-2 { background: linear-gradient(180deg, #0f0f0f 0%, #1a1710 100%); }
+        .bg-3 { background: #fafaf8; color: #1a1a1a; }
+
+        .serif { font-family: 'Playfair Display', serif; }
+        .gold { color: #c9a84c; }
+        .muted { color: rgba(255,255,255,0.35); }
+        .muted-dark { color: rgba(0,0,0,0.4); }
+
+        .line { width: 48px; height: 1px; background: #c9a84c; margin: 20px auto; }
+        .line-left { margin: 20px 0; }
+
+        .title { font-family: 'Playfair Display', serif; font-size: 52px; font-weight: 700; line-height: 1.2; letter-spacing: -0.5px; }
+        .body-text { font-size: 18px; font-weight: 400; line-height: 1.8; max-width: 600px; }
+        .small { font-size: 12px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; max-width: 960px; width: 100%; background: rgba(255,255,255,0.06); }
+        .bg-3 .grid-3 { background: rgba(0,0,0,0.06); }
+        .grid-cell { padding: 36px 28px; text-align: center; }
+        .bg-1 .grid-cell { background: #0f0f0f; }
+        .bg-2 .grid-cell { background: #141210; }
+        .bg-3 .grid-cell { background: #fafaf8; }
+        .cell-name { font-family: 'Playfair Display', serif; font-size: 19px; font-weight: 600; margin-bottom: 6px; }
+        .cell-role { font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: #c9a84c; }
+
+        .grid-2x3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; max-width: 960px; width: 100%; background: rgba(255,255,255,0.06); }
+
+        .stat-row { display: flex; gap: 60px; justify-content: center; }
+        .stat-item { text-align: center; }
+        .stat-num { font-family: 'Playfair Display', serif; font-size: 44px; font-weight: 700; color: #c9a84c; }
+        .stat-label { font-size: 11px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.35); margin-top: 8px; }
+        .bg-3 .stat-label { color: rgba(0,0,0,0.35); }
+
+        .timeline { max-width: 640px; width: 100%; }
+        .tl-item { display: flex; gap: 28px; padding: 20px 0; }
+        .tl-year { font-family: 'Playfair Display', serif; font-size: 24px; font-weight: 700; color: #c9a84c; min-width: 56px; }
+        .tl-text { font-size: 15px; line-height: 1.7; color: rgba(255,255,255,0.6); }
+        .tl-text strong { color: #e8e8e8; }
+
+        .quote-block { max-width: 580px; text-align: center; }
+        .quote-text { font-family: 'Playfair Display', serif; font-size: 28px; font-weight: 400; line-height: 1.6; font-style: italic; }
+
+        /* Module grid */
+        .mod-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; max-width: 960px; width: 100%; background: rgba(255,255,255,0.06); }
+        .mod-cell { background: #0f0f0f; padding: 22px 16px; text-align: center; }
+        .bg-2 .mod-cell { background: #141210; }
+        .bg-3 .mod-cell { background: #fafaf8; }
+        .mod-icon { font-size: 11px; font-weight: 800; color: #c9a84c; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+        .mod-name { font-size: 14px; font-weight: 600; }
+        .bg-3 .mod-name { color: #1a1a1a; }
+
+        .problem-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; max-width: 800px; width: 100%; background: rgba(255,255,255,0.06); }
+        .problem-cell { background: #0f0f0f; padding: 28px 24px; }
+        .problem-label { font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: rgba(255,255,255,0.25); margin-bottom: 8px; }
+        .problem-text { font-size: 15px; font-weight: 500; line-height: 1.6; color: rgba(255,255,255,0.7); }
+
+        .vision-list { max-width: 640px; width: 100%; }
+        .vision-item { display: flex; gap: 20px; padding: 18px 0; border-bottom: 1px solid rgba(0,0,0,0.06); }
+        .vision-num { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; color: #c9a84c; min-width: 28px; }
+        .vision-text { font-size: 15px; line-height: 1.6; color: rgba(0,0,0,0.6); }
+        .vision-text strong { color: #1a1a1a; }
+
+        .nav { position: fixed; bottom: 28px; right: 36px; display: flex; gap: 6px; z-index: 100; }
+        .nav button { width: 40px; height: 40px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); background: rgba(15,15,15,0.9); color: rgba(255,255,255,0.4); font-size: 16px; cursor: pointer; transition: all 0.2s; }
+        .nav button:hover { border-color: #c9a84c; color: #c9a84c; }
+        .progress-bar { position: fixed; top: 0; left: 0; height: 2px; background: #c9a84c; transition: width 0.5s ease; z-index: 100; }
+        .counter { position: fixed; bottom: 32px; left: 36px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.12); z-index: 100; letter-spacing: 2px; }
+
+        .slide.active .fade { animation: up 0.7s ease forwards; opacity: 0; }
+        .slide.active .fade.f1 { animation-delay: 0.15s; }
+        .slide.active .fade.f2 { animation-delay: 0.4s; }
+        .slide.active .fade.f3 { animation-delay: 0.65s; }
+        .slide.active .fade.f4 { animation-delay: 0.9s; }
+        @keyframes up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="progress-bar" id="progress"></div>
+    <div class="counter" id="counter"></div>
+
+    <!-- SLIDE 1 -->
+    <div class="slide bg-1 active">
+        <div style="text-align:center;">
+            <p class="small muted fade f1">POPPING BOBA INTERNATIONAL S.A.S</p>
+            <div class="line fade f2"></div>
+            <h1 class="title fade f3">Reconocimiento a<br>nuestros <span class="gold">Socios Fundadores</span></h1>
+            <p class="muted fade f4" style="margin-top:20px;font-size:14px;">Resultados 2025</p>
+        </div>
+    </div>
+
+    <!-- SLIDE 2 -->
+    <div class="slide bg-2">
+        <div style="text-align:center;">
+            <p class="small gold fade f1">Nuestros Resultados</p>
+            <div class="line fade f2"></div>
+            <div class="stat-row fade f3" style="margin-top:12px;">
+                <div class="stat-item">
+                    <div class="stat-num">$3,819M</div>
+                    <div class="stat-label">Ventas Netas</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-num">$232M</div>
+                    <div class="stat-label">Utilidad Neta</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-num">18</div>
+                    <div class="stat-label">Socios Fundadores</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-num">2</div>
+                    <div class="stat-label">Líneas de Negocio</div>
+                </div>
+            </div>
+            <p class="fade f4" style="margin-top:36px;font-size:15px;color:rgba(255,255,255,0.4);max-width:480px;">Estos resultados son posibles gracias a la visión y compromiso de cada uno de ustedes.</p>
+        </div>
+    </div>
+
+    <!-- SLIDE 3: Timeline -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1" style="margin-bottom:4px;">Nuestra Historia</p>
+        <div class="line fade f2" style="margin-bottom:24px;"></div>
+        <div class="timeline fade f3">
+            <div class="tl-item" style="border-bottom:1px solid rgba(255,255,255,0.06);"><span class="tl-year">2024</span><p class="tl-text"><strong>Fundación.</strong> Un grupo de personas con una visión compartida decide apostar por un mercado nuevo en Colombia. Nace POPPING BOBA INTERNATIONAL.</p></div>
+            <div class="tl-item" style="border-bottom:1px solid rgba(255,255,255,0.06);"><span class="tl-year">2025</span><p class="tl-text"><strong>Consolidación.</strong> Seis distribuidoras operando. Dos líneas de negocio — Liquipops y Geniality. $3,819M en ingresos netos.</p></div>
+            <div class="tl-item"><span class="tl-year">2026</span><p class="tl-text"><strong>Crecimiento.</strong> Expansión de mercado, optimización operativa y fortalecimiento del modelo de distribución. Nuevas metas.</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 4: Socios con distribuidora -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1">Socios Distribuidores</p>
+        <div class="line fade f2"></div>
+        <p class="fade f2" style="font-size:15px;color:rgba(255,255,255,0.45);margin-bottom:28px;">Quienes día a día llevan nuestro producto al mercado</p>
+        <div class="grid-2x3 fade f3">
+            <div class="grid-cell"><p class="cell-name">Familia Caicedo</p><p class="cell-role">Perlas Explosivas</p></div>
+            <div class="grid-cell"><p class="cell-name">Angelo</p><p class="cell-role">Topping Frozen</p></div>
+            <div class="grid-cell"><p class="cell-name">Ines</p><p class="cell-role">Esferas Explosivas</p></div>
+            <div class="grid-cell"><p class="cell-name">Explosión de Sabores</p><p class="cell-role">5 Socios</p></div>
+            <div class="grid-cell"><p class="cell-name">Maribel Erazo</p><p class="cell-role">Distribuidora Maribel</p></div>
+            <div class="grid-cell"><p class="cell-name">Ximena &amp; Pantoja</p><p class="cell-role">Burbujas Explosivas</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 5: Socios sin distribuidora -->
+    <div class="slide bg-2">
+        <p class="small gold fade f1">Socios Inversionistas</p>
+        <div class="line fade f2"></div>
+        <p class="fade f2" style="font-size:15px;color:rgba(255,255,255,0.45);margin-bottom:28px;">Quienes con su confianza y capital hicieron posible este proyecto</p>
+        <div class="grid-3 fade f3" style="max-width:720px;">
+            <div class="grid-cell"><p class="cell-name">Martha Benavides</p><p class="cell-role">Socia Fundadora</p><p style="margin-top:12px;font-size:13px;color:rgba(255,255,255,0.3);">Participación: 1.45%</p></div>
+            <div class="grid-cell"><p class="cell-name">Julian Carrillo</p><p class="cell-role">Socio Fundador</p><p style="margin-top:12px;font-size:13px;color:rgba(255,255,255,0.3);">Participación: 1.01%</p></div>
+            <div class="grid-cell"><p class="cell-name">Jackeline</p><p class="cell-role">Socia Fundadora</p><p style="margin-top:12px;font-size:13px;color:rgba(255,255,255,0.3);">Participación: 0.50%</p></div>
+        </div>
+        <p class="fade f4" style="margin-top:28px;font-size:14px;color:rgba(255,255,255,0.35);max-width:500px;text-align:center;">Su inversión y confianza fueron fundamentales para que POPPING BOBA INTERNATIONAL alcanzara los resultados que hoy presentamos.</p>
+    </div>
+
+    <!-- SLIDE 6: Quote -->
+    <div class="slide bg-1">
+        <div class="quote-block">
+            <div class="line fade f1"></div>
+            <p class="quote-text fade f2" style="margin:24px 0;">"El valor de un socio no se mide solo en capital. Se mide en la confianza que deposita cuando todo está por construirse."</p>
+            <div class="line fade f3"></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 7: El problema que resolvemos -->
+    <div class="slide bg-1">
+        <p class="small gold fade f1">Tecnología Propia</p>
+        <div class="line fade f2"></div>
+        <h2 class="title fade f3" style="font-size:36px;text-align:center;margin-bottom:28px;">Lo que estamos<br><span class="gold">construyendo</span></h2>
+        <div class="problem-grid fade f3">
+            <div class="problem-cell">
+                <p class="problem-label">Antes</p>
+                <p class="problem-text">Producción controlada en hojas de Excel. Sin trazabilidad de lotes ni control de inventario en tiempo real.</p>
+            </div>
+            <div class="problem-cell">
+                <p class="problem-label">Ahora</p>
+                <p class="problem-text"><strong>ERP propio</strong> que controla cada gramo de materia prima, cada lote producido, cada pedido entregado.</p>
+            </div>
+            <div class="problem-cell">
+                <p class="problem-label">Antes</p>
+                <p class="problem-text">Facturación manual. Conciliación de pagos por WhatsApp. Cero visibilidad de las ventas por distribuidor.</p>
+            </div>
+            <div class="problem-cell">
+                <p class="problem-label">Ahora</p>
+                <p class="problem-text"><strong>Integración directa con Siigo.</strong> Facturación automática, análisis de ventas en tiempo real, panel ejecutivo.</p>
+            </div>
+        </div>
+        <p class="fade f4" style="margin-top:24px;font-size:14px;color:rgba(255,255,255,0.35);max-width:500px;text-align:center;">Sistema desarrollado internamente, diseñado para las necesidades específicas de POPPING BOBA INTERNATIONAL.</p>
+    </div>
+
+    <!-- SLIDE 8: Los módulos -->
+    <div class="slide bg-2">
+        <p class="small gold fade f1">Plataforma GestionPBI</p>
+        <div class="line fade f2"></div>
+        <p class="fade f2" style="font-size:15px;color:rgba(255,255,255,0.45);margin-bottom:24px;">12 módulos operativos en producción</p>
+        <div class="mod-grid fade f3">
+            <div class="mod-cell"><p class="mod-icon">01</p><p class="mod-name">Producción y Ensamble</p></div>
+            <div class="mod-cell"><p class="mod-icon">02</p><p class="mod-name">Inventario y Zonas</p></div>
+            <div class="mod-cell"><p class="mod-icon">03</p><p class="mod-name">Fórmulas y Recetas</p></div>
+            <div class="mod-cell"><p class="mod-icon">04</p><p class="mod-name">Trazabilidad de Lotes</p></div>
+            <div class="mod-cell"><p class="mod-icon">05</p><p class="mod-name">Órdenes y Pedidos</p></div>
+            <div class="mod-cell"><p class="mod-icon">06</p><p class="mod-name">Facturación Siigo</p></div>
+            <div class="mod-cell"><p class="mod-icon">07</p><p class="mod-name">Punto de Venta (POS)</p></div>
+            <div class="mod-cell"><p class="mod-icon">08</p><p class="mod-name">Dashboard Ejecutivo</p></div>
+            <div class="mod-cell"><p class="mod-icon">09</p><p class="mod-name">Compras y Proveedores</p></div>
+            <div class="mod-cell"><p class="mod-icon">10</p><p class="mod-name">Calidad y PQR</p></div>
+            <div class="mod-cell"><p class="mod-icon">11</p><p class="mod-name">Análisis Microbiológico</p></div>
+            <div class="mod-cell"><p class="mod-icon">12</p><p class="mod-name">Saneamiento POES</p></div>
+        </div>
+        <div class="stat-row fade f4" style="margin-top:28px;gap:40px;">
+            <div class="stat-item"><div class="stat-num" style="font-size:32px;">gestionpbi.lat</div><div class="stat-label">Plataforma Web</div></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 9: Visión -->
+    <div class="slide bg-3">
+        <p class="small fade f1" style="color:#c9a84c;">Hacia dónde vamos</p>
+        <div class="line fade f2"></div>
+        <h2 class="title fade f3" style="font-size:34px;color:#1a1a1a;text-align:center;margin-bottom:28px;">Próximos <span class="gold">objetivos</span> tecnológicos</h2>
+        <div class="vision-list fade f3">
+            <div class="vision-item"><span class="vision-num">01</span><p class="vision-text"><strong>Portal del Distribuidor.</strong> Cada distribuidora podrá ver sus ventas, pedidos e inventario en tiempo real desde su celular.</p></div>
+            <div class="vision-item"><span class="vision-num">02</span><p class="vision-text"><strong>Planificación inteligente (MRP).</strong> El sistema sugerirá automáticamente qué producir, cuándo y cuánta materia prima comprar.</p></div>
+            <div class="vision-item"><span class="vision-num">03</span><p class="vision-text"><strong>Trazabilidad completa.</strong> Desde la materia prima hasta el consumidor final. Cada perla rastreada hasta su lote de origen.</p></div>
+            <div class="vision-item"><span class="vision-num">04</span><p class="vision-text"><strong>Reportes financieros automáticos.</strong> Estados de resultados generados desde el sistema, conciliados con Siigo en tiempo real.</p></div>
+            <div class="vision-item" style="border:none;"><span class="vision-num">05</span><p class="vision-text"><strong>Expansión de mercado.</strong> Infraestructura tecnológica lista para escalar a nuevas ciudades y nuevos canales de venta.</p></div>
+        </div>
+    </div>
+
+    <!-- SLIDE 10: Compromiso -->
+    <div class="slide bg-3">
+        <div style="text-align:center;">
+            <p class="small fade f1" style="color:#c9a84c;">Nuestro Compromiso</p>
+            <div class="line fade f2"></div>
+            <h2 class="title fade f3" style="font-size:38px;color:#1a1a1a;">Seguir construyendo<br>con <span class="gold">transparencia</span></h2>
+            <div class="stat-row fade f4" style="margin-top:36px;">
+                <div class="stat-item">
+                    <div class="stat-num">100%</div>
+                    <div class="stat-label" style="color:rgba(0,0,0,0.35);">Transparencia contable</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-num">Anual</div>
+                    <div class="stat-label" style="color:rgba(0,0,0,0.35);">Rendición de cuentas</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-num">ERG</div>
+                    <div class="stat-label" style="color:rgba(0,0,0,0.35);">Auditado por contador</div>
+                </div>
+            </div>
+            <p class="fade f4" style="margin-top:32px;font-size:15px;color:rgba(0,0,0,0.4);max-width:460px;">Cada decisión financiera se toma con base en datos auditados y pensando en el beneficio de todos los socios.</p>
+        </div>
+    </div>
+
+    <!-- SLIDE 8: Cierre -->
+    <div class="slide bg-1">
+        <div style="text-align:center;">
+            <p class="small muted fade f1">POPPING BOBA INTERNATIONAL S.A.S — 2025</p>
+            <div class="line fade f2"></div>
+            <h1 class="title fade f3" style="font-size:46px;margin-bottom:16px;"><span class="gold">Gracias</span> por confiar<br>en este proyecto.</h1>
+            <p class="fade f4" style="font-size:16px;color:rgba(255,255,255,0.4);max-width:420px;margin:0 auto;">Lo que hemos logrado es de todos.<br>Lo que viene, lo construiremos juntos.</p>
+        </div>
+    </div>
+
+    <div class="nav">
+        <button onclick="prev()">←</button>
+        <button onclick="next()">→</button>
+    </div>
+
+    <script>
+        let c = 0;
+        const s = document.querySelectorAll('.slide'), t = s.length;
+        function show(n) { s.forEach((x,i) => { x.classList.toggle('active', i===n); }); document.getElementById('progress').style.width=((n+1)/t*100)+'%'; document.getElementById('counter').textContent=(n+1)+' / '+t; }
+        function next() { if(c<t-1){c++;show(c);} }
+        function prev() { if(c>0){c--;show(c);} }
+        document.addEventListener('keydown', e => { if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();next();} if(e.key==='ArrowLeft'){e.preventDefault();prev();} });
+        show(0);
+    </script>
+</body>
+</html>

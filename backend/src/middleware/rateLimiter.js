@@ -13,4 +13,12 @@ const loginLimiter = rateLimit({
     message: 'Too many login attempts, please try again later'
 });
 
-module.exports = { generalLimiter, loginLimiter };
+// Stricter limiter for PIN attempts (4-digit = 10k combinations)
+const pinLoginLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute window
+    max: 5, // Max 5 attempts per minute
+    skipSuccessfulRequests: true,
+    message: 'Demasiados intentos de PIN. Intenta de nuevo en 1 minuto.'
+});
+
+module.exports = { generalLimiter, loginLimiter, pinLoginLimiter };

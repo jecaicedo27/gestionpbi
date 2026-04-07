@@ -5,6 +5,8 @@ const { auth } = require('../middleware/auth');
 
 router.get('/suggestions', auth, productionSchedulerController.getSuggestions);
 router.get('/mix/:flavor', auth, productionSchedulerController.calculateBatchMix);
+router.get('/demand', auth, productionSchedulerController.getFlavorDemand);
+router.get('/demand/:flavor', auth, productionSchedulerController.getFlavorDemand);
 router.get('/schedule', auth, productionSchedulerController.getSchedule);
 router.post('/schedule', auth, productionSchedulerController.createBatch);
 router.delete('/all', auth, productionSchedulerController.deleteAllBatches);

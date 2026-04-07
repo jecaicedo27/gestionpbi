@@ -1,13 +1,43 @@
-import { useState, useEffect } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import BottomNavBar from './BottomNavBar';
 import GlobalTimerAlert from './GlobalTimerAlert';
-import { Bell, LogOut } from 'lucide-react';
+import PinLockScreen from './PinLockScreen';
+import { Bell, LogOut, Printer, Wifi, LockKeyhole } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useZebra } from '../../context/ZebraContext';
 
 const Layout = () => {
-    const { user, logout } = useAuth();
+    const { user, logout, lockScreen, isLocked, unlockWithPin, fullLogoutFromLock, lastUser } = useAuth();
+    const navigate = useNavigate();
+    const { zebraStatus, zebraIp, relayIp, updateConfig, recheckNow, isRechecking, forceIp, setForceDirectIp } = useZebra();
+    const [showZebraConfig, setShowZebraConfig] = useState(false);
+    const [inputRelay, setInputRelay] = useState('');
+    const [inputForce, setInputForce] = useState('');
+    const zebraRef = useRef(null);
+
+    // Close popover on outside click
+    useEffect(() => {
+        if (!showZebraConfig) return;
+        const handler = (e) => { if (zebraRef.current && !zebraRef.current.contains(e.target)) setShowZebraConfig(false); };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showZebraConfig]);
+
+    const saveRelayIp = () => {
+        updateConfig(null, inputRelay.trim());
+        recheckNow();
+        setShowZebraConfig(false);
+    };
+    const saveForceIp = () => {
+        setForceDirectIp(inputForce.trim());
+        setShowZebraConfig(false);
+    };
+    const clearForce = () => {
+        setForceDirectIp('');
+        recheckNow();
+    };
     const location = useLocation();
 
     // Track screen width for responsive bottom nav
@@ -19,9 +49,12 @@ const Layout = () => {
     }, []);
 
     // PRODUCCION always tablet mode (dedicated tablets). Others only on small screens.
-    const alwaysTablet = user?.role === 'PRODUCCION' || user?.role === 'OPERARIO_PICKING';
-    const responsiveTabletRoles = ['LOGISTICA', 'CARTERA', 'CONTABILIDAD'];
+    const alwaysTablet = user?.role === 'PRODUCCION';
+    const responsiveTabletRoles = ['LOGISTICA', 'CARTERA', 'CONTABILIDAD', 'OPERARIO_PICKING'];
     const isTabletMode = alwaysTablet || (isSmallScreen && responsiveTabletRoles.includes(user?.role));
+    
+    // Check if we are in the distributor welcome screen to hide the sidebar and allow a full-width hero
+    const isDistributorWelcome = user?.role === 'DISTRIBUIDOR' && location.pathname === '/';
 
     const getTitle = () => {
         const path = location.pathname;
@@ -48,13 +81,75 @@ const Layout = () => {
     return (
         <div className={`flex min-h-screen bg-neutral-50 text-neutral-900 font-sans ${isTabletMode ? 'layout--tablet' : ''}`}>
             <GlobalTimerAlert />
-            {!isTabletMode && <Sidebar />}
+            {!isTabletMode && !isDistributorWelcome && <Sidebar />}
 
             <main className="flex-1 flex flex-col min-w-0">
                 <header className={`layout__header bg-white border-b border-neutral-200 ${isTabletMode ? 'h-12' : 'h-16'} flex items-center justify-between px-6 sticky top-0 z-30`}>
                     <h2 className={`${isTabletMode ? 'text-base' : 'text-lg'} font-semibold text-neutral-800`}>{getTitle()}</h2>
 
                     <div className="flex items-center gap-4">
+                        {/* Zebra printer status — shown to operational roles */}
+                        {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA'].includes(user?.role) && (
+                            <div className="relative" ref={zebraRef}>
+                                <button
+                                    onClick={() => { setInputRelay(relayIp || ''); setInputForce(forceIp || ''); setShowZebraConfig(v => !v); }}
+                                    title="Estado impresora Zebra — clic para configurar"
+                                    className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer
+                                        ${zebraStatus === 'connected'
+                                            ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                                            : zebraStatus === 'checking'
+                                            ? 'bg-slate-50 border-slate-200 text-slate-400 animate-pulse'
+                                            : 'bg-red-50 border-red-200 text-red-500'}`}
+                                >
+                                    <Printer size={13} />
+                                    <span>
+                                        {zebraStatus === 'connected' ? `Zebra ✓` : zebraStatus === 'checking' ? 'Zebra...' : 'Sin impresora'}
+                                    </span>
+                                </button>
+
+                                {showZebraConfig && (
+                                    <div className="absolute right-0 top-9 z-50 bg-white border border-neutral-200 rounded-xl shadow-xl p-4 w-72">
+                                        <p className="text-xs font-bold text-neutral-700 mb-2 flex items-center gap-1.5"><Wifi size={13}/> Configurar impresora Zebra</p>
+                                        <p className="text-xs text-neutral-500 mb-3">Estado: <span className="font-semibold">{zebraStatus === 'connected' ? `🟢 Conectada (${zebraIp})` : zebraStatus === 'checking' ? '🔵 Verificando...' : '🔴 No alcanzable'}</span></p>
+
+                                        {/* Section 1: Force Direct IP (for Android/tablet) */}
+                                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3">
+                                            <p className="text-xs font-bold text-amber-800 mb-0.5">📱 IP directa Zebra (tablet)</p>
+                                            <p className="text-xs text-amber-600 mb-1.5">Usa esto si Chrome bloquea la detección automática.</p>
+                                            {forceIp && <p className="text-xs text-emerald-700 font-semibold mb-1">✓ Activo: {forceIp} <button onClick={clearForce} className="ml-1 text-red-500 underline">Quitar</button></p>}
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={inputForce}
+                                                    onChange={e => setInputForce(e.target.value)}
+                                                    placeholder="192.168.68.113"
+                                                    className="flex-1 border border-amber-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                                                />
+                                                <button onClick={saveForceIp} className="bg-amber-500 text-white text-xs rounded-lg px-3 py-1.5 font-semibold hover:bg-amber-600">
+                                                    Forzar
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Section 2: PC Relay */}
+                                        <p className="text-xs text-neutral-600 font-medium">IP del PC relay (opcional)</p>
+                                        <p className="text-xs text-neutral-400 mb-1">Solo si usas el relay del PC.</p>
+                                        <div className="flex gap-2 mt-1">
+                                            <input
+                                                type="text"
+                                                value={inputRelay}
+                                                onChange={e => setInputRelay(e.target.value)}
+                                                placeholder="192.168.68.x"
+                                                className="flex-1 border border-neutral-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary-400"
+                                            />
+                                            <button onClick={saveRelayIp} className="bg-primary-600 text-white text-xs rounded-lg px-3 py-1.5 font-semibold hover:bg-primary-700">
+                                                {isRechecking ? '...' : 'Guardar'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
                         {!isTabletMode && (
                             <button className="p-2 text-neutral-500 hover:bg-neutral-100 rounded-full transition-colors relative">
                                 <Bell size={20} />
@@ -75,6 +170,17 @@ const Layout = () => {
 
                         <div className="h-8 w-px bg-neutral-200 mx-1"></div>
 
+                        {/* Lock screen button — only for operational roles */}
+                        {user?.role !== 'DISTRIBUIDOR' && (
+                            <button
+                                onClick={lockScreen}
+                                className="p-2 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                title="Bloquear pantalla (PIN)"
+                            >
+                                <LockKeyhole size={18} />
+                            </button>
+                        )}
+
                         <button
                             onClick={logout}
                             className="p-2 text-neutral-500 hover:text-red-600 hover:bg-neutral-100 rounded-lg transition-colors flex items-center gap-2"
@@ -92,6 +198,22 @@ const Layout = () => {
             </main>
 
             {isTabletMode && <BottomNavBar userRole={user?.role} />}
+
+            {/* PIN Lock Screen Overlay */}
+            {isLocked && (
+                <PinLockScreen
+                    lastUser={lastUser}
+                    onUnlock={async (pin) => {
+                        const result = await unlockWithPin(pin);
+                        if (result.success && result.roleChanged) {
+                            // Role changed — redirect to dashboard
+                            navigate('/', { replace: true });
+                        }
+                        return result;
+                    }}
+                    onFullLogout={fullLogoutFromLock}
+                />
+            )}
         </div>
     );
 };

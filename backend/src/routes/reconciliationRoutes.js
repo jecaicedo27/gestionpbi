@@ -312,4 +312,61 @@ router.get('/sales', auth, async (req, res) => {
     }
 });
 
+// ═══════════════════════════════════════════════════════
+// 4. POST /stock/consume-diff — Consume diff units (App > Siigo) FIFO
+// ═══════════════════════════════════════════════════════
+router.post('/stock/consume-diff', auth, async (req, res) => {
+    try {
+        const { productId, qty } = req.body;
+        if (!productId || !qty || qty <= 0) return res.status(400).json({ error: 'productId y qty requeridos' });
+
+        const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, sku: true, name: true } });
+        if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
+
+        let remaining = parseInt(qty);
+        const consumed = [];
+
+        // 1. Deduct from FinishedLotStock FIFO — ONLY PRODUCTO_TERMINADO
+        // Never touch CUARENTENA, BODEGA, MAQUILA or other zones
+        const finishedLots = await prisma.finishedLotStock.findMany({
+            where: { productId, zone: 'PRODUCTO_TERMINADO', currentQuantity: { gt: 0 } },
+            orderBy: { createdAt: 'asc' }
+        });
+        for (const lot of finishedLots) {
+            if (remaining <= 0) break;
+            const toDeduct = Math.min(lot.currentQuantity, remaining);
+            await prisma.finishedLotStock.update({ where: { id: lot.id }, data: { currentQuantity: lot.currentQuantity - toDeduct } });
+            consumed.push({ type: 'FinishedLot', lot: lot.lotNumber, zone: lot.zone, deducted: toDeduct });
+            remaining -= toDeduct;
+        }
+
+        // 2. If still remaining, deduct from MaterialLot FIFO
+        if (remaining > 0) {
+            const materialLots = await prisma.materialLot.findMany({
+                where: { productId, currentQuantity: { gt: 0 } },
+                orderBy: { createdAt: 'asc' }
+            });
+            for (const lot of materialLots) {
+                if (remaining <= 0) break;
+                const toDeduct = Math.min(lot.currentQuantity, remaining);
+                await prisma.materialLot.update({ where: { id: lot.id }, data: { currentQuantity: lot.currentQuantity - toDeduct } });
+                consumed.push({ type: 'MaterialLot', lot: lot.lotCode, zone: lot.zone, deducted: toDeduct });
+                remaining -= toDeduct;
+            }
+        }
+
+        res.json({
+            success: true,
+            product: product.sku,
+            requested: parseInt(qty),
+            consumed: parseInt(qty) - remaining,
+            unconsumed: remaining,
+            detail: consumed
+        });
+    } catch (err) {
+        console.error('consume-diff error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;

@@ -4,16 +4,21 @@ import { Package, AlertCircle, RefreshCw, TrendingUp } from 'lucide-react';
 import { inventoryService } from '../services/api';
 import TrendChart from '../components/analytics/TrendChart';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import DistributorWelcome from './DistributorWelcome';
 
 const Dashboard = () => {
+    const { user } = useAuth();
     const [data, setData] = useState(null);
     const [stats, setStats] = useState([]);
     const [suggestions, setSuggestions] = useState([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        loadDashboard();
-    }, []);
+        if (user?.role !== 'DISTRIBUIDOR') {
+            loadDashboard();
+        }
+    }, [user?.role]);
 
     const loadDashboard = async () => {
         setLoading(true);
@@ -62,6 +67,10 @@ const Dashboard = () => {
             </div>
         </div>
     );
+
+    if (user?.role === 'DISTRIBUIDOR') {
+        return <DistributorWelcome />;
+    }
 
     if (loading) return <div className="p-8 text-center text-neutral-500">Cargando dashboard...</div>;
 

@@ -8,6 +8,11 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
     const [selectedImage, setSelectedImage] = useState(null);
     const [actionNote, setActionNote] = useState('');
     const [processing, setProcessing] = useState(false);
+    const [ncProcessing, setNcProcessing] = useState(false);
+    const [ncResult, setNcResult] = useState(null); // { name, id, url }
+    const [adjustmentProcessing, setAdjustmentProcessing] = useState(false);
+    const [adjustmentNotes, setAdjustmentNotes] = useState('');
+    const [adjustmentDocFile, setAdjustmentDocFile] = useState(null);
     const [billingFiles, setBillingFiles] = useState([]);
     const [accountStatementFiles, setAccountStatementFiles] = useState([]);
     const [dispatchFiles, setDispatchFiles] = useState([]);
@@ -33,8 +38,11 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
             setDispatchFiles(prev => [...prev, ...pastedFiles]);
         } else if (stage === 'PENDING_BILLING') {
             setBillingFiles(prev => [...prev, ...pastedFiles]);
+        } else if (pqr.pendingAdjustment) {
+            // Use the last pasted image as the adjustment document
+            setAdjustmentDocFile(pastedFiles[pastedFiles.length - 1]);
         }
-    }, [pqr.stage, pqr.status]);
+    }, [pqr.stage, pqr.status, pqr.pendingAdjustment]);
 
     useEffect(() => {
         document.addEventListener('paste', handlePaste);
@@ -61,6 +69,46 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                 {labels[status] || status}
             </span>
         );
+    };
+
+    const createSiigoNC = async () => {
+        setNcProcessing(true);
+        try {
+            const res = await axios.post(
+                `${import.meta.env.VITE_API_URL}/api/pqr/${pqr.id}/siigo-credit-note`,
+                {},
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            setNcResult(res.data.creditNote);
+            setToast({ type: 'success', message: `✅ Nota Crédito ${res.data.creditNote?.name} creada en Siigo` });
+            setTimeout(() => { if (onUpdate) onUpdate(); onClose(); }, 2000);
+        } catch (err) {
+            const msg = err.response?.data?.siigoError || err.response?.data?.error || err.message;
+            setToast({ type: 'error', message: `❌ Error Siigo: ${msg}` });
+        } finally {
+            setNcProcessing(false);
+        }
+    };
+
+    const markAdjustmentDone = async () => {
+        setAdjustmentProcessing(true);
+        try {
+            const formData = new FormData();
+            formData.append('notes', adjustmentNotes || 'Ajuste de inventario por daños registrado');
+            if (adjustmentDocFile) formData.append('adjustmentDoc', adjustmentDocFile);
+
+            await axios.post(
+                `${import.meta.env.VITE_API_URL}/api/pqr/${pqr.id}/adjustment-done`,
+                formData,
+                { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' } }
+            );
+            setToast({ type: 'success', message: '✅ Ajuste de inventario registrado exitosamente' });
+            setTimeout(() => { if (onUpdate) onUpdate(); onClose(); }, 1800);
+        } catch (err) {
+            setToast({ type: 'error', message: err.response?.data?.error || 'Error al registrar ajuste' });
+        } finally {
+            setAdjustmentProcessing(false);
+        }
     };
 
     const handleAction = async (action, extraData = {}) => {
@@ -342,7 +390,7 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
 
                                 // Determine if this user can act on the current stage
                                 const canActOnQuality = ['ADMIN', 'CALIDAD'].includes(userRole) && (stage === 'PENDING_REVIEW' || pqr.status === 'PENDING');
-                                const canActOnBilling = ['ADMIN', 'CONTABILIDAD'].includes(userRole) && stage === 'PENDING_BILLING';
+                                const canActOnBilling = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_BILLING';
                                 const canActOnInvoice = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_INVOICE';
                                 const canActOnLogistics = ['ADMIN', 'LOGISTICA'].includes(userRole) && stage === 'PENDING_LOGISTICS';
                                 const canAct = canActOnQuality || canActOnBilling || canActOnInvoice || canActOnLogistics;
@@ -405,7 +453,7 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                                 </>
                                             )}
 
-                                            {/* STAGE 2: CREDIT NOTE (CONTABILIDAD) */}
+                                            {/* STAGE 2: NOTA CRÉDITO (COMERCIAL — crea NC manualmente en Siigo y sube PDF) */}
                                             {canActOnBilling && (
                                                 <>
                                                     <div className="bg-amber-50 text-amber-800 text-xs p-3 rounded-lg space-y-1">
@@ -414,6 +462,37 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                                         {isReplacement && (
                                                             <p className="mt-2 text-purple-700 font-medium">⚠️ Al ser reposición física, después deberá crear la factura.</p>
                                                         )}
+                                                    </div>
+
+                                                    {/* ── Siigo Auto-Create button ── */}
+                                                    {ncResult ? (
+                                                        <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
+                                                            <p className="text-green-800 font-bold text-sm">✅ NC creada en Siigo</p>
+                                                            <p className="text-green-700 text-lg font-mono font-bold mt-1">{ncResult.name}</p>
+                                                            {ncResult.url && <a href={ncResult.url} target="_blank" rel="noreferrer" className="text-xs text-green-600 underline mt-1 block">Ver en Siigo →</a>}
+                                                        </div>
+                                                    ) : (
+                                                        <button
+                                                            onClick={createSiigoNC}
+                                                            disabled={ncProcessing}
+                                                            className={`w-full px-4 py-3.5 rounded-xl text-sm font-bold shadow-lg transition-all flex items-center justify-center gap-2 ${
+                                                                ncProcessing
+                                                                    ? 'bg-gray-100 text-gray-400 cursor-wait'
+                                                                    : 'bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 shadow-green-200'
+                                                            }`}
+                                                        >
+                                                            {ncProcessing ? (
+                                                                <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg> Creando en Siigo...</>
+                                                            ) : (
+                                                                <>🧾 Crear Nota Crédito en Siigo</>
+                                                            )}
+                                                        </button>
+                                                    )}
+
+                                                    <div className="flex items-center gap-3 my-1">
+                                                        <div className="flex-1 h-px bg-gray-200"/>
+                                                        <span className="text-xs text-gray-400">o suba manualmente</span>
+                                                        <div className="flex-1 h-px bg-gray-200"/>
                                                     </div>
                                                     <textarea
                                                         className="w-full border-gray-200 rounded-lg text-sm p-3 focus:ring-2 focus:ring-blue-500 transition-shadow bg-gray-50 focus:bg-white"
@@ -580,6 +659,61 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                     {pqr.stage === 'COMPLETED' && (
                                         <p className="text-sm text-green-700">El proceso ha finalizado exitosamente.</p>
                                     )}
+                                </div>
+                            )}
+
+                            {/* ADMIN: Pending Inventory Adjustment */}
+                            {pqr.pendingAdjustment && ["ADMIN","CONTABILIDAD","CARTERA"].includes(user?.role) && (
+                                <div className="bg-orange-50 border border-orange-200 rounded-xl overflow-hidden">
+                                    <div className="bg-orange-100 px-4 py-3 border-b border-orange-200 flex items-center gap-2">
+                                        <span className="text-orange-600">🔧</span>
+                                        <h3 className="font-bold text-orange-900 text-sm">Ajuste de Inventario Pendiente</h3>
+                                        <span className="ml-auto bg-orange-200 text-orange-800 text-xs px-2 py-0.5 rounded-full font-semibold">ADMIN</span>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <p className="text-xs text-orange-700">
+                                            La NC fue emitida. Registre el <strong>ajuste por daños</strong> de las unidades devueltas para cerrar el proceso.
+                                        </p>
+                                        <textarea
+                                            className="w-full border border-orange-200 rounded-lg text-sm p-2.5 bg-white focus:ring-2 focus:ring-orange-400 resize-none"
+                                            rows="2"
+                                            placeholder="Observaciones (ej: unidades destruidas, lote dado de baja...)"
+                                            value={adjustmentNotes}
+                                            onChange={e => setAdjustmentNotes(e.target.value)}
+                                        />
+                                        {/* Document upload */}
+                                        <div className={`border-2 rounded-xl p-3 transition-all ${adjustmentDocFile ? 'border-orange-300 bg-orange-50/80' : 'border-dashed border-orange-200 bg-white'}`}>
+                                            <div className="flex items-center gap-2 mb-1.5">
+                                                <span className="text-sm">📎</span>
+                                                <span className="text-xs font-bold text-orange-800">Documento de Ajuste (PDF)</span>
+                                                {adjustmentDocFile && <span className="ml-auto text-orange-600 text-xs font-semibold">✓ {adjustmentDocFile.name}</span>}
+                                            </div>
+                                            <input
+                                                type="file"
+                                                accept="application/pdf,image/*"
+                                                onChange={e => setAdjustmentDocFile(e.target.files[0] || null)}
+                                                className="block w-full text-xs text-gray-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-orange-500 file:text-white hover:file:bg-orange-600 cursor-pointer"
+                                            />
+                                            <p className="text-[10px] text-gray-400 mt-1">💡 También puede pegar con <kbd className="px-1 py-0.5 bg-gray-100 border rounded text-[10px]">Ctrl+V</kbd></p>
+                                        </div>
+                                        <button
+                                            onClick={markAdjustmentDone}
+                                            disabled={adjustmentProcessing || !adjustmentDocFile}
+                                            className={"w-full py-2.5 rounded-xl text-sm font-bold transition-all " + (adjustmentProcessing || !adjustmentDocFile ? "bg-gray-200 text-gray-400 cursor-not-allowed" : "bg-orange-500 hover:bg-orange-600 text-white shadow-md shadow-orange-200")}
+                                        >
+                                            {adjustmentProcessing ? "⏳ Registrando..." : "✅ Registrar Ajuste de Inventario"}
+                                        </button>
+                                        {!adjustmentDocFile && (
+                                            <p className="text-[11px] text-orange-500 text-center">⚠️ Debe adjuntar el documento de ajuste para continuar</p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+
+                            {!pqr.pendingAdjustment && pqr.adjustmentDoneAt && (
+                                <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-xs text-gray-500">
+                                    🔧 Ajuste registrado el {new Date(pqr.adjustmentDoneAt).toLocaleDateString('es-CO')}
+                                    {pqr.adjustmentNotes && <span className="block text-gray-400 mt-0.5">{pqr.adjustmentNotes}</span>}
                                 </div>
                             )}
 

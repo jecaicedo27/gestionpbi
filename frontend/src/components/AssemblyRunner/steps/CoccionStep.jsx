@@ -50,8 +50,15 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
     const beepIntervalRef = useRef(null);
     const vibrationIntervalRef = useRef(null);
 
-    // Recover timer from server processParameters on mount
+    // Recover state from server processParameters on mount
     useEffect(() => {
+        // Recover from coccion_result (saved when step completes or photo uploaded)
+        const saved = params.coccion_result;
+        if (saved) {
+            if (saved.photoUrl) setPhotoUrl(saved.photoUrl);
+            if (saved.realTemperature) setRealTemperature(String(saved.realTemperature));
+        }
+        // Recover timer state
         if (timerMin === 0) return;
         const timerState = params.timerState;
         if (!timerState) return;
@@ -198,13 +205,27 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
             const res = await api.post('/assembly-notes/upload-photo', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
-            setPhotoUrl(res.data.url || URL.createObjectURL(file));
+            const savedUrl = res.data.url || URL.createObjectURL(file);
+            setPhotoUrl(savedUrl);
+            // Immediately persist photo URL to processParameters so it survives refresh
+            if (res.data.url && note?.id) {
+                api.patch(`/assembly-notes/${note.id}`, {
+                    processParameters: {
+                        ...params,
+                        coccion_result: {
+                            ...(params.coccion_result || {}),
+                            photoUrl: res.data.url,
+                            capturedAt: new Date().toISOString()
+                        }
+                    }
+                }).catch(() => {});
+            }
         } catch (err) {
             setPhotoUrl(URL.createObjectURL(file));
         } finally {
             setUploading(false);
         }
-    }, [note?.id, targetTemp]);
+    }, [note?.id, targetTemp, params]);
 
     const tempDiff = realTemperature ? Math.abs(parseFloat(realTemperature) - targetTemp) : null;
     const tempOk = tempDiff !== null && tempDiff <= 3;

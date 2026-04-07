@@ -18,4 +18,8 @@ const analyticsExecutiveController = require('../controllers/analyticsExecutiveC
 // Executive Stats
 router.get('/executive', auth, analyticsExecutiveController.getExecutiveStats);
 
+// Sales Analytics by Client
+const salesAnalyticsController = require('../controllers/salesAnalyticsController');
+router.get('/sales/by-client', auth, roles(['ADMIN']), salesAnalyticsController.getSalesByClient);
+
 module.exports = router;

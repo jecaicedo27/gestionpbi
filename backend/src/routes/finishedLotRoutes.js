@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
 const finishedLotService = require('../services/finishedLotService');
+const { buildQrString } = require('../utils/qrFormat');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
@@ -111,10 +112,11 @@ router.get('/production-lots/:productId', auth, async (req, res) => {
 
 // ── GET /qr-payload/:productId — Standardized QR payload for any label ──
 // Single source of truth for QR data across all frontend components
+// QR STRING FORMAT: LOT:{lot}|SKU:{sku}|BAR:{barcode}|QTY:{qty}|BOX:{box}/{total}
 router.get('/qr-payload/:productId', auth, async (req, res) => {
     try {
         const { productId } = req.params;
-        const { lotNumber, quantity, expiresAt } = req.query;
+        const { lotNumber, quantity, expiresAt, boxNumber, totalBoxes } = req.query;
         const product = await prisma.product.findUnique({
             where: { id: productId },
             select: { name: true, sku: true, barcode: true, packSize: true },
@@ -123,22 +125,13 @@ router.get('/qr-payload/:productId', auth, async (req, res) => {
 
         const qty = parseInt(quantity) || 0;
         const barcode = product.barcode || product.sku || '';
+        const box = parseInt(boxNumber) || 1;
+        const total = parseInt(totalBoxes) || 1;
 
-        // Standardized QR payload for preview
-        const qrPayload = {
-            productCode: product.sku || '',
-            barcode,
-            name: product.name || '',
-            lot: lotNumber || '',
-            lotNumber: lotNumber || '',
-            unitsPerBox: qty,
-            expirationDate: expiresAt || '',
-        };
+        // Canonical pipe-delimited QR string — from shared qrFormat.js
+        const qrString = buildQrString({ lotNumber: lotNumber || '', sku: product.sku || '', barcode, quantity: qty, boxNumber: box, totalBoxes: total });
 
-        // Standardized QR string for TSPL printing
-        const qrString = `LOT:${lotNumber || ''}|SKU:${product.sku || ''}|BAR:${barcode}|QTY:${qty}`;
-
-        res.json({ qrPayload, qrString, product: { ...product, barcode } });
+        res.json({ qrString, product: { ...product, barcode } });
     } catch (err) {
         console.error('qr-payload error:', err);
         res.status(500).json({ error: err.message });
@@ -204,6 +197,8 @@ router.get('/lot-summary/:lotNumber', auth, async (req, res) => {
                     empaqueMap[note.productId] = {
                         approved: empData?.approved_qty ?? note.actualQuantity ?? null,
                         defective: empData?.defective_qty ?? 0,
+                        defect_reasons: empData?.defect_reasons || [],
+                        conteo_qty: empData?.conteo_qty ?? null,
                     };
                 }
             }
@@ -226,7 +221,7 @@ router.get('/lot-summary/:lotNumber', auth, async (req, res) => {
 // ── POST /ingest — Register stock from production ───────────────────────────
 router.post('/ingest', auth, async (req, res) => {
     try {
-        const { productId, lotNumber, quantity, batchId, expiresAt, zone } = req.body;
+        const { productId, lotNumber, quantity, batchId, expiresAt, zone, perCarrito, reason } = req.body;
         if (!productId || !lotNumber || !quantity) {
             return res.status(400).json({ error: 'productId, lotNumber y quantity son requeridos' });
         }
@@ -248,6 +243,16 @@ router.post('/ingest', auth, async (req, res) => {
             return res.json({ success: true, stock: result.dest });
         }
 
+        // Guard: PRODUCTO_EN_PROCESO intermediates are tracked via MaterialLot — skip FinishedLotStock
+        const productInfo = await prisma.product.findUnique({
+            where: { id: productId },
+            select: { classification: true, name: true }
+        });
+        if (productInfo?.classification === 'PRODUCTO_EN_PROCESO') {
+            console.log(`[ingest] Skipping FinishedLotStock for intermediate: ${productInfo.name} (PRODUCTO_EN_PROCESO → tracked via MaterialLot)`);
+            return res.json({ success: true, skipped: true, reason: 'Intermedio rastreado via MaterialLot' });
+        }
+
         // Default: ingest into PRODUCCION zone (new stock from assembly)
         const stock = await finishedLotService.ingestFromProduction({
             productId,
@@ -257,6 +262,8 @@ router.post('/ingest', auth, async (req, res) => {
             expiresAt: expiresAt || null,
             userId: req.user.id,
             zone: 'PRODUCCION',
+            perCarrito: !!perCarrito,
+            reason: reason || null,
         });
         res.json({ success: true, stock });
     } catch (err) {
@@ -343,6 +350,39 @@ router.get('/available-lots/:productId', auth, async (req, res) => {
         res.json({ success: true, lots });
     } catch (err) {
         console.error('finished-lots/available-lots error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ── GET /all-active — Todos los FinishedLotStock activos (para inventario físico) ──
+router.get('/all-active', auth, async (req, res) => {
+    try {
+        const lots = await prisma.finishedLotStock.findMany({
+            where: { currentQuantity: { gt: 0 }, status: { in: ['AVAILABLE', 'LOW'] } },
+            include: {
+                product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true, accountGroup: true } }
+            },
+            orderBy: [{ product: { name: 'asc' } }, { lotNumber: 'asc' }]
+        });
+        // Map to same shape as MaterialLot for frontend compatibility
+        const mapped = lots.map(l => ({
+            id: l.id,
+            lotNumber: l.lotNumber,
+            zone: l.zone,
+            currentQuantity: l.currentQuantity,
+            initialQuantity: l.initialQuantity,
+            status: l.status,
+            unit: l.product?.unit || 'unidad',
+            receivedAt: l.createdAt,
+            productId: l.productId,
+            siigoProductName: l.product?.name || '',
+            siigoProductCode: l.product?.sku || '',
+            product: l.product,
+            _source: 'FINISHED_LOT'
+        }));
+        res.json(mapped);
+    } catch (err) {
+        console.error('finished-lots/all-active error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -566,9 +606,19 @@ router.get('/pending-box/:productId', auth, async (req, res) => {
 
         const box = await prisma.pendingBox.findFirst({
             where: { productId, boxSize },
-            include: { product: { select: { name: true, sku: true } } },
+            include: {
+                product: { select: { name: true, sku: true } },
+                entries: { orderBy: { createdAt: 'asc' } },
+            },
         });
-        res.json(box);
+
+        if (!box) return res.json(null);
+
+        // Normaliza la respuesta al mismo shape esperado por el frontend
+        res.json({
+            ...box,
+            entries: box.entries.map(e => ({ lot: e.lot, qty: e.qty, expiry: e.expiry ? e.expiry.toISOString().slice(0, 10) : null })),
+        });
     } catch (err) {
         console.error('GET pending-box error:', err);
         res.status(500).json({ error: err.message });
@@ -582,23 +632,47 @@ router.post('/pending-box', auth, async (req, res) => {
         // entries: [{lot, qty, expiry}]
         const currentQty = entries.reduce((sum, e) => sum + (e.qty || 0), 0);
 
-        // Check if one already exists for this product+boxSize
-        const existing = await prisma.pendingBox.findFirst({
-            where: { productId, boxSize },
+        const box = await prisma.$transaction(async (tx) => {
+            // Buscar o crear el box
+            let existing = await tx.pendingBox.findFirst({ where: { productId, boxSize } });
+
+            let boxRecord;
+            if (existing) {
+                boxRecord = await tx.pendingBox.update({
+                    where: { id: existing.id },
+                    data: { currentQty, isMaquila: isMaquila ?? existing.isMaquila },
+                });
+                // Reemplazar entries: borrar las viejas y crear las nuevas
+                await tx.pendingBoxEntry.deleteMany({ where: { boxId: existing.id } });
+            } else {
+                boxRecord = await tx.pendingBox.create({
+                    data: { productId, boxSize, isMaquila: isMaquila ?? false, currentQty },
+                });
+            }
+
+            // Crear entries normalizadas
+            await tx.pendingBoxEntry.createMany({
+                data: entries.map(e => ({
+                    boxId: boxRecord.id,
+                    lot: e.lot,
+                    qty: e.qty || 0,
+                    expiry: e.expiry ? new Date(e.expiry) : null,
+                })),
+            });
+
+            return boxRecord;
         });
 
-        let box;
-        if (existing) {
-            box = await prisma.pendingBox.update({
-                where: { id: existing.id },
-                data: { entries, currentQty, isMaquila: isMaquila ?? existing.isMaquila },
-            });
-        } else {
-            box = await prisma.pendingBox.create({
-                data: { productId, boxSize, isMaquila: isMaquila ?? false, entries, currentQty },
-            });
-        }
-        res.json(box);
+        // Retornar con entries para que el frontend actualice estado
+        const populated = await prisma.pendingBox.findUnique({
+            where: { id: box.id },
+            include: { entries: { orderBy: { createdAt: 'asc' } } },
+        });
+
+        res.json({
+            ...populated,
+            entries: populated.entries.map(e => ({ lot: e.lot, qty: e.qty, expiry: e.expiry ? e.expiry.toISOString().slice(0, 10) : null })),
+        });
     } catch (err) {
         console.error('POST pending-box error:', err);
         res.status(500).json({ error: err.message });

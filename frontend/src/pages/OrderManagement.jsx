@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
-import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer } from 'lucide-react';
+import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer, RotateCcw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { parseScanInput } from '../services/scannerParser';
+import { playSuccess, playError, playAlreadyDone, playItemComplete } from '../services/scannerSounds';
 
 const API_URL = `${import.meta.env.VITE_API_URL}/api` || '/api';
 const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}` });
 
 export default function OrderManagement() {
     const { user } = useAuth();
-    const isAdmin = ['ADMIN', 'LOGISTICA'].includes(user?.role);
+    const isAdmin = user?.role === 'ADMIN';
+    const isLogistica = user?.role === 'LOGISTICA';
     const isComercial = user?.role === 'COMERCIAL';
     const isDistributor = user?.role === 'DISTRIBUIDOR';
     const canManageOrders = isAdmin || isComercial;
@@ -18,15 +20,19 @@ export default function OrderManagement() {
     const [selectedOrder, setSelectedOrder] = useState(null);
     const [pickingOrder, setPickingOrder] = useState(null);
     const [pickingProgress, setPickingProgress] = useState(null);
+    const [expandItemId, setExpandItemId] = useState(null); // ID del item abierto para ver picking details
     const [invoiceModal, setInvoiceModal] = useState(null);
     const [dispatchModal, setDispatchModal] = useState(null);
     const [deliverModal, setDeliverModal] = useState(null);
     const [signedGuideFile, setSignedGuideFile] = useState(null);
     const [imageModal, setImageModal] = useState(null);
     const [dispatchForm, setDispatchForm] = useState({
-        driverName: '', licensePlate: '', driverCedula: '',
-        amountPaid: '', destination: '', dispatchTime: '', dispatchNotes: ''
+        driverName: '', licensePlate: '', driverCedula: '', driverPhone: '',
+        amountPaid: '', destination: '', destinationCity: '', dispatchTime: '', dispatchNotes: '',
+        receiverName: '', receiverPhone: ''
     });
+    const [driverSuggestions, setDriverSuggestions] = useState([]);
+    const [showDriverSuggestions, setShowDriverSuggestions] = useState(false);
     const [invoiceFiles, setInvoiceFiles] = useState({ invoicePdf: null, accountStatement: null, invoiceNumber: '' });
     const [manualLot, setManualLot] = useState('');
     const [scanBuffer, setScanBuffer] = useState('');
@@ -34,6 +40,7 @@ export default function OrderManagement() {
     const [unitPickPopup, setUnitPickPopup] = useState(null); // {itemId, product, qty, lot, availableLots}
     const [selectedItemId, setSelectedItemId] = useState(null);
     const [expandedOrderId, setExpandedOrderId] = useState(null);
+    const [ptStockMap, setPtStockMap] = useState({});  // productId → totalQty in PRODUCTO_TERMINADO
     const scanTimeout = useRef(null);
     const queryClient = useQueryClient();
 
@@ -45,6 +52,8 @@ export default function OrderManagement() {
     const [excelLoading, setExcelLoading] = useState(false);
     const [distributors, setDistributors] = useState([]);
     const [confirmSkipModal, setConfirmSkipModal] = useState(false);
+    const [successModal, setSuccessModal] = useState(null); // { type: 'success'|'error', title, message, detail }
+    const [packingModeModal, setPackingModeModal] = useState(null); // { order } — pending packing mode selection
 
     const { data: orders, isLoading } = useQuery({
         queryKey: ['admin-orders', statusFilter],
@@ -112,7 +121,7 @@ export default function OrderManagement() {
             }, { headers: AUTH() });
             return response.data;
         },
-        onSuccess: (data) => {
+        onSuccess: (data, variables) => {
             if (data.data?.order) {
                 setPickingOrder(data.data.order);
             }
@@ -123,27 +132,103 @@ export default function OrderManagement() {
             }));
             setManualLot('');
             loadPickingProgress(pickingOrder?.id);
-            // Flash success
+            // Determine if the scanned item just reached 100%
+            const scannedItemId = variables.orderItemId;
+            const orderItems = data.data?.order?.items;
+            if (orderItems && scannedItemId) {
+                const item = orderItems.find(i => i.id === scannedItemId);
+                if (item) {
+                    const targetQty = item.allocatedQty || item.requestedQty;
+                    const totalPicked = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+                    if (totalPicked >= targetQty) {
+                        playItemComplete(); // 🎉 Item reached the goal!
+                    } else {
+                        playSuccess();      // ✅ Partial progress
+                    }
+                } else {
+                    playSuccess();
+                }
+            } else {
+                playSuccess();
+            }
             setLastScan(prev => prev ? { ...prev, status: 'success' } : null);
             setTimeout(() => setLastScan(prev => prev?.status === 'success' ? null : prev), 3000);
         },
         onError: (error) => {
+            playError();
             setLastScan(prev => prev ? { ...prev, status: 'error', message: error.response?.data?.error || 'Error al escanear' } : null);
         }
     });
 
+    const [partialConfirmModal, setPartialConfirmModal] = useState(false);
+    const [backorderConfirmModal, setBackorderConfirmModal] = useState(false);
+
     const completePickingMutation = useMutation({
-        mutationFn: async (orderId) => {
-            const response = await axios.post(`${API_URL}/orders/${orderId}/complete-picking`, {}, { headers: AUTH() });
+        mutationFn: async ({ orderId, partial = false }) => {
+            const response = await axios.post(`${API_URL}/orders/${orderId}/complete-picking`, { partial }, { headers: AUTH() });
+            return response.data;
+        },
+        onSuccess: (data, variables) => {
+            queryClient.invalidateQueries(['admin-orders']);
+            queryClient.invalidateQueries(['order-counts']);
+            setPickingOrder(null);
+            setPickingProgress(null);
+            setPartialConfirmModal(false);
+            alert(variables.partial
+                ? '✅ Separación completada parcialmente — El pedido pasó a Listos con lo escaneado'
+                : '✅ Separación completada — Pedido listo para despacho');
+        },
+        onError: (error) => alert(error.response?.data?.error || 'Error al completar separación')
+    });
+
+    const completeWithBackorderMutation = useMutation({
+        mutationFn: async ({ orderId }) => {
+            const response = await axios.post(`${API_URL}/orders/${orderId}/complete-with-backorder`, {}, { headers: AUTH() });
+            return response.data;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries(['admin-orders']);
+            queryClient.invalidateQueries(['order-counts']);
+            setPickingOrder(null);
+            setPickingProgress(null);
+            setBackorderConfirmModal(false);
+            setSuccessModal({
+                type: 'success',
+                title: 'Separación completada + Nuevo pedido creado',
+                message: `Pedido ${data.backorder?.orderNumber} generado automáticamente`,
+                detail: `Lo escaneado del pedido original pasó a Listos. Se creó el pedido ${data.backorder?.orderNumber} con ${data.backorder?.itemCount} producto(s) faltantes para ${pickingOrder?.distributor?.name || 'el distribuidor'}. El nuevo pedido ya está Aprobado y listo para alistamiento.`
+            });
+        },
+        onError: (error) => {
+            setBackorderConfirmModal(false);
+            alert(error.response?.data?.error || 'Error al completar con backorder');
+        }
+    });
+
+    // ADMIN ONLY: unscan/unmark a picking item
+    const unscanMutation = useMutation({
+        mutationFn: async ({ orderId, pickingItemId }) => {
+            const response = await axios.delete(`${API_URL}/orders/${orderId}/picking-item/${pickingItemId}`, { headers: AUTH() });
             return response.data;
         },
         onSuccess: () => {
-            queryClient.invalidateQueries(['admin-orders']);
-            setPickingOrder(null);
-            setPickingProgress(null);
-            alert('✅ Separación completada — Pedido listo para despacho');
+            loadPickingProgress(pickingOrder?.id);
         },
-        onError: (error) => alert(error.response?.data?.error || 'Error al completar separación')
+        onError: (error) => alert(error.response?.data?.error || 'Error al desmarcar item')
+    });
+
+    // ADMIN ONLY: revert READY → IN_PICKING
+    const revertToPickingMutation = useMutation({
+        mutationFn: async ({ orderId }) => {
+            const response = await axios.post(`${API_URL}/orders/${orderId}/revert-to-picking`, {}, { headers: AUTH() });
+            return response.data;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries(['admin-orders']);
+            queryClient.invalidateQueries(['order-counts']);
+            alert(`✅ ${data.message}`);
+        },
+        onError: (error) => alert(error.response?.data?.error || 'Error al devolver pedido')
     });
 
     const invoiceMutation = useMutation({
@@ -154,19 +239,30 @@ export default function OrderManagement() {
         onSuccess: (data) => {
             queryClient.invalidateQueries(['admin-orders']);
             queryClient.invalidateQueries(['order-counts']);
+            const siigoName    = data.siigoInvoice?.name;
+            const distName     = data.data?.distributor?.name || invoiceModal?.distributor?.name || '';
+            const orderNumber  = data.data?.orderNumber        || invoiceModal?.orderNumber        || '';
+            const today        = new Date().toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' });
             setInvoiceModal(null);
-            const siigoName = data.siigoInvoice?.name;
-            if (siigoName) {
-                alert(`✅ Factura ${siigoName} creada exitosamente en Siigo`);
-            } else {
-                alert('✅ Pedido facturado exitosamente');
-            }
+            setSuccessModal({
+                type:     'success',
+                title:    siigoName || 'Factura creada en Siigo',
+                message:  `Nueva factura para ${distName}`,
+                detail:   `${today} · Con orden de compra ${orderNumber}`,
+                copyText: `*${siigoName || 'Nueva factura'}*\nNueva factura para *${distName}*\n${today}\nCon orden de compra: ${orderNumber}`
+            });
         },
+
         onError: (error) => {
             const errData = error.response?.data;
             const msg = errData?.siigoError || errData?.error || 'Error al facturar';
-            const details = errData?.siigoDetails?.map(d => d.Message).join('\n') || '';
-            alert(`❌ ${msg}${details ? '\n\n' + details : ''}`);
+            const details = errData?.siigoDetails?.map(d => d.Message).join(' • ') || '';
+            setSuccessModal({
+                type: 'error',
+                title: 'Error al facturar',
+                message: msg,
+                detail: details
+            });
         }
     });
 
@@ -178,9 +274,18 @@ export default function OrderManagement() {
         onSuccess: (data) => {
             queryClient.invalidateQueries(['admin-orders']);
             queryClient.invalidateQueries(['order-counts']);
+            // Save driver data for future reuse
+            if (dispatchForm.driverName) {
+                axios.post(`${API_URL}/drivers/upsert`, {
+                    name: dispatchForm.driverName,
+                    cedula: dispatchForm.driverCedula || undefined,
+                    phone: dispatchForm.driverPhone || undefined,
+                    licensePlate: dispatchForm.licensePlate || undefined,
+                }, { headers: AUTH() }).catch(() => {});
+            }
             const guideNumber = data.data?.transportGuideNumber;
             setDispatchModal(null);
-            setDispatchForm({ driverName: '', licensePlate: '', driverCedula: '', amountPaid: '', destination: '', dispatchTime: '', dispatchNotes: '' });
+            setDispatchForm({ driverName: '', licensePlate: '', driverCedula: '', driverPhone: '', amountPaid: '', destination: '', destinationCity: '', dispatchTime: '', dispatchNotes: '', receiverName: '', receiverPhone: '' });
             if (guideNumber && data.data?.id) {
                 const doPrint = confirm(`✅ Pedido despachado — Guía: ${guideNumber}\n\n¿Desea imprimir la guía de transporte?`);
                 if (doPrint) window.open(`${API_URL}/orders/${data.data.id}/transport-guide`, '_blank');
@@ -229,25 +334,112 @@ export default function OrderManagement() {
 
     // Open picking modal for an order
     const openPickingModal = useCallback(async (order) => {
-        setPickingOrder(order);
-        await loadPickingProgress(order.id);
-    }, [loadPickingProgress]);
+        // If packingMode already defined, go straight to picking
+        if (order.packingMode) {
+            await _startPickingFlow(order);
+        } else {
+            // Show custom modal to select packing mode
+            setPackingModeModal({ order });
+        }
+    }, []);
 
-    // ─── Handle QR Scan ──────────────────────────────────────────
+    // Internal helper: called after packing mode is confirmed
+    const _startPickingFlow = useCallback(async (orderToUse) => {
+        setPickingOrder(orderToUse);
+        await loadPickingProgress(orderToUse.id);
+        // Load PT stock for admin/logística reference
+        if (isAdmin || isLogistica) {
+            try {
+                const res = await axios.get(`${API_URL}/finished-lots/stock`, {
+                    params: { zone: 'PRODUCTO_TERMINADO' },
+                    headers: AUTH()
+                });
+                const stocks = res.data?.stocks || [];
+                const map = {};
+                stocks.forEach(s => {
+                    map[s.productId] = (map[s.productId] || 0) + (s.currentQuantity || 0);
+                });
+                setPtStockMap(map);
+            } catch { setPtStockMap({}); }
+        }
+    }, [loadPickingProgress, isAdmin, isLogistica]);
+
+    // Called when user picks a packing mode from the modal
+    const handleSelectPackingMode = useCallback(async (mode) => {
+        if (!packingModeModal) return;
+        const { order } = packingModeModal;
+        setPackingModeModal(null);
+        let orderToUse = { ...order, packingMode: mode };
+        try {
+            await axios.patch(`${API_URL}/orders/${order.id}`, { packingMode: mode }, { headers: AUTH() });
+        } catch (e) {
+            console.error('Error setting packing mode:', e);
+        }
+        await _startPickingFlow(orderToUse);
+    }, [packingModeModal, _startPickingFlow]);
+
+    // ─── Paste Listener for Deliver Modal (Ctrl+V) ──────────────
+    useEffect(() => {
+        const handlePaste = (e) => {
+            if (!deliverModal) return;
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1 || items[i].type === 'application/pdf') {
+                    const file = items[i].getAsFile();
+                    if (file) {
+                        setSignedGuideFile(file);
+                        break;
+                    }
+                }
+            }
+        };
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+    }, [deliverModal]);
+
+
+
     const handleQrScan = useCallback((qrData) => {
         if (!pickingOrder || !pickingProgress) return;
 
-        // Auto-match: find the order item that matches this productCode
+        // Auto-match: find the order item that matches this productCode OR barcode
         const matchedItem = pickingProgress.itemsProgress?.find(ip =>
             !ip.completed && pickingOrder.items.find(
-                oi => oi.id === ip.itemId && oi.product?.sku === qrData.productCode
+                oi => oi.id === ip.itemId && (
+                    oi.product?.sku === qrData.productCode ||
+                    (qrData.barcode && oi.product?.barcode === qrData.barcode)
+                )
             )
         );
 
-        const targetItemId = selectedItemId || matchedItem?.itemId;
+        // ── STRICT MATCH: only use auto-matched item, never blindly trust selectedItemId ──
+        const targetItemId = matchedItem?.itemId;
 
         if (!targetItemId) {
-            setLastScan({ productName: qrData.productCode, lotNumber: qrData.lotNumber, status: 'error', message: 'Producto no encontrado en este pedido', timestamp: Date.now() });
+            playError();
+            const scannedName = qrData.name || qrData.productCode;
+            setLastScan({ productName: scannedName, lotNumber: qrData.lotNumber, status: 'error', message: `Producto escaneado (${qrData.productCode}) no coincide con ningún item del pedido`, timestamp: Date.now() });
+            return;
+        }
+
+        // ── Overscan guard: block if item already complete ──
+        const ip = pickingProgress.itemsProgress?.find(i => i.itemId === targetItemId);
+        const alreadyScanned = ip?.scannedQty || 0;
+        const requested = ip?.requestedQty || 0;
+        const wouldScan = qrData.unitsPerBox || 1;
+
+        if (alreadyScanned >= requested) {
+            playAlreadyDone();
+            const matchedProduct = pickingOrder.items?.find(oi => oi.id === targetItemId)?.product;
+            setLastScan({ productName: matchedProduct?.name || qrData.productCode, lotNumber: qrData.lotNumber, status: 'warning', message: `Ya completo (${alreadyScanned}/${requested} uds) — no se necesitan más`, timestamp: Date.now() });
+            return;
+        }
+
+        if (alreadyScanned + wouldScan > requested) {
+            playError();
+            const matchedProduct = pickingOrder.items?.find(oi => oi.id === targetItemId)?.product;
+            setLastScan({ productName: matchedProduct?.name || qrData.productCode, lotNumber: qrData.lotNumber, status: 'error', message: `Sobrestock: solo faltan ${requested - alreadyScanned} uds, escaneaste ${wouldScan}`, timestamp: Date.now() });
             return;
         }
 
@@ -261,7 +453,7 @@ export default function OrderManagement() {
             qrData,
             scannedQty: qrData.unitsPerBox || 1
         });
-    }, [pickingOrder, pickingProgress, selectedItemId, scanMutation]);
+    }, [pickingOrder, pickingProgress, scanMutation]);
 
     // ─── Scanner input ref (hidden auto-focus input captures all scanner reads) ───
     const scannerInputRef = useRef(null);
@@ -301,9 +493,13 @@ export default function OrderManagement() {
             return;
         }
 
-        // ── 2. LOT:SKU (from thermal label QR) ──
+        // ── 2. LOT:SKU|BAR (from thermal label QR) — match by barcode first, fallback to SKU ──
         if (scan.type === 'qr_lot_sku' && scan.sku) {
-            const matchedOrderItem = pickingOrder.items?.find(oi => oi.product?.sku === scan.sku);
+            // Prefer barcode match (EAN-13 is globally unique); fallback to SKU
+            const matchedOrderItem = pickingOrder.items?.find(oi =>
+                scan.barcode && oi.product?.barcode === scan.barcode
+            ) || pickingOrder.items?.find(oi => oi.product?.sku === scan.sku);
+
             const matchedIp = matchedOrderItem && pickingProgress?.itemsProgress?.find(ip => ip.itemId === matchedOrderItem.id && !ip.completed);
 
             if (matchedOrderItem && matchedIp) {
@@ -311,10 +507,11 @@ export default function OrderManagement() {
                 if (scan.lotNumber) {
                     handleQrScan({
                         productCode: matchedOrderItem.product?.sku || scan.sku,
-                        barcode: matchedOrderItem.product?.barcode || scan.sku,
+                        barcode: scan.barcode || matchedOrderItem.product?.barcode || scan.sku,
                         name: matchedOrderItem.product?.name || '',
                         lotNumber: scan.lotNumber,
-                        unitsPerBox: matchedOrderItem.product?.packSize || 1,
+                        // QTY from QR takes priority, fallback to packSize in DB
+                        unitsPerBox: scan.unitsPerBox || matchedOrderItem.product?.packSize || 1,
                         expirationDate: ''
                     });
                 } else {
@@ -327,9 +524,11 @@ export default function OrderManagement() {
                     setLastScan({ productName: matchedOrderItem.product?.name, status: 'scanning', message: 'QR detectado — ingresa lote y cantidad', timestamp: Date.now() });
                 }
             } else if (matchedOrderItem) {
-                setLastScan({ productName: matchedOrderItem.product?.name || scan.sku, status: 'success', message: 'Ya completado', timestamp: Date.now() });
+                playAlreadyDone();
+                setLastScan({ productName: matchedOrderItem.product?.name || scan.sku, status: 'warning', message: 'Ya completado — no se necesitan más unidades', timestamp: Date.now() });
             } else {
-                setLastScan({ productName: scan.sku, status: 'error', message: `SKU ${scan.sku} no encontrado en este pedido`, timestamp: Date.now() });
+                playError();
+                setLastScan({ productName: scan.sku, status: 'error', message: `Producto (SKU: ${scan.sku}) no encontrado en este pedido`, timestamp: Date.now() });
             }
             return;
         }
@@ -350,8 +549,10 @@ export default function OrderManagement() {
                 setUnitPickPopup(prev => prev ? { ...prev, availableLots: lots, lot: lots.length === 1 ? lots[0].lotNumber : '' } : null);
             } catch { /* No lots registered yet — manual entry */ }
         } else if (matchedOrderItem) {
-            setLastScan({ productName: matchedOrderItem.product?.name || buffer, status: 'success', message: 'Ya completado', timestamp: Date.now() });
+            playAlreadyDone();
+            setLastScan({ productName: matchedOrderItem.product?.name || buffer, status: 'warning', message: 'Ya completado — no se necesitan más unidades', timestamp: Date.now() });
         } else {
+            playError();
             setLastScan({ productName: buffer, status: 'error', message: 'Código de barras no encontrado en este pedido', timestamp: Date.now() });
         }
     }, [pickingOrder, pickingProgress, handleQrScan]);
@@ -360,11 +561,22 @@ export default function OrderManagement() {
     const handleManualLot = useCallback((orderItemId, product) => {
         if (!manualLot.trim()) return;
 
+        const lotValue = manualLot.trim();
+
+        // ── Guard: detect QR-formatted strings pasted into manual lot field ──
+        // If it looks like a QR (contains LOT:|SKU:|BAR: or starts with {), route to scanner instead
+        if (lotValue.includes('SKU:') || lotValue.includes('LOT:') || lotValue.includes('BAR:') || lotValue.startsWith('{')) {
+            console.warn('[PICKING] QR string detected in manual lot field — routing to scanner parser');
+            setManualLot('');
+            handleScannerInput(lotValue);
+            return;
+        }
+
         const qrData = {
             productCode: product?.sku || '',
-            barcode: product?.sku || '',
+            barcode: product?.barcode || product?.sku || '',
             name: product?.name || '',
-            lotNumber: manualLot.trim(),
+            lotNumber: lotValue,
             unitsPerBox: product?.packSize || 1,
             expirationDate: new Date(Date.now() + 270 * 86400000).toISOString().split('T')[0]
         };
@@ -375,7 +587,8 @@ export default function OrderManagement() {
             qrData,
             scannedQty: product?.packSize || 1
         });
-    }, [manualLot, pickingOrder, scanMutation]);
+        setManualLot('');
+    }, [manualLot, pickingOrder, scanMutation, handleScannerInput]);
 
     // ─── Status helpers ──────────────────────────────────────────
     const statusLabels = {
@@ -408,26 +621,29 @@ export default function OrderManagement() {
     }
 
     return (
+        <>
         <div className="min-h-screen bg-gray-50 p-6">
             <div className="max-w-7xl mx-auto">
                 <div className="flex justify-between items-center mb-6">
                     <h1 className="text-3xl font-bold text-gray-900">Gestión de Pedidos</h1>
-                    {canManageOrders && (
+                    {(canManageOrders || isDistributor) && (
                         <button
                             onClick={async () => {
                                 setExcelModal(true);
                                 setExcelFile(null);
                                 setExcelPreview(null);
-                                setExcelDistributor('');
-                                try {
-                                    const res = await axios.get(`${API_URL}/admin/users`, { headers: AUTH() });
-                                    setDistributors((res.data.data || res.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
-                                } catch(e) { console.error(e); }
+                                setExcelDistributor(isDistributor ? user.id : '');
+                                if (!isDistributor) {
+                                    try {
+                                        const res = await axios.get(`${API_URL}/admin/users`, { headers: AUTH() });
+                                        setDistributors((res.data.data || res.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
+                                    } catch(e) { console.error(e); }
+                                }
                             }}
                             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
                         >
                             <Upload className="w-4 h-4" />
-                            Cargar Excel
+                            📋 Sube tu pedido por Excel
                         </button>
                     )}
                 </div>
@@ -473,7 +689,7 @@ export default function OrderManagement() {
                             }).length || 0;
 
                             // ── Animated progress card for IN_PICKING (distributor view) ──
-                            if (order.status === 'IN_PICKING' && !isAdmin) {
+                            if (order.status === 'IN_PICKING' && !(isAdmin || isLogistica)) {
                                 return (
                                     <div key={order.id} className="bg-white rounded-2xl shadow-lg border border-purple-100 overflow-hidden">
                                         {/* Header with inline progress */}
@@ -505,13 +721,27 @@ export default function OrderManagement() {
                                             </p>
                                         </div>
 
+                                        {/* Order Notes (visible to distributor) */}
+                                        {order.notes && (
+                                            <div className="mx-6 mt-3 flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+                                                <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
+                                                <p className="text-sm text-amber-800 leading-relaxed">
+                                                    <span className="font-semibold text-amber-900">Nota:</span>{' '}
+                                                    {order.notes}
+                                                </p>
+                                            </div>
+                                        )}
+
                                         {/* Collapsible per-item progress */}
                                         <div className="px-6 pb-4">
                                             <div className="flex items-center justify-between cursor-pointer hover:bg-purple-50 rounded-lg px-3 py-2 -mx-3 transition"
                                                 onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
                                             >
                                                 <span className="text-sm text-gray-600 font-medium">
-                                                    {completedItems}/{totalItems} productos separados • {order.items?.reduce((sum, i) => sum + Math.ceil(i.requestedQty / (i.product?.packSize || 1)), 0)} cajas
+                                                    {completedItems}/{totalItems} productos separados • {order.items?.reduce((sum, i) => {
+                                                        const ps = order.packingMode === 'EVEREST' ? 6 : (i.product?.packSize || 1);
+                                                        return sum + Math.ceil(i.requestedQty / ps);
+                                                    }, 0)} cajas
                                                 </span>
                                                 <div className="flex items-center gap-1">
                                                     <span className="text-xs text-purple-500">{expandedOrderId === order.id ? 'Ocultar' : 'Ver productos'}</span>
@@ -532,20 +762,22 @@ export default function OrderManagement() {
                                                     const scannedBoxes = Math.floor(scanned / packSize);
                                                     return (
                                                         <div key={item.id} className={`p-3 rounded-xl transition-all duration-500 ${done ? 'bg-green-50 border border-green-200' : 'bg-white border border-gray-100'}`}>
-                                                            <div className="flex justify-between items-center mb-1.5">
-                                                                <div className="flex items-center gap-2">
+                                                            <div className="flex items-start gap-2 mb-1.5">
+                                                                <div className="mt-0.5 flex-shrink-0">
                                                                     {done ? (
                                                                         <CheckCircle className="w-4 h-4 text-green-500" />
                                                                     ) : (
                                                                         <Box className="w-4 h-4 text-purple-400" />
                                                                     )}
-                                                                    <span className="text-sm font-medium text-gray-800 truncate max-w-[200px] sm:max-w-none">
+                                                                </div>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="text-sm font-medium text-gray-800 leading-snug">
                                                                         {item.product?.name || item.product?.sku}
+                                                                    </div>
+                                                                    <span className={`text-xs font-bold ${done ? 'text-green-600' : 'text-purple-600'}`}>
+                                                                        {scannedBoxes}/{boxes} cajas
                                                                     </span>
                                                                 </div>
-                                                                <span className={`text-xs font-bold ${done ? 'text-green-600' : 'text-purple-600'}`}>
-                                                                    {scannedBoxes}/{boxes} cajas
-                                                                </span>
                                                             </div>
                                                             <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
                                                                 <div className={`h-full rounded-full transition-all duration-700 ease-out ${done ? 'bg-green-500' : 'bg-gradient-to-r from-purple-500 to-indigo-500'}`}
@@ -599,6 +831,17 @@ export default function OrderManagement() {
                                     </div>
                                 </div>
 
+                                {/* Order Notes */}
+                                {order.notes && (
+                                    <div className="mb-3 flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+                                        <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
+                                        <p className="text-sm text-amber-800 leading-relaxed">
+                                            <span className="font-semibold text-amber-900">Nota:</span>{' '}
+                                            {order.notes}
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* Compact summary row — click to expand */}
                                 <div className="flex items-center justify-between border-t pt-3 mb-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2 py-1 -mx-2 transition"
                                     onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
@@ -607,7 +850,10 @@ export default function OrderManagement() {
                                         <Package className="w-4 h-4 text-gray-400" />
                                         <span className="font-medium">{order.items?.length} productos</span>
                                         <span className="text-gray-400">•</span>
-                                        <span>{order.items?.reduce((sum, i) => sum + Math.ceil(i.requestedQty / (i.product?.packSize || 1)), 0)} cajas total</span>
+                                        <span>{order.items?.reduce((sum, i) => {
+                                            const ps = order.packingMode === 'EVEREST' ? 6 : (i.product?.packSize || 1);
+                                            return sum + Math.ceil((i.allocatedQty || i.requestedQty) / ps);
+                                        }, 0)} cajas total</span>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <span className="text-xs text-gray-400">{expandedOrderId === order.id ? 'Ocultar' : 'Ver detalle'}</span>
@@ -620,25 +866,62 @@ export default function OrderManagement() {
                                 <div className="mb-4">
                                     <div className="space-y-1.5">
                                         {order.items?.map(item => {
-                                            const packSize = item.product?.packSize || 1;
+                                            const dbPackSize = item.product?.packSize || 1;
+                                            // Everest (maquila) = cajas de 6, Normal = packSize del producto
+                                            const packSize = order.packingMode === 'EVEREST' ? 6 : dbPackSize;
                                             const boxes = Math.ceil(item.requestedQty / packSize);
                                             const name = item.product?.name || item.product?.sku || '?';
                                             const stock = item.product?.currentStock || 0;
-                                            const sufficient = stock >= item.requestedQty;
+                                            // Group picking items by lot number
+                                            const lotMap = {};
+                                            (item.pickingItems || []).forEach(pi => {
+                                                if (pi.lotNumber) lotMap[pi.lotNumber] = (lotMap[pi.lotNumber] || 0) + (pi.scannedQty || 0);
+                                            });
+                                            const lots = Object.entries(lotMap);
+                                            const totalPicked = lots.reduce((s, [, q]) => s + q, 0);
+                                            const pickedBoxes = Math.floor(totalPicked / packSize);
+                                            // After picking starts: show Pedido vs Alistado; before: show stock
+                                            const showPickedView = ['IN_PICKING', 'READY', 'INVOICED', 'DISPATCHED', 'DELIVERED'].includes(order.status);
+                                            const sufficient = !showPickedView ? stock >= item.requestedQty : totalPicked >= item.requestedQty;
                                             return (
-                                                <div key={item.id} className={`flex justify-between items-center text-sm px-3 py-2 rounded-lg ${sufficient ? 'bg-gray-50' : 'bg-amber-50'}`}>
-                                                    <span className="text-gray-800 font-medium truncate mr-3">{name}</span>
-                                                    <div className="flex items-center gap-3 whitespace-nowrap">
-                                                        {isAdmin && (
-                                                            <span className={`text-xs ${sufficient ? 'text-green-600' : 'text-amber-600'}`}>
-                                                                Stock: {stock}
-                                                            </span>
-                                                        )}
-                                                        <span className="text-gray-600 text-xs font-medium">
-                                                            {boxes} {boxes === 1 ? 'caja' : 'cajas'}
-                                                            <span className="text-gray-400 ml-1">({item.requestedQty} uds)</span>
-                                                        </span>
+                                                <div key={item.id} className={`px-3 py-2 rounded-lg ${showPickedView ? (sufficient ? 'bg-gray-50' : 'bg-amber-50') : (stock >= item.requestedQty ? 'bg-gray-50' : 'bg-amber-50')}`}>
+                                                    <div className="text-sm">
+                                                        <div className="text-gray-800 font-semibold leading-snug mb-1">{name}</div>
+                                                        <div className="flex items-center gap-2 flex-wrap text-xs">
+                                                            {showPickedView ? (
+                                                                <>
+                                                                    <span className="text-gray-500">
+                                                                        Pedido: <strong>{boxes} {boxes === 1 ? 'caja' : 'cajas'}</strong> ({item.requestedQty} uds)
+                                                                    </span>
+                                                                    <span className="text-gray-300">|</span>
+                                                                    <span className={`font-semibold ${sufficient ? 'text-green-600' : 'text-amber-600'}`}>
+                                                                        Alistado: {pickedBoxes} {pickedBoxes === 1 ? 'caja' : 'cajas'} ({totalPicked} uds)
+                                                                    </span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    {(isAdmin || isLogistica) && (
+                                                                        <span className={`${stock >= item.requestedQty ? 'text-green-600' : 'text-amber-600'}`}>
+                                                                            Stock: {stock}
+                                                                        </span>
+                                                                    )}
+                                                                    <span className="text-gray-600 font-medium">
+                                                                        {boxes} {boxes === 1 ? 'caja' : 'cajas'}
+                                                                        <span className="text-gray-400 ml-1">({item.requestedQty} uds)</span>
+                                                                    </span>
+                                                                </>
+                                                            )}
+                                                        </div>
                                                     </div>
+                                                    {lots.length > 0 && (
+                                                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                                            {lots.map(([lot, qty]) => (
+                                                                <span key={lot} className="inline-flex items-center gap-1 text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5">
+                                                                    📦 Lote {lot} · <strong>{qty} uds</strong>
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })}
@@ -647,7 +930,7 @@ export default function OrderManagement() {
                                 )}
 
                                 {/* Actions */}
-                                {(isAdmin || (isDistributor && order.status === 'DISPATCHED')) && (
+                                {(isAdmin || isLogistica || isComercial || (isDistributor && order.status === 'DISPATCHED')) && (
                                 <div className="flex gap-3 flex-wrap">
                                     {order.status === 'PENDING' && (
                                         <button
@@ -680,6 +963,18 @@ export default function OrderManagement() {
                                         </button>
                                     )}
 
+                                    {/* Print picking sheet — available for APPROVED/IN_PICKING/READY/INVOICED */}
+                                    {['APPROVED', 'IN_PICKING', 'READY', 'INVOICED'].includes(order.status) && (isAdmin || isLogistica) && (
+                                        <button
+                                            onClick={() => window.open(`${API_URL}/orders/${order.id}/picking-sheet`, '_blank')}
+                                            className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded-md hover:bg-gray-200"
+                                            title="Imprimir hoja de separación"
+                                        >
+                                            <Printer className="w-4 h-4" />
+                                            Imprimir
+                                        </button>
+                                    )}
+
                                     {order.status === 'READY' && (isAdmin || isComercial) && (
                                         <button
                                             onClick={() => setInvoiceModal(order)}
@@ -690,7 +985,23 @@ export default function OrderManagement() {
                                         </button>
                                     )}
 
-                                    {order.status === 'INVOICED' && isAdmin && (
+                                    {order.status === 'READY' && isAdmin && (
+                                        <button
+                                            onClick={() => {
+                                                if (window.confirm(`¿Devolver ${order.orderNumber} a En Alistamiento?`)) {
+                                                    revertToPickingMutation.mutate({ orderId: order.id });
+                                                }
+                                            }}
+                                            disabled={revertToPickingMutation.isPending}
+                                            className="flex items-center gap-2 px-4 py-2 bg-amber-100 text-amber-800 border border-amber-300 rounded-md hover:bg-amber-200 disabled:opacity-50"
+                                            title="Devolver a En Alistamiento"
+                                        >
+                                            <RotateCcw className="w-4 h-4" />
+                                            Devolver
+                                        </button>
+                                    )}
+
+                                    {order.status === 'INVOICED' && (isAdmin || isLogistica) && (
                                         <button
                                             onClick={() => setDispatchModal(order)}
                                             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
@@ -786,7 +1097,74 @@ export default function OrderManagement() {
                 </div>
             </div>
 
+            {/* ════════════════ SUCCESS / ERROR MODAL ══════════════════════ */}
+            {successModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+                    style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+                    onClick={() => setSuccessModal(null)}>
+                    <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden"
+                        onClick={e => e.stopPropagation()}
+                        style={{ animation: 'modalPop 0.25s cubic-bezier(.175,.885,.32,1.275)' }}>
+                        {/* Gradient header */}
+                        <div className={`px-6 pt-8 pb-6 text-center ${
+                            successModal.type === 'success'
+                                ? 'bg-gradient-to-br from-emerald-500 to-teal-600'
+                                : 'bg-gradient-to-br from-red-500 to-rose-600'
+                        }`}>
+                            {/* Animated icon */}
+                            <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center mx-auto mb-4">
+                                <span className="text-white text-4xl">
+                                    {successModal.type === 'success' ? '✓' : '✕'}
+                                </span>
+                            </div>
+                            <h2 className="text-xl font-bold text-white">{successModal.title}</h2>
+                            <p className="text-white/80 text-sm mt-1 font-semibold tracking-wide">
+                                {successModal.message}
+                            </p>
+                        </div>
+                        {/* Body */}
+                        <div className="px-6 py-5">
+                            {successModal.detail && (
+                                <p className="text-gray-600 text-sm text-center leading-relaxed">
+                                    {successModal.detail}
+                                </p>
+                            )}
+                            {/* Botón copiar para WhatsApp — solo en facturas exitosas */}
+                            {successModal.type === 'success' && successModal.copyText && (
+                                <button
+                                    onClick={() => {
+                                        navigator.clipboard.writeText(successModal.copyText).then(() => {
+                                            setSuccessModal(prev => ({ ...prev, copied: true }));
+                                            setTimeout(() => setSuccessModal(prev => prev ? ({ ...prev, copied: false }) : null), 2000);
+                                        });
+                                    }}
+                                    className={`mt-4 w-full py-2.5 rounded-xl font-semibold text-sm transition-all active:scale-95 flex items-center justify-center gap-2 border-2 ${
+                                        successModal.copied
+                                            ? 'bg-green-100 border-green-400 text-green-700'
+                                            : 'bg-white border-emerald-400 text-emerald-700 hover:bg-emerald-50'
+                                    }`}
+                                >
+                                    {successModal.copied ? '✅ ¡Copiado!' : '📋 Copiar para WhatsApp'}
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setSuccessModal(null)}
+                                className={`mt-3 w-full py-3 rounded-xl font-semibold text-white transition-all active:scale-95 ${
+                                    successModal.type === 'success'
+                                        ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700'
+                                        : 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700'
+                                }`}>
+                                {successModal.type === 'success' ? 'Perfecto' : 'Entendido'}
+                            </button>
+                        </div>
+                    </div>
+
+                    <style>{`@keyframes modalPop { from { opacity:0; transform:scale(0.85) translateY(20px); } to { opacity:1; transform:scale(1) translateY(0); } }`}</style>
+                </div>
+            )}
+
             {/* ════════════════ IMAGE MODAL ═══════════════════════════════ */}
+
             {imageModal && (
                 <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4 z-50 cursor-pointer"
                     onClick={() => setImageModal(null)}>
@@ -863,13 +1241,24 @@ export default function OrderManagement() {
                         {(() => {
                             const allSufficient = selectedOrder.items?.every(i => (i.product?.currentStock || 0) >= i.requestedQty);
                             const insufficientCount = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) < i.requestedQty).length || 0;
-                            return (
-                                <div className={`p-3 rounded-lg mb-4 text-sm ${allSufficient ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'}`}>
-                                    {allSufficient ? (
-                                        <p className="text-green-800 font-medium">✅ Todos los productos tienen stock suficiente.</p>
-                                    ) : (
-                                        <p className="text-yellow-800 font-medium">⚠️ {insufficientCount} producto(s) con stock insuficiente. Se permitirá backorder.</p>
-                                    )}
+                            const sufficientCount = (selectedOrder.items?.length || 0) - insufficientCount;
+                            return allSufficient ? (
+                                <div className="p-3 rounded-lg mb-4 text-sm bg-green-50 border border-green-200">
+                                    <p className="text-green-800 font-medium">✅ Todos los productos tienen stock suficiente. Puedes aprobar directamente.</p>
+                                </div>
+                            ) : (
+                                <div className="mb-4 space-y-2 text-sm">
+                                    <p className="font-semibold text-gray-700">⚠️ {insufficientCount} producto(s) sin stock completo. Elige cómo proceder:</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div className="p-2.5 rounded-lg border border-amber-300 bg-amber-50">
+                                            <p className="font-bold text-amber-800 text-xs">✂️ SOLO LO DISPONIBLE</p>
+                                            <p className="text-amber-700 text-xs mt-0.5">Se despachan <strong>{sufficientCount}</strong> referencias con stock. Los <strong>{insufficientCount}</strong> faltantes <u>NO se incluyen</u> en este pedido.</p>
+                                        </div>
+                                        <div className="p-2.5 rounded-lg border border-green-300 bg-green-50">
+                                            <p className="font-bold text-green-800 text-xs">📦 CON BACKORDER</p>
+                                            <p className="text-green-700 text-xs mt-0.5">Se incluyen <strong>todos</strong> los productos. Los <strong>{insufficientCount}</strong> faltantes quedan en cola de producción para despacho posterior.</p>
+                                        </div>
+                                    </div>
                                 </div>
                             );
                         })()}
@@ -883,38 +1272,45 @@ export default function OrderManagement() {
                         )}
 
                         {/* PENDING Actions */}
-                        {selectedOrder.status === 'PENDING' && (
-                            <div className="flex justify-end gap-3 border-t pt-4 flex-wrap">
-                                <button
-                                    onClick={() => {
-                                        const reason = prompt('Razón del rechazo:');
-                                        if (reason) rejectMutation.mutate({ orderId: selectedOrder.id, reason });
-                                    }}
-                                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
-                                >
-                                    <XCircle className="w-4 h-4" /> Rechazar
-                                </button>
-                                {(() => {
-                                    const hasInsufficient = selectedOrder.items?.some(i => (i.product?.currentStock || 0) < i.requestedQty);
-                                    return hasInsufficient ? (
+                        {selectedOrder.status === 'PENDING' && (() => {
+                            const hasInsufficient = selectedOrder.items?.some(i => (i.product?.currentStock || 0) < i.requestedQty);
+                            return (
+                                <div className="flex justify-end gap-3 border-t pt-4 flex-wrap items-center">
+                                    <button
+                                        onClick={() => {
+                                            const reason = prompt('Razón del rechazo:');
+                                            if (reason) rejectMutation.mutate({ orderId: selectedOrder.id, reason });
+                                        }}
+                                        className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm font-medium"
+                                    >
+                                        <XCircle className="w-4 h-4" /> Rechazar
+                                    </button>
+                                    {hasInsufficient && (
+                                        <div className="flex flex-col items-center gap-0.5">
+                                            <button
+                                                onClick={() => setConfirmSkipModal(true)}
+                                                disabled={approveMutation.isPending}
+                                                className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600 disabled:bg-gray-400 font-medium text-sm"
+                                            >
+                                                ✂️ Aprobar solo lo disponible
+                                            </button>
+                                            <span className="text-xs text-amber-700">Omite los faltantes</span>
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col items-center gap-0.5">
                                         <button
-                                            onClick={() => setConfirmSkipModal(true)}
+                                            onClick={() => approveMutation.mutate({ orderId: selectedOrder.id })}
                                             disabled={approveMutation.isPending}
-                                            className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600 disabled:bg-gray-400 font-medium text-sm"
+                                            className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 font-medium text-sm"
                                         >
-                                            <CheckCircle className="w-4 h-4" /> Aprobar sin faltantes
+                                            <CheckCircle className="w-4 h-4" />
+                                            {hasInsufficient ? 'Aprobar con backorder' : 'Aprobar Pedido'}
                                         </button>
-                                    ) : null;
-                                })()}
-                                <button
-                                    onClick={() => approveMutation.mutate({ orderId: selectedOrder.id })}
-                                    disabled={approveMutation.isPending}
-                                    className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 font-medium"
-                                >
-                                    <CheckCircle className="w-4 h-4" /> Aprobar Pedido
-                                </button>
-                            </div>
-                        )}
+                                        {hasInsufficient && <span className="text-xs text-green-700">Incluye todos, faltantes en cola</span>}
+                                    </div>
+                                </div>
+                            );
+                        })()}
 
 
                     </div>
@@ -956,8 +1352,8 @@ export default function OrderManagement() {
                                         ) : (
                                             <div>
                                                 <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                                                <p className="text-sm text-gray-500">Toque para seleccionar archivo</p>
-                                                <p className="text-xs text-gray-400">Foto o PDF (máx. 10MB)</p>
+                                                <p className="text-sm font-semibold text-gray-600">Toque o presione Ctrl+V para pegar</p>
+                                                <p className="text-xs text-gray-400 mt-1">Foto o PDF (máx. 10MB)</p>
                                             </div>
                                         )}
                                     </div>
@@ -1016,16 +1412,30 @@ export default function OrderManagement() {
                         </div>
 
                         <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-5 text-xs text-gray-600 space-y-1">
-                            <p>🏷️ <strong>Descuento:</strong> 34.8%</p>
-                            <p>📋 <strong>Impuestos según producto:</strong></p>
-                            <ul className="ml-5 space-y-0.5 list-disc text-gray-500">
-                                <li>LIQUIPOPS → IVA 19% + Comestibles Ultraprocesados 20%</li>
-                                <li>SIROPES/GENIALITY → IVA 19% + Bebidas Azucaradas</li>
-                                <li>LIQUIMON/Otros → IVA 19%</li>
-                            </ul>
-                            <p>📊 <strong>Retención:</strong> ReteFuente 2.5%</p>
-                            <p>💳 <strong>Forma de pago:</strong> Crédito (30 días)</p>
-                            <p>📄 <strong>Documento:</strong> FV-1 (Factura)</p>
+                            {(() => {
+                                const dist = invoiceModal.distributor || {};
+                                const discountPct = parseFloat(dist.discountPercent) || 34.8;
+                                const hasLiquimon = invoiceModal.items?.some(i => (i.product?.sku || '').toUpperCase().includes('LIQUIMON'));
+                                const applyRete = dist.reteFuente === true; // opt-in: solo Persona Jurídica
+                                const creditDays = 30; // Plazo fijo en Siigo (no configurable por distribuidor)
+                                return (<>
+                                    {hasLiquimon ? (
+                                        <p>🏷️ <strong>Descuento:</strong> {discountPct}% <span className="text-red-500 text-xs font-semibold">(0% para LIQUIMON)</span></p>
+                                    ) : (
+                                        <p>🏷️ <strong>Descuento:</strong> {discountPct}%</p>
+                                    )}
+                                    <p>📋 <strong>Impuestos según producto:</strong></p>
+                                    <ul className="ml-5 space-y-0.5 list-disc text-gray-500">
+                                        <li>LIQUIPOPS → IVA 19% + Comestibles Ultraprocesados 20%</li>
+                                        <li>SIROPES/GENIALITY → IVA 19% + Bebidas Azucaradas</li>
+                                        <li>LIQUIMON/Otros → IVA 19%</li>
+                                    </ul>
+                                    {applyRete && <p>📊 <strong>Retención:</strong> ReteFuente 2.5%</p>}
+                                    {!applyRete && <p className="text-orange-600">📊 <strong>Retención:</strong> Sin ReteFuente (Persona Natural)</p>}
+                                    <p>💳 <strong>Forma de pago:</strong> Crédito ({creditDays} días)</p>
+                                    <p>📄 <strong>Documento:</strong> Factura Electrónica (Según Configuración)</p>
+                                </>);
+                             })()}
                         </div>
 
                         <div className="flex justify-end gap-3">
@@ -1044,36 +1454,114 @@ export default function OrderManagement() {
             )}
 
             {/* ════════════════ DISPATCH FORM MODAL ═══════════════════════════ */}
-            {dispatchModal && (
+            {dispatchModal && (() => {
+                // Weight + auto-amount calculation
+                const getWeightGrams = (product) => {
+                    const name = (product?.name || '').toUpperCase();
+                    if (name.includes('SIROPE') || name.includes('GENIALITY')) {
+                        if (name.includes('1000')) return 1300;
+                        if (name.includes('360')) return 500;
+                        return 1300;
+                    }
+                    if (name.includes('LIQUIMON')) {
+                        if (name.includes('1000')) return 1000;
+                        return 500;
+                    }
+                    const grMatch = name.match(/(\d+)\s*GR/);
+                    if (grMatch) return parseInt(grMatch[1]);
+                    return 350;
+                };
+                const totalKg = dispatchModal.items?.reduce((sum, item) => {
+                    return sum + ((item.allocatedQty || 0) * getWeightGrams(item.product) / 1000);
+                }, 0) || 0;
+                const suggestedAmount = Math.round(totalKg * 550);
+
+                return (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-lg max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+                    <div className="bg-white rounded-xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto shadow-2xl">
                         <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-xl font-bold text-gray-900">Despachar Pedido</h3>
+                            <h3 className="text-xl font-bold text-gray-900">🚛 Despachar Pedido</h3>
                             <button onClick={() => setDispatchModal(null)}
                                 className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
                         </div>
 
                         <p className="text-sm text-gray-600 mb-4">
-                            Pedido: <span className="font-semibold">{dispatchModal.orderNumber}</span> — 
+                            Pedido: <span className="font-semibold">{dispatchModal.orderNumber}</span> —
                             Distribuidor: <span className="font-semibold">{dispatchModal.distributor?.name}</span>
                         </p>
 
                         <div className="space-y-3">
+                            {/* Driver name with autocomplete */}
+                            <div className="relative">
+                                <label className="block text-xs font-medium text-gray-700 mb-1">Nombre del Conductor *</label>
+                                <input
+                                    type="text"
+                                    value={dispatchForm.driverName}
+                                    onChange={async (e) => {
+                                        const val = e.target.value;
+                                        setDispatchForm(prev => ({ ...prev, driverName: val }));
+                                        if (val.length >= 2) {
+                                            try {
+                                                const res = await axios.get(`${API_URL}/drivers?q=${encodeURIComponent(val)}`, { headers: AUTH() });
+                                                setDriverSuggestions(res.data.data || []);
+                                                setShowDriverSuggestions(true);
+                                            } catch {}
+                                        } else {
+                                            setShowDriverSuggestions(false);
+                                        }
+                                    }}
+                                    onBlur={() => setTimeout(() => setShowDriverSuggestions(false), 180)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:border-indigo-400 outline-none"
+                                    placeholder="Nombre completo"
+                                    autoComplete="off"
+                                />
+                                {showDriverSuggestions && driverSuggestions.length > 0 && (
+                                    <div className="absolute z-50 w-full bg-white border border-gray-200 rounded-lg shadow-xl mt-1 max-h-48 overflow-y-auto">
+                                        {driverSuggestions.map(d => (
+                                            <button
+                                                key={d.id}
+                                                type="button"
+                                                onMouseDown={() => {
+                                                    setDispatchForm(prev => ({
+                                                        ...prev,
+                                                        driverName: d.name,
+                                                        driverCedula: d.cedula || prev.driverCedula,
+                                                        driverPhone: d.phone || prev.driverPhone,
+                                                        licensePlate: d.licensePlate || prev.licensePlate,
+                                                    }));
+                                                    setShowDriverSuggestions(false);
+                                                }}
+                                                className="w-full text-left px-3 py-2.5 hover:bg-indigo-50 border-b border-gray-100 last:border-0"
+                                            >
+                                                <div className="font-medium text-sm text-gray-900">{d.name}</div>
+                                                <div className="text-xs text-gray-500 flex gap-3">
+                                                    {d.cedula && <span>CC: {d.cedula}</span>}
+                                                    {d.phone && <span>📱 {d.phone}</span>}
+                                                    {d.licensePlate && <span>🚛 {d.licensePlate}</span>}
+                                                </div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Cedula + Phone */}
                             <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">Nombre del Conductor *</label>
-                                    <input type="text" value={dispatchForm.driverName}
-                                        onChange={(e) => setDispatchForm(prev => ({ ...prev, driverName: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Nombre completo" />
-                                </div>
                                 <div>
                                     <label className="block text-xs font-medium text-gray-700 mb-1">Cédula</label>
                                     <input type="text" value={dispatchForm.driverCedula}
                                         onChange={(e) => setDispatchForm(prev => ({ ...prev, driverCedula: e.target.value }))}
                                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="1234567890" />
                                 </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">📱 Celular</label>
+                                    <input type="tel" value={dispatchForm.driverPhone}
+                                        onChange={(e) => setDispatchForm(prev => ({ ...prev, driverPhone: e.target.value }))}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="300 000 0000" />
+                                </div>
                             </div>
 
+                            {/* Plate + Amount */}
                             <div className="grid grid-cols-2 gap-3">
                                 <div>
                                     <label className="block text-xs font-medium text-gray-700 mb-1">Placa del Vehículo *</label>
@@ -1082,18 +1570,50 @@ export default function OrderManagement() {
                                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm uppercase" placeholder="ABC-123" />
                                 </div>
                                 <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">Monto Pagado ($)</label>
-                                    <input type="number" value={dispatchForm.amountPaid}
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                        Flete ($) <span className="text-gray-400 font-normal">≈ {totalKg.toFixed(1)} kg × $550</span>
+                                    </label>
+                                    <input
+                                        type="number"
+                                        value={dispatchForm.amountPaid !== '' ? dispatchForm.amountPaid : suggestedAmount}
                                         onChange={(e) => setDispatchForm(prev => ({ ...prev, amountPaid: e.target.value }))}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="0" />
+                                        onFocus={() => { if (dispatchForm.amountPaid === '') setDispatchForm(prev => ({ ...prev, amountPaid: suggestedAmount })); }}
+                                        className="w-full px-3 py-2 border border-indigo-300 rounded-md text-sm bg-indigo-50 font-semibold"
+                                        placeholder={suggestedAmount.toString()}
+                                    />
                                 </div>
                             </div>
 
+                            {/* Destination */}
                             <div>
                                 <label className="block text-xs font-medium text-gray-700 mb-1">Destino *</label>
                                 <input type="text" value={dispatchForm.destination}
                                     onChange={(e) => setDispatchForm(prev => ({ ...prev, destination: e.target.value }))}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Ciudad / Dirección" />
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Dirección de entrega" />
+                            </div>
+
+                            {/* City */}
+                            <div>
+                                <label className="block text-xs font-medium text-gray-700 mb-1">🏙️ Ciudad Destino</label>
+                                <input type="text" value={dispatchForm.destinationCity}
+                                    onChange={(e) => setDispatchForm(prev => ({ ...prev, destinationCity: e.target.value }))}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Ej: Bogotá, Medellín..." />
+                            </div>
+
+                            {/* Receiver info */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">👤 Recibe (Nombre)</label>
+                                    <input type="text" value={dispatchForm.receiverName}
+                                        onChange={(e) => setDispatchForm(prev => ({ ...prev, receiverName: e.target.value }))}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Nombre de quien recibe" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">📱 Tel. Contacto Destino</label>
+                                    <input type="text" value={dispatchForm.receiverPhone}
+                                        onChange={(e) => setDispatchForm(prev => ({ ...prev, receiverPhone: e.target.value }))}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm" placeholder="Celular contacto" />
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
@@ -1111,38 +1631,14 @@ export default function OrderManagement() {
                                 </div>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-medium text-gray-700 mb-1">Peso Estimado</label>
-                                <div className="px-3 py-2 bg-gray-100 rounded-md text-sm font-semibold text-gray-700">
-                                    {(() => {
-                                        const getWeightGrams = (product) => {
-                                            const name = (product?.name || '').toUpperCase();
-                                            // SIROPE GENIALITY: 1000 ML = 1300g, 360 ML = 500g
-                                            if (name.includes('SIROPE') || name.includes('GENIALITY')) {
-                                                if (name.includes('1000')) return 1300;
-                                                if (name.includes('360')) return 500;
-                                                return 1300; // default sirope
-                                            }
-                                            // LIQUIMON: 500 ML = 500g, 1000 ML = 1000g
-                                            if (name.includes('LIQUIMON')) {
-                                                if (name.includes('1000')) return 1000;
-                                                if (name.includes('500')) return 500;
-                                                return 500;
-                                            }
-                                            // LIQUIPOPS: weight matches the GR in name (350, 1150, 3400)
-                                            const grMatch = name.match(/(\d+)\s*GR/);
-                                            if (grMatch) return parseInt(grMatch[1]);
-                                            return 350; // fallback
-                                        };
-                                        const totalKg = dispatchModal.items?.reduce((sum, item) => {
-                                            const weightG = getWeightGrams(item.product);
-                                            return sum + ((item.allocatedQty || 0) * weightG / 1000);
-                                        }, 0) || 0;
-                                        return `${totalKg.toFixed(1)} kg (calculado automáticamente)`;
-                                    })()}
-                                </div>
+                            {/* Weight summary */}
+                            <div className="flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-md text-sm">
+                                <span className="text-gray-500">⚖️ Peso estimado:</span>
+                                <span className="font-semibold text-gray-800">{totalKg.toFixed(1)} kg</span>
+                                <span className="ml-auto text-xs text-gray-400">calculado automáticamente</span>
                             </div>
 
+                            {/* Notes */}
                             <div>
                                 <label className="block text-xs font-medium text-gray-700 mb-1">Notas de Despacho</label>
                                 <textarea value={dispatchForm.dispatchNotes}
@@ -1160,7 +1656,12 @@ export default function OrderManagement() {
                             <button onClick={() => setDispatchModal(null)}
                                 className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">Cancelar</button>
                             <button
-                                onClick={() => dispatchMutation.mutate({ orderId: dispatchModal.id, ...dispatchForm })}
+                                onClick={() => dispatchMutation.mutate({
+                                    orderId: dispatchModal.id,
+                                    ...dispatchForm,
+                                    amountPaid: dispatchForm.amountPaid !== '' ? dispatchForm.amountPaid : suggestedAmount,
+                                    driverPhone: dispatchForm.driverPhone,
+                                })}
                                 disabled={!dispatchForm.driverName || !dispatchForm.licensePlate || !dispatchForm.destination || dispatchMutation.isPending}
                                 className="px-5 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:bg-gray-400 font-medium"
                             >
@@ -1169,12 +1670,13 @@ export default function OrderManagement() {
                         </div>
                     </div>
                 </div>
-            )}
+                );
+            })()}
 
             {/* ════════════════ PICKING MODAL ════════════════════════════════════ */}
             {pickingOrder && (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[95vh] flex flex-col shadow-2xl">
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 pb-20 z-50">
+                    <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[calc(100dvh-6rem)] flex flex-col shadow-2xl">
                         {/* Header */}
                         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-5 rounded-t-2xl">
                             <div className="flex justify-between items-center text-white">
@@ -1226,7 +1728,8 @@ export default function OrderManagement() {
                         {/* ── LIVE SCAN FEED ── */}
                         <div className={`px-5 py-3 border-b transition-all duration-300 ${
                             lastScan?.status === 'success' ? 'bg-green-50 border-green-200' :
-                            lastScan?.status === 'error' ? 'bg-red-50 border-red-200' :
+                            lastScan?.status === 'error'   ? 'bg-red-50 border-red-200' :
+                            lastScan?.status === 'warning' ? 'bg-orange-50 border-orange-300' :
                             lastScan?.status === 'scanning' ? 'bg-blue-50 border-blue-200' :
                             'bg-purple-50 border-purple-100'
                         }`}>
@@ -1234,24 +1737,32 @@ export default function OrderManagement() {
                                 <div className="flex items-center gap-3">
                                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm ${
                                         lastScan.status === 'success' ? 'bg-green-500 animate-bounce' :
-                                        lastScan.status === 'error' ? 'bg-red-500' :
+                                        lastScan.status === 'error'   ? 'bg-red-500' :
+                                        lastScan.status === 'warning' ? 'bg-orange-500' :
                                         'bg-blue-500 animate-pulse'
                                     }`}>
-                                        {lastScan.status === 'success' ? '✓' : lastScan.status === 'error' ? '✗' : '⟳'}
+                                        {lastScan.status === 'success' ? '✓' : lastScan.status === 'error' ? '✗' : lastScan.status === 'warning' ? '⚠' : '⟳'}
                                     </div>
                                     <div className="flex-1">
                                         <p className={`text-sm font-bold ${
                                             lastScan.status === 'success' ? 'text-green-800' :
-                                            lastScan.status === 'error' ? 'text-red-800' :
+                                            lastScan.status === 'error'   ? 'text-red-800' :
+                                            lastScan.status === 'warning' ? 'text-orange-800' :
                                             'text-blue-800'
                                         }`}>
                                             {lastScan.status === 'success' ? '✅ Escaneado' :
-                                             lastScan.status === 'error' ? '❌ Error' : '🔄 Procesando...'}
+                                             lastScan.status === 'error'   ? '❌ Error' :
+                                             lastScan.status === 'warning' ? '⛔ Ya completo' :
+                                             '🔄 Procesando...'}
                                         </p>
                                         <p className="text-xs text-gray-600">
                                             {lastScan.productName}
                                             {lastScan.lotNumber && <span className="ml-2 text-gray-400">Lote: {lastScan.lotNumber}</span>}
-                                            {lastScan.message && <span className={`ml-2 ${lastScan.status === 'error' ? 'text-red-500' : 'text-blue-500'}`}>{lastScan.message}</span>}
+                                            {lastScan.message && <span className={`ml-2 ${
+                                                lastScan.status === 'error'   ? 'text-red-500' :
+                                                lastScan.status === 'warning' ? 'text-orange-600 font-medium' :
+                                                'text-blue-500'
+                                            }`}>{lastScan.message}</span>}
                                         </p>
                                     </div>
                                 </div>
@@ -1276,6 +1787,13 @@ export default function OrderManagement() {
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter' && manualLot.trim()) {
                                         e.preventDefault();
+                                        const val = manualLot.trim();
+                                        // ── If it looks like a QR string, route to scanner parser instead ──
+                                        if (val.includes('SKU:') || val.includes('LOT:') || val.includes('BAR:') || val.startsWith('{')) {
+                                            setManualLot('');
+                                            handleScannerInput(val);
+                                            return;
+                                        }
                                         const firstIncomplete = pickingProgress?.itemsProgress?.find(ip => !ip.completed);
                                         if (firstIncomplete) {
                                             const product = pickingOrder.items?.find(oi => oi.id === firstIncomplete.itemId)?.product;
@@ -1394,84 +1912,237 @@ export default function OrderManagement() {
                         {/* ── ITEMS LIST (flat, no expand needed) ── */}
                         <div className="flex-1 overflow-y-auto p-4 space-y-2">
                             {pickingProgress?.itemsProgress
-                                ?.map((ip) => {
+                                ?.slice()
+                                .sort((a, b) => {
+                                    const nameA = (a.productName || '').toUpperCase();
+                                    const nameB = (b.productName || '').toUpperCase();
+                                    // Brand: LIQUIPOPS=0, GENIALITY/SIROPE=1, others=2
+                                    const brandOf = (n) => n.includes('LIQUIPOPS') || n.includes('LIQUIPOS') ? 0 : (n.includes('GENIALITY') || n.includes('SIROPE')) ? 1 : 2;
+                                    const brandA = brandOf(nameA), brandB = brandOf(nameB);
+                                    if (brandA !== brandB) return brandA - brandB;
+                                    // Extract flavor (after "SABOR A " or "SABOR ")
+                                    const flavorOf = (n) => {
+                                        const m = n.match(/SABOR\s+(?:A\s+)?(.+?)(?:\s+X\s+\d|\s*$)/);
+                                        return m ? m[1].trim() : n;
+                                    };
+                                    const flavorA = flavorOf(nameA), flavorB = flavorOf(nameB);
+                                    if (flavorA !== flavorB) return flavorA.localeCompare(flavorB);
+                                    // Size descending within same flavor
+                                    const sizeOf = (n) => { const m = n.match(/\b(3400|1150|1000|500|360|350)\b/); return m ? parseInt(m[1]) : 0; };
+                                    return sizeOf(nameB) - sizeOf(nameA);
+                                })
+                                .map((ip) => {
                                 const orderItem = pickingOrder.items?.find(oi => oi.id === ip.itemId);
                                 const product = orderItem?.product;
-                                const packSize = product?.packSize || 1;
+                                const dbPackSize = product?.packSize || 1;
+                                // Everest (maquila) = cajas de 6, Normal = packSize del producto
+                                const packSize = pickingOrder?.packingMode === 'EVEREST' ? 6 : dbPackSize;
                                 const requestedUnits = ip.requestedQty;
                                 const scannedUnits = ip.scannedQty;
                                 const remainingUnits = requestedUnits - scannedUnits;
-                                const requestedBoxes = packSize > 1 ? (requestedUnits / packSize).toFixed(1) : null;
-                                const scannedBoxes = packSize > 1 ? (scannedUnits / packSize).toFixed(1) : null;
-                                const isLastScanned = lastScan?.status === 'success' && product?.name === lastScan?.productName;
+                                const requestedBoxes = packSize > 1 ? Math.ceil(requestedUnits / packSize) : null;
+                                const scannedBoxes = packSize > 1 ? Math.floor(scannedUnits / packSize) : null;
+                                const isLastScanned = lastScan?.productName === ip.productName;
 
                                 return (
-                                    <div key={ip.itemId}
-                                        className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all duration-500 ${
-                                            ip.completed
-                                                ? 'border-green-200 bg-green-50 opacity-60'
-                                                : isLastScanned
-                                                    ? 'border-green-400 bg-green-50 shadow-lg shadow-green-100 scale-[1.01]'
-                                                    : 'border-gray-100 bg-white hover:border-gray-200'
-                                        }`}
-                                    >
-                                        {/* Status icon */}
-                                        <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0 ${
-                                            ip.completed ? 'bg-green-500' :
-                                            isLastScanned ? 'bg-green-500 animate-pulse' :
-                                            'bg-gray-300'
-                                        }`}>
-                                            {ip.completed ? '✓' : scannedUnits > 0 ? scannedUnits : '·'}
-                                        </div>
+                                    <div key={ip.itemId} className="flex flex-col gap-0 border-2 rounded-xl transition-all duration-300" style={{ borderColor: ip.completed ? '#bcf0da' : '#f3f4f6' }}>
+                                        <div
+                                            onClick={() => setExpandItemId(expandItemId === ip.itemId ? null : ip.itemId)}
+                                            className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all duration-500 ${
+                                                ip.completed
+                                                    ? 'bg-green-50 opacity-100 hover:bg-green-100'
+                                                    : isLastScanned
+                                                        ? 'border-green-400 bg-green-50 shadow-lg shadow-green-100 scale-[1.01]'
+                                                        : 'bg-white hover:bg-gray-50'
+                                            }`}
+                                        >
+                                            {/* Status icon */}
+                                            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0 ${
+                                                ip.completed ? 'bg-green-500' :
+                                                isLastScanned ? 'bg-green-500 animate-pulse' :
+                                                'bg-gray-300'
+                                            }`}>
+                                                {ip.completed ? '✓' : scannedUnits > 0 ? scannedUnits : '·'}
+                                            </div>
 
-                                        {/* Product info */}
-                                        <div className="flex-1 min-w-0">
-                                            <div className="font-semibold text-gray-900 text-sm truncate">{ip.productName}</div>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-xs text-gray-400">{product?.sku}</span>
-                                                {product?.barcode && (
-                                                    <span className="text-xs font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{product.barcode}</span>
+                                            {/* Product info — enhanced with size badge + fruit emoji */}
+                                            {(() => {
+                                                const name = ip.productName || '';
+                                                const nameUpper = name.toUpperCase();
+                                                // Extract size from product name
+                                                const sizeMatch = nameUpper.match(/\b(3400|1150|1000|500|360|350)\b/);
+                                                const sizeNum = sizeMatch ? sizeMatch[1] : null;
+                                                // Size color coding
+                                                const sizeStyles = {
+                                                    '3400': { bg: 'bg-red-500', text: 'text-white', label: '3400g' },
+                                                    '1150': { bg: 'bg-blue-500', text: 'text-white', label: '1150g' },
+                                                    '1000': { bg: 'bg-purple-500', text: 'text-white', label: '1000ml' },
+                                                    '500':  { bg: 'bg-teal-500', text: 'text-white', label: '500g' },
+                                                    '360':  { bg: 'bg-orange-500', text: 'text-white', label: '360ml' },
+                                                    '350':  { bg: 'bg-emerald-500', text: 'text-white', label: '350g' },
+                                                };
+                                                const sizeStyle = sizeNum ? sizeStyles[sizeNum] : null;
+                                                // Flavor emoji mapping
+                                                const flavorEmojis = {
+                                                    'FRESA': '🍓', 'MANGO': '🥭', 'MARACUYA': '🍈', 'SANDIA': '🍉',
+                                                    'BLUEBERRY': '🫐', 'CHAMOY': '🌶️', 'ICE PINK': '🩷',
+                                                    'CHICLE': '🫧', 'CAFE': '☕', 'CAFÉ': '☕', 'LYCHE': '🌸',
+                                                    'LYCHEE': '🌸', 'UVA': '🍇', 'LIMON': '🍋', 'LIMÓN': '🍋',
+                                                    'NARANJA': '🍊', 'PIÑA': '🍍', 'COCO': '🥥', 'DURAZNO': '🍑',
+                                                    'GUAYABA': '🍐', 'MORA': '🫐', 'TAMARINDO': '🌰',
+                                                    'ESCARCHADOR': '❄️', 'LIQUIMON': '🍋',
+                                                };
+                                                let flavorEmoji = '';
+                                                for (const [flavor, emoji] of Object.entries(flavorEmojis)) {
+                                                    if (nameUpper.includes(flavor)) { flavorEmoji = emoji; break; }
+                                                }
+                                                return (
+                                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                        {/* Size badge — big and prominent */}
+                                                        {sizeStyle && (
+                                                            <div className={`${sizeStyle.bg} ${sizeStyle.text} px-2.5 py-1.5 rounded-xl font-black text-lg leading-none flex-shrink-0 shadow-sm min-w-[60px] text-center`}>
+                                                                {sizeStyle.label}
+                                                            </div>
+                                                        )}
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="font-semibold text-gray-900 text-sm leading-snug flex items-start gap-1">
+                                                                {flavorEmoji && <span className="text-lg flex-shrink-0">{flavorEmoji}</span>}
+                                                                <span>{name}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                                <span className="text-xs text-gray-400 font-mono">{product?.sku}</span>
+                                                                {product?.barcode && (
+                                                                    <span className="text-xs font-mono font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">📊 {product.barcode}</span>
+                                                                )}
+                                                                {(isAdmin || isLogistica) && orderItem?.productId && ptStockMap[orderItem.productId] !== undefined && (
+                                                                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded border ${
+                                                                        ptStockMap[orderItem.productId] >= requestedUnits
+                                                                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                                                            : ptStockMap[orderItem.productId] > 0
+                                                                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                                                                : 'bg-red-50 text-red-700 border-red-200'
+                                                                    }`} title="Stock en Producto Terminado">
+                                                                        🏭 PT: {ptStockMap[orderItem.productId]} uds
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
+
+                                            {/* Progress + remaining */}
+                                            <div className="text-right flex-shrink-0">
+                                                <div className="text-sm font-bold text-gray-900">
+                                                    <span className={ip.completed ? 'text-green-600' : ''}>{scannedUnits}</span>
+                                                    <span className="text-gray-400"> / {requestedUnits}</span>
+                                                    <span className="text-xs text-gray-400 ml-1">uds</span>
+                                                </div>
+                                                {packSize > 1 && (
+                                                    <div className="text-[10px] text-gray-400">({scannedBoxes}/{requestedBoxes} cajas)</div>
+                                                )}
+                                                {!ip.completed && remainingUnits > 0 && (
+                                                    <div className="mt-0.5">
+                                                        <span className="text-xs font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Faltan {remainingUnits}</span>
+                                                    </div>
                                                 )}
                                             </div>
-                                        </div>
 
-                                        {/* Progress + remaining */}
-                                        <div className="text-right flex-shrink-0">
-                                            <div className="text-sm font-bold text-gray-900">
-                                                <span className={ip.completed ? 'text-green-600' : ''}>{scannedUnits}</span>
-                                                <span className="text-gray-400"> / {requestedUnits}</span>
-                                                <span className="text-xs text-gray-400 ml-1">uds</span>
+                                            {/* Mini progress bar */}
+                                            <div className="w-12 h-2 bg-gray-200 rounded-full overflow-hidden flex-shrink-0 mx-2">
+                                                <div className={`h-full rounded-full transition-all duration-500 ${ip.completed ? 'bg-green-500' : 'bg-purple-500'}`}
+                                                    style={{ width: `${ip.progress}%` }}
+                                                />
                                             </div>
-                                            {packSize > 1 && (
-                                                <div className="text-[10px] text-gray-400">({scannedBoxes}/{requestedBoxes} cajas)</div>
-                                            )}
-                                            {!ip.completed && remainingUnits > 0 && (
-                                                <div className="mt-0.5">
-                                                    <span className="text-xs font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Faltan {remainingUnits}</span>
+
+                                            {/* Chevron Icon */}
+                                            <div className="text-gray-400">
+                                                {expandItemId === ip.itemId ? '▲' : '▼'}
+                                            </div>
+                                        </div>
+
+                                        {/* EXPANDABLE DETAILS AREA */}
+                                        {expandItemId === ip.itemId && (
+                                            <div className="px-4 pb-4 pt-1 border-t border-gray-100 bg-gray-50 rounded-b-xl">
+                                                <div className="flex justify-between items-center mb-2">
+                                                    <h4 className="text-xs font-bold text-gray-500 uppercase">Detalle de Separación</h4>
                                                 </div>
-                                            )}
-                                        </div>
-
-                                        {/* Mini progress bar */}
-                                        <div className="w-12 h-2 bg-gray-200 rounded-full overflow-hidden flex-shrink-0">
-                                            <div className={`h-full rounded-full transition-all duration-500 ${ip.completed ? 'bg-green-500' : 'bg-purple-500'}`}
-                                                style={{ width: `${ip.progress}%` }}
-                                            />
-                                        </div>
-
-                                        {/* Scanned lots chips (compact) */}
-                                        {ip.pickingItems?.length > 0 && (
-                                            <div className="hidden sm:flex gap-1 flex-shrink-0 max-w-[120px] overflow-hidden">
-                                                {ip.pickingItems.slice(-2).map((pi, idx) => (
-                                                    <span key={idx} className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-500 font-mono whitespace-nowrap">
-                                                        {pi.lotNumber}
-                                                    </span>
-                                                ))}
+                                                {ip.pickingItems?.length === 0 ? (
+                                                    <div className="text-xs text-gray-400 italic">No se ha escaneado ninguna caja aún.</div>
+                                                ) : (
+                                                    <ul className="space-y-2">
+                                                        {ip.pickingItems?.map((pi, pId) => (
+                                                            <li key={pId} className="flex items-center justify-between text-xs bg-white p-2 rounded border border-gray-200 shadow-sm">
+                                                                <div>
+                                                                    <div className="font-bold text-indigo-700 font-mono tracking-tight">{pi.lotNumber}</div>
+                                                                    <div className="text-gray-400 text-[10px]">{new Date(pi.scannedAt || Date.now()).toLocaleTimeString()} por {typeof pi.scannedBy === 'string' ? pi.scannedBy : (pi.scannedBy?.name || 'Usuario')}</div>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="text-right">
+                                                                        <div className="font-bold text-gray-800">{pi.scannedQty} uds</div>
+                                                                        {pi.barcode && <div className="text-[10px] text-gray-400 font-mono">{pi.barcode}</div>}
+                                                                    </div>
+                                                                    {isAdmin && (
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                if (window.confirm(`¿Desmarcar lote ${pi.lotNumber} (${pi.scannedQty} uds)?`)) {
+                                                                                    unscanMutation.mutate({ orderId: pickingOrder.id, pickingItemId: pi.id });
+                                                                                }
+                                                                            }}
+                                                                            disabled={unscanMutation.isPending}
+                                                                            className="ml-1 px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-50 text-[10px] font-bold whitespace-nowrap transition-colors"
+                                                                            title="Desmarcar este escaneo (Admin)"
+                                                                        >
+                                                                            ✕ Desmarcar
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
                                             </div>
                                         )}
                                     </div>
                                 );
                             })}
+
+                            {/* ── INLINE COMPLETE BUTTON — always reachable on mobile ── */}
+                            {pickingProgress?.itemsTotal > 0 && (
+                                <div className="pt-3 pb-2 space-y-2">
+                                    {/* Full completion — ADMIN + LOGISTICA when 100% */}
+                                    {pickingProgress.itemsCompleted === pickingProgress.itemsTotal && (isAdmin || isLogistica) && (
+                                        <button
+                                            onClick={() => completePickingMutation.mutate({ orderId: pickingOrder.id })}
+                                            disabled={completePickingMutation.isPending}
+                                            className="w-full py-3.5 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:bg-gray-400 font-bold text-sm shadow-lg"
+                                        >
+                                            {completePickingMutation.isPending ? 'Completando...' : '✅ Completar Separación'}
+                                        </button>
+                                    )}
+                                    {/* Partial completion — ADMIN ONLY */}
+                                    {isAdmin && pickingProgress.itemsCompleted !== pickingProgress.itemsTotal && (pickingProgress.totalScanned || 0) > 0 && (
+                                        <button
+                                            onClick={() => setPartialConfirmModal(true)}
+                                            disabled={completePickingMutation.isPending || completeWithBackorderMutation.isPending}
+                                            className="w-full py-3.5 bg-amber-500 text-white rounded-xl hover:bg-amber-600 disabled:bg-gray-400 font-bold text-sm shadow-lg"
+                                        >
+                                            ⚠️ Completar Parcialmente ({pickingProgress.itemsCompleted}/{pickingProgress.itemsTotal} ítems)
+                                        </button>
+                                    )}
+                                    {/* Backorder — ADMIN ONLY: complete + create new order for missing */}
+                                    {isAdmin && pickingProgress.itemsCompleted !== pickingProgress.itemsTotal && (pickingProgress.totalScanned || 0) > 0 && (
+                                        <button
+                                            onClick={() => setBackorderConfirmModal(true)}
+                                            disabled={completePickingMutation.isPending || completeWithBackorderMutation.isPending}
+                                            className="w-full py-3.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-400 font-bold text-sm shadow-lg"
+                                        >
+                                            🔄 Completar + Reordenar Faltantes
+                                        </button>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         {/* Footer */}
@@ -1486,23 +2157,206 @@ export default function OrderManagement() {
                                 >
                                     🔄 Actualizar
                                 </button>
+                                {/* Partial completion — ADMIN ONLY */}
+                                {isAdmin && (pickingProgress?.totalScanned || 0) > 0 &&
+                                 (pickingProgress?.itemsCompleted < pickingProgress?.itemsTotal) && (
+                                    <button
+                                        onClick={() => setPartialConfirmModal(true)}
+                                        disabled={completePickingMutation.isPending || completeWithBackorderMutation.isPending}
+                                        className="px-5 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-gray-400 font-bold text-sm"
+                                    >
+                                        ⚠️ Parcial
+                                    </button>
+                                )}
+                                {/* Backorder — ADMIN ONLY */}
+                                {isAdmin && (pickingProgress?.totalScanned || 0) > 0 &&
+                                 (pickingProgress?.itemsCompleted < pickingProgress?.itemsTotal) && (
+                                    <button
+                                        onClick={() => setBackorderConfirmModal(true)}
+                                        disabled={completePickingMutation.isPending || completeWithBackorderMutation.isPending}
+                                        className="px-5 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-400 font-bold text-sm"
+                                    >
+                                        🔄 + Reordenar
+                                    </button>
+                                )}
+                                {/* Full completion — ADMIN + LOGISTICA when 100% */}
+                                {(isAdmin || isLogistica) && (
                                 <button
-                                    onClick={() => completePickingMutation.mutate(pickingOrder.id)}
+                                    onClick={() => completePickingMutation.mutate({ orderId: pickingOrder.id })}
                                     disabled={pickingProgress?.itemsCompleted !== pickingProgress?.itemsTotal || completePickingMutation.isPending}
                                     className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 font-bold"
                                 >
                                     {completePickingMutation.isPending ? 'Completando...' : '✅ Completar Separación'}
                                 </button>
+                                )}
                             </div>
                         </div>
                     </div>
                 </div>
             )}
 
+            {/* ════════════════ BACKORDER CONFIRM MODAL ════════════════ */}
+            {backorderConfirmModal && pickingOrder && pickingProgress && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-[70]">
+                    <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
+                        <div className="bg-gradient-to-r from-blue-500 to-indigo-600 p-5 text-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center text-xl">🔄</div>
+                                <div>
+                                    <h3 className="text-lg font-bold">Completar + Crear Nuevo Pedido</h3>
+                                    <p className="text-sm text-white/80">Pedido {pickingOrder.orderNumber} — {pickingOrder.distributor?.name}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-5 max-h-[55vh] overflow-y-auto">
+                            <p className="text-sm text-gray-600 mb-4">
+                                Lo escaneado pasará a <strong>Listo</strong> y se <strong>creará automáticamente un nuevo pedido</strong> con los faltantes que entrará directo a alistamiento.
+                            </p>
+
+                            {/* Items that WILL be invoiced */}
+                            <div className="mb-4">
+                                <p className="text-sm font-bold text-green-700 mb-2">
+                                    ✅ Pasará a Listos ({pickingProgress.itemsProgress?.filter(i => i.scannedQty > 0).length || 0} productos)
+                                </p>
+                                <div className="space-y-1">
+                                    {pickingProgress.itemsProgress?.filter(i => i.scannedQty > 0).map((ip, idx) => (
+                                        <div key={idx} className="flex justify-between items-center px-3 py-2 bg-green-50 rounded-lg border border-green-100 text-xs">
+                                            <span className="font-medium text-green-900 flex-1">{ip.productName}</span>
+                                            <span className="text-green-700 font-bold ml-2">{ip.scannedQty} uds</span>
+                                            {ip.scannedQty < ip.requestedQty && (
+                                                <span className="ml-2 text-amber-600 text-[10px]">(pedido: {ip.requestedQty})</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Items for the new backorder */}
+                            <div>
+                                <p className="text-sm font-bold text-blue-700 mb-2">
+                                    📦 Nuevo pedido automático ({pickingProgress.itemsProgress?.filter(i => i.requestedQty - i.scannedQty > 0).length} productos)
+                                </p>
+                                <div className="space-y-1">
+                                    {pickingProgress.itemsProgress?.filter(i => i.requestedQty - i.scannedQty > 0).map((ip, idx) => (
+                                        <div key={idx} className="flex justify-between items-center px-3 py-2 bg-blue-50 rounded-lg border border-blue-100 text-xs">
+                                            <span className="font-medium text-blue-900 flex-1">{ip.productName}</span>
+                                            <span className="text-blue-700 font-bold ml-2">{ip.requestedQty - ip.scannedQty} uds</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-2 italic">
+                                    El nuevo pedido entrará como <strong>Aprobado</strong> y pasará directo a la cola de alistamiento.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="border-t px-5 py-4 bg-gray-50 flex justify-end gap-3">
+                            <button
+                                onClick={() => setBackorderConfirmModal(false)}
+                                className="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-100"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={() => completeWithBackorderMutation.mutate({ orderId: pickingOrder.id })}
+                                disabled={completeWithBackorderMutation.isPending}
+                                className="px-5 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl font-bold hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-400 shadow-md"
+                            >
+                                {completeWithBackorderMutation.isPending ? 'Procesando...' : `✅ Confirmar Listo + Crear Nuevo Pedido`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ════════════════ PARTIAL PICKING CONFIRM MODAL ════════════════ */}
+            {partialConfirmModal && pickingOrder && pickingProgress && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-[70]">
+                    <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
+                        <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-5 text-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center text-xl">⚠️</div>
+                                <div>
+                                    <h3 className="text-lg font-bold">Completar Parcialmente</h3>
+                                    <p className="text-sm text-white/80">Pedido {pickingOrder.orderNumber}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-5 max-h-[55vh] overflow-y-auto">
+                            <p className="text-sm text-gray-600 mb-4">
+                                Solo pasará a Listos lo que fue escaneado. Los ítems faltantes <strong>no quedarán en este pedido</strong>.
+                            </p>
+
+                            {/* Items that WILL be invoiced */}
+                            <div className="mb-4">
+                                <p className="text-sm font-bold text-green-700 mb-2">
+                                    ✅ Pasará a Listos ({pickingProgress.itemsProgress?.filter(i => i.scannedQty > 0).length || 0} productos)
+                                </p>
+                                <div className="space-y-1">
+                                    {pickingProgress.itemsProgress?.filter(i => i.scannedQty > 0).map((ip, idx) => (
+                                        <div key={idx} className="flex justify-between items-center px-3 py-2 bg-green-50 rounded-lg border border-green-100 text-xs">
+                                            <span className="font-medium text-green-900 flex-1">{ip.productName}</span>
+                                            <span className="text-green-700 font-bold ml-2">{ip.scannedQty} uds</span>
+                                            {ip.scannedQty < ip.requestedQty && (
+                                                <span className="ml-2 text-amber-600 text-[10px]">(pedido: {ip.requestedQty})</span>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Items that will NOT be invoiced */}
+                            {pickingProgress.itemsProgress?.some(i => i.scannedQty <= 0) && (
+                                <div>
+                                    <p className="text-sm font-bold text-red-700 mb-2">
+                                        ❌ No se incluirá ({pickingProgress.itemsProgress?.filter(i => i.scannedQty <= 0).length} productos sin escanear)
+                                    </p>
+                                    <div className="space-y-1">
+                                        {pickingProgress.itemsProgress?.filter(i => i.scannedQty <= 0).map((ip, idx) => (
+                                            <div key={idx} className="flex justify-between items-center px-3 py-2 bg-red-50 rounded-lg border border-red-100 text-xs">
+                                                <span className="font-medium text-red-900 flex-1">{ip.productName}</span>
+                                                <span className="text-red-600">{ip.requestedQty} uds</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="border-t px-5 py-4 bg-gray-50 flex justify-end gap-3">
+                            <button
+                                onClick={() => setPartialConfirmModal(false)}
+                                className="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-100"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={() => completePickingMutation.mutate({ orderId: pickingOrder.id, partial: true })}
+                                disabled={completePickingMutation.isPending}
+                                className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl font-bold hover:from-amber-600 hover:to-orange-600 disabled:from-gray-400 disabled:to-gray-400 shadow-md"
+                            >
+                                {completePickingMutation.isPending ? 'Procesando...' : `✅ Confirmar Listo ${pickingProgress.itemsProgress?.filter(i => i.scannedQty > 0).length || 0} Productos`}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ════════════════ CONFIRM SKIP INSUFFICIENT MODAL ════════════════ */}
+
             {confirmSkipModal && selectedOrder && (() => {
-                const insufficient = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) < i.requestedQty) || [];
-                const sufficient = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) >= i.requestedQty) || [];
+                const zeroStock = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) === 0) || [];
+                const partial = selectedOrder.items?.filter(i => {
+                    const s = i.product?.currentStock || 0;
+                    return s > 0 && s < i.requestedQty;
+                }) || [];
+                const full = selectedOrder.items?.filter(i => (i.product?.currentStock || 0) >= i.requestedQty) || [];
+                const totalAllocated = [...partial, ...full].reduce((sum, i) => {
+                    return sum + Math.min(i.product?.currentStock || 0, i.requestedQty);
+                }, 0);
+                const includedCount = partial.length + full.length;
                 return (
                     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
                         <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden">
@@ -1510,53 +2364,73 @@ export default function OrderManagement() {
                             <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-5 text-white">
                                 <div className="flex items-center gap-3">
                                     <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
-                                        <span className="text-xl">📋</span>
+                                        <span className="text-xl">✂️</span>
                                     </div>
                                     <div>
-                                        <h3 className="text-lg font-bold">Aprobar sin faltantes</h3>
+                                        <h3 className="text-lg font-bold">Aprobar con lo disponible</h3>
                                         <p className="text-sm text-white/80">Pedido {selectedOrder.orderNumber}</p>
                                     </div>
                                 </div>
                             </div>
 
-                            <div className="p-5 max-h-[50vh] overflow-y-auto">
-                                {/* Items to REMOVE */}
-                                <div className="mb-4">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                                        <p className="text-sm font-bold text-red-700">Se eliminarán ({insufficient.length})</p>
-                                    </div>
-                                    <div className="space-y-1">
-                                        {insufficient.map((item, idx) => (
-                                            <div key={idx} className="flex justify-between items-center px-3 py-2 bg-red-50 rounded-lg border border-red-100">
-                                                <span className="text-xs font-medium text-red-900 flex-1">{item.product?.name}</span>
-                                                <div className="flex gap-3 text-xs">
-                                                    <span className="text-red-600">Pedido: <b>{item.requestedQty}</b></span>
-                                                    <span className="text-red-500">Stock: <b>{item.product?.currentStock || 0}</b></span>
+                            <div className="p-5 max-h-[55vh] overflow-y-auto space-y-4">
+                                {/* Partial stock items — included with reduced qty */}
+                                {partial.length > 0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                                            <p className="text-sm font-bold text-amber-700">Se despachan parcialmente ({partial.length})</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            {partial.map((item, idx) => (
+                                                <div key={idx} className="flex justify-between items-center px-3 py-2 bg-amber-50 rounded-lg border border-amber-100">
+                                                    <span className="text-xs font-medium text-amber-900 flex-1">{item.product?.name}</span>
+                                                    <div className="flex gap-3 text-xs">
+                                                        <span className="text-gray-400 line-through">Pedido: {item.requestedQty}</span>
+                                                        <span className="text-amber-700 font-bold">→ Se envían: {item.product?.currentStock || 0}</span>
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        ))}
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
+                                )}
 
-                                {/* Items to KEEP */}
-                                <div>
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                        <p className="text-sm font-bold text-green-700">Se mantendrán ({sufficient.length})</p>
+                                {/* Full stock items — included completely */}
+                                {full.length > 0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                            <p className="text-sm font-bold text-green-700">Stock completo ({full.length})</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            {full.slice(0, 5).map((item, idx) => (
+                                                <div key={idx} className="flex justify-between items-center px-3 py-2 bg-green-50 rounded-lg border border-green-100">
+                                                    <span className="text-xs font-medium text-green-900 flex-1">{item.product?.name}</span>
+                                                    <span className="text-xs text-green-600">Cant: <b>{item.requestedQty}</b></span>
+                                                </div>
+                                            ))}
+                                            {full.length > 5 && <p className="text-xs text-gray-500 pl-3">... y {full.length - 5} más</p>}
+                                        </div>
                                     </div>
-                                    <div className="space-y-1">
-                                        {sufficient.slice(0, 5).map((item, idx) => (
-                                            <div key={idx} className="flex justify-between items-center px-3 py-2 bg-green-50 rounded-lg border border-green-100">
-                                                <span className="text-xs font-medium text-green-900 flex-1">{item.product?.name}</span>
-                                                <span className="text-xs text-green-600">Cant: <b>{item.requestedQty}</b></span>
-                                            </div>
-                                        ))}
-                                        {sufficient.length > 5 && (
-                                            <p className="text-xs text-gray-500 pl-3">... y {sufficient.length - 5} productos más</p>
-                                        )}
+                                )}
+
+                                {/* Zero stock items — dropped */}
+                                {zeroStock.length > 0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                                            <p className="text-sm font-bold text-red-700">Sin stock — se omiten ({zeroStock.length})</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            {zeroStock.map((item, idx) => (
+                                                <div key={idx} className="flex justify-between items-center px-3 py-2 bg-red-50 rounded-lg border border-red-100">
+                                                    <span className="text-xs font-medium text-red-900 flex-1">{item.product?.name}</span>
+                                                    <span className="text-xs text-red-500">Stock: 0</span>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
-                                </div>
+                                )}
                             </div>
 
                             {/* Footer */}
@@ -1575,7 +2449,7 @@ export default function OrderManagement() {
                                     disabled={approveMutation.isPending}
                                     className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl font-bold hover:from-amber-600 hover:to-orange-600 disabled:from-gray-400 disabled:to-gray-400 transition shadow-md"
                                 >
-                                    {approveMutation.isPending ? 'Aprobando...' : `✅ Aprobar ${sufficient.length} productos`}
+                                    {approveMutation.isPending ? 'Aprobando...' : `✅ Despachar ${totalAllocated} uds de ${includedCount} referencias`}
                                 </button>
                             </div>
                         </div>
@@ -1592,7 +2466,8 @@ export default function OrderManagement() {
                             <button onClick={() => setExcelModal(false)} className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
                         </div>
 
-                        {/* Step 1: Select distributor */}
+                        {/* Step 1: Select distributor (only for admin/comercial) */}
+                        {!isDistributor && (
                         <div className="mb-4">
                             <label className="block text-sm font-semibold text-gray-700 mb-1">Distribuidor</label>
                             <select
@@ -1606,6 +2481,7 @@ export default function OrderManagement() {
                                 ))}
                             </select>
                         </div>
+                        )}
 
                         {/* Step 2: File upload */}
                         <div className="mb-4">
@@ -1616,7 +2492,85 @@ export default function OrderManagement() {
                                 onChange={e => { setExcelFile(e.target.files[0]); setExcelPreview(null); }}
                                 className="w-full p-2 border border-gray-300 rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded-md file:border-0 file:bg-emerald-50 file:text-emerald-700 file:font-semibold"
                             />
-                            <p className="text-xs text-gray-500 mt-1">Col B = código de barras, Col G = cantidad a facturar</p>
+                        </div>
+
+                        {/* Template Example + Download */}
+                        <div className="mb-4 border-2 border-dashed border-emerald-200 rounded-xl p-4 bg-emerald-50/50">
+                            <div className="flex items-center justify-between mb-3">
+                                <span className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+                                    📋 El archivo debe seguir esta plantilla:
+                                </span>
+                                <button
+                                    type="button"
+                                    className="flex items-center gap-1.5 text-sm font-semibold text-emerald-700 hover:text-emerald-800 transition"
+                                    onClick={async () => {
+                                        try {
+                                            const res = await axios.get(`${API_URL}/orders/template`, {
+                                                headers: AUTH(),
+                                                responseType: 'blob'
+                                            });
+                                            // Verify we got an actual Excel file, not an error JSON
+                                            if (res.data.type && res.data.type.includes('json')) {
+                                                const text = await res.data.text();
+                                                const err = JSON.parse(text);
+                                                alert(err.error || 'Error generando plantilla');
+                                                return;
+                                            }
+                                            const url = window.URL.createObjectURL(res.data);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            // Use filename from backend header, fallback to OC_date
+                                            const disposition = res.headers['content-disposition'] || '';
+                                            const match = disposition.match(/filename="?(.+?)"?$/);
+                                            const today = new Date().toISOString().slice(0, 10);
+                                            a.download = match ? match[1] : `OC_${today}.xlsx`;
+                                            a.click();
+                                            window.URL.revokeObjectURL(url);
+                                        } catch(err) {
+                                            console.error('Template download error:', err);
+                                            alert('Error descargando plantilla: ' + (err.response?.data?.error || err.message));
+                                        }
+                                    }}
+                                >
+                                    ⬇️ Descargar Plantilla
+                                </button>
+                            </div>
+
+                            {/* Visual example table */}
+                            <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
+                                <table className="w-full text-xs">
+                                    <thead className="bg-gray-100">
+                                        <tr>
+                                            <th className="text-left px-3 py-2 font-bold text-orange-600">Col A: Barras</th>
+                                            <th className="text-left px-3 py-2 font-bold text-gray-600">Col B: Producto</th>
+                                            <th className="text-center px-3 py-2 font-bold text-emerald-700">Col C: Cantidades a Solicitar ✏️</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr className="border-t">
+                                            <td className="px-3 py-2 font-mono text-orange-700">7709998045011</td>
+                                            <td className="px-3 py-2 text-gray-800">LIQUIPOPS SABOR A MARACUYÁ</td>
+                                            <td className="px-3 py-2 text-center font-bold text-emerald-700 bg-emerald-50">48</td>
+                                        </tr>
+                                        <tr className="border-t">
+                                            <td className="px-3 py-2 font-mono text-orange-700">7709998045028</td>
+                                            <td className="px-3 py-2 text-gray-800">LIQUIPOPS SABOR A MANGO</td>
+                                            <td className="px-3 py-2 text-center font-bold text-emerald-700 bg-emerald-50">60</td>
+                                        </tr>
+                                        <tr className="border-t bg-gray-50">
+                                            <td className="px-3 py-2 font-mono text-orange-700">7709998045035</td>
+                                            <td className="px-3 py-2 text-gray-800">LIQUIPOPS SABOR A SANDÍA</td>
+                                            <td className="px-3 py-2 text-center text-gray-400 italic">vacío = no pide</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                                <span>🟠 <strong>Col A</strong> = código de barras (NO modificar)</span>
+                                <span>🟢 <strong>Col C</strong> = cantidades a solicitar en <strong>unidades</strong> (lo único que debes llenar)</span>
+                                <span>📦 Si quieres 3 cajas de x20, escribe <strong>60</strong></span>
+                            </div>
                         </div>
 
                         {/* Preview button */}
@@ -1662,7 +2616,6 @@ export default function OrderManagement() {
                                         <thead className="bg-gray-100">
                                             <tr>
                                                 <th className="text-left px-3 py-2 font-medium">Producto</th>
-                                                <th className="text-center px-3 py-2 font-medium">SKU</th>
                                                 <th className="text-center px-3 py-2 font-medium">Cantidad</th>
                                                 <th className="text-center px-3 py-2 font-medium">Cajas</th>
                                                 <th className="text-center px-3 py-2 font-medium">Stock</th>
@@ -1675,7 +2628,6 @@ export default function OrderManagement() {
                                                 return (
                                                     <tr key={idx} className={`border-t ${!sufficient ? 'bg-amber-50' : ''}`}>
                                                         <td className="px-3 py-2 font-medium text-gray-900 text-xs">{item.name}</td>
-                                                        <td className="px-3 py-2 text-center text-xs text-gray-500">{item.sku}</td>
                                                         <td className="px-3 py-2 text-center font-bold">{item.quantity}</td>
                                                         <td className="px-3 py-2 text-center text-gray-600">{boxes}</td>
                                                         <td className="px-3 py-2 text-center">
@@ -1734,5 +2686,69 @@ export default function OrderManagement() {
                 </div>
             )}
         </div>
+
+        {/* ── Packing Mode Selection Modal ──────────────────────────── */}
+        {packingModeModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+                style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(4px)' }}
+            >
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden"
+                    style={{ animation: 'slideUpFadeIn 0.22s ease-out' }}
+                >
+                    {/* Header */}
+                    <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-6 py-5">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center text-xl">📦</div>
+                            <div>
+                                <h3 className="text-white font-bold text-lg leading-tight">Tipo de empaque</h3>
+                                <p className="text-purple-200 text-xs mt-0.5">{packingModeModal.order?.orderNumber}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Body */}
+                    <div className="px-5 pt-5 pb-4">
+                        <p className="text-sm text-gray-500 mb-4 text-center">¿Cómo se empacan los productos de este pedido?</p>
+                        <div className="flex flex-col gap-3">
+                            {/* NORMAL option */}
+                            <button
+                                onClick={() => handleSelectPackingMode('NORMAL')}
+                                className="group relative flex items-center gap-4 p-4 rounded-xl border-2 border-gray-200 hover:border-violet-400 hover:bg-violet-50 transition-all duration-150 text-left"
+                            >
+                                <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-gray-100 group-hover:bg-violet-100 flex items-center justify-center text-2xl transition-colors">
+                                    🛍️
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="font-bold text-gray-900 text-sm">Empaque Normal</p>
+                                    <p className="text-xs text-gray-500 mt-0.5">4, 12 ó 40 unidades según el producto</p>
+                                </div>
+                                <div className="flex-shrink-0 w-5 h-5 rounded-full border-2 border-gray-300 group-hover:border-violet-500 transition-colors" />
+                            </button>
+
+                            {/* EVEREST option */}
+                            <button
+                                onClick={() => handleSelectPackingMode('EVEREST')}
+                                className="group relative flex items-center gap-4 p-4 rounded-xl border-2 border-gray-200 hover:border-amber-400 hover:bg-amber-50 transition-all duration-150 text-left"
+                            >
+                                <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-gray-100 group-hover:bg-amber-100 flex items-center justify-center text-2xl transition-colors">
+                                    🏔️
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <p className="font-bold text-gray-900 text-sm">Empaque EVEREST</p>
+                                    <p className="text-xs text-gray-500 mt-0.5">Maquila — cajas de 6 unidades fijas</p>
+                                </div>
+                                <div className="flex-shrink-0 w-5 h-5 rounded-full border-2 border-gray-300 group-hover:border-amber-500 transition-colors" />
+                            </button>
+                        </div>
+
+                        <p className="text-center text-xs text-gray-400 mt-4">
+                            Esta selección afecta el conteo de cajas para este pedido
+                        </p>
+                    </div>
+                </div>
+                <style>{`@keyframes slideUpFadeIn { from { opacity:0; transform:translateY(16px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }`}</style>
+            </div>
+        )}
+        </>
     );
 }

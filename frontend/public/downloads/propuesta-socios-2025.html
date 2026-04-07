@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Propuesta Bonificación Socios Fundadores — Popping Boba International 2025</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #0f172a; color: #e2e8f0; overflow: hidden; }
+
+        .deck { width: 100vw; height: 100vh; position: relative; }
+        .slide {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            padding: 50px 80px;
+            opacity: 0; transform: translateX(40px);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+            pointer-events: none;
+        }
+        .slide.active { opacity: 1; transform: translateX(0); pointer-events: all; }
+        .slide.prev { opacity: 0; transform: translateX(-40px); }
+
+        /* ─── Vibrant Backgrounds ─── */
+        .bg-hero { background: linear-gradient(135deg, #1a0a2e 0%, #16213e 30%, #0f3460 60%, #533483 100%); }
+        .bg-coral { background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 50%, #f0932b 100%); }
+        .bg-ocean { background: linear-gradient(135deg, #0c3547 0%, #0f4c75 40%, #3282b8 100%); }
+        .bg-forest { background: linear-gradient(135deg, #0b3d0b 0%, #1b5e20 40%, #2e7d32 100%); }
+        .bg-sunset { background: linear-gradient(135deg, #e65100 0%, #f57c00 30%, #ff9800 60%, #ffb300 100%); }
+        .bg-candy { background: linear-gradient(135deg, #6a0572 0%, #ab3c97 40%, #d63384 70%, #ff6b9d 100%); }
+        .bg-royal { background: linear-gradient(135deg, #1a237e 0%, #283593 40%, #3f51b5 100%); }
+        .bg-mint { background: linear-gradient(135deg, #004d40 0%, #00695c 40%, #00897b 100%); }
+        .bg-white { background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); color: #1e293b; }
+
+        /* ─── Typography ─── */
+        .title { font-size: 52px; font-weight: 900; letter-spacing: -2px; line-height: 1.1; margin-bottom: 12px; }
+        .subtitle { font-size: 20px; font-weight: 400; color: rgba(255,255,255,0.7); line-height: 1.5; }
+        .section-title { font-size: 38px; font-weight: 800; letter-spacing: -1px; margin-bottom: 28px; }
+        .label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 3px; margin-bottom: 10px; }
+        .label-amber { color: #fbbf24; }
+        .label-pink { color: #f472b6; }
+        .label-cyan { color: #22d3ee; }
+        .label-lime { color: #a3e635; }
+        .big-number { font-size: 68px; font-weight: 900; letter-spacing: -3px; }
+
+        .text-amber { color: #fbbf24; }
+        .text-emerald { color: #34d399; }
+        .text-red { color: #f87171; }
+        .text-blue { color: #60a5fa; }
+        .text-pink { color: #f472b6; }
+        .text-cyan { color: #22d3ee; }
+        .text-lime { color: #a3e635; }
+        .text-orange { color: #fb923c; }
+        .text-violet { color: #a78bfa; }
+        .text-dark { color: #1e293b; }
+
+        /* ─── Cards ─── */
+        .card {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px; padding: 28px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+        .card-glow-amber { border-color: rgba(251,191,36,0.3); box-shadow: 0 8px 32px rgba(251,191,36,0.1); }
+        .card-glow-pink { border-color: rgba(244,114,182,0.3); box-shadow: 0 8px 32px rgba(244,114,182,0.1); }
+        .card-glow-cyan { border-color: rgba(34,211,238,0.3); box-shadow: 0 8px 32px rgba(34,211,238,0.1); }
+        .card-glow-lime { border-color: rgba(163,230,53,0.3); box-shadow: 0 8px 32px rgba(163,230,53,0.1); }
+
+        .card-white {
+            background: white; border: 1px solid #e2e8f0;
+            border-radius: 20px; padding: 28px; color: #1e293b;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+        }
+
+        /* ─── Layout ─── */
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; width: 100%; }
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; width: 100%; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; width: 100%; }
+        .w-full { width: 100%; }
+        .flex-center { display: flex; align-items: center; justify-content: center; }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .mb-4 { margin-bottom: 16px; }
+        .mb-6 { margin-bottom: 24px; }
+        .mb-8 { margin-bottom: 32px; }
+
+        /* ─── Table ─── */
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { text-align: left; padding: 12px 16px; font-weight: 800; font-size: 10px; text-transform: uppercase; letter-spacing: 2px; color: rgba(255,255,255,0.5); border-bottom: 2px solid rgba(255,255,255,0.1); }
+        td { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); font-weight: 500; }
+        .bg-white th { color: #64748b; border-bottom: 2px solid #e2e8f0; }
+        .bg-white td { border-bottom: 1px solid #f1f5f9; color: #334155; }
+
+        /* ─── Badges ─── */
+        .badge { display: inline-block; padding: 5px 14px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; }
+        .badge-amber { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
+        .badge-pink { background: linear-gradient(135deg, #ec4899, #be185d); color: white; }
+        .badge-cyan { background: linear-gradient(135deg, #06b6d4, #0891b2); color: white; }
+        .badge-lime { background: linear-gradient(135deg, #84cc16, #65a30d); color: white; }
+
+        /* ─── Images ─── */
+        .img-round { border-radius: 20px; box-shadow: 0 12px 40px rgba(0,0,0,0.3); object-fit: cover; }
+        .img-float { position: absolute; border-radius: 20px; box-shadow: 0 16px 48px rgba(0,0,0,0.4); opacity: 0.85; }
+
+        /* ─── Navigation ─── */
+        .nav { position: fixed; bottom: 24px; right: 32px; display: flex; gap: 8px; z-index: 100; }
+        .nav button { width: 48px; height: 48px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.2); background: rgba(15,23,42,0.85); backdrop-filter: blur(10px); color: white; font-size: 20px; cursor: pointer; transition: all 0.2s; }
+        .nav button:hover { background: rgba(255,255,255,0.2); transform: scale(1.05); }
+        .progress-bar { position: fixed; top: 0; left: 0; height: 4px; background: linear-gradient(90deg, #f59e0b, #ec4899, #8b5cf6); transition: width 0.4s ease; z-index: 100; border-radius: 0 2px 2px 0; }
+        .slide-counter { position: fixed; bottom: 32px; left: 32px; font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.25); z-index: 100; }
+        .logo-fixed { position: fixed; top: 20px; left: 28px; font-size: 11px; font-weight: 900; color: rgba(255,255,255,0.12); letter-spacing: 3px; text-transform: uppercase; z-index: 100; }
+
+        /* ─── Floating Bubbles Animation ─── */
+        .bubbles { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; overflow: hidden; }
+        .bubble {
+            position: absolute; border-radius: 50%;
+            animation: floatUp var(--dur) ease-in infinite;
+            animation-delay: var(--delay);
+            opacity: 0;
+        }
+        @keyframes floatUp {
+            0% { opacity: 0; transform: translateY(100vh) scale(0.3); }
+            10% { opacity: var(--peak); }
+            90% { opacity: var(--peak); }
+            100% { opacity: 0; transform: translateY(-10vh) scale(1); }
+        }
+
+        /* ─── Slide Animations ─── */
+        .slide.active .anim { animation: fadeUp 0.5s ease forwards; opacity: 0; }
+        .slide.active .anim.d1 { animation-delay: 0.1s; }
+        .slide.active .anim.d2 { animation-delay: 0.2s; }
+        .slide.active .anim.d3 { animation-delay: 0.3s; }
+        .slide.active .anim.d4 { animation-delay: 0.4s; }
+        .slide.active .anim.d5 { animation-delay: 0.5s; }
+        .slide.active .anim.d6 { animation-delay: 0.6s; }
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+        .emoji { font-size: 36px; margin-bottom: 12px; }
+        .divider { width: 60px; height: 4px; border-radius: 2px; margin: 16px 0; }
+        .divider-amber { background: linear-gradient(90deg, #f59e0b, #f97316); }
+        .divider-pink { background: linear-gradient(90deg, #ec4899, #f43f5e); }
+        .divider-cyan { background: linear-gradient(90deg, #06b6d4, #3b82f6); }
+
+        .stat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; opacity: 0.6; margin-bottom: 4px; }
+        .stat-value { font-size: 32px; font-weight: 900; letter-spacing: -1px; }
+        .stat-desc { font-size: 12px; opacity: 0.5; margin-top: 2px; }
+
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(251,191,36,0.15), rgba(249,115,22,0.1));
+            border: 1px solid rgba(251,191,36,0.3);
+            border-radius: 16px; padding: 20px; text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="logo-fixed">POPPING BOBA INTERNATIONAL</div>
+    <div class="bubbles" id="bubbles"></div>
+    <div class="progress-bar" id="progress"></div>
+    <div class="slide-counter" id="slideCounter"></div>
+
+    <div class="deck" id="deck">
+
+        <!-- ═══ SLIDE 1: Hero ═══ -->
+        <div class="slide bg-hero active" data-slide="0">
+            <img src="img/popping-boba-hero.png" class="img-float" style="right: -60px; bottom: -40px; width: 480px; height: 480px; opacity: 0.7;">
+            <img src="img/bubble-tea-drinks.png" class="img-float" style="left: -40px; top: -30px; width: 350px; height: 350px; opacity: 0.5;">
+            <div style="max-width: 600px; position: relative; z-index: 2;">
+                <p class="label label-amber anim d1">🧋 Popping Boba International S.A.S</p>
+                <h1 class="title anim d2" style="font-size: 56px;">
+                    Bonificación<br>
+                    <span class="text-amber">Socios 2025</span>
+                </h1>
+                <div class="divider divider-amber anim d3"></div>
+                <p class="subtitle anim d4" style="font-size: 18px;">
+                    Modelo de compensación para socios que no tienen distribuidora propia.
+                    Basado en datos fiscales reales de Siigo.
+                </p>
+                <div style="display: flex; gap: 12px; margin-top: 24px;" class="anim d5">
+                    <span class="badge badge-amber">Datos Siigo</span>
+                    <span class="badge badge-pink">Marzo 2025</span>
+                    <span class="badge badge-cyan">Confidencial</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 2: Context ═══ -->
+        <div class="slide bg-ocean" data-slide="1">
+            <div style="width: 100%; max-width: 900px;">
+                <p class="label label-cyan anim d1">📋 Contexto</p>
+                <h2 class="section-title anim d2">¿Por qué esta propuesta?</h2>
+                <div class="grid-2 anim d3">
+                    <div>
+                        <div class="card card-glow-cyan" style="margin-bottom: 16px;">
+                            <div class="emoji">🏢</div>
+                            <p style="font-weight: 800; font-size: 18px; margin-bottom: 8px;">Socios con Distribuidora</p>
+                            <p style="opacity: 0.7; font-size: 14px; line-height: 1.6;">
+                                Perlas, Topping, Explosión, Esferas, Burbujas, Maribel — compran con descuento mayorista (30-34.8%).
+                                Su beneficio es el margen de reventa.
+                            </p>
+                        </div>
+                        <div class="card card-glow-amber">
+                            <div class="emoji">👤</div>
+                            <p style="font-weight: 800; font-size: 18px; margin-bottom: 8px;">Socios SIN Distribuidora</p>
+                            <p style="opacity: 0.7; font-size: 14px; line-height: 1.6;">
+                                No compran producto, no tienen margen comercial.
+                                <strong class="text-amber">¿Cómo compensarlos por su inversión y confianza?</strong>
+                            </p>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: center;">
+                        <img src="img/bubble-tea-drinks.png" class="img-round" style="width: 100%; max-width: 380px;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 3: Datos reales ═══ -->
+        <div class="slide bg-candy" data-slide="2">
+            <div style="width: 100%; max-width: 900px;">
+                <p class="label anim d1" style="color: #fce7f3;">📊 Datos Reales Siigo — 2025</p>
+                <h2 class="section-title anim d2">Desempeño Comercial</h2>
+                <div class="grid-4 anim d3 mb-6">
+                    <div class="card" style="text-align: center;">
+                        <p class="stat-label">Venta Bruta</p>
+                        <p class="stat-value text-amber">$6,151M</p>
+                        <p class="stat-desc">Precio base × unidades</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p class="stat-label">Descuentos</p>
+                        <p class="stat-value text-red">-$2,099M</p>
+                        <p class="stat-desc">Comerciales a distrib.</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p class="stat-label">Subtotal Neto</p>
+                        <p class="stat-value text-emerald">$4,051M</p>
+                        <p class="stat-desc">Ingreso real sin imp.</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p class="stat-label">Facturado</p>
+                        <p class="stat-value text-cyan">$5,372M</p>
+                        <p class="stat-desc">Total con impuestos</p>
+                    </div>
+                </div>
+                <div class="grid-3 anim d4">
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 40px; margin-bottom: 4px;">🧾</p>
+                        <p style="font-weight: 800; font-size: 28px;">829</p>
+                        <p class="stat-desc">Facturas generadas</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 40px; margin-bottom: 4px;">📦</p>
+                        <p style="font-weight: 800; font-size: 28px;">753,625</p>
+                        <p class="stat-desc">Unidades vendidas</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 40px; margin-bottom: 4px;">👥</p>
+                        <p style="font-weight: 800; font-size: 28px;">18</p>
+                        <p class="stat-desc">Clientes activos</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 4: Ranking ═══ -->
+        <div class="slide bg-royal" data-slide="3">
+            <div style="width: 100%; max-width: 900px;">
+                <p class="label label-cyan anim d1">🏆 Ranking de Distribuidores</p>
+                <h2 class="section-title anim d2">Top Distribuidores — Subtotal Siigo</h2>
+                <div class="anim d3">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Distribuidor</th>
+                                <th class="text-right">Venta Bruta</th>
+                                <th class="text-right">Descuento</th>
+                                <th class="text-right">Subtotal Neto</th>
+                                <th class="text-right">% Participación</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="badge badge-amber">1</span></td>
+                                <td style="font-weight: 800;">Perlas Explosivas</td>
+                                <td class="text-right">$3,708M</td>
+                                <td class="text-right text-red">-$1,285M</td>
+                                <td class="text-right text-emerald" style="font-weight: 800;">$2,424M</td>
+                                <td class="text-right text-amber" style="font-weight: 800;">59.8%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-pink">2</span></td>
+                                <td style="font-weight: 800;">Topping Frozen</td>
+                                <td class="text-right">$1,159M</td>
+                                <td class="text-right text-red">-$393M</td>
+                                <td class="text-right text-emerald" style="font-weight: 800;">$766M</td>
+                                <td class="text-right text-amber" style="font-weight: 800;">18.9%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-cyan">3</span></td>
+                                <td style="font-weight: 800;">Explosión de Sabores</td>
+                                <td class="text-right">$692M</td>
+                                <td class="text-right text-red">-$235M</td>
+                                <td class="text-right text-emerald" style="font-weight: 800;">$457M</td>
+                                <td class="text-right text-amber" style="font-weight: 800;">11.3%</td>
+                            </tr>
+                            <tr>
+                                <td><span class="badge badge-lime">4</span></td>
+                                <td>Maribel Erazo</td>
+                                <td class="text-right">$207M</td>
+                                <td class="text-right text-red">-$62M</td>
+                                <td class="text-right text-emerald">$145M</td>
+                                <td class="text-right">3.6%</td>
+                            </tr>
+                            <tr>
+                                <td>5</td>
+                                <td>Esferas Explosivas</td>
+                                <td class="text-right">$180M</td>
+                                <td class="text-right text-red">-$60M</td>
+                                <td class="text-right text-emerald">$120M</td>
+                                <td class="text-right">3.0%</td>
+                            </tr>
+                            <tr>
+                                <td>6</td>
+                                <td>Burbujas Explosivas</td>
+                                <td class="text-right">$169M</td>
+                                <td class="text-right text-red">-$55M</td>
+                                <td class="text-right text-emerald">$113M</td>
+                                <td class="text-right">2.8%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 5: 3 Options ═══ -->
+        <div class="slide bg-forest" data-slide="4">
+            <div style="width: 100%; max-width: 950px;">
+                <p class="label label-lime anim d1">🧮 3 Formas de Calcular el Pool</p>
+                <h2 class="section-title anim d2">Opciones de Bonificación</h2>
+                <div class="grid-3 anim d3 mb-6">
+                    <div class="card card-glow-cyan">
+                        <span class="badge badge-cyan" style="margin-bottom: 12px;">Opción A</span>
+                        <p style="font-weight: 800; font-size: 17px; margin-bottom: 6px;">0.15% de Ventas Netas</p>
+                        <p style="font-size: 13px; opacity: 0.7; margin-bottom: 16px;">Se toma el subtotal Siigo (ingreso real sin impuestos) y se aplica 0.15%.</p>
+                        <div class="highlight-box" style="background: rgba(34,211,238,0.1); border-color: rgba(34,211,238,0.3);">
+                            <p style="font-size: 12px; opacity: 0.5;">$4,051M × 0.15%</p>
+                            <p class="stat-value text-cyan">$6.08M</p>
+                            <p style="font-size: 11px; opacity: 0.5; margin-top: 2px;">al año</p>
+                        </div>
+                    </div>
+                    <div class="card card-glow-amber">
+                        <span class="badge badge-amber" style="margin-bottom: 12px;">Opción B</span>
+                        <p style="font-weight: 800; font-size: 17px; margin-bottom: 6px;">2.46% de Utilidad Neta</p>
+                        <p style="font-size: 13px; opacity: 0.7; margin-bottom: 16px;">Se toma la utilidad neta del ERG y se aplica 2.46%. Depende de las ganancias.</p>
+                        <div class="highlight-box">
+                            <p style="font-size: 12px; opacity: 0.5;">$232M × 2.46%</p>
+                            <p class="stat-value text-amber">$5.71M</p>
+                            <p style="font-size: 11px; opacity: 0.5; margin-top: 2px;">al año</p>
+                        </div>
+                    </div>
+                    <div class="card card-glow-lime" style="border: 2px solid rgba(163,230,53,0.5);">
+                        <span class="badge badge-lime" style="margin-bottom: 12px;">⭐ Opción C — Recomendada</span>
+                        <p style="font-weight: 800; font-size: 17px; margin-bottom: 6px;">0.75% del Beneficio Dist.</p>
+                        <p style="font-size: 13px; opacity: 0.7; margin-bottom: 16px;">Se toma el pool de beneficios de distribuidores y se aplica 0.75%. No depende de utilidad.</p>
+                        <div class="highlight-box" style="background: rgba(163,230,53,0.1); border-color: rgba(163,230,53,0.3);">
+                            <p style="font-size: 12px; opacity: 0.5;">$761M × 0.75%</p>
+                            <p class="stat-value text-lime">$5.71M</p>
+                            <p style="font-size: 11px; opacity: 0.5; margin-top: 2px;">al año</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="anim d4 card" style="text-align: center; padding: 16px;">
+                    <p style="font-size: 14px; opacity: 0.7;">
+                        📌 Las 3 opciones convergen a ~$5.7M–$6.1M/año. La <strong class="text-lime">Opción C</strong> es la más estable porque no depende de la utilidad neta.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 6: Distribution by Partner ═══ -->
+        <div class="slide bg-sunset" data-slide="5">
+            <div style="width: 100%; max-width: 900px;">
+                <p class="label anim d1" style="color: #fff7ed;">💰 Distribución del Pool (Opción C: $5.71M)</p>
+                <h2 class="section-title anim d2">Bonificación por Socio</h2>
+                <div class="anim d3 mb-6">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Socio</th>
+                                <th class="text-right">Equity</th>
+                                <th class="text-right">% del Pool</th>
+                                <th class="text-right">Bono Anual</th>
+                                <th class="text-right">Bono Mensual</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="font-weight: 800;">👤 Martha Benavides</td>
+                                <td class="text-right">2.00%</td>
+                                <td class="text-right" style="font-weight: 800; color: #1e293b;">57.14%</td>
+                                <td class="text-right" style="font-weight: 800; font-size: 18px; color: #1e293b;">$3.26M</td>
+                                <td class="text-right" style="font-weight: 800; color: white; font-size: 18px;">$272K</td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 800;">👤 Julian Carrillo</td>
+                                <td class="text-right">1.00%</td>
+                                <td class="text-right" style="font-weight: 800; color: #1e293b;">28.57%</td>
+                                <td class="text-right" style="font-weight: 800; font-size: 18px; color: #1e293b;">$1.63M</td>
+                                <td class="text-right" style="font-weight: 800; color: white; font-size: 18px;">$136K</td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 800;">👤 Jakeline</td>
+                                <td class="text-right">0.50%</td>
+                                <td class="text-right" style="font-weight: 800; color: #1e293b;">14.29%</td>
+                                <td class="text-right" style="font-weight: 800; font-size: 18px; color: #1e293b;">$0.82M</td>
+                                <td class="text-right" style="font-weight: 800; color: white; font-size: 18px;">$68K</td>
+                            </tr>
+                        </tbody>
+                        <tfoot>
+                            <tr style="border-top: 2px solid rgba(255,255,255,0.2);">
+                                <td style="font-weight: 900;">TOTAL POOL</td>
+                                <td class="text-right" style="font-weight: 800;">3.50%</td>
+                                <td class="text-right" style="font-weight: 800;">100%</td>
+                                <td class="text-right" style="font-weight: 900; font-size: 20px; color: #1e293b;">$5.71M</td>
+                                <td class="text-right" style="font-weight: 900; color: white; font-size: 20px;">$476K</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                <div class="grid-3 anim d4">
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 28px;">📅</p>
+                        <p style="font-weight: 800; font-size: 14px; margin-top: 6px;">Pago Mensual</p>
+                        <p style="opacity: 0.7; font-size: 12px;">Primeros 10 días del mes</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 28px;">📈</p>
+                        <p style="font-weight: 800; font-size: 14px; margin-top: 6px;">Crece con Ventas</p>
+                        <p style="opacity: 0.7; font-size: 12px;">Si las ventas suben, sube el pool</p>
+                    </div>
+                    <div class="card" style="text-align: center;">
+                        <p style="font-size: 28px;">⚖️</p>
+                        <p style="font-weight: 800; font-size: 14px; margin-top: 6px;">Proporcional al Equity</p>
+                        <p style="opacity: 0.7; font-size: 12px;">Cada socio recibe según su %</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 7: Conditions ═══ -->
+        <div class="slide bg-mint" data-slide="6">
+            <div style="width: 100%; max-width: 900px;">
+                <div class="grid-2">
+                    <div>
+                        <p class="label label-lime anim d1">📋 Condiciones</p>
+                        <h2 class="section-title anim d2" style="font-size: 32px;">Reglas del<br>Programa</h2>
+                        <div class="anim d3">
+                            <div class="card card-glow-lime" style="margin-bottom: 12px;">
+                                <p><span style="font-size: 20px;">✅</span> <strong>Se calcula sobre Subtotal Siigo</strong> — dato fiscal real, verificable.</p>
+                            </div>
+                            <div class="card card-glow-cyan" style="margin-bottom: 12px;">
+                                <p><span style="font-size: 20px;">✅</span> <strong>Se paga mensual</strong> — dentro de los primeros 10 días del mes siguiente.</p>
+                            </div>
+                            <div class="card card-glow-amber" style="margin-bottom: 12px;">
+                                <p><span style="font-size: 20px;">✅</span> <strong>Revisión anual</strong> — el % se ajusta según resultados del año.</p>
+                            </div>
+                            <div class="card card-glow-pink" style="margin-bottom: 12px;">
+                                <p><span style="font-size: 20px;">✅</span> <strong>Transparencia total</strong> — datos verificables en dashboard y Siigo.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center;">
+                        <img src="img/popping-boba-production.png" class="img-round" style="width: 100%;">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SLIDE 8: Closing ═══ -->
+        <div class="slide bg-hero" data-slide="7">
+            <img src="img/popping-boba-hero.png" class="img-float" style="left: -100px; bottom: -80px; width: 500px; height: 500px; opacity: 0.5;">
+            <div style="text-align: center; max-width: 700px; position: relative; z-index: 2;">
+                <p class="label label-pink anim d1">🎯 Próximos Pasos</p>
+                <h2 class="title anim d2" style="font-size: 48px;">
+                    Juntos construimos<br>
+                    <span style="background: linear-gradient(90deg, #f59e0b, #ec4899, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">el futuro de Popping Boba</span>
+                </h2>
+                <div class="divider divider-pink anim d3" style="margin: 16px auto;"></div>
+                <p class="subtitle anim d4" style="font-size: 17px;">
+                    Esta propuesta busca reconocer la confianza y el aporte de cada socio fundador.
+                    Todos los datos son verificables en el dashboard de ventas y en Siigo.
+                </p>
+                <div style="display: flex; gap: 16px; justify-content: center; margin-top: 32px;" class="anim d5">
+                    <div class="card" style="padding: 16px 24px; text-align: center;">
+                        <p style="font-size: 24px;">🗳️</p>
+                        <p style="font-weight: 800; font-size: 13px; margin-top: 6px;">Votación de Socios</p>
+                    </div>
+                    <div class="card" style="padding: 16px 24px; text-align: center;">
+                        <p style="font-size: 24px;">📝</p>
+                        <p style="font-weight: 800; font-size: 13px; margin-top: 6px;">Firma de Acuerdo</p>
+                    </div>
+                    <div class="card" style="padding: 16px 24px; text-align: center;">
+                        <p style="font-size: 24px;">🚀</p>
+                        <p style="font-weight: 800; font-size: 13px; margin-top: 6px;">Ejecución Abril</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="nav">
+        <button onclick="navigate(-1)">←</button>
+        <button onclick="navigate(1)">→</button>
+    </div>
+
+    <script>
+        let current = 0;
+        const slides = document.querySelectorAll('.slide');
+        const total = slides.length;
+
+        function showSlide(n) {
+            slides.forEach((s, i) => {
+                s.classList.remove('active', 'prev');
+                if (i === n) s.classList.add('active');
+                else if (i < n) s.classList.add('prev');
+            });
+            document.getElementById('progress').style.width = ((n + 1) / total * 100) + '%';
+            document.getElementById('slideCounter').textContent = (n + 1) + ' / ' + total;
+        }
+
+        function navigate(dir) {
+            current = Math.max(0, Math.min(total - 1, current + dir));
+            showSlide(current);
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); navigate(1); }
+            if (e.key === 'ArrowLeft') navigate(-1);
+        });
+
+        let touchStartX = 0;
+        document.addEventListener('touchstart', e => touchStartX = e.touches[0].clientX);
+        document.addEventListener('touchend', e => {
+            const diff = touchStartX - e.changedTouches[0].clientX;
+            if (Math.abs(diff) > 50) navigate(diff > 0 ? 1 : -1);
+        });
+
+        showSlide(0);
+
+        // ─── Floating Bubbles ───
+        const bubbleContainer = document.getElementById('bubbles');
+        const bubbleColors = [
+            'radial-gradient(circle at 30% 30%, rgba(251,191,36,0.6), rgba(251,191,36,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(244,114,182,0.6), rgba(244,114,182,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(34,211,238,0.6), rgba(34,211,238,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(163,230,53,0.6), rgba(163,230,53,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(167,139,250,0.6), rgba(167,139,250,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(248,113,113,0.5), rgba(248,113,113,0.1))',
+            'radial-gradient(circle at 30% 30%, rgba(52,211,153,0.5), rgba(52,211,153,0.1))',
+        ];
+        for (let i = 0; i < 25; i++) {
+            const b = document.createElement('div');
+            b.className = 'bubble';
+            const size = 8 + Math.random() * 28;
+            b.style.width = size + 'px';
+            b.style.height = size + 'px';
+            b.style.left = Math.random() * 100 + '%';
+            b.style.background = bubbleColors[Math.floor(Math.random() * bubbleColors.length)];
+            b.style.boxShadow = `inset -2px -2px ${size/3}px rgba(255,255,255,0.3), 0 0 ${size/2}px rgba(255,255,255,0.05)`;
+            b.style.setProperty('--dur', (8 + Math.random() * 14) + 's');
+            b.style.setProperty('--delay', Math.random() * 12 + 's');
+            b.style.setProperty('--peak', (0.15 + Math.random() * 0.25).toString());
+            bubbleContainer.appendChild(b);
+        }
+    </script>
+</body>
+</html>

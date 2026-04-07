@@ -9,7 +9,9 @@ async function listFormulas(req, res) {
     try {
         const { productId, isActive } = req.query;
 
-        const where = {};
+        const where = {
+            product: { accountGroup: { notIn: [1402, 1405] } }
+        };
         if (productId) where.productId = productId;
         if (isActive !== undefined) where.isActive = isActive === 'true';
 

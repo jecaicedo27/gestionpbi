@@ -5,12 +5,26 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const logger = require('../utils/logger');
 
+const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
+const extractTrailingNumber = (value) => {
+    const matches = String(value || '').match(/\d+/g);
+    if (!matches || matches.length === 0) return '';
+    return String(parseInt(matches[matches.length - 1], 10));
+};
+const supplierNamesMatch = (left, right) => {
+    const a = String(left || '').trim().toUpperCase();
+    const b = String(right || '').trim().toUpperCase();
+    if (!a || !b) return false;
+    return a.includes(b) || b.includes(a) || a.split(' ')[0] === b.split(' ')[0];
+};
+
 /**
  * POST /procurement/receptions
  */
 exports.create = async (req, res) => {
     try {
-        const { purchaseOrderId, photoProductUrl, photoInvoiceUrl, observations, items } = req.body;
+        const { purchaseOrderId, observations, items } = req.body;
+        // Nota: photoProductUrl y photoInvoiceUrl eliminados (Fase 8) — usar invoiceImageUrls / receptionPhotoUrls
 
         if (!purchaseOrderId || !items?.length) {
             return res.status(400).json({ error: 'Faltan datos de recepción' });
@@ -30,8 +44,6 @@ exports.create = async (req, res) => {
             data: {
                 purchaseOrderId,
                 receivedById: req.user.id,
-                photoProductUrl: photoProductUrl || null,
-                photoInvoiceUrl: photoInvoiceUrl || null,
                 observations: observations || null,
                 status: 'RECEIVED',
                 items: {
@@ -124,8 +136,32 @@ exports.validate = async (req, res) => {
             return res.status(400).json({ error: 'Debe ingresar el número de factura del proveedor' });
         }
 
+        if (!siigoSyncData || typeof siigoSyncData !== 'object') {
+            return res.status(400).json({ error: 'Debe sincronizar la compra exacta de Siigo antes de validar contablemente' });
+        }
+
+        const requestedPurchaseNumber = extractTrailingNumber(siigoCompraCode);
+        const syncedPurchaseNumber = extractTrailingNumber(siigoSyncData.number ?? siigoSyncData.name);
+        if (!requestedPurchaseNumber || !syncedPurchaseNumber || requestedPurchaseNumber !== syncedPurchaseNumber) {
+            return res.status(400).json({
+                error: `La compra sincronizada no coincide con la solicitada. Se pidió ${requestedPurchaseNumber || siigoCompraCode || 'N/A'} y Siigo devolvió ${syncedPurchaseNumber || siigoSyncData.name || 'otra compra'}.`
+            });
+        }
+
+        const expectedSupplierNit = normalizeDigits(reception.purchaseOrder.supplierNit || reception.purchaseOrder.supplier?.identification);
+        const syncedSupplierNit = normalizeDigits(siigoSyncData.supplier?.identification);
+        const supplierMatches = expectedSupplierNit && syncedSupplierNit
+            ? expectedSupplierNit === syncedSupplierNit
+            : supplierNamesMatch(reception.purchaseOrder.supplierName, siigoSyncData.supplier?.name);
+
+        if (!supplierMatches) {
+            return res.status(400).json({
+                error: `La compra sincronizada pertenece a otro proveedor: ${siigoSyncData.supplier?.name || 'Desconocido'}.`
+            });
+        }
+
         // Build Siigo reference from sync data
-        const siigoInvoiceRef = siigoSyncData?.name || (siigoCompraCode ? `FC-${siigoCompraCode}` : null);
+        const siigoInvoiceRef = siigoSyncData?.name || (syncedPurchaseNumber ? `Compra ${syncedPurchaseNumber}` : null);
 
         // Update reception
         const updated = await prisma.reception.update({
@@ -135,6 +171,7 @@ exports.validate = async (req, res) => {
                 accountingUserId: req.user.id,
                 accountingAt: new Date(),
                 siigoRef: siigoInvoiceRef,
+                siigoPurchaseId: siigoSyncData?.siigoId || null,
                 accountingNotes: accountingNotes || null,
                 providerInvoiceNumber: providerInvoiceNumber || null,
                 itemCosts: itemCosts || null
@@ -220,6 +257,16 @@ exports.createLots = async (req, res) => {
             if (product) resolvedProductId = product.id;
         }
 
+        // Resolve product unit for correct lot creation
+        let productUnit = 'gramo';
+        if (resolvedProductId) {
+            const prod = await prisma.product.findUnique({
+                where: { id: resolvedProductId },
+                select: { unit: true }
+            });
+            if (prod?.unit) productUnit = prod.unit;
+        }
+
         const created = [];
         for (const lot of lots) {
             const materialLot = await prisma.materialLot.create({
@@ -231,6 +278,7 @@ exports.createLots = async (req, res) => {
                     lotNumber: lot.lotNumber,
                     initialQuantity: lot.quantity,
                     currentQuantity: lot.quantity,
+                    unit: productUnit,
                     expiresAt: lot.expiresAt ? new Date(lot.expiresAt) : null,
                     qrData: JSON.stringify({
                         lot: lot.lotNumber,
@@ -247,8 +295,8 @@ exports.createLots = async (req, res) => {
         logger.info(`🏷️ ${created.length} lotes creados para ${orderItem.siigoProductName} — Total: ${(newLotsTotal / 1000).toFixed(1)} kg`);
         res.status(201).json(created);
     } catch (error) {
-        logger.error('Error creating lots:', error.message);
-        res.status(500).json({ error: 'Error creando lotes' });
+        logger.error('Error creating lots:', error.message, error.stack);
+        res.status(500).json({ error: 'Error creando lotes: ' + error.message });
     }
 };
 

@@ -2,17 +2,23 @@ const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
 
 const prisma = new PrismaClient();
-const RESERVATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const RESERVATION_TTL_MS = 30 * 60 * 1000; // 30 min idle timeout
+const RESERVATION_MAX_MS = 2 * 60 * 60 * 1000;  // 2 hour ABSOLUTE MAX — heartbeat cannot extend beyond this
 
 /**
  * Get available quantity for a product (stock - cart reservations - pending orders)
  */
-async function getAvailableQty(productId, excludeDistributorId = null) {
-    const product = await prisma.product.findUnique({
-        where: { id: productId },
-        select: { currentStock: true }
+async function getAvailableQty(productId, excludeDistributorId = null, tx = prisma) {
+    // Sum stock strictly from the physical PRODUCTO_TERMINADO zone
+    const finishedStock = await tx.finishedLotStock.aggregate({
+        where: {
+            productId,
+            zone: 'PRODUCTO_TERMINADO',
+            currentQuantity: { gt: 0 }
+        },
+        _sum: { currentQuantity: true }
     });
-    if (!product) return 0;
+    const physicalStock = finishedStock._sum.currentQuantity || 0;
 
     // Sum cart reservations (excluding specified distributor and expired)
     const cartWhere = {
@@ -22,25 +28,28 @@ async function getAvailableQty(productId, excludeDistributorId = null) {
     if (excludeDistributorId) {
         cartWhere.distributorId = { not: excludeDistributorId };
     }
-    const cartAgg = await prisma.cartReservation.aggregate({
+    const cartAgg = await tx.cartReservation.aggregate({
         where: cartWhere,
         _sum: { quantity: true }
     });
 
     // Sum pending/approved/in-progress order items (findMany + manual sum, aggregate doesn't support nested relation filters)
-    const pendingItems = await prisma.orderItem.findMany({
+    const pendingItems = await tx.orderItem.findMany({
         where: {
             productId,
             order: {
                 status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] }
             }
         },
-        select: { requestedQty: true }
+        select: { requestedQty: true, allocatedQty: true, pendingQty: true }
     });
+    // Subtract the full requested quantity for active orders.
+    // Because even if they are physically allocated/picked, they are still 
+    // sitting in the FinishedLotStock database until invoiced/dispatched.
     const orderReserved = pendingItems.reduce((sum, i) => sum + i.requestedQty, 0);
 
     const reserved = (cartAgg._sum.quantity || 0) + orderReserved;
-    return Math.max(0, product.currentStock - reserved);
+    return Math.max(0, physicalStock - reserved);
 }
 
 /**
@@ -76,7 +85,10 @@ exports.reserve = async (req, res) => {
 
         // Calculate available (excluding this distributor's own reservations)
         const available = await getAvailableQty(productId, distributorId);
-        const isBackorder = quantity > available;
+        
+        // Calculate backorder (if requested quantity exceeds physical availability)
+        // We now ALLOW reservations beyond stock to capture demand for production
+        const backorderQty = Math.max(0, quantity - available);
 
         // Upsert reservation (allow over-ordering / backorders)
         const reservation = await prisma.cartReservation.upsert({
@@ -104,8 +116,8 @@ exports.reserve = async (req, res) => {
             success: true,
             data: reservation,
             availableQty: newAvailable,
-            backorder: isBackorder,
-            backorderQty: isBackorder ? quantity - available : 0
+            backorder: backorderQty > 0,
+            backorderQty
         });
 
     } catch (error) {
@@ -213,13 +225,48 @@ exports.clearCart = async (req, res) => {
 exports.heartbeat = async (req, res) => {
     try {
         const distributorId = req.user.id;
+        const now = Date.now();
 
-        await prisma.cartReservation.updateMany({
+        // Get current items to enforce absolute max TTL
+        const items = await prisma.cartReservation.findMany({
             where: { distributorId },
-            data: { expiresAt: new Date(Date.now() + RESERVATION_TTL_MS) }
+            select: { id: true, productId: true, createdAt: true }
         });
 
-        res.json({ success: true });
+        const expired = [];
+        const toExtend = [];
+
+        for (const item of items) {
+            const absoluteExpiry = new Date(item.createdAt).getTime() + RESERVATION_MAX_MS;
+            if (now >= absoluteExpiry) {
+                // Past the absolute max — force release
+                expired.push(item.id);
+            } else {
+                // Extend but not beyond absolute max
+                const newExpiry = Math.min(now + RESERVATION_TTL_MS, absoluteExpiry);
+                toExtend.push({ id: item.id, expiresAt: new Date(newExpiry) });
+            }
+        }
+
+        // Delete items that exceeded absolute max
+        if (expired.length > 0) {
+            await prisma.cartReservation.deleteMany({ where: { id: { in: expired } } });
+        }
+
+        // Extend valid items
+        for (const item of toExtend) {
+            await prisma.cartReservation.update({
+                where: { id: item.id },
+                data: { expiresAt: item.expiresAt }
+            });
+        }
+
+        res.json({
+            success: true,
+            expiredCount: expired.length,
+            extended: toExtend.length,
+            message: expired.length > 0 ? `${expired.length} artículo(s) expiraron (límite 2h). Vuelve a agregarlos.` : null
+        });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Error heartbeat' });
     }

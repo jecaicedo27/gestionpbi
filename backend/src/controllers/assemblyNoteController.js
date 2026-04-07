@@ -14,21 +14,32 @@ const assemblyNoteController = {
      */
     getAllNotes: async (req, res) => {
         try {
-            const { status, batchId, productId } = req.query;
+            const { status, batchId, productId, since } = req.query;
             const where = {};
             if (status) where.status = status;
             if (batchId) where.productionBatchId = batchId;
             if (productId) where.productId = productId;
+            // Filtro de fecha: solo lotes a partir de `since` (ISO string)
+            if (since) {
+                where.productionBatch = { createdAt: { gte: new Date(since) } };
+            }
 
             const notes = await prisma.assemblyNote.findMany({
                 where,
                 include: {
-                    product: true,
-                    productionBatch: { include: { outputTargets: { include: { product: { select: { id: true, name: true, sku: true, size: true } } }, orderBy: { plannedWeightKg: 'desc' } } } },
-
-                    executedBy: true,
-                    processType: true,
-                    items: { include: { component: true } }
+                    product: { select: { id: true, name: true, sku: true } },
+                    productionBatch: {
+                        select: {
+                            id: true, batchNumber: true, scheduledStart: true,
+                            status: true, flavor: true,
+                            outputTargets: {
+                                include: { product: { select: { id: true, name: true, sku: true, size: true } } },
+                                orderBy: { plannedWeightKg: 'desc' }
+                            }
+                        }
+                    },
+                    processType: { select: { id: true, code: true, name: true } },
+                    items: { include: { component: { select: { id: true, name: true } } } }
                 },
                 orderBy: { stageOrder: 'asc' }
             });
@@ -398,11 +409,22 @@ const assemblyNoteController = {
         try {
             const { id } = req.params;
             const { processParameters } = req.body;
-            const updated = await prisma.assemblyNote.update({
-                where: { id },
-                data: { ...(processParameters !== undefined && { processParameters }) }
-            });
-            res.json(updated);
+            if (processParameters !== undefined) {
+                // Merge with existing processParameters to avoid overwriting
+                // other keys (empaqueRef, lot_selections, carriots, etc.)
+                const existing = await prisma.assemblyNote.findUnique({
+                    where: { id }, select: { processParameters: true }
+                });
+                const merged = { ...(existing?.processParameters || {}), ...processParameters };
+                const updated = await prisma.assemblyNote.update({
+                    where: { id },
+                    data: { processParameters: merged }
+                });
+                res.json(updated);
+            } else {
+                const note = await prisma.assemblyNote.findUnique({ where: { id } });
+                res.json(note);
+            }
         } catch (error) {
             res.status(500).json({ error: error.message });
         }
@@ -587,11 +609,77 @@ const assemblyNoteController = {
                         }
                     }
                 }
-            } catch (postConteoErr) {
-                console.warn('[completeNote] Post-CONTEO update failed (non-critical):', postConteoErr.message);
+
+                // ── Post-EMPAQUE (no CONTEO): scale ENSAMBLE items by actual production ──
+                // SIROPES have no CONTEO step. When EMPAQUE completes, we must scale
+                // sibling ENSAMBLE notes to match actual approved units, not planned.
+                // "No se ensambla lo que se programa, se ensambla lo que sale real"
+                if (completedNote?.processType?.code === 'EMPAQUE') {
+                    // Check if there's a CONTEO in this batch — if yes, CONTEO already handled scaling
+                    const conteoExists = await prisma.assemblyNote.count({
+                        where: {
+                            productionBatchId: completedNote.productionBatchId,
+                            processType: { code: 'CONTEO' }
+                        }
+                    });
+
+                    if (conteoExists === 0) {
+                        // No CONTEO → EMPAQUE is the source of truth for actual production
+                        const empParams = completedNote.processParameters || {};
+                        const actualApproved = empParams.empaque?.approved_qty
+                            || empParams.empaqueRef?.conteo_qty
+                            || parseFloat(actualQuantity) || 0;
+
+                        if (actualApproved > 0) {
+                            // Find sibling ENSAMBLE notes for the same product
+                            const ensambleSiblings = await prisma.assemblyNote.findMany({
+                                where: {
+                                    productionBatchId: completedNote.productionBatchId,
+                                    processType: { code: 'ENSAMBLE' },
+                                    productId: (await prisma.assemblyNote.findUnique({ where: { id }, select: { productId: true } }))?.productId,
+                                    status: { in: ['PENDING', 'IN_PROGRESS'] }
+                                },
+                                include: { items: true }
+                            });
+
+                            for (const ensamble of ensambleSiblings) {
+                                const oldTarget = ensamble.targetQuantity || 0;
+                                if (oldTarget <= 0) continue;
+
+                                const scaleFactor = actualApproved / oldTarget;
+                                if (Math.abs(scaleFactor - 1) < 0.001) continue; // No change needed
+
+                                // Scale targetQuantity
+                                await prisma.assemblyNote.update({
+                                    where: { id: ensamble.id },
+                                    data: { targetQuantity: actualApproved }
+                                });
+
+                                // Scale all items proportionally
+                                for (const item of ensamble.items) {
+                                    const pq = item.plannedQuantity;
+                                    if (pq == null || pq <= 0) continue;
+                                    const newQty = pq * scaleFactor;
+                                    // For items measured in units (tarros, tapas, etc.), round to integer
+                                    // For grams, keep as-is
+                                    const finalQty = item.unit === 'gramo' ? Math.round(newQty) : Math.round(newQty);
+                                    await prisma.assemblyNoteItem.update({
+                                        where: { id: item.id },
+                                        data: { plannedQuantity: finalQty, actualQuantity: finalQty }
+                                    });
+                                }
+
+                                console.log(`[completeNote] EMPAQUE → ENSAMBLE scaled ${ensamble.stageName}: target ${oldTarget} → ${actualApproved} (×${scaleFactor.toFixed(3)}) [NO CONTEO — SIROPE flow]`);
+                            }
+                        }
+                    }
+                }
+            } catch (postCompletionErr) {
+                console.warn('[completeNote] Post-completion scaling failed (non-critical):', postCompletionErr.message);
             }
 
-            res.json(result);
+            const response = result || { success: true };
+            res.json({ ...response, consumptionAlerts: response.consumptionAlerts || undefined });
         } catch (error) {
             console.error(`[completeNote] ERROR for note ${req.params.id}:`, error.message, '\nBody:', JSON.stringify(req.body).slice(0, 500), '\nStack:', error.stack?.split('\n').slice(0, 5).join('\n'));
             res.status(400).json({ error: error.message });
@@ -1073,6 +1161,58 @@ const assemblyNoteController = {
                             }));
                             flatStages.splice(startIdx, count, ...newSubStages);
                             console.log(`[quickStart] Replaced ${count} FRESA compuesto stages with ${newSubStages.length} ${flavorKey} stages`);
+                        }
+                    }
+                }
+
+                // ── Resolve BASE sub-template swap ──────────────────────────
+                // Some flavors (e.g. MANGO BICHE CON SAL) use a different base
+                // (BASE LIQUIPOPS DIOXIDO / TMPL049) instead of the default
+                // BASE LIQUIPOPS (TMPL-BASELIQ-001). Detect this by checking
+                // if the COMPUESTO formula references a different base product.
+                const defaultBaseCode = 'TMPL-BASELIQ-001';
+                const hasDefaultBase = flatStages.some(s => s._fromSubTemplate === defaultBaseCode);
+                if (hasDefaultBase && flavorCompuestoId) {
+                    const compFormula = await prisma.formula.findFirst({
+                        where: { productId: flavorCompuestoId, isActive: true },
+                        include: { items: { include: { ingredient: { select: { id: true, name: true, sku: true } } } } },
+                        orderBy: { version: 'desc' }
+                    });
+                    if (compFormula) {
+                        const baseIngredient = compFormula.items.find(i =>
+                            i.ingredient?.name?.toUpperCase().startsWith('BASE LIQUIPOPS')
+                        );
+                        if (baseIngredient && baseIngredient.ingredient.name !== 'BASE LIQUIPOPS') {
+                            // This flavor uses a non-standard base — find its template
+                            const altBaseTemplate = await prisma.assemblyTemplate.findFirst({
+                                where: { productId: baseIngredient.ingredientId, isActive: true },
+                                include: {
+                                    product: true,
+                                    stages: {
+                                        include: {
+                                            processType: true,
+                                            inputs: { include: { product: true }, orderBy: { displayOrder: 'asc' } }
+                                        },
+                                        orderBy: { stageOrder: 'asc' }
+                                    }
+                                }
+                            });
+                            if (altBaseTemplate?.stages?.length > 0) {
+                                const startIdx = flatStages.findIndex(s => s._fromSubTemplate === defaultBaseCode);
+                                if (startIdx >= 0) {
+                                    const endIdx = flatStages.findLastIndex(s => s._fromSubTemplate === defaultBaseCode);
+                                    const count = endIdx - startIdx + 1;
+                                    const newBaseStages = altBaseTemplate.stages.map(subStage => ({
+                                        ...subStage,
+                                        _fromSubTemplate: altBaseTemplate.templateCode,
+                                        _subTemplateProductId: altBaseTemplate.productId
+                                    }));
+                                    flatStages.splice(startIdx, count, ...newBaseStages);
+                                    console.log(`[quickStart] BASE swap: ${defaultBaseCode} → ${altBaseTemplate.templateCode} (${altBaseTemplate.product?.name}) — ${count} stages replaced with ${newBaseStages.length}`);
+                                }
+                            } else {
+                                console.warn(`[quickStart] ⚠️ No BASE template found for "${baseIngredient.ingredient.name}" — keeping default`);
+                            }
                         }
                     }
                 }

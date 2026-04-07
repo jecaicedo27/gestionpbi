@@ -51,37 +51,25 @@ exports.approveOrder = async (req, res) => {
 
         // Approve and allocate in transaction
         const updated = await prisma.$transaction(async (tx) => {
-            // If skipInsufficient, remove items where stock < requested
+            // If skipInsufficient: drop items with ZERO stock; keep items with partial stock (allocate available)
             if (skipInsufficient) {
-                const insufficientItems = order.items.filter(
-                    item => (item.product?.currentStock || 0) < item.requestedQty
+                const zeroStockItems = order.items.filter(
+                    item => (item.product?.currentStock || 0) === 0
                 );
-                if (insufficientItems.length > 0) {
+                if (zeroStockItems.length > 0) {
                     await tx.orderItem.deleteMany({
-                        where: { id: { in: insufficientItems.map(i => i.id) } }
+                        where: { id: { in: zeroStockItems.map(i => i.id) } }
                     });
-                    // Also release reserved stock for removed items
-                    for (const item of insufficientItems) {
-                        try {
-                            await tx.inventoryAlternate.update({
-                                where: { productId: item.productId },
-                                data: {
-                                    reservedQty: { decrement: item.requestedQty },
-                                    availableQty: { increment: item.requestedQty }
-                                }
-                            });
-                        } catch (e) { /* no alternate record */ }
-                    }
                 }
             }
 
-            // Get remaining items after potential deletions
+            // Get remaining items: if skipInsufficient drop stock=0, else keep all
             const remainingItems = skipInsufficient
-                ? order.items.filter(item => (item.product?.currentStock || 0) >= item.requestedQty)
+                ? order.items.filter(item => (item.product?.currentStock || 0) > 0)
                 : order.items;
 
             if (remainingItems.length === 0) {
-                throw new Error('No quedan productos con stock suficiente para aprobar');
+                throw new Error('No quedan productos con stock disponible para aprobar');
             }
 
             // Update order status
@@ -91,31 +79,23 @@ exports.approveOrder = async (req, res) => {
                     status: 'APPROVED',
                     approvedBy: approverId,
                     approvedAt: new Date(),
-                    ...(skipInsufficient ? { notes: (order.notes || '') + ' [Aprobado sin faltantes]' } : {})
+                    ...(skipInsufficient ? { notes: (order.notes || '') + ' [Aprobado con stock parcial]' } : {})
                 },
                 include: {
-                    items: {
-                        include: {
-                            product: true
-                        }
-                    },
+                    items: { include: { product: true } },
                     distributor: true,
-                    approver: {
-                        select: {
-                            name: true
-                        }
-                    }
+                    approver: { select: { name: true } }
                 }
             });
 
-            // Update allocated quantities for remaining items
+            // Allocate quantities — partial for insufficient, full for sufficient
             for (const item of remainingItems) {
+                const stock = item.product?.currentStock || 0;
+                const allocated = skipInsufficient ? Math.min(stock, item.requestedQty) : item.requestedQty;
+                const pending = item.requestedQty - allocated;
                 await tx.orderItem.update({
                     where: { id: item.id },
-                    data: {
-                        allocatedQty: item.requestedQty,
-                        pendingQty: 0
-                    }
+                    data: { allocatedQty: allocated, pendingQty: pending }
                 });
             }
 
@@ -301,7 +281,12 @@ exports.invoiceOrder = async (req, res) => {
         const order = await prisma.order.findUnique({
             where: { id },
             include: {
-                items: { include: { product: true } },
+                items: {
+                    include: {
+                        product: true,
+                        pickingItems: { select: { scannedQty: true, lotNumber: true } }
+                    }
+                },
                 distributor: true
             }
         });
@@ -324,7 +309,6 @@ exports.invoiceOrder = async (req, res) => {
         } catch (siigoErr) {
             siigoError = siigoErr;
             logger.error(`⚠️ Siigo invoice failed for order ${order.orderNumber}:`, JSON.stringify(siigoErr));
-            // If Siigo fails completely, return error instead of silently continuing
             if (!siigoResult) {
                 return res.status(500).json({
                     success: false,
@@ -335,19 +319,84 @@ exports.invoiceOrder = async (req, res) => {
             }
         }
 
-        const updated = await prisma.order.update({
-            where: { id },
-            data: {
-                status: 'INVOICED',
-                invoicedAt: new Date(),
-                invoicedBy: req.user.id,
-                invoiceNumber: siigoResult?.name || siigoResult?.number?.toString() || null,
-                invoicePdfUrl: siigoResult?.public_url || null
-            },
-            include: { distributor: { select: { name: true } } }
+        const invoiceRef = siigoResult?.name || siigoResult?.number?.toString() || 'N/A';
+
+        // ── Mark as INVOICED + deduct FinishedLotStock in a single transaction ──
+        const updated = await prisma.$transaction(async (tx) => {
+            const updatedOrder = await tx.order.update({
+                where: { id },
+                data: {
+                    status: 'INVOICED',
+                    invoicedAt: new Date(),
+                    invoicedBy: req.user.id,
+                    invoiceNumber: invoiceRef !== 'N/A' ? invoiceRef : null,
+                    invoicePdfUrl: siigoResult?.public_url || null
+                },
+                include: { distributor: { select: { name: true } } }
+            });
+
+            // ── FIFO deduction from PRODUCTO_TERMINADO ──────────────────────────
+            // For every order item, consume the scanned quantity from finished lots.
+            // Creates a FinishedLotTransfer record per lot consumed so the
+            // reconciliation dashboard can show "Salida factura FV-2-xxxx".
+            for (const item of order.items) {
+                const scannedQty = (item.pickingItems || []).reduce((s, p) => s + p.scannedQty, 0);
+                if (scannedQty <= 0 || !item.productId) continue;
+
+                const lots = await tx.finishedLotStock.findMany({
+                    where: {
+                        productId: item.productId,
+                        zone: 'PRODUCTO_TERMINADO',
+                        currentQuantity: { gt: 0 },
+                        status: { not: 'DEPLETED' }
+                    },
+                    orderBy: { createdAt: 'asc' }  // FIFO
+                });
+
+                let remaining = scannedQty;
+                for (const lot of lots) {
+                    if (remaining <= 0) break;
+                    const consume = Math.min(remaining, lot.currentQuantity);
+                    const newQty = lot.currentQuantity - consume;
+
+                    await tx.finishedLotStock.update({
+                        where: { id: lot.id },
+                        data: {
+                            currentQuantity: newQty,
+                            status: newQty <= 0 ? 'DEPLETED'
+                                : newQty < (lot.initialQuantity || 1) * 0.1 ? 'LOW'
+                                : 'AVAILABLE'
+                        }
+                    });
+
+                    await tx.finishedLotTransfer.create({
+                        data: {
+                            finishedLotStockId: lot.id,
+                            productId: item.productId,
+                            lotNumber: lot.lotNumber,
+                            fromZone: 'PRODUCTO_TERMINADO',
+                            toZone: 'BODEGA',
+                            quantity: consume,
+                            reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`,
+                            orderId: order.id,
+                            transferredById: req.user.id,
+                            observations: `${consume} uds → ${order.distributor?.name || 'distribuidor'}`
+                        }
+                    });
+
+                    remaining -= consume;
+                    logger.info(`  📤 ${item.product?.sku} lote ${lot.lotNumber}: -${consume} uds (queda: ${newQty})`);
+                }
+
+                if (remaining > 0) {
+                    logger.warn(`[invoiceOrder] ⚠️ ${item.product?.sku}: ${remaining} uds sin lote PT — sincronizar con Siigo`);
+                }
+            }
+
+            return updatedOrder;
         });
 
-        logger.info(`Order ${updated.orderNumber} invoiced by ${req.user.name || req.user.id} → Siigo: ${siigoResult?.name}`);
+        logger.info(`Order ${updated.orderNumber} invoiced by ${req.user.name || req.user.id} → Siigo: ${invoiceRef}`);
 
         res.json({
             success: true,
@@ -361,6 +410,7 @@ exports.invoiceOrder = async (req, res) => {
     }
 };
 
+
 /**
  * Logistics: Dispatch order with enhanced details + auto transport guide
  * POST /api/orders/:id/dispatch
@@ -369,14 +419,15 @@ exports.dispatchOrder = async (req, res) => {
     try {
         const { id } = req.params;
         const {
-            driverName, licensePlate, driverCedula,
-            amountPaid, destination, dispatchTime, dispatchNotes
+            driverName, licensePlate, driverCedula, driverPhone,
+            amountPaid, destination, destinationCity, dispatchTime, dispatchNotes,
+            receiverName, receiverPhone
         } = req.body;
 
         const order = await prisma.order.findUnique({
             where: { id },
             include: {
-                items: { include: { product: { select: { name: true, packSize: true } } } }
+                items: { orderBy: { sortOrder: 'asc' }, include: { product: { select: { name: true, packSize: true } } } }
             }
         });
 
@@ -420,11 +471,15 @@ exports.dispatchOrder = async (req, res) => {
                     driverName,
                     licensePlate: licensePlate.toUpperCase(),
                     driverCedula,
+                    driverPhone: driverPhone || null,
                     amountPaid: amountPaid ? parseFloat(amountPaid) : null,
                     totalWeightKg: Math.round(totalWeightKg * 100) / 100,
                     dispatchTime: dispatchTime || now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
                     destination,
+                    destinationCity: destinationCity || null,
                     dispatchNotes,
+                    receiverName: receiverName || null,
+                    receiverPhone: receiverPhone || null,
                     transportGuideNumber,
                     trackingGuide: transportGuideNumber
                 },
@@ -552,7 +607,7 @@ exports.getTransportGuide = async (req, res) => {
         const order = await prisma.order.findUnique({
             where: { id },
             include: {
-                items: { include: { product: { select: { name: true, sku: true, packSize: true } } } },
+                items: { orderBy: { sortOrder: 'asc' }, include: { product: { select: { name: true, sku: true, packSize: true } } } },
                 distributor: { select: { name: true, email: true } }
             }
         });
@@ -571,7 +626,8 @@ exports.getTransportGuide = async (req, res) => {
         const rows = order.items.map(item => {
             const qty = item.allocatedQty || 0;
             const weightG = getWeightG(item.product?.name);
-            const boxes = Math.ceil(qty / 12); // 12 units per box
+            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+            const boxes = Math.ceil(qty / unitsPerBox);
             const weightKg = (qty * weightG / 1000).toFixed(2);
             return `<tr>
                 <td>${item.product?.name || item.product?.sku}</td>
@@ -580,6 +636,61 @@ exports.getTransportGuide = async (req, res) => {
                 <td style="text-align:center">${weightKg} kg</td>
             </tr>`;
         }).join('');
+
+        const totalUnits = order.items.reduce((s, i) => s + (i.allocatedQty || 0), 0);
+        const totalBoxes = order.items.reduce((s, item) => {
+            const qty = item.allocatedQty || 0;
+            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+            return s + Math.ceil(qty / unitsPerBox);
+        }, 0);
+
+        // ── Category summary: group boxes by product type/size ──
+        const categories = [
+            { key: 'sirope', label: 'Siropes', color: '#7C3AED', match: (n) => n.includes('SIROPE') || n.includes('GENIALITY') },
+            { key: '3400',   label: '3400 GR', color: '#DC2626', match: (n) => !n.includes('SIROPE') && !n.includes('GENIALITY') && n.includes('3400') },
+            { key: '1150',   label: '1150 GR', color: '#EA580C', match: (n) => !n.includes('SIROPE') && !n.includes('GENIALITY') && n.includes('1150') },
+            { key: '500',    label: '500 GR',  color: '#0891B2', match: (n) => !n.includes('SIROPE') && !n.includes('GENIALITY') && n.includes('500') },
+            { key: '360',    label: '360 ML',  color: '#4F46E5', match: (n) => !n.includes('SIROPE') && !n.includes('GENIALITY') && n.includes('360') },
+            { key: '350',    label: '350 GR',  color: '#16A34A', match: (n) => !n.includes('SIROPE') && !n.includes('GENIALITY') && n.includes('350') },
+        ];
+        const catSummary = {};
+        categories.forEach(c => { catSummary[c.key] = { boxes: 0, units: 0, weightKg: 0 }; });
+        catSummary['otros'] = { boxes: 0, units: 0, weightKg: 0 };
+
+        order.items.forEach(item => {
+            const qty = item.allocatedQty || 0;
+            if (qty <= 0) return;
+            const name = (item.product?.name || '').toUpperCase();
+            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+            const boxes = Math.ceil(qty / unitsPerBox);
+            const weightKg = qty * getWeightG(item.product?.name) / 1000;
+            const cat = categories.find(c => c.match(name));
+            const key = cat ? cat.key : 'otros';
+            catSummary[key].boxes += boxes;
+            catSummary[key].units += qty;
+            catSummary[key].weightKg += weightKg;
+        });
+
+        const catChips = categories
+            .filter(c => catSummary[c.key].boxes > 0)
+            .map(c => {
+                const d = catSummary[c.key];
+                return `<div style="flex:1;min-width:120px;background:${c.color}10;border:2px solid ${c.color}30;border-radius:10px;padding:10px 12px;text-align:center">
+                    <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:${c.color};letter-spacing:1px;margin-bottom:4px">${c.label}</div>
+                    <div style="font-size:22px;font-weight:900;color:${c.color}">${d.boxes}</div>
+                    <div style="font-size:10px;color:#666">cajas · ${d.units} uds</div>
+                    <div style="font-size:9px;color:#999;margin-top:2px">${d.weightKg.toFixed(1)} kg</div>
+                </div>`;
+            }).join('');
+        // Add "otros" if exists
+        const otrosChip = catSummary['otros'].boxes > 0
+            ? `<div style="flex:1;min-width:120px;background:#f1f5f9;border:2px solid #cbd5e1;border-radius:10px;padding:10px 12px;text-align:center">
+                <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#64748b;letter-spacing:1px;margin-bottom:4px">Otros</div>
+                <div style="font-size:22px;font-weight:900;color:#64748b">${catSummary['otros'].boxes}</div>
+                <div style="font-size:10px;color:#666">cajas · ${catSummary['otros'].units} uds</div>
+                <div style="font-size:9px;color:#999;margin-top:2px">${catSummary['otros'].weightKg.toFixed(1)} kg</div>
+            </div>`
+            : '';
 
         const html = `<!DOCTYPE html>
 <html lang="es">
@@ -602,8 +713,10 @@ exports.getTransportGuide = async (req, res) => {
         th { background: #7C3AED; color: white; padding: 8px 12px; text-align: left; font-size: 12px; text-transform: uppercase; }
         td { padding: 8px 12px; border-bottom: 1px solid #E5E7EB; font-size: 13px; }
         tr:nth-child(even) { background: #F9FAFB; }
-        .totals { display: flex; justify-content: flex-end; gap: 30px; margin-bottom: 30px; font-size: 14px; }
+        .totals { display: flex; justify-content: flex-end; gap: 30px; margin-bottom: 15px; font-size: 14px; }
         .totals span { font-weight: 700; color: #7C3AED; }
+        .cat-summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 25px; padding: 12px; background: #FAFAFA; border: 1px solid #E5E7EB; border-radius: 10px; }
+        .cat-title { width: 100%; font-size: 10px; font-weight: 700; text-transform: uppercase; color: #7C3AED; letter-spacing: 1.5px; margin-bottom: 4px; }
         .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 40px; }
         .sig-block { border-top: 2px solid #333; padding-top: 8px; text-align: center; }
         .sig-block p { font-size: 12px; color: #666; }
@@ -634,6 +747,7 @@ exports.getTransportGuide = async (req, res) => {
             <h4>Datos del Conductor</h4>
             <p>Nombre: <span class="value">${order.driverName || ''}</span></p>
             <p>Cédula: <span class="value">${order.driverCedula || ''}</span></p>
+            <p>Celular: <span class="value">${order.driverPhone || ''}</span></p>
             <p>Placa: <span class="value">${order.licensePlate || ''}</span></p>
         </div>
         <div class="info-box">
@@ -641,6 +755,9 @@ exports.getTransportGuide = async (req, res) => {
             <p>Fecha: <span class="value">${order.dispatchedAt ? new Date(order.dispatchedAt).toLocaleDateString('es-CO') : ''}</span></p>
             <p>Hora: <span class="value">${order.dispatchTime || ''}</span></p>
             <p>Destino: <span class="value">${order.destination || ''}</span></p>
+            ${order.destinationCity ? `<p>Ciudad: <span class="value">${order.destinationCity}</span></p>` : ''}
+            ${order.receiverName ? `<p>Recibe: <span class="value">${order.receiverName}</span></p>` : ''}
+            ${order.receiverPhone ? `<p>Tel. contacto: <span class="value">${order.receiverPhone}</span></p>` : ''}
         </div>
         <div class="info-box">
             <h4>Resumen</h4>
@@ -659,8 +776,22 @@ exports.getTransportGuide = async (req, res) => {
 
     <div class="totals">
         <div>Total productos: <span>${order.items.length}</span></div>
+        <div>Total unidades: <span>${totalUnits}</span></div>
+        <div>Total cajas: <span>${totalBoxes}</span></div>
         <div>Total peso: <span>${order.totalWeightKg || 0} kg</span></div>
     </div>
+
+    <div class="cat-summary">
+        <div class="cat-title">📦 Resumen de Cajas por Categoría</div>
+        ${catChips}${otrosChip}
+    </div>
+
+    ${order.dispatchNotes ? `
+    <div style="margin-bottom:20px;padding:12px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#EA580C;letter-spacing:1px;margin-bottom:6px">📝 Notas de Despacho</div>
+        <p style="font-size:13px;color:#333;margin:0;white-space:pre-wrap">${order.dispatchNotes}</p>
+    </div>
+    ` : ''}
 
     <div class="signatures">
         <div class="sig-block">
@@ -749,10 +880,13 @@ exports.getAllOrders = async (req, res) => {
                         select: {
                             id: true,
                             name: true,
-                            email: true
+                            email: true,
+                            discountPercent: true,
+                            reteFuente: true
                         }
                     },
                     items: {
+                        orderBy: { sortOrder: 'asc' },
                         include: {
                             product: {
                                 select: {
@@ -779,7 +913,11 @@ exports.getAllOrders = async (req, res) => {
                         }
                     }
                 },
-                orderBy: { createdAt: 'desc' },
+                // Dynamic sort: FIFO for operational statuses, date-specific for post-invoicing
+                orderBy: status === 'INVOICED'  ? { invoicedAt: 'desc' }
+                       : status === 'DISPATCHED' ? { dispatchedAt: 'desc' }
+                       : status === 'DELIVERED'  ? { deliveredAt: 'desc' }
+                       : { createdAt: 'asc' },   // FIFO for PENDING/APPROVED/IN_PICKING/READY
                 skip: Number(skip),
                 take: Number(limit)
             }),
@@ -809,6 +947,223 @@ exports.getAllOrders = async (req, res) => {
 /**
  * Get order by ID with full details
  */
+/**
+ * Get printable picking sheet HTML
+ * GET /api/orders/:id/picking-sheet
+ * Generates a print-friendly document to place on pallets during picking
+ */
+exports.getPickingSheet = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const order = await prisma.order.findUnique({
+            where: { id },
+            include: {
+                items: {
+                    orderBy: { sortOrder: 'asc' },
+                    include: {
+                        product: { select: { name: true, sku: true, packSize: true, barcode: true, flavor: true } },
+                        pickingItems: { select: { lotNumber: true, scannedQty: true } }
+                    }
+                },
+                distributor: { select: { name: true, email: true } }
+            }
+        });
+
+        if (!order) {
+            return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+        }
+
+        // Build product rows — use allocatedQty (actual dispatch qty), fallback to requestedQty
+        const rows = order.items.map((item, idx) => {
+            const qty = item.allocatedQty || item.requestedQty;
+            const packSize = item.product?.packSize || 1;
+            const boxes = Math.ceil(qty / packSize);
+            const name = item.product?.name || item.product?.sku || '?';
+            const sku = item.product?.sku || '';
+            // Show if qty was adjusted from original request
+            const wasAdjusted = item.allocatedQty && item.allocatedQty !== item.requestedQty;
+            const adjustedNote = wasAdjusted
+                ? `<div style="font-size:9px;color:#B45309;font-style:italic">Pedido: ${item.requestedQty} → Asignado: ${item.allocatedQty}</div>`
+                : '';
+            // Group picking items by lot
+            const lotMap = {};
+            (item.pickingItems || []).forEach(pi => {
+                if (pi.lotNumber) lotMap[pi.lotNumber] = (lotMap[pi.lotNumber] || 0) + (pi.scannedQty || 0);
+            });
+            const lots = Object.entries(lotMap);
+            const lotStr = lots.length > 0
+                ? lots.map(([lot, q]) => `${lot} (${q} uds)`).join(', ')
+                : '';
+            return `<tr>
+                <td style="text-align:center;font-weight:600">${idx + 1}</td>
+                <td>
+                    <div style="font-weight:600">${name}</div>
+                    <div style="font-size:10px;color:#888">${sku}</div>
+                    ${adjustedNote}
+                </td>
+                <td style="text-align:center;font-weight:700;font-size:16px">${boxes}</td>
+                <td style="text-align:center;font-weight:700;font-size:14px;color:#7C3AED">${qty}</td>
+                <td style="min-width:140px">${lotStr || '<span style="color:#ccc;font-style:italic">_______________</span>'}</td>
+                <td style="text-align:center">
+                    <div style="width:22px;height:22px;border:2px solid #7C3AED;border-radius:4px;margin:0 auto"></div>
+                </td>
+            </tr>`;
+        }).join('');
+
+        const totalBoxes = order.items.reduce((s, item) => {
+            const qty = item.allocatedQty || item.requestedQty;
+            const packSize = item.product?.packSize || 1;
+            return s + Math.ceil(qty / packSize);
+        }, 0);
+        const totalUnits = order.items.reduce((s, i) => s + (i.allocatedQty || i.requestedQty), 0);
+
+        const createdDate = new Date(order.createdAt).toLocaleDateString('es-CO', {
+            day: 'numeric', month: 'long', year: 'numeric'
+        });
+        const createdTime = new Date(order.createdAt).toLocaleTimeString('es-CO', {
+            hour: '2-digit', minute: '2-digit'
+        });
+
+        const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Hoja de Picking - ${order.orderNumber}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; padding: 25px; color: #333; font-size: 13px; }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #7C3AED; padding-bottom: 12px; margin-bottom: 15px; }
+        .logo { font-size: 22px; font-weight: 800; color: #7C3AED; }
+        .logo small { display: block; font-size: 11px; font-weight: 400; color: #666; letter-spacing: 2px; text-transform: uppercase; }
+        .order-info { text-align: right; }
+        .order-info .order-number { font-size: 17px; font-weight: 800; color: #7C3AED; }
+        .order-info .date { font-size: 11px; color: #888; }
+        .info-bar { display: flex; gap: 20px; margin-bottom: 15px; padding: 10px 14px; background: #F5F3FF; border: 1px solid #E8E0FF; border-radius: 8px; }
+        .info-bar .item { flex: 1; }
+        .info-bar .label { font-size: 9px; text-transform: uppercase; color: #7C3AED; font-weight: 700; letter-spacing: 1px; }
+        .info-bar .value { font-size: 14px; font-weight: 600; color: #333; }
+        .notes { margin-bottom: 15px; padding: 8px 12px; background: #FFF7ED; border: 1px solid #FED7AA; border-radius: 6px; font-size: 12px; color: #92400E; }
+        .notes strong { color: #78350F; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        thead th { background: #7C3AED; color: white; padding: 8px 10px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+        thead th:first-child { border-radius: 6px 0 0 0; }
+        thead th:last-child { border-radius: 0 6px 0 0; }
+        tbody td { padding: 7px 10px; border-bottom: 1px solid #E5E7EB; font-size: 12px; vertical-align: middle; }
+        tbody tr:nth-child(even) { background: #FAFAFA; }
+        tbody tr:hover { background: #F5F3FF; }
+        .totals-bar { display: flex; justify-content: flex-end; gap: 25px; padding: 10px 14px; background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 8px; margin-bottom: 20px; font-size: 13px; }
+        .totals-bar .total-item { }
+        .totals-bar .total-label { color: #666; }
+        .totals-bar .total-value { font-weight: 800; color: #7C3AED; margin-left: 4px; }
+        .signatures { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 30px; margin-top: 35px; }
+        .sig-block { border-top: 2px solid #333; padding-top: 6px; text-align: center; }
+        .sig-block .title { font-size: 11px; font-weight: 600; color: #333; }
+        .sig-block .subtitle { font-size: 10px; color: #888; }
+        .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #BBB; border-top: 1px solid #E5E7EB; padding-top: 8px; }
+        @media print {
+            body { padding: 15px; }
+            .no-print { display: none; }
+            tbody tr:hover { background: transparent; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <div class="logo">
+                LIQUIPOPS
+                <small>Hoja de Separación / Picking</small>
+            </div>
+        </div>
+        <div class="order-info">
+            <div class="order-number">${order.orderNumber}</div>
+            <div class="date">${createdDate} · ${createdTime}</div>
+        </div>
+    </div>
+
+    <div class="info-bar">
+        <div class="item">
+            <div class="label">Distribuidor</div>
+            <div class="value">${order.distributor?.name || 'N/A'}</div>
+        </div>
+        <div class="item">
+            <div class="label">Total Productos</div>
+            <div class="value">${order.items.length}</div>
+        </div>
+        <div class="item">
+            <div class="label">Total Cajas</div>
+            <div class="value">${totalBoxes}</div>
+        </div>
+        <div class="item">
+            <div class="label">Total Unidades</div>
+            <div class="value">${totalUnits}</div>
+        </div>
+    </div>
+
+    ${order.notes ? `<div class="notes"><strong>📋 Nota:</strong> ${order.notes}</div>` : ''}
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width:35px;text-align:center">#</th>
+                <th>Producto</th>
+                <th style="text-align:center;width:70px">Cajas</th>
+                <th style="text-align:center;width:70px">Uds</th>
+                <th style="width:160px">Lote</th>
+                <th style="text-align:center;width:40px">✓</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+    </table>
+
+    <div class="totals-bar">
+        <div class="total-item">
+            <span class="total-label">Productos:</span>
+            <span class="total-value">${order.items.length}</span>
+        </div>
+        <div class="total-item">
+            <span class="total-label">Cajas:</span>
+            <span class="total-value">${totalBoxes}</span>
+        </div>
+        <div class="total-item">
+            <span class="total-label">Unidades:</span>
+            <span class="total-value">${totalUnits}</span>
+        </div>
+    </div>
+
+    <div class="signatures">
+        <div class="sig-block">
+            <div class="title">Separado por</div>
+            <div class="subtitle">Nombre y firma</div>
+        </div>
+        <div class="sig-block">
+            <div class="title">Verificado por</div>
+            <div class="subtitle">Nombre y firma</div>
+        </div>
+        <div class="sig-block">
+            <div class="title">Recibido por</div>
+            <div class="subtitle">Nombre y firma</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        Documento generado automáticamente — ${new Date().toLocaleString('es-CO')} — LIQUIPOPS SAS
+    </div>
+
+    <script>window.onload = () => window.print();</script>
+</body>
+</html>`;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+
+    } catch (error) {
+        logger.error('Picking Sheet Error:', error);
+        res.status(500).json({ success: false, error: 'Error al generar hoja de picking' });
+    }
+};
+
 exports.getOrderById = async (req, res) => {
     try {
         const { id } = req.params;
@@ -825,6 +1180,7 @@ exports.getOrderById = async (req, res) => {
                     }
                 },
                 items: {
+                    orderBy: { sortOrder: 'asc' },
                     include: {
                         product: {
                             select: {

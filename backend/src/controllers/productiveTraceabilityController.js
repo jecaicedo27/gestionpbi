@@ -1093,12 +1093,14 @@ exports.getBatchDetail = async (req, res) => {
             });
 
             (order.receptions || []).forEach((reception) => {
-                [reception.photoProductUrl, reception.photoInvoiceUrl, reception.siigoScreenshotUrl]
+                // Fase 8: photoProductUrl y photoInvoiceUrl eliminados (eran legacy sin datos)
+                // siigoScreenshotUrl se mantiene
+                [reception.siigoScreenshotUrl]
                     .filter(Boolean)
                     .forEach((url, index) => {
                         pushEvidence(evidence, evidenceSeen, {
                             url,
-                            label: `Recepción ${order.orderNumber} · Archivo ${index + 1}`,
+                            label: `Recepción ${order.orderNumber} · Siigo ${index + 1}`,
                             sourceType: 'RECEPTION',
                             sourceId: reception.id,
                             sourceLabel: order.orderNumber,

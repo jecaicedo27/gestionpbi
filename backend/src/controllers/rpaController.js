@@ -17,6 +17,27 @@ const createSiigoAssemblyNote = async (req, res) => {
             });
         }
 
+        // ── Idempotency guard: reject if same assemblyNoteId already running or done ──
+        if (assemblyNoteId) {
+            const existing = await prisma.rpaExecution.findFirst({
+                where: {
+                    assemblyNoteId,
+                    status: { in: ['RUNNING', 'SUCCESS'] }
+                },
+                orderBy: { startedAt: 'desc' }
+            });
+            if (existing) {
+                return res.status(409).json({
+                    success: false,
+                    status: existing.status,
+                    executionId: existing.id,
+                    siigoNoteCode: existing.siigoNoteCode,
+                    error: `Ya existe una ejecución ${existing.status === 'SUCCESS' ? 'exitosa' : 'en curso'} para esta nota de ensamble (${existing.siigoNoteCode || existing.id}).`
+                });
+            }
+        }
+
+
         // Resolve SKU if not provided
         let resolvedSku = productSku || null;
         if (!resolvedSku) {

@@ -9,7 +9,7 @@ const Sidebar = () => {
 
     const allItems = [
         // ── General ──
-        { icon: LayoutDashboard, label: 'Dashboard', path: '/', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: LayoutDashboard, label: 'Dashboard', path: '/', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING', 'QUIMICO'] },
 
         // ── Distribución ──
         { icon: ShoppingCart, label: 'Tienda', path: '/shop', roles: ['DISTRIBUIDOR'], section: 'Distribución' },
@@ -17,33 +17,41 @@ const Sidebar = () => {
 
         // ── Logística ──
         { icon: Package, label: 'Pedidos', path: '/orders', roles: ['ADMIN', 'LOGISTICA'], section: 'Logística' },
-        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory', roles: ['ADMIN', 'PRODUCCION', 'CARTERA', 'LOGISTICA'] },
-        { icon: Layers, label: 'Trazabilidad Lotes', path: '/lots/traceability', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory', roles: ['ADMIN', 'PRODUCCION', 'CARTERA', 'LOGISTICA', 'OPERARIO_PICKING', 'QUIMICO'] },
+        { icon: Layers, label: 'Trazabilidad Lotes', path: '/lots/traceability', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
 
         // ── Producción ──
         { icon: Calendar, label: 'Prog. Producción', path: '/production/schedule', roles: ['ADMIN'], section: 'Producción' },
-        { icon: Calendar, label: 'Producción', path: '/production/view', roles: ['PRODUCCION'], section: 'Producción' },
-        { icon: PlayCircle, label: 'Modo Operador (PLC)', path: '/production/operator', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'] },
-        { icon: Factory, label: 'Plantillas Producción', path: '/assembly-templates', roles: ['ADMIN'] },
-        { icon: Activity, label: 'Historial RPA', path: '/rpa-history', roles: ['ADMIN', 'PRODUCCION'] },
-        { icon: FileText, label: 'Gestor Fórmulas', path: '/formulas', roles: ['ADMIN'] },
-        { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: Calendar, label: 'Producción', path: '/production/view', roles: ['PRODUCCION', 'QUIMICO'], section: 'Producción' },
+        { icon: PlayCircle, label: 'Modo Operador (PLC)', path: '/production/operator', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING', 'QUIMICO'] },
+        { icon: Factory, label: 'Plantillas Liquipops', path: '/assembly-templates', roles: ['ADMIN'] },
+        { icon: Factory, label: 'Plantillas Geniality', path: '/geniality/assembly-templates', roles: ['ADMIN'] },
+        { icon: Activity, label: 'Historial RPA', path: '/rpa-history', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
+        { icon: FileText, label: 'Fórmulas Liquipops', path: '/formulas', roles: ['ADMIN', 'QUIMICO'] },
+        { icon: FileText, label: 'Fórmulas Geniality', path: '/geniality/formulas', roles: ['ADMIN', 'QUIMICO'] },
+        { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel', roles: ['ADMIN', 'QUIMICO'] },
         { icon: LineChart, label: 'Panel MRP', path: '/mrp', roles: ['ADMIN'] },
         { icon: BarChart2, label: 'KPIs Producción', path: '/production/kpis', roles: ['ADMIN'] },
-        { icon: ClipboardList, label: 'Historial Batches', path: '/production/batch-history', roles: ['ADMIN'] },
-        { icon: Warehouse, label: 'Zona de Producción', path: '/production/zone', roles: ['ADMIN', 'PRODUCCION'] },
-        { icon: Package, label: 'Zonas Prod. Terminado', path: '/production/finished-zone', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION'] },
-        { icon: ClipboardList, label: 'Conteo Físico', path: '/production/physical-count', roles: ['ADMIN', 'LOGISTICA'] },
-        { icon: AlertCircle, label: 'Recall por Lote', path: '/recall-report', roles: ['ADMIN', 'CALIDAD', 'LOGISTICA'] },
-        { icon: Printer, label: 'Impresión Etiquetas', path: '/labeling', roles: ['ADMIN', 'PRODUCCION'] },
+        { icon: ClipboardList, label: 'Historial Batches', path: '/production/batch-history', roles: ['ADMIN', 'QUIMICO'] },
+        { icon: Warehouse, label: 'Zona de Producción', path: '/production/zone', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
+        { icon: Package, label: 'Zonas Prod. Terminado', path: '/production/finished-zone', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION', 'OPERARIO_PICKING'] },
+        { icon: Truck, label: 'Actas de Entrega', path: '/production/handoffs', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION', 'OPERARIO_PICKING'] },
+        { icon: ClipboardList, label: 'Conteo Físico PT', path: '/production/physical-count', roles: ['ADMIN', 'LOGISTICA'] },
+        { icon: ClipboardList, label: 'Inventario Físico MP', path: '/inventory/count', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION', 'QUIMICO'] },
+
+        { icon: AlertCircle, label: 'Recall por Lote', path: '/recall-report', roles: ['ADMIN', 'CALIDAD', 'LOGISTICA', 'QUIMICO'] },
+        { icon: Printer, label: 'Impresión Etiquetas', path: '/labeling', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'] },
+        { icon: ClipboardList, label: 'Reg. de Lavado POES', path: '/sanitation/operator', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
 
         // ── Calidad ──
-        { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL', 'LOGISTICA'], section: 'Calidad' },
-        { icon: Activity, label: 'Dashboard PQR', path: '/pqr/dashboard', roles: ['ADMIN', 'CALIDAD'] },
-        { icon: AlertCircle, label: 'PQR Interno — Crear', path: '/internal-pqr/create', roles: ['ADMIN', 'CALIDAD'] },
-        { icon: AlertCircle, label: 'PQR Interno — Gestión', path: '/internal-pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD'] },
-        { icon: Network, label: 'Trazabilidad Productiva', path: '/quality/productive-traceability', roles: ['ADMIN', 'CALIDAD', 'PRODUCCION'] },
-        { icon: Microscope, label: 'Microbiología', path: '/micro/dashboard', roles: ['ADMIN', 'CALIDAD'] },
+        { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL', 'LOGISTICA', 'QUIMICO'], section: 'Calidad' },
+        { icon: Activity, label: 'Dashboard PQR', path: '/pqr/dashboard', roles: ['ADMIN', 'CALIDAD', 'QUIMICO'] },
+        { icon: AlertCircle, label: 'PQR Interno — Crear', path: '/internal-pqr/create', roles: ['ADMIN', 'CALIDAD', 'QUIMICO'] },
+        { icon: AlertCircle, label: 'PQR Interno — Gestión', path: '/internal-pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'QUIMICO'] },
+        { icon: Network, label: 'Trazabilidad Productiva', path: '/quality/productive-traceability', roles: ['ADMIN', 'CALIDAD', 'PRODUCCION', 'QUIMICO'] },
+        { icon: Microscope, label: 'Microbiología', path: '/micro/dashboard', roles: ['ADMIN', 'CALIDAD', 'QUIMICO'] },
+        { icon: ClipboardList, label: 'Saneamiento POES', path: '/sanitation/dashboard', roles: ['ADMIN', 'CALIDAD', 'QUIMICO'] },
+        { icon: Settings, label: 'Config POES', path: '/sanitation/config', roles: ['ADMIN', 'QUIMICO'] },
 
         // ── Compras ──
         { icon: Truck, label: 'Forecast MP', path: '/procurement/forecast', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA'], section: 'Compras' },
@@ -56,6 +64,7 @@ const Sidebar = () => {
         // ── Reportes & Admin ──
         { icon: Search, label: 'Conciliación Siigo', path: '/reconciliation', roles: ['ADMIN'], section: 'Reportes' },
         { icon: LineChart, label: 'Análisis Ejecutivo', path: '/analytics/executive', roles: ['ADMIN'] },
+        { icon: BarChart2, label: 'Ventas por Cliente', path: '/analytics/sales', roles: ['ADMIN'] },
         { icon: FileText, label: 'Movimientos', path: '/admin/movements', roles: ['ADMIN'] },
         { icon: UsersIcon, label: 'Usuarios', path: '/admin/users', roles: ['ADMIN'] },
         { icon: Settings, label: 'Configuración', path: '/admin/config', roles: ['ADMIN'] },

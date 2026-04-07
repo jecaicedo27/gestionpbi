@@ -98,6 +98,13 @@ exports.getAvailableLots = async (req, res) => {
     try {
         const { productId } = req.params;
 
+        // Get product to determine the correct display unit
+        const product = await prisma.product.findUnique({
+            where: { id: productId },
+            select: { unit: true }
+        });
+        const productUnit = product?.unit || 'unidad';
+
         const lots = await prisma.materialLot.findMany({
             where: {
                 productId,
@@ -118,7 +125,13 @@ exports.getAvailableLots = async (req, res) => {
             orderBy: { receivedAt: 'desc' }
         });
 
-        res.json(lots);
+        // Override lot unit with the product's unit for correct display
+        const lotsWithUnit = lots.map(l => ({
+            ...l,
+            unit: productUnit
+        }));
+
+        res.json(lotsWithUnit);
     } catch (error) {
         console.error('Error getting available lots:', error);
         res.status(500).json({ error: error.message });

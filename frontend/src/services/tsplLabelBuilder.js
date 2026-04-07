@@ -7,6 +7,7 @@
  *
  * TSPL reference: https://www.tscprinters.com/EN/DownloadFile
  */
+import { buildQrString } from './qrService';
 
 /**
  * Build TSPL commands for a material lot label.
@@ -29,13 +30,13 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
         productName = '', sku = '', lotNumber = '',
         quantity = 0, unit = 'unidad', supplier = '',
         receivedAt = '', expiresAt = '', orderNumber = '',
-        barcode = ''
+        barcode = '', statusText = null
     } = data;
 
     // Format quantity
     const isWeight = unit === 'gramo' || unit === 'g';
     const qtyText = isWeight
-        ? `${(quantity / 1000).toFixed(1)} kg`
+        ? `${quantity.toLocaleString('es-CO')} g`
         : `${quantity.toLocaleString('es-CO')} ${unit || 'und'}`;
 
     // Format dates — "Recep" is actually fabrication date
@@ -82,7 +83,15 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
                 nameLine1 = sizeMatch[1].trim().substring(0, 22);
                 nameLine3 = sizeMatch[2].trim();
             } else {
-                nameLine1 = productName.substring(0, 22);
+                // No size spec — split long names (e.g. premixes) into 2 lines
+                const words = productName.split(/\s+/);
+                if (words.length >= 3 && productName.length > 16) {
+                    const mid = Math.ceil(words.length / 2);
+                    nameLine1 = words.slice(0, mid).join(' ');
+                    nameLine2 = words.slice(mid).join(' ');
+                } else {
+                    nameLine1 = productName.substring(0, 22);
+                }
             }
         }
     }
@@ -96,10 +105,10 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
     if (lotDisplay.length > 20) lotDisplay = lotDisplay.substring(0, 20) + '..';
     const qtyDisplay = qtyText.substring(0, 18);
 
-    // QR content — includes barcode + quantity for automated picking
+    // QR content — canonical format from qrService (single source of truth)
     const boxNum = data.boxNumber || 1;
     const boxTotal = data.totalBoxes || 1;
-    const qrContent = `LOT:${lotNumber}|SKU:${sku}|BAR:${barcode || sku}|QTY:${quantity}|BOX:${boxNum}/${boxTotal}`;
+    const qrContent = buildQrString({ lotNumber, sku, barcode: barcode || sku, quantity, boxNumber: boxNum, totalBoxes: boxTotal });
 
     // ── Layout: text LEFT (14-340), QR RIGHT (400+) ──
     const textW = 340;
@@ -118,8 +127,12 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
         'DIRECTION 1',
         'CLS',
 
-        // ── Company Header (skip for maquila) ──
-        ...(maquila ? [] : [
+        // ── Company Header (skip for maquila or statusText) ──
+        ...(statusText ? [
+            `REVERSE 0,0,576,34`,
+            `TEXT 20,10,"1",0,1,1,"${escapeTspl(statusText)}"`,
+            'BAR 10,36,556,2',
+        ] : maquila ? [] : [
             `TEXT 10,10,"1",0,1,1,"POPPING BOBA INTERNATIONAL S.A.S."`,
             'BAR 10,28,556,2',
         ]),
@@ -188,7 +201,7 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
     cmds.push(`TEXT 10,${y},"1",0,1,1,"${new Date().toLocaleDateString('es-CO')} ${new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}"`);
     if (orderNumber) cmds.push(`TEXT 280,${y},"1",0,1,1,"OC: ${escapeTspl(orderNumber)}"`);
 
-    // ── Print (always 1 per call — each box gets unique QR) ──
+    // ── Print 1 label per call (copies handled by caller loop) ──
     cmds.push(`PRINT 1`);
 
     return cmds.join('\n') + '\n';

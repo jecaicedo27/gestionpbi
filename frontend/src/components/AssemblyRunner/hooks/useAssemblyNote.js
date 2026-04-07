@@ -123,13 +123,19 @@ export function useAssemblyNote(id) {
             steps.push({ type: 'CONTEO', data: noteData });
         } else if (isEnsamble) {
             steps.push({ type: 'MARCADO_CAJAS', data: noteData });
+            steps.push({ type: 'OUTPUT', data: noteData });   // Mandatory: operator enters REAL qty
             steps.push({ type: 'ENSAMBLE', data: noteData });
         } else if (isEmpaque) {
             // If materials were pre-consumed at CONTEO, skip all INPUT steps
             const preConsumed = noteData.processParameters?.materialsPreConsumed === true;
             if (!preConsumed) {
-                // Legacy: Add INPUT steps for items needing lot selection (not ETIQUETA, SELLO, CAJA)
-                const exemptKeywords = ['ETIQUETA', 'SELLO', 'CAJA'];
+                // Exempt packaging materials AND bulk ingredients already weighed in earlier steps
+                const exemptKeywords = [
+                    'ETIQUETA', 'SELLO', 'CAJA',         // packaging labels/seals/boxes
+                    'TARRO', 'TAPA', 'FOIL', 'LINER', 'ENVASE',  // containers
+                    'SABORIZACION', 'COMPUESTO', 'PROTECCION', 'BASE', 'SIROPE', // bulk ingredients
+                    'ESFERA',  // spheres: auto-consumed from MaterialLot on completeNote
+                ];
                 const lotItems = (noteData.items || []).filter(item => {
                     const name = (item.component?.name || '').toUpperCase();
                     return !exemptKeywords.some(kw => name.includes(kw));
@@ -137,6 +143,8 @@ export function useAssemblyNote(id) {
                 lotItems.forEach(item => steps.push({ type: 'INPUT', data: item }));
             }
             steps.push({ type: 'EMPAQUE', data: noteData });
+            steps.push({ type: 'MARCADO_CAJAS', data: noteData });  // Etiquetado QR (buenas + NC)
+            steps.push({ type: 'ENSAMBLE', data: noteData });       // Ensamble final (incluye merma)
         } else if (isCoccion) {
             steps.push({ type: 'COCCION', data: noteData });
         } else if (isMedicion) {
@@ -182,8 +190,13 @@ export function useAssemblyNote(id) {
         if (noteData.status === 'EXECUTING') {
             const isEmpaque = noteData.processType?.code === 'EMPAQUE';
             if (isEmpaque) {
-                // EMPAQUE always starts at selector — user picks presentation from there
-                startIdx = 0;
+                // Restore to persisted wizard step (survive F5/logout/tablet lock)
+                const savedStepEmp = noteData.processParameters?.wizardStep;
+                if (typeof savedStepEmp === 'number' && savedStepEmp > 0 && savedStepEmp < steps.length) {
+                    startIdx = savedStepEmp;
+                } else {
+                    startIdx = 0; // Default: start at selector
+                }
             } else {
                 // 1. Check for server-saved wizard step position (persisted when user navigates away)
                 const savedStep = noteData.processParameters?.wizardStep;

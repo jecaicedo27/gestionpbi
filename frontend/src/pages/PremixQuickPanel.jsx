@@ -61,6 +61,22 @@ const PREMIXES = [
         shadow: 'shadow-blue-200',
         description: 'Agua + Alginato de Sodio',
     },
+    {
+        name: 'Premezcla Calcio Dióxido',
+        code: 'TMPL110',
+        emoji: '🦴',
+        gradient: 'from-lime-500 to-green-600',
+        shadow: 'shadow-lime-200',
+        description: 'Lactato + Cloruro de Calcio + Dióxido de Titanio',
+    },
+    {
+        name: 'Premezcla Gomas Especial',
+        code: 'TMPL048',
+        emoji: '🧪',
+        gradient: 'from-fuchsia-500 to-purple-600',
+        shadow: 'shadow-fuchsia-200',
+        description: 'Gomas especiales para fórmula Dióxido',
+    },
 ];
 
 const PROCESSES = [
@@ -71,6 +87,14 @@ const PROCESSES = [
         gradient: 'from-indigo-500 to-blue-700',
         shadow: 'shadow-indigo-200',
         description: 'Agua + Calcio + Gomas + Azúcar + Glucosa + Conservantes',
+    },
+    {
+        name: 'Base Liquipops Dióxido',
+        code: 'TMPL-BASELIQ-001-v2',
+        emoji: '⚪',
+        gradient: 'from-emerald-500 to-teal-700',
+        shadow: 'shadow-emerald-200',
+        description: 'Calcio Dióxido + Gomas + Azúcar + Glucosa + Color Verde + Dióxido Titanio',
     },
 ];
 
@@ -144,7 +168,17 @@ export default function PremixQuickPanel() {
     const [activeTab, setActiveTab] = useState('liquipops'); // 'liquipops' | 'geniality'
 
     const isAdmin = user?.role?.toUpperCase() === 'ADMIN';
-    const premezclasToShow = PREMIXES;
+    const isQuimico = user?.role?.toUpperCase() === 'QUIMICO';
+    const isProduccion = user?.role?.toUpperCase() === 'PRODUCCION';
+    const canSeeSecretFormulas = isAdmin || isQuimico;
+
+    // Premezclas: Producción can see them EXCEPT Protónico
+    // Protónico, Compuestos, Esferas → Admin/Quimico only
+    const premezclasToShow = canSeeSecretFormulas
+        ? PREMIXES
+        : isProduccion
+            ? PREMIXES.filter(p => !p.name.toLowerCase().includes('protónico'))
+            : [];
 
     // ── Active-batch conflict dialog state ────────────────────
     const [conflictDialog, setConflictDialog] = useState(null);
@@ -152,7 +186,7 @@ export default function PremixQuickPanel() {
 
     /* fetch all templates to get their IDs */
     useEffect(() => {
-        api.get('/assembly-templates')
+        api.get('/assembly-templates?all=true')
             .then(r => setTemplates(r.data || []))
             .catch(() => { })
             .finally(() => setLoading(false));
@@ -334,6 +368,8 @@ export default function PremixQuickPanel() {
                                     'TMPL005': 'linear-gradient(135deg, #facc15, #f59e0b)',
                                     'TMPL007': 'linear-gradient(135deg, #3b82f6, #0ea5e9)',
                                     'TMPL-BASELIQ-001': 'linear-gradient(135deg, #4f46e5, #1e40af)',
+                                    'TMPL110': 'linear-gradient(135deg, #84cc16, #16a34a)',
+                                    'TMPL048': 'linear-gradient(135deg, #d946ef, #9333ea)',
                                 }[premix.code] || 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                                 padding: '0.5rem',
                                 display: 'flex',
@@ -422,8 +458,8 @@ export default function PremixQuickPanel() {
                 })}
             </div>
 
-            {/* ── PROCESSES section ── */}
-            {isAdmin && PROCESSES.length > 0 && (
+            {/* ── PROCESSES section ── (visible to all authorized roles) */}
+            {(canSeeSecretFormulas || isProduccion) && PROCESSES.length > 0 && (
                 <>
                     <div style={{ margin: '1.5rem 0 0.75rem' }}>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -460,6 +496,7 @@ export default function PremixQuickPanel() {
                                     <div style={{
                                         background: {
                                             'TMPL-BASELIQ-001': 'linear-gradient(135deg, #4f46e5, #1e40af)',
+                                            'TMPL-BASELIQ-001-v2': 'linear-gradient(135deg, #10b981, #0d9488)',
                                             'TMPL064': 'linear-gradient(135deg, #d97706, #b45309)',
                                         }[premix.code] || 'linear-gradient(135deg, #6366f1, #8b5cf6)',
                                         padding: '0.5rem',
@@ -513,8 +550,8 @@ export default function PremixQuickPanel() {
             </>
             )}
 
-            {/* ── COMPUESTOS section ── */}
-            {isAdmin && COMPUESTOS.length > 0 && (
+            {/* ── COMPUESTOS section ── (Admin/Quimico only) */}
+            {canSeeSecretFormulas && COMPUESTOS.length > 0 && (
                 <>
                     <div style={{ margin: '1.5rem 0 0.75rem' }}>
                         <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -562,8 +599,8 @@ export default function PremixQuickPanel() {
                 </>
             )}
 
-            {/* ── ESFERAS section ── */}
-            {isAdmin && (
+            {/* ── ESFERAS section ── (Admin/Quimico only) */}
+            {canSeeSecretFormulas && (
             <>
                 <div style={{ margin: '1.5rem 0 0.75rem' }}>
                     <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
@@ -615,8 +652,8 @@ export default function PremixQuickPanel() {
             </>
             )}
 
-            {/* ── PROTECCIÓN section ── */}
-            <>
+            {/* ── PROTECCIÓN section ── (visible to all authorized roles) */}
+            {(canSeeSecretFormulas || isProduccion) && (<>
                 <div style={{ margin: '1.5rem 0 0.75rem' }}>
                     <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>
                         🛡️ Protección
@@ -660,7 +697,7 @@ export default function PremixQuickPanel() {
                         );
                     })}
                 </div>
-            </>
+            </>)}
 
             {/* ═══ END LIQUIPOPS TAB ═══ */}
             </>)}

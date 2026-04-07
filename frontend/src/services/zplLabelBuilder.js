@@ -1,31 +1,34 @@
 /**
  * zplLabelBuilder.js — Generate ZPL commands for Zebra ZD230t
  *
- * Label size: 80mm × 50mm at 203 DPI (8 dots/mm)
- * 80mm = 640 dots,  50mm = 400 dots
+ * Label paper: Dual-column roll
+ *   Total width:  103mm = 824 dots (at 8 dots/mm, 203 DPI)
+ *   Total height:  40mm = 320 dots
+ *   Left column:   50mm = 400 dots (0 → 400)
+ *   Center gap:     3mm =  24 dots
+ *   Right column:  50mm = 400 dots (424 → 824)
  *
- * ZPL reference: https://www.zebra.com/content/dam/zebra/manuals/printers/common/programming/zpl-zbi2-pm-en.pdf
+ * Each print produces TWO identical labels side by side.
  */
+import { buildQrString } from './qrService';
 
 /**
- * Build ZPL commands for a material lot label.
- *
- * @param {Object} data  — same shape as tsplLabelBuilder
- * @param {number} [copies=1]
- * @returns {string} ZPL command string
+ * Render one label's content at a given X offset.
+ * Fits in ~48mm wide × 38mm tall (384 × 304 dots usable).
  */
-export function buildLotLabelZPL(data, copies = 1) {
+function renderLabel(data, xOff) {
     const {
         productName = '', sku = '', lotNumber = '',
-        quantity = 0, unit = 'unidad', supplier = '',
-        receivedAt = '', expiresAt = '', orderNumber = '',
-        barcode = ''
+        quantity = 0, unit = 'unidad',
+        receivedAt = '', expiresAt = '',
+        barcode = '', boxNumber = 1, totalBoxes = 1,
+        statusText = null
     } = data;
 
     // Format quantity
     const isWeight = unit === 'gramo' || unit === 'g';
     const qtyText = isWeight
-        ? `${(quantity / 1000).toFixed(1)} kg`
+        ? `${quantity.toLocaleString('es-CO')} g`
         : `${quantity.toLocaleString('es-CO')} ${unit || 'und'}`;
 
     // Format dates
@@ -51,89 +54,178 @@ export function buildLotLabelZPL(data, copies = 1) {
         nameLine2 = saborMatch[2].trim();
         nameLine3 = saborMatch[3].trim();
     } else {
+        // Non-SABOR products (e.g. "SIROPE GENIALITY ESCARCHADOR X 360 ML" or "PREMEZCLA GOMAS PARA PERLAS")
         const sizeMatch = productName.match(/^(.+?)(\s+X\s+\d+.*)$/i);
         if (sizeMatch) {
-            nameLine1 = sizeMatch[1].trim().substring(0, 28);
+            const base = sizeMatch[1].trim();
             nameLine3 = sizeMatch[2].trim();
+            // Try to split known brands from product variant
+            const brandMatch = base.match(/^(SIROPE GENIALITY|LIQUIPOPS|ESSKISIMO|BLACK|WOW|BATCH GENIALITY)\s+(.+)$/i);
+            if (brandMatch) {
+                nameLine1 = brandMatch[1].trim();
+                nameLine2 = brandMatch[2].trim();
+            } else {
+                nameLine1 = base.substring(0, 24);
+            }
         } else {
-            nameLine1 = productName.substring(0, 28);
+            // No size spec — split long names (e.g. premixes) into 2 lines
+            const words = productName.split(/\s+/);
+            if (words.length >= 3 && productName.length > 16) {
+                // Split roughly in half at a word boundary
+                const mid = Math.ceil(words.length / 2);
+                nameLine1 = words.slice(0, mid).join(' ');
+                nameLine2 = words.slice(mid).join(' ');
+            } else {
+                nameLine1 = productName.substring(0, 24);
+            }
         }
     }
 
-    // Lot display
+    // Lot display (shortened)
     let lotDisplay = lotNumber;
     if (/[a-zA-Z]/.test(lotNumber)) {
         const parts = lotNumber.split('-');
         lotDisplay = parts.length >= 2 ? parts.slice(-2).join('-') : parts[parts.length - 1];
     }
-    if (lotDisplay.length > 22) lotDisplay = lotDisplay.substring(0, 22) + '..';
+    if (lotDisplay.length > 18) lotDisplay = lotDisplay.substring(0, 18) + '..';
 
-    // QR content
-    const boxNum = data.boxNumber || 1;
-    const boxTotal = data.totalBoxes || 1;
-    const qrContent = `LOT:${lotNumber}|SKU:${sku}|BAR:${barcode || sku}|QTY:${quantity}|BOX:${boxNum}/${boxTotal}`;
+    // QR content — canonical format from qrService (single source of truth)
+    const qrData = buildQrString({ lotNumber, sku, barcode: barcode || sku, quantity, boxNumber, totalBoxes });
 
-    // ── Build ZPL for 40mm × 50mm label (2-up) ──
-    // Single label: ~37mm usable = 296 dots at 203 DPI
-    let y = 6;
-    const textX = 6;
-    const W = 284; // usable width with margins
+    // ── Build label fields at xOff ──
+    // Column: ~50mm = 400 dots wide, 40mm = 320 dots tall
+    // Layout mirrors SAT label: text LEFT, separator, QR RIGHT
+    const x = xOff + 14;      // left margin ~1.7mm to avoid cut-off
+    const sepX = xOff + 236;
+    const qrX = xOff + 244;
+    let y = 14;                // ~1.7mm top margin
+    let fields = '';
 
-    let zpl = '^XA\n';
-    zpl += '^MMT\n';         // Thermal transfer mode
-    zpl += '^PW296\n';       // Print width ~37mm (safe for 40mm with gap)
-    zpl += '^LL400\n';       // Label length 50mm
-    zpl += '^LS0\n';
-    zpl += '^MD10\n';
-    zpl += '^PR3\n';
-
-    // ── Company header (tiny) ──
-    zpl += `^FO6,${y}^A0N,11,11^FDPOPPING BOBA INTL S.A.S.^FS\n`;
-    y += 13;
-    zpl += `^FO${textX},${y}^GB${W},1,1^FS\n`;
+    // ── 1. Company header (small, like SAT) ──
+    if (statusText) {
+        // Print inverted black box with white text for status
+        fields += `^FO${x},${y - 2}^GB380,22,22^FS\n`;
+        fields += `^FO${x + 10},${y + 2}^A0N,16,14^FR^FD${esc(statusText)}^FS\n`;
+    } else {
+        fields += `^FO${x},${y}^A0N,16,14^FDPOPPING BOBA INTL S.A.S.^FS\n`;
+    }
+    y += 18;
+    fields += `^FO${x},${y}^GB380,1,1^FS\n`;
     y += 3;
 
-    // ── Product Name — compact ──
+    // ── LEFT SIDE: Same order as SAT label ──
+
+    // 2. Brand line — smart abbreviation to fit 50mm column
     if (nameLine2) {
-        // FLAVOR big
-        zpl += `^FO${textX},${y}^A0N,26,26^FD${esc(nameLine2.substring(0, 16))}^FS\n`;
-        y += 30;
-        if (nameLine3) {
-            zpl += `^FO${textX},${y}^A0N,14,14^FD${esc(nameLine3)}^FS\n`;
-            y += 18;
-        }
-    } else {
-        zpl += `^FO${textX},${y}^A0N,18,18^FD${esc(nameLine1.substring(0, 22))}^FS\n`;
+        let brandLine = nameLine1;
+        // Shorten known brands to fit label width (~16 chars at 18pt)
+        if (/SIROPE GENIALITY/i.test(brandLine))        brandLine = 'GENIALITY SABOR';
+        else if (/LIQUIPOPS/i.test(brandLine))           brandLine = 'LIQUIPOPS SABOR';
+        else if (/ESSKISIMO/i.test(brandLine))           brandLine = 'ESSKISIMO SABOR';
+        else if (/BLACK/i.test(brandLine))               brandLine = 'BLACK SABOR';
+        else if (/WOW/i.test(brandLine))                 brandLine = 'WOW SABOR';
+        else                                             brandLine = brandLine.substring(0, 18);
+        fields += `^FO${x},${y}^A0N,18,16^FD${esc(brandLine)}^FS\n`;
         y += 22;
     }
 
-    // ── SKU + Lote ──
-    zpl += `^FO${textX},${y}^A0N,14,14^FD${esc(sku.substring(0, 10))}  L:${esc(lotDisplay.substring(0, 12))}^FS\n`;
-    y += 18;
+    // 3. FLAVOR — dynamic sizing based on length
+    if (nameLine2) {
+        const fl = nameLine2.length;
+        if (fl <= 9) {
+            // Short: BIG (e.g. "MARACUYA", "CHAMOY")
+            fields += `^FO${x},${y}^A0N,44,42^FD${esc(nameLine2)}^FS\n`;
+            y += 48;
+        } else if (fl <= 16) {
+            // Medium: slightly smaller (e.g. "MANGO BICHE", "CEREZA ACIDA")
+            fields += `^FO${x},${y}^A0N,34,30^FD${esc(nameLine2)}^FS\n`;
+            y += 38;
+        } else {
+            // Long: 2 lines (e.g. "MANGO BICHE CON SAL")
+            const mid = nameLine2.lastIndexOf(' ', 14);
+            const splitAt = mid > 4 ? mid : 14;
+            fields += `^FO${x},${y}^A0N,28,26^FD${esc(nameLine2.substring(0, splitAt))}^FS\n`;
+            y += 30;
+            fields += `^FO${x},${y}^A0N,28,26^FD${esc(nameLine2.substring(splitAt).trim())}^FS\n`;
+            y += 32;
+        }
+    } else {
+        // Single-line name: use dynamic sizing based on length
+        const len = nameLine1.length;
+        if (len <= 14) {
+            fields += `^FO${x},${y}^A0N,36,34^FD${esc(nameLine1)}^FS\n`;
+            y += 40;
+        } else if (len <= 20) {
+            fields += `^FO${x},${y}^A0N,28,26^FD${esc(nameLine1)}^FS\n`;
+            y += 32;
+        } else {
+            fields += `^FO${x},${y}^A0N,22,20^FD${esc(nameLine1.substring(0, 24))}^FS\n`;
+            y += 26;
+        }
+    }
 
-    // ── Quantity ──
-    zpl += `^FO${textX},${y}^A0N,18,18^FD${esc(qtyText.substring(0, 20))}^FS\n`;
+    // 4. Size spec "X 3400 GR"
+    if (nameLine3) {
+        fields += `^FO${x},${y}^A0N,20,18^FD${esc(nameLine3.substring(0, 14))}^FS\n`;
+        y += 22;
+    }
+
+    // 5. SKU
+    fields += `^FO${x},${y}^A0N,20,18^FDSKU: ${esc(sku.substring(0, 12))}^FS\n`;
     y += 22;
 
-    // ── Dates ──
-    zpl += `^FO${textX},${y}^A0N,12,12^FDF:${fabDate} V:${expDate}^FS\n`;
-    y += 16;
+    // 6. Lote — FULL number, no truncation
+    fields += `^FO${x},${y}^A0N,20,18^FDLote: ${esc(lotDisplay.substring(0, 16))}^FS\n`;
+    y += 24;
 
-    // ── Separator ──
-    zpl += `^FO${textX},${y}^GB${W},1,1^FS\n`;
-    y += 4;
+    // 7. Quantity — bold
+    fields += `^FO${x},${y}^A0N,30,30^FD${esc(qtyText.substring(0, 12))}^FS\n`;
+    y += 34;
 
-    // ── QR Code — small, left-aligned ──
-    // Simplified QR content for smaller code
-    const qrData = `${lotNumber}|${sku}|${quantity}`;
-    zpl += `^FO${textX},${y}^BQN,2,3^FDMA,${esc(qrData)}^FS\n`;
+    // 8. Dates
+    fields += `^FO${x},${y}^A0N,18,16^FDFab: ${fabDate}^FS\n`;
+    y += 20;
+    fields += `^FO${x},${y}^A0N,18,16^FDVence: ${expDate}^FS\n`;
+    y += 20;
 
-    // ── Timestamp at very bottom ──
+    // 9. Timestamp (bottom, tiny — like SAT)
     const now = new Date();
-    const ts = `${now.toLocaleDateString('es-CO')}`;
-    zpl += `^FO${textX},385^A0N,10,10^FD${ts}^FS\n`;
+    const ts = `${now.toLocaleDateString('es-CO')} ${now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
+    fields += `^FO${x},${y}^A0N,12,12^FD${ts}^FS\n`;
 
-    // ── Print copies ──
+    // ── VERTICAL SEPARATOR ──
+    fields += `^FO${sepX},20^GB2,290,2^FS\n`;
+
+    // ── RIGHT SIDE: QR Code ──
+    fields += `^FO${qrX},30^BQN,2,4^FDMA,${esc(qrData)}^FS\n`;
+
+    return fields;
+}
+
+/**
+ * Build ZPL for a material lot label — prints TWO copies side-by-side.
+ *
+ * @param {Object} data  — label data
+ * @param {number} [copies=1] — number of PAIRS to print
+ * @returns {string} ZPL command string
+ */
+export function buildLotLabelZPL(data, copies = 1) {
+    let zpl = '^XA\n';
+    zpl += '^MMT\n';          // Thermal transfer mode
+    zpl += '^PW824\n';        // Full print width: 103mm = 824 dots
+    zpl += '^LL320\n';        // Label length: 40mm = 320 dots
+    zpl += '^LS0\n';
+    zpl += '^MD10\n';
+    zpl += '^PR3\n';
+    zpl += '^XB\n';          // Suppress backfeed — prevents skipping labels between jobs
+
+    // Left label (column 1): starts at X=0
+    zpl += renderLabel(data, 0);
+
+    // Right label (column 2): starts at X=424 (50mm + 3mm gap = 53mm = 424 dots)
+    zpl += renderLabel(data, 424);
+
+    // Print pairs
     zpl += `^PQ${copies}\n`;
     zpl += '^XZ\n';
 
@@ -141,21 +233,25 @@ export function buildLotLabelZPL(data, copies = 1) {
 }
 
 /**
- * Build a test label for Zebra — minimal ZPL
+ * Build a test label for Zebra — dual column
  */
 export function buildTestLabelZPL() {
     const now = new Date().toLocaleString('es-CO');
     return [
         '^XA',
         '^MMT',
-        '^PW296',        // 37mm width (single label of 2-up)
-        '^LL400',
+        '^PW824',        // Full 103mm width
+        '^LL320',        // 40mm height
         '^LS0',
         '^MD10',
-        '^FO20,60^A0N,32,32^FDTEST^FS',
-        '^FO20,100^A0N,18,18^FDZebra ZD230t^FS',
-        `^FO20,130^A0N,14,14^FD${now}^FS`,
-        '^FO40,180^BQN,2,3^FDMA,PBI-TEST^FS',
+        // Left test
+        '^FO20,20^A0N,28,28^FDTEST IZQ^FS',
+        `^FO20,60^A0N,14,14^FD${now}^FS`,
+        '^FO20,90^BQN,2,2^FDMA,PBI-L^FS',
+        // Right test
+        '^FO444,20^A0N,28,28^FDTEST DER^FS',
+        `^FO444,60^A0N,14,14^FD${now}^FS`,
+        '^FO444,90^BQN,2,2^FDMA,PBI-R^FS',
         '^PQ1,0,1,Y',
         '^XZ',
     ].join('\n');

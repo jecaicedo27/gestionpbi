@@ -483,7 +483,10 @@ const PQRManagement = () => {
                                 <tr><td colSpan="10" className="text-center py-4">Cargando...</td></tr>
                             ) : Array.isArray(filteredPqrs) && filteredPqrs.length > 0 ? (
                                 filteredPqrs.map((pqr) => (
-                                    <tr key={pqr.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(pqr.id) ? 'bg-purple-50' : ''}`}>
+                                    <tr key={pqr.id} className={`hover:bg-gray-50 transition-colors ${
+                                        pqr.pendingAdjustment ? 'bg-orange-50/60 border-l-2 border-l-orange-400' :
+                                        selectedIds.has(pqr.id) ? 'bg-purple-50' : ''
+                                    }`}>
                                         <td className="px-2 py-3 text-center">
                                             <input
                                                 type="checkbox"
@@ -531,7 +534,12 @@ const PQRManagement = () => {
                                             {getRefundBadge(pqr.refundMethod)}
                                         </td>
                                         <td className="px-4 py-3 whitespace-nowrap">
-                                            {getStageBadge(pqr.stage)}
+                                            <div className="flex items-center gap-1 flex-wrap">
+                                                {getStageBadge(pqr.stage)}
+                                                {pqr.pendingAdjustment && (
+                                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-700 whitespace-nowrap">🔧 Ajuste</span>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-4 py-3 whitespace-nowrap">
                                             {getStatusBadge(pqr.status)}

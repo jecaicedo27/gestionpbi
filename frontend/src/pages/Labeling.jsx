@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Bluetooth, BluetoothOff, Printer, TestTube, Package, Hash, Calendar, Truck, Copy, CheckCircle2, AlertTriangle, Wifi, WifiOff } from 'lucide-react';
+import { Search, Bluetooth, BluetoothOff, Printer, TestTube, Package, Hash, Calendar, Truck, Copy, CheckCircle2, AlertTriangle, Wifi, WifiOff, Download, ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import api from '../services/api';
 import printer from '../services/bluetoothPrinter';
 import { buildLotLabel, buildTestLabel } from '../services/tsplLabelBuilder';
 import { buildLotLabelZPL, buildTestLabelZPL } from '../services/zplLabelBuilder';
+import { useZebra } from '../context/ZebraContext';
 
-const RELAY_URL = 'http://127.0.0.1:3939';
 
 const Labeling = () => {
     // ── Printer mode: 'bluetooth' (SAT) or 'network' (Zebra) ──
@@ -18,10 +18,12 @@ const Labeling = () => {
     const [printing, setPrinting] = useState(false);
     const [printMsg, setPrintMsg] = useState(null);
 
-    // ── Network (Zebra) state ──
-    const [zebraStatus, setZebraStatus] = useState(null); // null=unknown, 'connected', 'unreachable', 'relay_offline'
-    const [zebraIp, setZebraIp] = useState('');
-    const [zebraChecking, setZebraChecking] = useState(false);
+    // Zebra state from global context
+    const { zebraStatus, zebraIp, printZPL, recheckNow, isRechecking, configIp, relayIp, updateConfig } = useZebra();
+    const [showZebraSettings, setShowZebraSettings] = useState(false);
+    const [editIp, setEditIp] = useState(configIp);
+    const [editRelay, setEditRelay] = useState(relayIp);
+
 
     // ── Lots ──
     const [searchQuery, setSearchQuery] = useState('');
@@ -49,27 +51,14 @@ const Labeling = () => {
         return unsub;
     }, [mode]);
 
-    // ── Auto-check Zebra relay on mount when in network mode ──
-    useEffect(() => {
-        if (mode !== 'network') return;
-        checkZebraRelay();
-        const interval = setInterval(checkZebraRelay, 15000);
-        return () => clearInterval(interval);
-    }, [mode]);
-
     const checkZebraRelay = async () => {
         setZebraChecking(true);
-        try {
-            const res = await fetch(`${RELAY_URL}/status`, { signal: AbortSignal.timeout(2000) });
-            const data = await res.json();
-            setZebraStatus(data.printer === 'connected' ? 'connected' : 'unreachable');
-            setZebraIp(data.printerIp || '');
-        } catch {
-            setZebraStatus('relay_offline');
-        } finally {
-            setZebraChecking(false);
-        }
+        await recheckNow();
+        setZebraChecking(false);
     };
+
+
+
 
     // ── Load lots ──
     useEffect(() => {
@@ -137,18 +126,13 @@ const Labeling = () => {
         setPrinterName('');
     };
 
-    // ── Print functions (dual mode) ──
+
+    // Send ZPL via global ZebraContext
     const sendToZebra = async (zpl) => {
-        const res = await fetch(`${RELAY_URL}/print`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ zpl }),
-        });
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || 'Error de impresión');
-        }
+        const result = await printZPL(zpl);
+        if (!result.ok) throw new Error(result.error || 'Error de impresión');
     };
+
 
     const handleTestPrint = async () => {
         setPrinting(true);
@@ -258,6 +242,19 @@ const Labeling = () => {
                 </button>
             </div>
 
+            {mode === 'network' && (
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '8px 12px', borderRadius: 10, background: '#ecfdf5',
+                    border: '1px solid #6ee7b7', marginBottom: 16,
+                }}>
+                    <Wifi size={14} color="#059669" />
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#065f46' }}>
+                        🌐 Impresión directa vía WiFi — sin PC intermediaria ({zebraIp || '192.168.68.113'})
+                    </span>
+                </div>
+            )}
+
             {/* ── Status Bar ── */}
             {mode === 'bluetooth' ? (
                 /* Bluetooth status bar */
@@ -307,45 +304,110 @@ const Labeling = () => {
                     </div>
                 </div>
             ) : (
-                /* Zebra/Network status bar */
                 <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
                     padding: '12px 16px', borderRadius: 14, marginBottom: 20,
-                    background: zebraStatus === 'connected' ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)' : zebraStatus === 'relay_offline' ? '#fef2f2' : '#fefce8',
-                    border: `1.5px solid ${zebraStatus === 'connected' ? '#6ee7b7' : zebraStatus === 'relay_offline' ? '#fca5a5' : '#fde68a'}`,
+                    background: zebraStatus === 'connected' ? 'linear-gradient(135deg, #ecfdf5, #d1fae5)'
+                        : zebraStatus === 'checking' ? '#f0f9ff'
+                        : '#fef2f2',
+                    border: `1.5px solid ${zebraStatus === 'connected' ? '#6ee7b7' : zebraStatus === 'checking' ? '#bae6fd' : '#fca5a5'}`,
                 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <Wifi size={20} color={zebraStatus === 'connected' ? '#059669' : '#94a3b8'} />
-                        <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.88rem', color: zebraStatus === 'connected' ? '#065f46' : '#64748b' }}>
-                                {zebraStatus === 'connected' && `🟢 Zebra ZD230 — ${zebraIp}`}
-                                {zebraStatus === 'unreachable' && '🟡 Relay OK — Zebra no alcanzable'}
-                                {zebraStatus === 'relay_offline' && '🔴 Relay no detectado'}
-                                {!zebraStatus && '⏳ Verificando...'}
-                            </div>
-                            {zebraStatus === 'relay_offline' && (
-                                <div style={{ fontSize: '0.72rem', color: '#dc2626', marginTop: 2 }}>
-                                    Ejecute <code style={{ background: '#fee2e2', padding: '1px 4px', borderRadius: 4 }}>node zebra-relay.js</code> en el PC
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <Wifi size={20} color={zebraStatus === 'connected' ? '#059669' : zebraStatus === 'checking' ? '#0284c7' : '#94a3b8'} />
+                            <div>
+                                <div style={{ fontWeight: 700, fontSize: '0.88rem', color: zebraStatus === 'connected' ? '#065f46' : zebraStatus === 'checking' ? '#0369a1' : '#64748b' }}>
+                                    {zebraStatus === 'connected' && `🟢 Zebra ZD230 — ${zebraIp}`}
+                                    {zebraStatus === 'checking' && '⏳ Verificando impresora...'}
+                                    {zebraStatus === 'unreachable' && '🔴 Impresora no alcanzable'}
+                                    {!zebraStatus && '⏳ Verificando...'}
                                 </div>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button onClick={recheckNow} disabled={isRechecking}
+                                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#059669', cursor: 'pointer', opacity: isRechecking ? 0.6 : 1 }}>
+                                <Wifi size={14} className={isRechecking ? 'animate-pulse' : ''} /> {isRechecking ? '...' : 'Verificar'}
+                            </button>
+                            <button onClick={() => setShowZebraSettings(!showZebraSettings)}
+                                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: showZebraSettings ? '#f3f4f6' : '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#4b5563', cursor: 'pointer' }}>
+                                <Settings size={14} />
+                            </button>
+                            {zebraStatus === 'connected' && (
+                                <button onClick={handleTestPrint} disabled={printing}
+                                    style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#6366f1', cursor: 'pointer' }}>
+                                    <TestTube size={14} /> Test
+                                </button>
                             )}
                         </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                        <button onClick={checkZebraRelay} disabled={zebraChecking}
-                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#059669', cursor: 'pointer', opacity: zebraChecking ? 0.6 : 1 }}>
-                            <Wifi size={14} /> {zebraChecking ? '...' : 'Verificar'}
-                        </button>
-                        {zebraStatus === 'connected' && (
-                            <button onClick={handleTestPrint} disabled={printing}
-                                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: '1px solid #d1d5db', background: '#fff', fontSize: '0.8rem', fontWeight: 600, color: '#6366f1', cursor: 'pointer' }}>
-                                <TestTube size={14} /> Test
+
+                    {showZebraSettings && (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#374151' }}>Ajustes de Conexión (Tablet)</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                <div>
+                                    <label style={{ fontSize: '0.7rem', color: '#6b7280', display: 'block', marginBottom: 4 }}>IP de la Impresora</label>
+                                    <input value={editIp} onChange={e => setEditIp(e.target.value)} 
+                                        style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.8rem' }} />
+                                </div>
+                                <div>
+                                    <label style={{ fontSize: '0.7rem', color: '#6b7280', display: 'block', marginBottom: 4 }}>IP del Relay (Opcional)</label>
+                                    <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.68.100"
+                                        style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.8rem' }} />
+                                </div>
+                            </div>
+                            <button onClick={() => { updateConfig(editIp, editRelay); setShowZebraSettings(false); recheckNow(); }}
+                                style={{ width: '100%', padding: '8px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 8, fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer' }}>
+                                Guardar y Reconectar
                             </button>
-                        )}
-                    </div>
+                        </div>
+                    )}
+                    {zebraStatus === 'unreachable' && (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #fecaca', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            <div style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 600 }}>
+                                {window.innerWidth < 1024 ? "Configuración para Tablet/Celular:" : "Para usar esta impresora necesitas abrir la App Zebra Relay en este PC:"}
+                            </div>
+                            {window.innerWidth < 1024 ? (
+                                <div style={{ fontSize: '0.78rem', color: '#b91c1c', background: '#fff', padding: '10px', borderRadius: 8, border: '1px solid #fecaca' }}>
+                                    1. Entra a "Configuración del sitio" o "Permisos" (icono de candado arriba).<br/>
+                                    2. Cambia <strong>"Contenido no seguro"</strong> a <strong>Permitir</strong>.<br/>
+                                    3. Actualiza la página.<br/><br/>
+                                    <button 
+                                        onClick={() => {
+                                            recheckNow();
+                                            // PNA Wakeup: Opening the printer page in a new tab often 'trusts' the IP for the session.
+                                            window.open(`http://${configIp || '192.168.68.113'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
+                                        }}
+                                        disabled={isRechecking}
+                                        style={{ width: '100%', padding: '12px', background: isRechecking ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 800, fontSize: '0.9rem', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                                    >
+                                        {isRechecking ? (
+                                            <>
+                                                <div className="animate-spin" style={{ width: 14, height: 14, border: '2px solid #fff', borderTopColor: 'transparent', borderRadius: '50%' }}></div>
+                                                CONECTANDO...
+                                            </>
+                                        ) : "DESPERTAR CONEXIÓN (CLICK AQUÍ)"}
+                                    </button>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                    <a href="/downloads/zebra/iniciar-zebra.bat" target="_blank" download
+                                        style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 8, background: '#fee2e2', border: '1px solid #fca5a5', textDecoration: 'none', color: '#b91c1c', fontSize: '0.8rem', fontWeight: 700 }}>
+                                        <Download size={14} /> Descargar e Iniciar
+                                    </a>
+                                    <a href="/downloads/zebra/instalar-inicio.bat" target="_blank" download
+                                        style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 8, border: '1px dashed #fca5a5', textDecoration: 'none', color: '#b91c1c', fontSize: '0.8rem', fontWeight: 600 }}>
+                                        Instalar al arrancar
+                                    </a>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
-            {/* ── Print Message Toast ── */}
+
+
             {printMsg && (
                 <div style={{
                     display: 'flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderRadius: 10, marginBottom: 16,

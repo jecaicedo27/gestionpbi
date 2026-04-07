@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+    ChevronDown,
+    ChevronLeft,
     ChevronRight,
+    Factory,
     Filter,
     RefreshCcw,
     Search,
@@ -505,6 +508,32 @@ const ProductiveTraceabilityPage = () => {
                                 </div>
                                 <p className="mt-4 text-sm font-bold text-slate-900">Sin lotes para mostrar</p>
                                 <p className="mt-2 text-sm text-slate-500">Ajusta los filtros o espera a que se generen nuevos batches con informacion trazable.</p>
+                            </div>
+                        )}
+
+                        {/* ── Pagination Controls ── */}
+                        {pagination.totalPages > 1 && (
+                            <div className="mt-4 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <button
+                                    type="button"
+                                    onClick={() => fetchBatches(pagination.page - 1, filters)}
+                                    disabled={pagination.page <= 1 || listLoading}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    <ChevronLeft size={14} /> Anterior
+                                </button>
+                                <span className="text-xs font-bold text-slate-600">
+                                    {pagination.page} / {pagination.totalPages}
+                                    <span className="ml-1 font-normal text-slate-400">({formatNumber(pagination.total)})</span>
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => fetchBatches(pagination.page + 1, filters)}
+                                    disabled={pagination.page >= pagination.totalPages || listLoading}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    Siguiente <ChevronRight size={14} />
+                                </button>
                             </div>
                         )}
                     </div>

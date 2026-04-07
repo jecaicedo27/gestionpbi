@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, Table, Tag, Space, Typography, Row, Col, Statistic, Button, InputNumber, Spin, Alert, Tooltip, Tabs, Badge, Collapse } from 'antd';
-import { WarningOutlined, ArrowUpOutlined, ArrowDownOutlined, SettingOutlined, ReloadOutlined, ExclamationCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { WarningOutlined, ArrowUpOutlined, ArrowDownOutlined, SettingOutlined, ReloadOutlined, ExclamationCircleOutlined, CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import api from '../services/api';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import 'dayjs/locale/es';
+dayjs.extend(relativeTime);
+dayjs.locale('es');
 
 const { Title, Text } = Typography;
 
@@ -220,6 +225,29 @@ const ForecastPage = () => {
                 );
             },
             sorter: (a, b) => (b.packsNeeded || 0) - (a.packsNeeded || 0)
+        },
+        {
+            title: 'Alerta desde',
+            key: 'alertSince',
+            width: 130,
+            render: (_, r) => {
+                if (!r.alertSince) return null;
+                const d = dayjs(r.alertSince);
+                const daysAgo = dayjs().diff(d, 'day');
+                const color = daysAgo >= 7 ? 'red' : daysAgo >= 3 ? 'orange' : 'gold';
+                return (
+                    <Tooltip title={d.format('DD/MM/YYYY HH:mm')}>
+                        <Tag icon={<ClockCircleOutlined />} color={color} style={{ margin: 0 }}>
+                            {d.fromNow()}
+                        </Tag>
+                    </Tooltip>
+                );
+            },
+            sorter: (a, b) => {
+                const aDate = a.alertSince ? new Date(a.alertSince).getTime() : Infinity;
+                const bDate = b.alertSince ? new Date(b.alertSince).getTime() : Infinity;
+                return aDate - bDate; // oldest alerts first
+            }
         },
         {
             title: 'OC Activa',

@@ -478,7 +478,47 @@ class SiigoService {
     async processInvoiceAsMovement(invoice) {
         try {
             const date = new Date(invoice.date);
-            const customerName = invoice.customer ? (Array.isArray(invoice.customer.name) ? invoice.customer.name.join(' ') : invoice.customer.name) : 'CLIENTE DESCONOCIDO';
+
+            // Siigo invoice API only returns customer.identification (NIT), not customer.name
+            // Look up the distributor name from local User table by NIT, then Siigo API
+            let customerName = 'CLIENTE DESCONOCIDO';
+            const customerIdentification = invoice.customer?.identification;
+            if (customerIdentification) {
+                // 1. Try local User table (distributors)
+                const localUser = await prisma.user.findFirst({
+                    where: { nit: customerIdentification },
+                    select: { name: true }
+                });
+                if (localUser) {
+                    customerName = localUser.name;
+                } else {
+                    // 2. Try Supplier table
+                    const localSupplier = await prisma.supplier.findFirst({
+                        where: { identification: customerIdentification },
+                        select: { name: true }
+                    });
+                    if (localSupplier?.name) {
+                        customerName = localSupplier.name;
+                    } else {
+                        // 3. Fallback: query Siigo customers API by identification
+                        try {
+                            const res = await this.client.get('/customers', {
+                                params: { identification: customerIdentification, page: 1, page_size: 1 }
+                            });
+                            const siigoCustomer = res.data?.results?.[0];
+                            if (siigoCustomer?.name) {
+                                const sName = Array.isArray(siigoCustomer.name)
+                                    ? siigoCustomer.name.filter(Boolean).join(' ')
+                                    : siigoCustomer.name;
+                                customerName = sName || `NIT ${customerIdentification}`;
+                            }
+                        } catch (_err) {
+                            // Ignore — use NIT as fallback
+                            customerName = `NIT ${customerIdentification}`;
+                        }
+                    }
+                }
+            }
 
             // Siigo document ID + consecutive as unique reference
             const documentNumber = `${invoice.document.id}-${invoice.number}`;
@@ -536,7 +576,7 @@ class SiigoService {
             const sysConfig = await prisma.systemSettings.findUnique({ where: { key: 'PRODUCTION_CONFIG' } });
             const DOCUMENT_ID = parseInt(sysConfig?.value?.siigoDocumentType) || 9314;
             const SELLER_ID = 240;     // Gerencia
-            const DISCOUNT_PERCENT = 34.8;
+            const DISCOUNT_PERCENT = parseFloat(order.distributor?.discountPercent) || 34.8;
             const PAYMENT_DAYS = 30;
 
             const RETE_FUENTE_2_5 = 5014;      // Retefuente 2.5% — always applied
@@ -544,35 +584,65 @@ class SiigoService {
 
             // ─── Customer (distributor) ───
             const nit = order.distributor?.nit || order.distributor?.username;
+            const idType = order.distributor?.idType || '13'; // '13'=NIT, '12'=Cédula
             if (!nit) {
                 throw { message: 'El distribuidor no tiene NIT configurado', error: 'NIT_REQUIRED' };
             }
 
             // ─── Items — use each product's own taxes from Siigo sync ───
             const items = order.items.map(item => {
-                const unitPrice = item.product?.price || 0;
                 const quantity = item.allocatedQty || item.requestedQty || 0;
 
                 // Get product taxes from DB (synced from Siigo)
                 const productTaxes = Array.isArray(item.product?.taxes) ? item.product.taxes : [];
-                
-                // Map to Siigo format: [{id: taxId}] — use the product's own taxes + always add ReteFuente
+
+                // ── Tax-included price correction ──────────────────────────────────────
+                // Siigo stores "taxIncluded" products with their consumer price (IVA + other
+                // percentage taxes already embedded). The API expects the NET BASE price
+                // (before taxes), so we strip those taxes out.
+                // Value-based taxes (e.g., Bebidas Azucaradas / IBUA) ARE also embedded in
+                // the consumer price, and must be subtracted linearly BEFORE dividing by
+                // the percentage tax divisor.
+                let unitPrice = item.product?.price || 0;
+                if (item.product?.taxIncluded) {
+                    // 1. Subtract fixed-value taxes
+                    const fixedTaxesTotal = productTaxes
+                        .filter(t => t.rate > 0 && t.milliliters > 0)
+                        .reduce((sum, t) => sum + (t.rate * (t.milliliters / 100)), 0);
+                    
+                    unitPrice -= fixedTaxesTotal;
+
+                    // 2. Divide by percentage-based taxes
+                    const taxDivisor = 1 + productTaxes
+                        .filter(t => t.type !== 'Retefuente' && (t.percentage || 0) > 0)
+                        .reduce((sum, t) => sum + (t.percentage / 100), 0);
+                        
+                    unitPrice = Math.round((unitPrice / taxDivisor) * 100) / 100;
+                }
+
+                // Map to Siigo format: [{id: taxId}] — use product's own taxes + ReteFuente (conditional)
+                const applyRete = order.distributor?.reteFuente === true; // opt-in: solo si es Persona Jurídica
                 const itemTaxes = productTaxes.map(t => ({ id: t.id }));
-                
-                // Add ReteFuente if not already present
-                if (!itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
+                if (applyRete && !itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
                     itemTaxes.push({ id: RETE_FUENTE_2_5 });
                 }
 
                 const productName = item.product?.name || '';
-                logger.info(`   📦 ${item.product?.sku} | ${productName.substring(0, 40)} | qty: ${quantity} | taxes: [${itemTaxes.map(t => t.id).join(',')}]`);
+                
+                // Regla de Negocio: LIQUIMON jamás tiene descuento
+                let rowDiscount = DISCOUNT_PERCENT;
+                if ((item.product?.sku || '').toUpperCase().includes('LIQUIMON')) {
+                    rowDiscount = 0;
+                }
+
+                logger.info(`   📦 ${item.product?.sku} | ${productName.substring(0, 40)} | qty: ${quantity} | base: $${unitPrice.toLocaleString('es-CO')} | desc: ${rowDiscount}% | taxes: [${itemTaxes.map(t => t.id).join(',')}]`);
 
                 return {
                     code: item.product?.sku,
                     description: productName,
-                    quantity: quantity,
+                    quantity,
                     price: unitPrice,
-                    discount: DISCOUNT_PERCENT,
+                    discount: rowDiscount,
                     taxes: itemTaxes
                 };
             });
@@ -583,7 +653,7 @@ class SiigoService {
             let totalAPagar = 0;
             for (const item of items) {
                 const lineGross = item.price * item.quantity;
-                const lineDiscount = r2(lineGross * (DISCOUNT_PERCENT / 100));
+                const lineDiscount = r2(lineGross * ((item.discount || 0) / 100));  // use per-item discount (0% for LIQUIMON)
                 const lineNet = r2(lineGross - lineDiscount);
                 
                 // Sum taxes for this line
@@ -606,8 +676,9 @@ class SiigoService {
                         lineTaxes += r2(tx.rate * (tx.milliliters / 100) * item.quantity);
                     }
                 }
-                // Always add ReteFuente 2.5% (appended via RETE_FUENTE_2_5 tax ID)
-                if (!origTaxes.find(t => t.type === 'Retefuente')) {
+                // Add ReteFuente 2.5% only if distributor is Persona Jurídica
+                const _applyRete = order.distributor?.reteFuente === true; // opt-in: solo si es Persona Jurídica
+                if (_applyRete && !origTaxes.find(t => t.type === 'Retefuente')) {
                     lineRete += r2(lineNet * 0.025);
                 }
                 
@@ -618,6 +689,15 @@ class SiigoService {
             // Due date
             const dueDate = new Date();
             dueDate.setDate(dueDate.getDate() + PAYMENT_DAYS);
+
+            // ─── Build lot traceability for invoice observations ───
+            const lotLines = order.items.map(item => {
+                const lots = [...new Set((item.pickingItems || []).map(pi => pi.lotNumber).filter(Boolean))];
+                if (!lots.length) return null;
+                return `${item.product?.sku}: ${lots.join('/')}`;
+            }).filter(Boolean);
+            const lotsText = lotLines.length ? ` | Lotes: ${lotLines.join(' | ')}` : '';
+            const observations = `Pedido: ${order.orderNumber}${lotsText}`.substring(0, 250);
 
             // ─── Build Payload ───
             const payload = {
@@ -636,7 +716,7 @@ class SiigoService {
                         due_date: dueDate.toISOString().split('T')[0]
                     }
                 ],
-                observations: `Pedido: ${order.orderNumber}`
+                observations
             };
 
             logger.info(`📝 Creating Siigo Invoice | Order: ${order.orderNumber} | NIT: ${nit} | Items: ${items.length} | Payment: $${totalAPagar.toLocaleString('es-CO')}`);
@@ -796,6 +876,72 @@ class SiigoService {
         return null;
     }
 
+    _extractTrailingNumber(value) {
+        const matches = String(value ?? '').match(/\d+/g);
+        if (!matches || matches.length === 0) return null;
+        const parsed = parseInt(matches[matches.length - 1], 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    async _mapPurchaseLookupResult(purchase) {
+        const supplierIdentification = purchase.supplier?.identification || null;
+        let supplierName = 'Desconocido';
+
+        if (supplierIdentification) {
+            const localSupplier = await prisma.supplier.findFirst({
+                where: { identification: supplierIdentification },
+                select: { name: true }
+            });
+            if (localSupplier) supplierName = localSupplier.name;
+            else supplierName = `NIT ${supplierIdentification}`;
+        }
+
+        const items = (purchase.items || []).map(item => ({
+            code: item.code,
+            description: item.description,
+            quantity: item.quantity,
+            price: item.price,
+            total: (item.quantity || 0) * (item.price || 0),
+            taxes: item.taxes || []
+        }));
+
+        const subtotal = items.reduce((sum, i) => sum + i.total, 0);
+        const taxTotals = {};
+        items.forEach(item => {
+            (item.taxes || []).forEach(t => {
+                const key = t.name || t.type || `Tax ${t.id}`;
+                if (!taxTotals[key]) taxTotals[key] = { name: key, percentage: t.percentage, value: 0, type: t.type || '' };
+                taxTotals[key].value += (t.value || 0);
+            });
+        });
+
+        return {
+            siigoId: purchase.id,
+            number: purchase.number,
+            name: purchase.name,
+            date: purchase.date,
+            dueDate: purchase.due_date || null,
+            currency: purchase.currency?.code || 'COP',
+            supplier: {
+                name: supplierName,
+                identification: supplierIdentification
+            },
+            items,
+            subtotal,
+            taxBreakdown: Object.values(taxTotals),
+            total: purchase.total || subtotal,
+            observations: purchase.observations || '',
+            providerInvoice: purchase.provider_invoice || null,
+            paymentMethod: purchase.payments?.[0]?.name || null,
+            _raw: {
+                documentId: purchase.document?.id,
+                documentName: purchase.document?.name,
+                costCenter: purchase.cost_center,
+                payments: purchase.payments
+            }
+        };
+    }
+
     /**
      * Get Purchase Invoice from Siigo by consecutive number
      * Used for cross-validation: accounting enters the Siigo purchase number
@@ -805,85 +951,36 @@ class SiigoService {
      */
     async getPurchaseByNumber(number) {
         if (!this.token) await this.authenticate();
+        const targetNumber = this._extractTrailingNumber(number);
+        if (!targetNumber) return null;
         try {
-            // Search purchases by number — Siigo API allows filtering
-            const response = await this.client.get(`/purchases`, {
-                params: {
-                    number: number,
-                    page: 1,
-                    page_size: 5
-                }
-            });
+            const pageSize = 100;
+            let page = 1;
 
-            const results = response.data.results || [];
-            if (results.length === 0) {
-                return null; // Not found
-            }
-
-            // Take the first match
-            const purchase = results[0];
-
-            // Map to clean format — Siigo purchases only return supplier.identification, not name
-            // Look up the supplier name from local DB
-            const supplierIdentification = purchase.supplier?.identification || null;
-            let supplierName = 'Desconocido';
-            if (supplierIdentification) {
-                const { PrismaClient } = require('@prisma/client');
-                const prisma = new PrismaClient();
-                const localSupplier = await prisma.supplier.findFirst({
-                    where: { identification: supplierIdentification },
-                    select: { name: true }
+            while (true) {
+                // Siigo is currently ignoring the purchase number filter, so we
+                // scan paginated results until we find the exact consecutive.
+                const response = await this.client.get('/purchases', {
+                    params: {
+                        number: targetNumber,
+                        page,
+                        page_size: pageSize
+                    }
                 });
-                if (localSupplier) supplierName = localSupplier.name;
-                else supplierName = `NIT ${supplierIdentification}`;
-                await prisma.$disconnect();
+
+                const results = response.data.results || [];
+                if (results.length === 0) return null;
+
+                const purchase = results.find(item => this._extractTrailingNumber(item.number ?? item.name) === targetNumber);
+                if (purchase) return this._mapPurchaseLookupResult(purchase);
+
+                const pagination = response.data.pagination || {};
+                const totalResults = Number(pagination.total_results) || 0;
+                const effectivePageSize = Number(pagination.page_size) || pageSize;
+                const totalPages = totalResults > 0 ? Math.ceil(totalResults / effectivePageSize) : page;
+                if (page >= totalPages) return null;
+                page += 1;
             }
-
-            const items = (purchase.items || []).map(item => ({
-                code: item.code,
-                description: item.description,
-                quantity: item.quantity,
-                price: item.price,
-                total: (item.quantity || 0) * (item.price || 0),
-                taxes: item.taxes || []
-            }));
-
-            // Calculate totals and tax breakdown
-            const subtotal = items.reduce((sum, i) => sum + i.total, 0);
-            const taxTotals = {};
-            items.forEach(item => {
-                (item.taxes || []).forEach(t => {
-                    const key = t.name || t.type || `Tax ${t.id}`;
-                    if (!taxTotals[key]) taxTotals[key] = { name: key, percentage: t.percentage, value: 0, type: t.type || '' };
-                    taxTotals[key].value += (t.value || 0);
-                });
-            });
-
-            return {
-                siigoId: purchase.id,
-                number: purchase.number,
-                name: purchase.name, // e.g. "FC-2601"
-                date: purchase.date,
-                dueDate: purchase.due_date || null,
-                currency: purchase.currency?.code || 'COP',
-                supplier: {
-                    name: supplierName,
-                    identification: supplierIdentification
-                },
-                items,
-                subtotal,
-                taxBreakdown: Object.values(taxTotals),
-                total: purchase.total || subtotal,
-                observations: purchase.observations || '',
-                providerInvoice: purchase.provider_invoice || null,
-                paymentMethod: purchase.payments?.[0]?.name || null,
-                _raw: {
-                    documentId: purchase.document?.id,
-                    documentName: purchase.document?.name,
-                    costCenter: purchase.cost_center,
-                    payments: purchase.payments
-                }
-            };
         } catch (error) {
             if (error.response && error.response.status === 401) {
                 await this.authenticate();
@@ -994,6 +1091,157 @@ class SiigoService {
                 error: msg,
                 details: validationErrors,
                 siigoPayload: payload
+            };
+        }
+    }
+
+    /**
+     * Create a Siigo Electronic Credit Note (NC-2) from a PQR record.
+     * Uses the same price/tax logic as createInvoice.
+     * @param {Object} pqr — Prisma PQR with items (including product.price/taxes/taxIncluded/sku/name) and user (nit, name)
+     */
+    async createCreditNote(pqr) {
+        try {
+            await this.authenticate();
+
+            // ─── Credit note NC: use pqr.user idType and discountPercent ──
+            const NC_DOCUMENT_ID   = 28532;  // NC-2 — Nota Crédito Electrónica
+
+            const SELLER_ID        = 240;    // Gerencia
+            const DISCOUNT_PERCENT = parseFloat(pqr.user?.discountPercent) || 34.8;
+            const RETE_FUENTE_2_5  = 5014;   // Retefuente 2.5%
+
+            // ── Customer (distributor) ──
+            const nit = pqr.user?.nit;
+            const idType = pqr.user?.idType || '13'; // '13'=NIT, '12'=Cédula
+            if (!nit) {
+                throw { message: 'El distribuidor no tiene NIT configurado', error: 'NIT_REQUIRED' };
+            }
+
+            logger.info(`\n🧾 [createCreditNote] PQR: ${pqr.ticketNumber} → NC-2 para NIT ${nit}`);
+
+            // ── Items — same tax/price logic as createInvoice ──
+            const items = pqr.items.map(item => {
+                const quantity     = item.quantity || 0;
+                const productTaxes = Array.isArray(item.product?.taxes) ? item.product.taxes : [];
+
+                let unitPrice = item.product?.price || 0;
+                if (item.product?.taxIncluded) {
+                    const taxDivisor = 1 + productTaxes
+                        .filter(t => t.type !== 'Retefuente' && (t.percentage || 0) > 0)
+                        .reduce((sum, t) => sum + (t.percentage / 100), 0);
+                    unitPrice = Math.round((unitPrice / taxDivisor) * 100) / 100;
+                }
+
+                const itemTaxes = productTaxes.map(t => ({ id: t.id }));
+                if (!itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
+                    itemTaxes.push({ id: RETE_FUENTE_2_5 });
+                }
+
+                const productName = item.product?.name || item.product?.sku;
+                
+                // Regla de Negocio: LIQUIMON jamás tiene descuento
+                let rowDiscount = DISCOUNT_PERCENT;
+                if ((item.product?.sku || '').toUpperCase().includes('LIQUIMON')) {
+                    rowDiscount = 0;
+                }
+
+                logger.info(`   📦 ${item.product?.sku} | qty: ${quantity} | base: $${unitPrice.toLocaleString('es-CO')} | desc: ${rowDiscount}% | taxes: [${itemTaxes.map(t => t.id).join(',')}]`);
+
+                return {
+                    code: item.product?.sku,
+                    description: productName,
+                    quantity,
+                    price: unitPrice,
+                    discount: rowDiscount,
+                    taxes: itemTaxes
+                };
+            }).filter(i => {
+                if (!i.code) {
+                    logger.warn(`   ⚠️ Item excluido de NC — sin producto vinculado (qty: ${i.quantity})`);
+                }
+                return i.quantity > 0 && i.code;
+            });
+
+            const excluded = pqr.items.length - items.length;
+            if (excluded > 0) {
+                logger.warn(`⚠️ [createCreditNote] ${excluded} item(s) excluidos por no tener producto vinculado en la DB`);
+            }
+
+
+            if (items.length === 0) {
+                throw { message: 'El PQR no tiene items válidos con producto configurado', error: 'NO_ITEMS' };
+            }
+
+            // ── Calcular total NC (mismo algoritmo que createInvoice) ──
+            const r2 = v => Math.round(v * 100) / 100;
+            const PAYMENT_CLIENTES_NAC = 10079; // Clientes Nacionales (Crédito/NC)
+            let totalAPagar = 0;
+
+            for (const item of items) {
+                const lineGross    = r2(item.price * item.quantity);
+                const lineDiscount = r2(lineGross * (DISCOUNT_PERCENT / 100));
+                const lineNet      = r2(lineGross - lineDiscount);
+
+                // Busca taxes originales del producto para calcular impuestos en la línea
+                const origProduct = pqr.items.find(i => i.product?.sku === item.code)?.product;
+                const origTaxes   = Array.isArray(origProduct?.taxes) ? origProduct.taxes : [];
+
+                let lineTaxes = 0, lineRete = 0;
+                for (const tx of origTaxes) {
+                    if ((tx.percentage || 0) > 0) {
+                        const txAmt = r2(lineNet * (tx.percentage / 100));
+                        if (tx.type === 'Retefuente') lineRete += txAmt;
+                        else lineTaxes += txAmt;
+                    } else if ((tx.rate || 0) > 0 && (tx.milliliters || 0) > 0) {
+                        lineTaxes += r2(tx.rate * (tx.milliliters / 100) * item.quantity);
+                    }
+                }
+                if (!origTaxes.find(t => t.type === 'Retefuente')) {
+                    lineRete += r2(lineNet * 0.025); // ReteFuente 2.5% siempre
+                }
+                totalAPagar += r2(lineNet + lineTaxes - lineRete);
+            }
+            totalAPagar = r2(totalAPagar);
+            logger.info(`   💰 Total NC: $${totalAPagar.toLocaleString('es-CO')}`);
+
+            const today = new Date().toISOString().split('T')[0];
+            const dueDate = new Date();
+            dueDate.setDate(dueDate.getDate() + 30);
+
+            const payload = {
+                document: { id: NC_DOCUMENT_ID },
+                date: today,
+                customer: {
+                    identification: nit.replace(/[^0-9]/g, ''),
+                    branch_office: 0
+                },
+                seller: SELLER_ID,
+                reason: 5,  // Motivo DIAN 5 = Otros (no requiere factura de referencia)
+                observations: `Nota crédito PQR ${pqr.ticketNumber}${pqr.reportedByName ? ` — ${pqr.reportedByName}` : ''}`,
+                items
+            };
+
+
+
+            logger.info(`   📤 Payload NC:\n${JSON.stringify(payload, null, 2)}`);
+
+            const response = await this.client.post('/credit-notes', payload);
+
+            logger.info(`✅ [createCreditNote] NC creada: ${response.data.name} (ID: ${response.data.id})`);
+            return response.data;
+        } catch (error) {
+            const errorDetails = error.response ? error.response.data : error.message;
+            logger.error(`❌ [createCreditNote] Error:`, JSON.stringify(errorDetails));
+
+            if (error.error) throw error; // Already formatted
+
+            const msg = error.response?.data?.Errors?.[0]?.Message || 'Error de validación en Siigo';
+            throw {
+                message: 'Error creando nota crédito en Siigo',
+                error: msg,
+                details: error.response?.data?.Errors || [],
+                siigoPayload: error.config?.data
             };
         }
     }

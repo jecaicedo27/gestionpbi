@@ -11,8 +11,15 @@ router.post('/:id/reject', auth, workflowController.rejectOrder);
 router.post('/:id/start-picking', auth, workflowController.startPicking);
 router.post('/:id/scan', auth, workflowController.scanItem);
 router.post('/:id/complete-picking', auth, workflowController.completePicking);
+router.post('/:id/complete-with-backorder', auth, workflowController.completePickingWithBackorder);
+
+// Admin: unscan/unmark a picking item
+router.delete('/:id/picking-item/:pickingItemId', auth, workflowController.unscanItem);
 
 // Progress tracking
 router.get('/:id/picking-progress', auth, workflowController.getPickingProgress);
+
+// Admin: revert READY → IN_PICKING
+router.post('/:id/revert-to-picking', auth, workflowController.revertToPicking);
 
 module.exports = router;

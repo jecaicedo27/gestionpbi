@@ -3,9 +3,21 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const PHASE = { CHECKLIST: 'checklist', COUNTING: 'counting', RESULTS: 'results', HISTORY: 'history' };
+const BRANDS = [
+    { key: 'LIQUIPOPS', label: '🍬 Liquipops', color: '#6366f1', emoji: '🍬' },
+    { key: 'GENIALITY', label: '🍹 Geniality', color: '#059669', emoji: '🍹' },
+];
+const ZONES = [
+    { key: 'PRODUCTO_TERMINADO', label: 'Producto Terminado', icon: '🏠' },
+    { key: 'BODEGA', label: 'Bodega', icon: '📦' },
+    { key: 'CUARENTENA', label: 'Cuarentena', icon: '⚠️' },
+    { key: 'MAQUILA', label: 'Maquila', icon: '🔧' },
+];
 
 const PhysicalCountPage = () => {
     const { user } = useAuth();
+    const [activeBrand, setActiveBrand] = useState('LIQUIPOPS');
+    const [activeZone, setActiveZone] = useState('PRODUCTO_TERMINADO');
     const [phase, setPhase] = useState(PHASE.CHECKLIST);
     const [loading, setLoading] = useState(true);
     const [count, setCount] = useState(null);
@@ -24,11 +36,17 @@ const PhysicalCountPage = () => {
     const [validating, setValidating] = useState(null); // itemId being validated
     const saveTimerRef = useRef(null);
 
-    // On mount: check for active count
+    // On mount and brand/zone change: check for active count
     useEffect(() => {
+        setLoading(true);
+        setCount(null);
+        setLocalItems({});
+        setValidatedItems({});
+        setPhase(PHASE.CHECKLIST);
+        setChecklist({ empaqueConfirmed: false, pedidosSeparated: false, noTransfersPending: false });
         (async () => {
             try {
-                const res = await api.get('/physical-counts/active');
+                const res = await api.get(`/physical-counts/active?brand=${activeBrand}&zone=${activeZone}`);
                 if (res.data.count) {
                     setCount(res.data.count);
                     initLocalItems(res.data.count.items);
@@ -40,7 +58,7 @@ const PhysicalCountPage = () => {
                 setLoading(false);
             }
         })();
-    }, []);
+    }, [activeBrand, activeZone]);
 
     const initLocalItems = (items) => {
         const map = {};
@@ -76,7 +94,7 @@ const PhysicalCountPage = () => {
     const handleStart = async () => {
         try {
             setLoading(true);
-            const res = await api.post('/physical-counts', { checklist });
+            const res = await api.post('/physical-counts', { checklist, brand: activeBrand, zone: activeZone });
             setCount(res.data.count);
             initLocalItems(res.data.count.items);
             setPhase(PHASE.COUNTING);
@@ -104,7 +122,7 @@ const PhysicalCountPage = () => {
 
     const loadHistory = async () => {
         try {
-            const res = await api.get('/physical-counts/history');
+            const res = await api.get(`/physical-counts/history?brand=${activeBrand}&zone=${activeZone}`);
             setHistory(res.data.counts || []);
             setPhase(PHASE.HISTORY);
         } catch (err) {
@@ -150,16 +168,38 @@ const PhysicalCountPage = () => {
             await api.patch(`/physical-counts/${count.id}/items`, {
                 items: [{ itemId: item.id, countedBoxes: v.boxes, countedLoose: v.loose }]
             });
-            const diff = total - item.systemQuantity;
-            setValidatedItems(prev => ({
-                ...prev,
-                [item.id]: { ok: diff === 0, diff, systemQty: item.systemQuantity, countedTotal: total }
-            }));
+            
+            // Re-fetch active count to get the LIVE system quantity directly from the server
+            const res = await api.get(`/physical-counts/active?brand=${activeBrand}&zone=${activeZone}`);
+            if (res.data.count) {
+                setCount(res.data.count);
+                // Find the updated item to get its live difference
+                const updatedItem = res.data.count.items.find(i => i.id === item.id);
+                if (updatedItem) {
+                    setValidatedItems(prev => ({
+                        ...prev,
+                        [item.id]: { 
+                            ok: updatedItem.difference === 0, 
+                            diff: updatedItem.difference, 
+                            systemQty: updatedItem.systemQuantity, 
+                            countedTotal: total 
+                        }
+                    }));
+                }
+            }
         } catch (err) {
             console.error('Error validating:', err);
         } finally {
             setValidating(null);
         }
+    };
+
+    // Brand-specific helpers
+    const stripProductName = (name) => {
+        if (activeBrand === 'GENIALITY') {
+            return name?.replace(/SIROPE GENIALITY SABOR A /i, '').replace(/\s*X\s*\d+.*$/i, '') || '';
+        }
+        return name?.replace(/LIQUIPOPS SABOR A /i, '').replace(/\s*X\s*\d+.*$/i, '') || '';
     };
 
     if (loading) {
@@ -173,15 +213,57 @@ const PhysicalCountPage = () => {
         );
     }
 
+    // ── Brand Tab Switcher (always visible at top) ──
+    const BrandTabs = () => (
+        <div style={{ maxWidth: 600, margin: '0 auto 12px' }}>
+            {/* Brand tabs */}
+            <div style={{ display: 'flex', gap: 4, padding: 4, background: '#f1f5f9', borderRadius: 12, marginBottom: 8 }}>
+                {BRANDS.map(b => (
+                    <button key={b.key} onClick={() => setActiveBrand(b.key)}
+                        style={{
+                            flex: 1, padding: '10px 0', borderRadius: 10, border: 'none',
+                            background: activeBrand === b.key ? 'white' : 'transparent',
+                            boxShadow: activeBrand === b.key ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                            color: activeBrand === b.key ? (b.key === 'GENIALITY' ? '#059669' : '#6366f1') : '#94a3b8',
+                            fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer', transition: 'all 0.15s',
+                        }}>
+                        {b.label}
+                    </button>
+                ))}
+            </div>
+            {/* Zone pills */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {ZONES.map(z => (
+                    <button key={z.key} onClick={() => setActiveZone(z.key)}
+                        style={{
+                            padding: '5px 12px', borderRadius: 20, border: 'none',
+                            background: activeZone === z.key ? '#1e293b' : '#e2e8f0',
+                            color: activeZone === z.key ? 'white' : '#64748b',
+                            fontWeight: activeZone === z.key ? 700 : 500,
+                            fontSize: '0.78rem', cursor: 'pointer', transition: 'all 0.12s',
+                        }}>
+                        {z.icon} {z.label}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+
     // ── PHASE: CHECKLIST ──
     if (phase === PHASE.CHECKLIST) {
         const allChecked = checklist.empaqueConfirmed && checklist.pedidosSeparated && checklist.noTransfersPending;
+        const brand = BRANDS.find(b => b.key === activeBrand);
+        const zone = ZONES.find(z => z.key === activeZone);
         return (
             <div style={{ maxWidth: 560, margin: '40px auto', padding: '0 16px' }}>
+                <BrandTabs />
                 <div style={{ textAlign: 'center', marginBottom: 32 }}>
-                    <div style={{ fontSize: '3rem', marginBottom: 8 }}>📋</div>
-                    <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>Conteo Físico — Producto Terminado</h1>
-                    <p style={{ color: '#64748b', fontSize: '0.85rem', marginTop: 6 }}>Validaciones previas antes de iniciar el conteo</p>
+                    <div style={{ fontSize: '3rem', marginBottom: 8 }}>{brand.emoji}</div>
+                    <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>Conteo Físico — {brand.label.split(' ').slice(1).join(' ')}</h1>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 8, padding: '4px 12px', borderRadius: 20, background: '#1e293b', color: 'white', fontSize: '0.78rem', fontWeight: 700 }}>
+                        {zone.icon} {zone.label}
+                    </div>
+                    <p style={{ color: '#64748b', fontSize: '0.85rem', marginTop: 8 }}>Validaciones previas antes de iniciar el conteo</p>
                 </div>
 
                 <div style={{ background: 'white', borderRadius: 16, boxShadow: '0 4px 24px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
@@ -281,6 +363,7 @@ const PhysicalCountPage = () => {
 
         return (
             <div style={{ maxWidth: 700, margin: '20px auto', padding: '0 12px' }}>
+                <BrandTabs />
                 {/* Header */}
                 <div style={{ position: 'sticky', top: 0, zIndex: 10, background: '#f8fafc', paddingBottom: 12, paddingTop: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -438,19 +521,20 @@ const PhysicalCountPage = () => {
                                             </div>
                                         </div>
 
-                                        {/* Validation result banner */}
+                                        {/* Validation result banner — BLIND: only show direction, never exact diff */}
                                         {validated && !validated.ok && (
                                             <div style={{
-                                                padding: '6px 12px', borderRadius: '0 0 12px 12px',
+                                                padding: '8px 12px', borderRadius: '0 0 12px 12px',
                                                 border: '2px solid #fca5a5', borderTop: 'none',
                                                 background: '#fef2f2',
                                                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                                             }}>
                                                 <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#dc2626' }}>
-                                                    ❌ Diferencia: {validated.diff > 0 ? '+' : ''}{validated.diff} uds
-                                                    {validated.diff > 0 ? ' (sobrante)' : ' (faltante)'}
+                                                    {validated.diff > 0
+                                                        ? '⬆️ Conteo Físico MAYOR al Sistema'
+                                                        : '⬇️ Conteo Físico MENOR al Sistema'}
                                                 </span>
-                                                <span style={{ fontSize: '0.65rem', color: '#94a3b8' }}>Corrige y vuelve a validar</span>
+                                                <span style={{ fontSize: '0.65rem', color: '#94a3b8', fontWeight: 600 }}>Revise el conteo</span>
                                             </div>
                                         )}
                                     </div>
@@ -472,6 +556,7 @@ const PhysicalCountPage = () => {
 
         return (
             <div style={{ maxWidth: 700, margin: '20px auto', padding: '0 12px' }}>
+                <BrandTabs />
                 <div style={{ textAlign: 'center', marginBottom: 24 }}>
                     <div style={{ fontSize: '3rem', marginBottom: 4 }}>📊</div>
                     <h1 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>Resultados del Conteo</h1>
@@ -506,7 +591,7 @@ const PhysicalCountPage = () => {
                     </div>
 
                     {items.sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference)).map((item, idx) => {
-                        const name = item.product?.name?.replace(/LIQUIPOPS SABOR A /i, '').replace(/\s*X\s*\d+.*$/i, '') || '';
+                        const name = stripProductName(item.product?.name);
                         const size = item.product?.name?.match(/(\d+\s*(GR|G|ML))/i)?.[1] || '';
                         const diffColor = item.difference > 0 ? '#16a34a' : item.difference < 0 ? '#dc2626' : '#64748b';
                         const diffBg = item.difference > 0 ? '#f0fdf4' : item.difference < 0 ? '#fef2f2' : 'white';
@@ -554,6 +639,7 @@ const PhysicalCountPage = () => {
     if (phase === PHASE.HISTORY) {
         return (
             <div style={{ maxWidth: 700, margin: '20px auto', padding: '0 12px' }}>
+                <BrandTabs />
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
                     <h1 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#1e293b', margin: 0 }}>📊 Historial de Conteos</h1>
                     <button onClick={() => { setPhase(PHASE.CHECKLIST); setHistoryDetail(null); }}
@@ -573,7 +659,7 @@ const PhysicalCountPage = () => {
                         </div>
                         <div style={{ background: 'white', borderRadius: 12, boxShadow: '0 2px 12px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
                             {(historyDetail.items || []).sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference)).map((item, idx) => {
-                                const name = item.product?.name?.replace(/LIQUIPOPS SABOR A /i, '').replace(/\s*X\s*\d+.*$/i, '') || '';
+                                const name = stripProductName(item.product?.name);
                                 const diff = item.difference;
                                 return (
                                     <div key={item.id} style={{

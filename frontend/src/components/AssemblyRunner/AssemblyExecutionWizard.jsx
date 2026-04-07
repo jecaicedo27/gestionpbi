@@ -87,15 +87,26 @@ const AssemblyExecutionWizard = () => {
         empaqueDefective, setEmpaqueDefective,
         empaquePhotoUrls, setPhotoUrl,
         empaqueDefectReasons, setDefectReason,
+        restoreFromDraft: restoreEmpaqueDraft,
+        setNoteId: setEmpaqueNoteId,
     } = useEmpaqueState();
 
-    const { conteoActuals, setConteoActual } = useConteoState();
+    const {
+        conteoActuals, setConteoActual,
+        conteoPhotos, setConteoPhoto,
+        carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
+    } = useConteoState();
+
+    // ── Empaque-side carriots (read from the CONTEO note) ─────────────────────
+    const [empaqueCarriots, setEmpaqueCarriots] = useState([]);
+
 
     // ── Local wizard state ───────────────────────────────────────────────────
     const [submitting, setSubmitting] = useState(false);
     const [showCompletionPanel, setShowCompletionPanel] = useState(false);
     const [showHandoff, setShowHandoff] = useState(false);
     const [empaqueReceptionConfirmed, setEmpaqueReceptionConfirmed] = useState(false);
+    const [savedReceptionPhotos, setSavedReceptionPhotos] = useState({});
     const [marcadoCajas, setMarcadoCajas] = useState({ unidadesPorCaja: 0, totalCajas: 0 });
     const [weighingPhotos, setWeighingPhotos] = useState({});
     const [selectedLotIds, setSelectedLotIds] = useState({});
@@ -105,6 +116,120 @@ const AssemblyExecutionWizard = () => {
     const [formacionQcData, setFormacionQcData] = useState(null);
     const [esferificacionData, setEsferificacionData] = useState(null);
     const [proteccionValidated, setProteccionValidated] = useState(false);
+    // { productId: true } — tracks which presentations have been labeled by packaging
+    const [rotuladoStatus, setRotuladoStatus] = useState({});
+
+    // ── Pre-load carriots from processParameters on note load (session resume) ─
+    useEffect(() => {
+        if (!note) return;
+        const saved = note.processParameters?.carriots;
+        if (saved?.length > 0 && carriots.length === 0) {
+            preloadCarriots(saved);
+        }
+    }, [note?.id]); // eslint-disable-line
+
+    // ── Restore empaque reception state from processParameters (survive F5) ─
+    useEffect(() => {
+        if (!note) return;
+        const pp = note.processParameters;
+        if (pp?.empaque_reception_confirmed) {
+            setEmpaqueReceptionConfirmed(true);
+        }
+        if (pp?.reception_photos && Object.keys(pp.reception_photos).length > 0) {
+            setSavedReceptionPhotos(pp.reception_photos);
+        }
+    }, [note?.id]); // eslint-disable-line
+
+    // ── Bind noteId + restore empaque QC draft from processParameters (survive screen-lock / F5) ─
+    useEffect(() => {
+        if (!note?.id) return;
+        setEmpaqueNoteId(note.id);
+        const draft = note.processParameters?.empaque_draft;
+        if (draft && draft.defective_qty > 0) {
+            restoreEmpaqueDraft(draft);
+        }
+    }, [note?.id]); // eslint-disable-line
+
+    // ── Handlers: carrito production side (CONTEO step) ──────────────────────
+    const handleAddCarrito = useCallback(async (productId, productName, qty) => {
+        // Capture current carriots BEFORE async state update
+        const carriotosBefore = carriots;
+        const newEntry = addCarritoLocal(productId, productName, qty);
+        // Use captured local state + new entry — avoids stale note.processParameters
+        try {
+            const allCarriots = [...carriotosBefore, newEntry];
+            await api.patch(`/assembly-notes/${note.id}`, {
+                processParameters: {
+                    ...note.processParameters,
+                    carriots: allCarriots,
+                }
+            });
+            message.success(`🛒 Carrito #${newEntry.carritoNum} registrado — ${qty} uds de ${productName}`);
+        } catch (e) {
+            console.warn('Error saving carrito:', e.message);
+        }
+    }, [note, carriots, addCarritoLocal]);
+
+    const handleRemoveCarrito = useCallback(async (carritoId) => {
+        removeCarritoLocal(carritoId);
+        try {
+            // Use current carriots state to avoid stale reads
+            const remaining = carriots.filter(c => c.id !== carritoId);
+            await api.patch(`/assembly-notes/${note.id}`, {
+                processParameters: { ...note.processParameters, carriots: remaining }
+            });
+        } catch (e) { console.warn('Error removing carrito:', e.message); }
+    }, [note, carriots, removeCarritoLocal]);
+
+    // ── Handlers: empaque reception side (EMPAQUE step) ──────────────────────
+    // Find CONTEO note from allBatchNotes to read its carriots
+    const conteoNote = allBatchNotes?.find(n => n.processType?.code === 'CONTEO' || n.stageName?.toLowerCase().includes('conteo'));
+
+    const handleConfirmCarrito = useCallback(async (carritoId, ncQty = 0, ncCause = '') => {
+        // Fallback: when packaging role opens the CONTEO note directly, conteoNote = note itself
+        const targetNote = conteoNote || note;
+        if (!targetNote) return;
+        const updated = (empaqueCarriots.length > 0 ? empaqueCarriots : targetNote.processParameters?.carriots || []).map(c =>
+            c.id === carritoId ? { ...c, receivedAt: new Date().toISOString(), ncQty: ncQty || 0, ncCause: ncCause || '' } : c
+        );
+        setEmpaqueCarriots(updated);
+        try {
+            await api.patch(`/assembly-notes/${targetNote.id}`, {
+                processParameters: { ...targetNote.processParameters, carriots: updated }
+            });
+            message.success(`✅ Carrito recibido${ncQty > 0 ? ` — ${ncQty} NC registradas` : ''}`);
+        } catch (e) { console.warn('Error confirming carrito:', e.message); }
+    }, [conteoNote, note, empaqueCarriots]);
+
+    // ── Polling: re-fetch carriots every 20s when on EMPAQUE step OR packaging role on CONTEO ──
+    useEffect(() => {
+        const currentStep = wizardSteps[currentStepIndex];
+        const isPackaging = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role);
+        // Run polling on EMPAQUE step, OR when packaging role views any step (e.g. CONTEO)
+        if (currentStep?.type !== 'EMPAQUE' && !isPackaging) return;
+        if (!note?.productionBatchId) return;
+
+        // Immediate preload: if we're packaging role on the CONTEO note itself,
+        // the carriots are already in note.processParameters — use them right away
+        if (isPackaging && note?.processParameters?.carriots?.length > 0 && empaqueCarriots.length === 0) {
+            setEmpaqueCarriots(note.processParameters.carriots);
+        }
+
+        // Async refresh from server (also runs every 20s)
+        const loadCarriots = async () => {
+            try {
+                const batchNotes = await api.get(`/assembly-notes?batchId=${note.productionBatchId}`);
+                const cNote = batchNotes.data.find(n => n.processType?.code === 'CONTEO');
+                if (cNote?.processParameters?.carriots) {
+                    setEmpaqueCarriots(cNote.processParameters.carriots);
+                }
+            } catch (e) { /* silent */ }
+        };
+        loadCarriots();
+        const interval = setInterval(loadCarriots, 20000);
+        return () => clearInterval(interval);
+    }, [currentStepIndex, wizardSteps, note?.productionBatchId, user?.role]); // eslint-disable-line
+
 
     // Auto-advance past INTRO when arriving with ?skipIntro=1 (from empaque selector or other)
     useEffect(() => {
@@ -208,7 +333,27 @@ const AssemblyExecutionWizard = () => {
                 if (entry?.actual) return entry.actual;
             }
 
-            // Fallback to output targets (planned units)
+            // ── EMPAQUE fallback (SIROPES without CONTEO) ──
+            // "No se ensambla lo que se programa, se ensambla lo que sale real"
+            // Check completed EMPAQUE notes for actual approved quantities
+            const empaqueNote = allNotesRes.data.find(n =>
+                n.processType?.code === 'EMPAQUE' && n.status === 'COMPLETED' &&
+                n.productId === noteData.productId
+            );
+            if (empaqueNote?.processParameters) {
+                const empParams = empaqueNote.processParameters;
+                // Priority 1: empaque.approved_qty (set by handleComplete for EMPAQUE)
+                const approvedQty = empParams.empaque?.approved_qty;
+                if (approvedQty && approvedQty > 0) return approvedQty;
+                // Priority 2: empaque.conteo_qty (set by handleComplete)
+                const empConteoQty = empParams.empaque?.conteo_qty;
+                if (empConteoQty && empConteoQty > 0) return empConteoQty;
+                // Priority 3: empaqueRef.conteo_qty (manual conteo for siropes, set in IntroStep)
+                const conteoQty = empParams.empaqueRef?.conteo_qty;
+                if (conteoQty && conteoQty > 0) return conteoQty;
+            }
+
+            // Last resort: output targets (planned units) — WARNING: these are programmed, not actual
             const outputTargets = noteData.productionBatch?.outputTargets || [];
             const stageName = (noteData.stageName || '').toLowerCase();
             const nums = (stageName.match(/\d{3,}/g) || []);
@@ -315,42 +460,133 @@ const AssemblyExecutionWizard = () => {
             }
         }
 
+        // ── EMPAQUE QC → persist defective data before advancing to MARCADO_CAJAS ──
+        if (currentStep.type === 'EMPAQUE' && note.processType?.code === 'EMPAQUE') {
+            const empData = note.empaqueData || {};
+            const conteoQty =
+                empData.conteo_qty
+                ?? note.processParameters?.empaqueRef?.conteo_qty
+                ?? note.targetQuantity
+                ?? 0;
+            const defectivos = parseInt(empaqueDefective || 0, 10);
+            const aprobados = Math.max(0, conteoQty - defectivos);
+
+            // Validate: every defective jar must have a cause selected
+            if (defectivos > 0) {
+                const missingCauses = Array.from({ length: defectivos }).filter((_, i) => !empaqueDefectReasons[i]?.cause);
+                if (missingCauses.length > 0) {
+                    message.error(`⚠️ Debe seleccionar la causa del defecto para ${missingCauses.length === 1 ? 'el tarro defectuoso' : `los ${missingCauses.length} tarros defectuosos`}`);
+                    return;
+                }
+            }
+
+            // Persist empaque QC data (survive F5/logout)
+            try {
+                await api.patch(`/assembly-notes/${note.id}`, {
+                    processParameters: {
+                        ...note.processParameters,
+                        empaque: {
+                            conteo_qty: conteoQty,
+                            defective_qty: defectivos,
+                            approved_qty: aprobados,
+                            photo_urls: empaquePhotoUrls,
+                            defect_reasons: empaqueDefectReasons,
+                        }
+                    }
+                });
+                // Keep local note in sync
+                if (note.processParameters) {
+                    note.processParameters.empaque = {
+                        conteo_qty: conteoQty, defective_qty: defectivos,
+                        approved_qty: aprobados, photo_urls: empaquePhotoUrls,
+                        defect_reasons: empaqueDefectReasons,
+                    };
+                }
+                message.success(`✅ QC guardado — ${aprobados} buenas, ${defectivos} defectuosas`);
+            } catch (e) {
+                console.warn('Error persisting empaque QC:', e.message);
+            }
+        }
+
         // MARCADO_CAJAS → save box data to processParameters before advancing
+        // Auto-ingest is now deferred to ENSAMBLE step (handleComplete)
         if (currentStep.type === 'MARCADO_CAJAS') {
+            if (marcadoCajas.isValid === false) {
+                message.error('🚫 La cantidad a empacar supera la producción real. Ajuste las cajas.');
+                return;
+            }
             try {
                 await api.patch(`/assembly-notes/${note.id}`, {
                     processParameters: {
                         ...note.processParameters,
                         marcado_cajas: {
                             unidades_por_caja: marcadoCajas.unidadesPorCaja,
+                            cajas_llenas: marcadoCajas.cajasLlenas,
+                            unidades_sueltas: marcadoCajas.unidadesSueltas,
                             total_cajas: marcadoCajas.totalCajas,
+                            ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
+                            contramuestra_qty: marcadoCajas.contramuestraQty || 0,
                             lote: note.productionBatch?.batchNumber,
                             fecha_marcado: new Date().toISOString(),
                         }
                     }
                 });
-                message.success(`📦 Marcado guardado — ${marcadoCajas.totalCajas} cajas × ${marcadoCajas.unidadesPorCaja} uds`);
+                // Keep local note in sync
+                if (note.processParameters) {
+                    note.processParameters.marcado_cajas = {
+                        unidades_por_caja: marcadoCajas.unidadesPorCaja,
+                        cajas_llenas: marcadoCajas.cajasLlenas,
+                        unidades_sueltas: marcadoCajas.unidadesSueltas,
+                        total_cajas: marcadoCajas.totalCajas,
+                        ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
+                        contramuestra_qty: marcadoCajas.contramuestraQty || 0,
+                        maquila_qty: marcadoCajas.maquilaQty || 0,
+                        lote: note.productionBatch?.batchNumber,
+                    };
+                }
+                message.success(`📦 Marcado guardado — ${marcadoCajas.cajasLlenas || 0} cajas llenas y ${marcadoCajas.unidadesSueltas || 0} uds sueltas`);
 
-                // ── Auto-ingest finished product stock into PRODUCCION zone ──
-                const totalUnits = marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja;
-                if (totalUnits > 0 && note.product?.id && note.productionBatch?.batchNumber) {
+                // ── Pending Box management ──
+                // Delete old pending box if it was completed or discarded
+                if (marcadoCajas.pendingBox && (marcadoCajas.pendingBoxFill > 0 || !marcadoCajas.pendingBox)) {
                     try {
-                        await api.post('/finished-lots/ingest', {
-                            productId: note.product.id,
-                            lotNumber: note.productionBatch.batchNumber,
-                            quantity: totalUnits,
-                            batchId: note.productionBatchId || null,
+                        await api.delete(`/finished-lots/pending-box/${marcadoCajas.pendingBox.id}`);
+                        console.log('[MarcadoCajas] Deleted completed pending box');
+                    } catch (e) { console.warn('[MarcadoCajas] Delete pending box:', e.message); }
+                }
+                // Create new pending box if there are partial units remaining
+                const newPartial = Number(marcadoCajas.unidadesSueltas) || 0;
+                if (newPartial > 0 && note.productId && marcadoCajas.unidadesPorCaja > 0) {
+                    try {
+                        await api.post('/finished-lots/pending-box', {
+                            productId: note.productId,
+                            boxSize: marcadoCajas.unidadesPorCaja,
+                            entries: [{
+                                lot: note.productionBatch?.batchNumber || '',
+                                qty: newPartial,
+                                expiry: note.productionBatch?.expiresAt || null,
+                            }],
                         });
-                        message.success(`📥 Stock registrado: ${totalUnits} uds en zona PRODUCCIÓN`);
-                    } catch (ingErr) {
-                        console.warn('Finished lot ingest (non-blocking):', ingErr.message);
-                    }
+                        console.log(`[MarcadoCajas] Created new pending box: ${newPartial}/${marcadoCajas.unidadesPorCaja}`);
+                    } catch (e) { console.warn('[MarcadoCajas] Create pending box:', e.message); }
                 }
             } catch (e) {
                 console.warn('Error guardando marcado de cajas:', e.message);
                 // Non-blocking — continue anyway
             }
         }
+
+        // ── ADMIN RE-EDIT: if note is already COMPLETED, save was enough — don't advance to ENSAMBLE ──
+        if (currentStep.type === 'MARCADO_CAJAS' && note.status === 'COMPLETED') {
+            message.success('✅ Datos de empaque actualizados (re-edición Admin)');
+            // Navigate back to batch empaque selector
+            const parentEmpaqueId = allBatchNotes?.find(n =>
+                n.processType?.code === 'EMPAQUE' && n.id !== note.id
+            )?.id || note.id;
+            setTimeout(() => navigate('/production/operator'), 1200);
+            return;
+        }
+
         // COCCION → save temperature + photo data to processParameters
         if (currentStep.type === 'COCCION') {
             try {
@@ -505,85 +741,252 @@ const AssemblyExecutionWizard = () => {
 
             // ENSAMBLE / FORMACION → RPA now fires from backend completeNote (lot concordance)
 
-            // EMPAQUE → save defective data + fire Siigo fire-and-forget
-            if (currentStep?.type === 'EMPAQUE') {
+            // ══════════════════════════════════════════════════════════════════════
+            // ENSAMBLE WITHIN EMPAQUE NOTE → Final step of unified wizard
+            // Fires: persist empaque data → Siigo RPA → completeNote → auto-ingest → auto-complete ENSAMBLE note
+            // ══════════════════════════════════════════════════════════════════════
+            if (currentStep?.type === 'ENSAMBLE' && note.processType?.code === 'EMPAQUE') {
                 const empData = note.empaqueData || {};
-                const conteoQty = empData.conteo_qty ?? parseFloat(targetQuantity) ?? 0;
-                const defectivos = parseInt(empaqueDefective || 0, 10);
-                const aprobados = Math.max(0, conteoQty - defectivos);
+                const emp = note.processParameters?.empaque || {};
+                const conteoQty = emp.conteo_qty
+                    || empData.conteo_qty
+                    || note.processParameters?.empaqueRef?.conteo_qty
+                    || note.targetQuantity
+                    || 0;
+                const defectivos = emp.defective_qty || 0;
+                const aprobados = emp.approved_qty || Math.max(0, conteoQty - defectivos);
+                const totalEmpaque = conteoQty; // all units (buenos + malos)
 
-                // Validate: every defective jar must have a cause selected
-                if (defectivos > 0) {
-                    const missingCauses = Array.from({ length: defectivos }).filter((_, i) => !empaqueDefectReasons[i]?.cause);
-                    if (missingCauses.length > 0) {
-                        message.error(`⚠️ Debe seleccionar la causa del defecto para ${missingCauses.length === 1 ? 'el tarro defectuoso' : `los ${missingCauses.length} tarros defectuosos`}`);
-                        setSubmitting(false);
-                        return;
-                    }
-                }
-
-                await api.patch(`/assembly-notes/${note.id}`, {
-                    processParameters: {
-                        ...note.processParameters,
-                        empaque: {
-                            conteo_qty: conteoQty,
-                            defective_qty: defectivos,
-                            approved_qty: aprobados,
-                            photo_urls: empaquePhotoUrls,
-                            defect_reasons: empaqueDefectReasons,
-                        }
-                    }
-                }).catch(() => { });
-
+                // 1. Siigo RPA (fire-and-forget)
                 if (note.processParameters?.assembly_on_complete) {
+                    const productName = empData.product_name || note.product?.name || 'Producto';
+                    const productSku = note.product?.sku || null;
                     (async () => {
                         try {
-                            const productName = empData.product_name || note.product?.name || 'Producto';
-                            const productSku = note.product?.sku || null;
                             await api.post('/rpa/siigo-assembly', {
-                                productName, productSku, quantity: aprobados, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Aprobados: ${aprobados}/${conteoQty}.`
+                                productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
+                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
                             });
-                            message.success(`🤖 Siigo: ${aprobados} × ${productName}`);
+                            message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);
                         } catch (e) {
                             message.warning('⚠️ Siigo no disponible — proceso continúa');
                         }
                     })();
                     if (defectivos > 0) {
+                        const defectReasons = emp.defect_reasons || empaqueDefectReasons;
+                        const photoUrls = emp.photo_urls || empaquePhotoUrls;
                         (async () => {
                             try {
-                                const productName = empData.product_name || note.product?.name || 'Producto';
-                                const productSku = note.product?.sku || null;
                                 await api.post('/rpa/siigo-adjustment', {
                                     productName, productSku, quantity: -defectivos,
                                     reason: `Defectuosos empaque - ${note.stageName}`,
-                                    photoUrls: empaquePhotoUrls,
-                                    defectReasons: empaqueDefectReasons,
+                                    photoUrls, defectReasons,
                                 });
                             } catch (e) { console.warn('Adjustment skip:', e.message); }
                         })();
                     }
                 }
 
-                // Use aprobados as the completion quantity
-                // Merge persisted lot_selections with local selectedLotIds for lot-based consumption
+                // 2. Complete the EMPAQUE note
                 const persistedLotSelEmp = note.processParameters?.lot_selections || {};
                 const mergedLotIdsEmp = { ...persistedLotSelEmp, ...selectedLotIds };
                 Object.keys(mergedLotIdsEmp).forEach(k => { if (!mergedLotIdsEmp[k]) delete mergedLotIdsEmp[k]; });
 
-                await api.post(`/assembly-notes/${note.id}/complete`, {
+                const ensambleObs = [
+                    outputObservations || '',
+                    `Aprobados: ${aprobados}/${conteoQty}`,
+                    defectivos > 0 ? `Defectuosos: ${defectivos} — ${(emp.defect_reasons || []).map(r => r?.cause).filter(Boolean).join(', ')}` : null,
+                ].filter(Boolean).join('. ');
+
+                const completeRes = await api.post(`/assembly-notes/${note.id}/complete`, {
                     operatorId: user?.id,
-                    actualQuantity: aprobados,
-                    observations: outputObservations || null,
+                    actualQuantity: totalEmpaque,
+                    observations: ensambleObs,
                     lotSelections: mergedLotIdsEmp
                 });
+                if (completeRes.data?.consumptionAlerts?.length > 0) {
+                    const alerts = completeRes.data.consumptionAlerts;
+                    message.warning(`⚠️ Alerta de consumo: ${alerts.map(a => `${a.component} (esperado: ${a.expected}, consumido: ${a.consumed})`).join(', ')}`, 10);
+                }
+
+                // 3. Auto-ingest to PRODUCCION zone (all units — logistics handles NC split)
+                if (totalEmpaque > 0 && note.productId) {
+                    const empBatchNumber = note.productionBatch?.batchNumber
+                        || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber;
+                    const empBatchId = note.productionBatchId
+                        || allBatchNotes?.find(n => n.productionBatchId)?.productionBatchId;
+                    if (empBatchNumber) {
+                        api.post('/finished-lots/ingest', {
+                            productId: note.productId,
+                            lotNumber: empBatchNumber,
+                            quantity: totalEmpaque,
+                            batchId: empBatchId || null,
+                        }).then(() => {
+                            message.success(`📥 Stock: ${aprobados} buenos + ${defectivos} NC = ${totalEmpaque} uds de ${note.product?.name} en PRODUCCIÓN`);
+                        }).catch(ingErr => {
+                            const ingMsg = ingErr.response?.data?.error || '';
+                            if (!ingMsg.startsWith('DUPLICATE_INGESTION') && !ingMsg.startsWith('ASSEMBLY_INCOMPLETE')) {
+                                console.error('[EMPAQUE-ENSAMBLE AUTO-INGEST]', ingMsg, { productId: note.productId, empBatchNumber, totalEmpaque });
+                            }
+                        });
+                    }
+                }
+
+                // 4. Auto-complete the separate ENSAMBLE note (mirror note for Siigo traceability)
+                // NOTE: Only Liquipops ENSAMBLE — Geniality (G_ENSAMBLE) is NOT touched here
+                try {
+                    const batchId = note.productionBatchId;
+                    const allNotesRes2 = await api.get(`/assembly-notes?batchId=${batchId}`);
+                    const ensambleNotes = (allNotesRes2.data || []).filter(n =>
+                        n.id !== note.id &&
+                        n.status !== 'COMPLETED' &&
+                        n.processType?.code === 'ENSAMBLE' &&
+                        n.productId === note.productId
+                    );
+                    for (const ensambleNote of ensambleNotes) {
+                        try {
+                            // Must START before COMPLETE (PENDING notes reject /complete)
+                            if (ensambleNote.status === 'PENDING') {
+                                await api.post(`/assembly-notes/${ensambleNote.id}/start`, {
+                                    operatorId: user?.id
+                                });
+                            }
+                            await api.post(`/assembly-notes/${ensambleNote.id}/complete`, {
+                                operatorId: user?.id,
+                                actualQuantity: totalEmpaque,
+                                observations: `Auto-completado desde empaque unificado. ${ensambleObs}`
+                            });
+                            console.log(`[ENSAMBLE auto-complete] ✅ ${ensambleNote.id} completed`);
+                            // Also trigger ingest from ENSAMBLE note for finished goods
+                            const empBatchNumber2 = note.productionBatch?.batchNumber
+                                || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber;
+                            if (ensambleNote.productId && empBatchNumber2 && batchId) {
+                                api.post('/finished-lots/ingest', {
+                                    productId: ensambleNote.productId,
+                                    lotNumber: empBatchNumber2,
+                                    quantity: totalEmpaque,
+                                    batchId,
+                                }).catch(ingErr => {
+                                    const ingMsg = ingErr.response?.data?.error || '';
+                                    if (!ingMsg.startsWith('DUPLICATE_INGESTION')) {
+                                        console.warn('[ENSAMBLE MIRROR INGEST]', ingMsg);
+                                    }
+                                });
+                            }
+                        } catch (ensambleErr) {
+                            console.warn(`[ENSAMBLE auto-complete] ${ensambleNote.id}:`, ensambleErr.message);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[ENSAMBLE auto-complete scan]', e.message);
+                }
             } else if (currentStep?.type === 'CONTEO') {
-                // CONTEO → save actual counts + esferas
+                // ── Packaging role finalizing CONTEO ──
+                // Siigo is fired per-carrito in ConteoStep.
+                // But we must still complete the CONTEO note + auto-complete ENSAMBLE
+                // on the backend so productionZoneStock gets incremented.
+                const isPackagingRole = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role);
+
+                if (isPackagingRole) {
+                    const batchId = note.productionBatchId;
+                    const batchNumber = note.productionBatch?.batchNumber || '';
+
+                    // ── 1. Calculate real total from received carriots ──
+                    const receivedCarriots = empaqueCarriots.filter(c => c.receivedAt);
+                    const totalRealQty = receivedCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+
+                    // ── 2. Complete the CONTEO note on the backend ──
+                    try {
+                        const conteoCounts = {};
+                        (note.productionBatch?.outputTargets || []).forEach(t => {
+                            const actualUds = receivedCarriots
+                                .filter(c => c.productId === t.productId)
+                                .reduce((s, c) => s + c.qty, 0);
+                            conteoCounts[t.product?.name || t.productId] = {
+                                productId: t.productId,
+                                productName: t.product?.name,
+                                planned: t.plannedUnits,
+                                actual: actualUds,
+                            };
+                        });
+                        await api.patch(`/assembly-notes/${note.id}`, {
+                            processParameters: { conteo: conteoCounts }
+                        }).catch(() => {});
+                        await api.post(`/assembly-notes/${note.id}/complete`, {
+                            operatorId: user?.id,
+                            actualQuantity: totalRealQty || note.targetQuantity,
+                            observations: `Empaque Liquipops — carriots recibidos: ${receivedCarriots.length}. Lote: ${batchNumber}.`
+                        });
+                    } catch (e) {
+                        console.warn('[CONTEO complete]', e.message);
+                    }
+
+                    // ── 3. Find + auto-complete the ENSAMBLE note → triggers productionZoneStock ──
+                    try {
+                        const allNotesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
+                        const batchNotes = allNotesRes.data || [];
+
+                        // Complete each product's ENSAMBLE note with its real carrito qty
+                        const ensambleNotes = batchNotes.filter(n =>
+                            n.stageOrder >= note.stageOrder &&
+                            n.status !== 'COMPLETED' &&
+                            (n.processType?.code === 'ENSAMBLE' || n.processType?.code === 'G_ENSAMBLE')
+                        );
+
+                        for (const ensambleNote of ensambleNotes) {
+                            // Calculate how many units this ENSAMBLE note covers
+                            const ensambleProductId = ensambleNote.productId;
+                            const ensambleQty = ensambleProductId
+                                ? receivedCarriots
+                                    .filter(c => c.productId === ensambleProductId)
+                                    .reduce((s, c) => s + c.qty, 0)
+                                : totalRealQty;
+
+                            const qty = ensambleQty > 0 ? ensambleQty : (ensambleNote.targetQuantity || totalRealQty);
+                            if (qty <= 0) continue;
+
+                            try {
+                                await api.post(`/assembly-notes/${ensambleNote.id}/complete`, {
+                                    operatorId: user?.id,
+                                    actualQuantity: qty,
+                                    observations: `Ensamble auto — empaque completo. Carriots: ${receivedCarriots.length}. Lote: ${batchNumber}.`
+                                });
+                                message.success(`📦 Stock actualizado: ${qty} uds de ${ensambleNote.product?.name || 'Producto'} en zona PRODUCCIÓN`);
+
+                                // After completing ENSAMBLE, trigger the finished-lot ingest
+                                if (ensambleNote.productId && batchNumber && batchId) {
+                                    api.post('/finished-lots/ingest', {
+                                        productId: ensambleNote.productId,
+                                        lotNumber: batchNumber,
+                                        quantity: qty,
+                                        batchId,
+                                    }).catch(ingErr => {
+                                        const ingMsg = ingErr.response?.data?.error || '';
+                                        if (!ingMsg.startsWith('DUPLICATE_INGESTION')) {
+                                            console.warn('[ENSAMBLE INGEST]', ingMsg);
+                                        }
+                                    });
+                                }
+                            } catch (ensambleErr) {
+                                console.warn(`[ENSAMBLE auto-complete] ${ensambleNote.id}:`, ensambleErr.message);
+                            }
+                        }
+
+                        message.success('✅ Empaque completado — productos registrados en zona PRODUCCIÓN');
+                        setTimeout(() => navigate('/production/operator'), 1500);
+                    } catch {
+                        message.success('✅ Proceso de empaque completado');
+                        setTimeout(() => navigate('/production/operator'), 1200);
+                    }
+                    return;
+                }
+
+                // Production role completing CONTEO → save actual counts + esferas
                 const esferaFactors = note.processParameters?.esfera_factors || {};
                 const counts = {};
                 let esferas_total = 0;
-                const targets = note.productionBatch?.outputTargets || [];
-                targets.forEach(t => {
+                const conteoTargets = note.productionBatch?.outputTargets || [];
+                conteoTargets.forEach(t => {
                     const actual = parseInt(conteoActuals[t.productId] || t.plannedUnits, 10);
                     const factor = esferaFactors[t.productId] || 0;
                     const esferas = actual * factor;
@@ -594,12 +997,17 @@ const AssemblyExecutionWizard = () => {
                     };
                 });
                 await api.patch(`/assembly-notes/${note.id}`, {
-                    processParameters: { conteo: counts, esferas_total }
+                    processParameters: { conteo: counts, esferas_total, conteo_photos: conteoPhotos }
                 }).catch(() => { });
+
+                // Use the sum of all real counted units as the actualQuantity
+                const totalConteoUnits = conteoTargets.reduce((sum, t) => {
+                    return sum + parseInt(conteoActuals[t.productId] || t.plannedUnits, 10);
+                }, 0);
 
                 await api.post(`/assembly-notes/${note.id}/complete`, {
                     operatorId: user?.id,
-                    actualQuantity: parseFloat(outputQuantity) || parseFloat(targetQuantity) || note.targetQuantity,
+                    actualQuantity: totalConteoUnits || parseFloat(outputQuantity) || note.targetQuantity,
                     observations: outputObservations || null
                 });
             } else if (currentStep?.type === 'ENSAMBLE') {
@@ -614,6 +1022,44 @@ const AssemblyExecutionWizard = () => {
                     observations: outputObservations || null,
                     lotSelections: mergedLotIdsE
                 });
+
+                // ── AUTO-INGEST to PRODUCCION zone after ENSAMBLE ──────────────────
+                // When EMPAQUE fires ingest, the ASSEMBLY_INCOMPLETE guard may block it
+                // (ENSAMBLE still pending). Now that ENSAMBLE is done, retry the ingest.
+                // Only for finished goods (accountGroup 1401 or 1402).
+                const productAccountGroup = note.product?.accountGroup;
+                if ([1401, 1402].includes(productAccountGroup) && ensambleQty > 0) {
+                    // Robust batchNumber resolution: try note directly first,
+                    // then scan allBatchNotes (any note in the batch has it),
+                    // final fallback: any note in the batch that carries a productionBatch.
+                    const batchNumber = note.productionBatch?.batchNumber
+                        || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber
+                        || allBatchNotes?.find(n => n.id === note.id)?.productionBatch?.batchNumber;
+                    const batchId = note.productionBatchId
+                        || allBatchNotes?.find(n => n.productionBatchId)?.productionBatchId;
+
+                    if (batchNumber && batchId) {
+                        try {
+                            await api.post('/finished-lots/ingest', {
+                                productId: note.productId,
+                                lotNumber: batchNumber,
+                                quantity: ensambleQty,
+                                batchId,
+                            });
+                        } catch (ingestErr) {
+                            // If already ingested (duplicate guard) — OK, silently ignore
+                            const msg = ingestErr.response?.data?.error || '';
+                            if (!msg.startsWith('DUPLICATE_INGESTION')) {
+                                console.error('[AUTO-INGEST] Error after ENSAMBLE:', msg, { productId: note.productId, batchNumber, ensambleQty });
+                            }
+                        }
+                    } else {
+                        console.error('[AUTO-INGEST] No batchNumber found — ingest skipped!', {
+                            noteId: note.id, productionBatchId: note.productionBatchId,
+                            hasBatch: !!note.productionBatch, allBatchNotesCount: allBatchNotes?.length
+                        });
+                    }
+                }
             } else {
                 // ── Merge persisted lot_selections with local selectedLotIds ──
                 const persistedLotSel = note.processParameters?.lot_selections || {};
@@ -622,19 +1068,65 @@ const AssemblyExecutionWizard = () => {
                 Object.keys(mergedLotIds).forEach(k => { if (!mergedLotIds[k]) delete mergedLotIds[k]; });
 
                 // ── Pass lot selections to backend for atomic consumption ──
-                await api.post(`/assembly-notes/${note.id}/complete`, {
+                const completeRes2 = await api.post(`/assembly-notes/${note.id}/complete`, {
                     operatorId: user?.id,
                     actualQuantity: parseFloat(outputQuantity) || parseFloat(targetQuantity) || note.targetQuantity,
                     observations: outputObservations || null,
                     lotSelections: mergedLotIds
                 });
+                if (completeRes2.data?.consumptionAlerts?.length > 0) {
+                    const alerts = completeRes2.data.consumptionAlerts;
+                    message.warning(`⚠️ Alerta de consumo: ${alerts.map(a => `${a.component} (esperado: ${a.expected}, consumido: ${a.consumed})`).join(', ')}`, 10);
+                }
             }
 
             message.success(`Etapa ${note.stageOrder} — ${note.stageName} completada ✅`);
 
             const batchId = note.productionBatchId;
             const allNotesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
-            const nextNote = allNotesRes.data.find(n =>
+            const allBatchNotesFresh = allNotesRes.data || [];
+
+            // ── Special case: finishing a sub-EMPAQUE wizard ──────────────────────
+            // When the unified EMPAQUE wizard (QC→MARCADO→ENSAMBLE) completes,
+            // we must return to the EMPAQUE multi-selector (parent note), NOT advance
+            // to the next sequential stage.
+            const isFinishingEmpaqueWizard = note.processType?.code === 'EMPAQUE' && currentStep?.type === 'ENSAMBLE';
+
+            if (isFinishingEmpaqueWizard) {
+                // The selector note is the lowest-stageOrder EMPAQUE note that is NOT the current sub-note.
+                const selectorNote = allBatchNotesFresh
+                    .filter(n => n.processType?.code === 'EMPAQUE' && n.id !== note.id)
+                    .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
+
+                if (selectorNote) {
+                    console.log('[EMPAQUE wizard] Regresando al selector:', selectorNote.id);
+                    setTimeout(() => {
+                        navigate(`/assembly-execution/${selectorNote.id}`, { replace: true });
+                        window.location.reload();
+                    }, 800);
+                } else {
+                    // All EMPAQUE notes done — advance to the true next stage (skip ENSAMBLE mirrors)
+                    const nextStage = allBatchNotesFresh.find(n =>
+                        n.stageOrder > note.stageOrder &&
+                        n.status !== 'COMPLETED' &&
+                        n.processType?.code !== 'ENSAMBLE'
+                    );
+                    if (nextStage) {
+                        message.info(`Avanzando a ${nextStage.stageName}`);
+                        setTimeout(() => {
+                            navigate(`/assembly-execution/${nextStage.id}`, { replace: true });
+                            window.location.reload();
+                        }, 1200);
+                    } else {
+                        message.success('🎉 ¡Todas las etapas completadas!');
+                        setShowCompletionPanel(true);
+                    }
+                }
+                return;
+            }
+
+            // ── Standard next-note navigation (non-EMPAQUE wizard) ───────────────
+            const nextNote = allBatchNotesFresh.find(n =>
                 n.stageOrder > note.stageOrder && n.status !== 'COMPLETED'
             );
 
@@ -643,12 +1135,12 @@ const AssemblyExecutionWizard = () => {
                 const isProduccion = user?.role === 'PRODUCCION';
 
                 if (nextIsEmpaque && isProduccion) {
-                    // ── Handoff to empaque — don't navigate, show handoff screen ──
                     setShowHandoff(true);
                 } else {
                     message.info(`Avanzando a Etapa ${nextNote.stageOrder}: ${nextNote.stageName}`);
+                    const skipIntroFlag = nextIsEmpaque && !isProduccion ? '?skipIntro=1' : '';
                     setTimeout(() => {
-                        navigate(`/assembly-execution/${nextNote.id}`, { replace: true });
+                        navigate(`/assembly-execution/${nextNote.id}${skipIntroFlag}`, { replace: true });
                         window.location.reload();
                     }, 1200);
                 }
@@ -768,7 +1260,8 @@ const AssemblyExecutionWizard = () => {
         const hasWeight = actualQuantities[currentItemId] !== undefined && actualQuantities[currentItemId] !== '';
         const lotVal = lotNumbers[currentItemId];
         const hasLot = typeof lotVal === 'string' && lotVal.trim().length > 0;
-        canAdvance = hasWeight && hasLot;
+        const hasPhoto = !!weighingPhotos[currentItemId];
+        canAdvance = hasWeight && hasLot && hasPhoto;
 
         // Multi-lot validation: if lots exist in inventory, block until coverage >= planned
         // Skip for EMPAQUE — lots are auto-assigned with whatever is available
@@ -792,14 +1285,36 @@ const AssemblyExecutionWizard = () => {
         canAdvance = false;
     }
 
-    // Block on CONTEO step if not all outputs have been counted
+    // Block FINALIZAR on CONTEO step until every product has a count entered
+    // AND every product with actual > 0 has a photo.
+    // CONTEO is Liquipops-only (direct input). Geniality uses its own wizard.
     if (currentStep.type === 'CONTEO') {
-        const targets = note.productionBatch?.outputTargets || [];
-        const allCounted = targets.length > 0 && targets.every(t => {
-            const val = conteoActuals[t.productId];
-            return val !== undefined && val !== '';
-        });
-        if (!allCounted) canAdvance = false;
+        // Packaging roles must NEVER finalize CONTEO — it's production only
+        const isPackaging = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role);
+        if (isPackaging) {
+            canAdvance = false;
+        } else {
+            const targets = note.productionBatch?.outputTargets || [];
+            // Products with planned > 0 MUST have an explicit count entered.
+            // Products with planned === 0 auto-count as 0 (user doesn't need to type 0).
+            const allHaveCounts = targets.length > 0 && targets.every(t => {
+                const val = conteoActuals[t.productId];
+                if (t.plannedUnits === 0 && (val === undefined || val === '')) return true; // auto-0
+                return val !== undefined && val !== '' && !isNaN(parseInt(val, 10));
+            });
+            if (!allHaveCounts) canAdvance = false;
+
+            // Photo validation: every target with actual > 0 must have a photo
+            if (allHaveCounts) {
+                const allHavePhotos = targets.every(t => {
+                    const val = conteoActuals[t.productId];
+                    const actual = (val === undefined || val === '') ? (t.plannedUnits || 0) : parseInt(val, 10);
+                    if (isNaN(actual) || actual <= 0) return true; // qty 0 → no photo needed
+                    return !!conteoPhotos[t.productId];
+                });
+                if (!allHavePhotos) canAdvance = false;
+            }
+        }
     }
 
     // Block on COCCION step if not complete (photo + timer + temperature)
@@ -815,47 +1330,54 @@ const AssemblyExecutionWizard = () => {
     // Block FINALIZAR on OUTPUT step if REAL PRODUCIDO is empty or variation > 5%
     if (currentStep.type === 'OUTPUT') {
         const realQty = parseFloat(outputQuantity);
+        const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
         const isPesajeNote = note.processType?.code === 'PESAJE';
         const isFormacionNote = note.processType?.code === 'FORMACION';
         
-        const pesajeTotal = isPesajeNote && note.items?.length > 0
-            ? note.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
-            : null;
-
-        // Same logic as OutputStep: try to find a previous completed PESAJE step for batch total
-        const previousPesajeOutput = isPesajeNote && allBatchNotes?.length > 0
-            ? allBatchNotes
-                .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== note.id)
-                .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0]?.actualQuantity
-            : null;
-
-        const formulaBaseQty = note.product?.formulas?.[0]?.baseQuantity || 0;
-        const noteMultiplier = note.multiplier || 1;
-
-        // Determine if MAJOR pesaje step or ADDITIVE (like conservante)
-        const pesajeIsMajor = pesajeTotal && previousPesajeOutput && pesajeTotal > previousPesajeOutput * 0.1;
-
-        let expectedQty;
-        if (pesajeIsMajor || !previousPesajeOutput) {
-            expectedQty = pesajeTotal
-                || previousPesajeOutput
-                || (isFormacionNote && formulaBaseQty > 1 ? formulaBaseQty * noteMultiplier : null)
-                || parseFloat(targetQuantity)
-                || note.targetQuantity
-                || 0;
-        } else {
-            // Additive step: expected = previous batch output + items being added
-            expectedQty = previousPesajeOutput + (pesajeTotal || 0);
-        }
-            
         if (!outputQuantity || realQty <= 0) {
             canAdvance = false;
-        } else if (expectedQty > 0) {
-            const variationPct = Math.abs((realQty - expectedQty) / expectedQty) * 100;
-            if (variationPct > 5) {
-                canAdvance = false;
+        } else if (!isEnsambleNote) {
+            // For PESAJE/FORMACION: enforce 5% variation limit
+            const pesajeTotal = isPesajeNote && note.items?.length > 0
+                ? note.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
+                : null;
+
+            // Same logic as OutputStep: try to find a previous completed PESAJE step for batch total
+            const previousPesajeOutput = isPesajeNote && allBatchNotes?.length > 0
+                ? allBatchNotes
+                    .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== note.id)
+                    .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0]?.actualQuantity
+                : null;
+
+            const formulaBaseQty = note.product?.formulas?.[0]?.baseQuantity || 0;
+            const noteMultiplier = note.multiplier || 1;
+
+            // Determine if MAJOR pesaje step or ADDITIVE (like conservante)
+            const pesajeIsMajor = pesajeTotal && previousPesajeOutput && pesajeTotal > previousPesajeOutput * 0.1;
+
+            let expectedQty;
+            if (pesajeIsMajor || !previousPesajeOutput) {
+                expectedQty = pesajeTotal
+                    || previousPesajeOutput
+                    || (isFormacionNote && formulaBaseQty > 1 ? formulaBaseQty * noteMultiplier : null)
+                    || parseFloat(targetQuantity)
+                    || note.targetQuantity
+                    || 0;
+            } else {
+                // Additive step: expected = previous batch output + items being added
+                expectedQty = previousPesajeOutput + (pesajeTotal || 0);
+            }
+
+            if (expectedQty > 0) {
+                const variationPct = Math.abs((realQty - expectedQty) / expectedQty) * 100;
+                if (variationPct > 5) {
+                    canAdvance = false;
+                }
             }
         }
+        // ENSAMBLE: only blocks if qty is empty/0 (already handled above)
+        // No 5% variation — operator enters real tarros/grams freely
+
         // Block if QC parameters are not complete (out of range, missing photos, or checklist incomplete)
         if (qcData && !qcData.isComplete) {
             canAdvance = false;
@@ -891,9 +1413,18 @@ const AssemblyExecutionWizard = () => {
         }
     }
 
+    // Block ENSAMBLE step within EMPAQUE note — always allow (informational summary)
+    // The user clicks FINALIZAR to trigger the complete flow
+
     let nextLabel = 'SIGUIENTE';
     if (currentStep.type === 'INTRO' && note.status === 'PENDING') nextLabel = 'INICIAR PROCESO';
     if (currentStep.type === 'INPUT') nextLabel = 'CONFIRMAR PESO';
+    if (currentStep.type === 'CONTEO') nextLabel = 'PRODUCCIÓN TERMINADA ✓';
+    // Unified EMPAQUE wizard labels
+    if (currentStep.type === 'EMPAQUE' && isEmpaque) nextLabel = 'CONFIRMAR QC ✓';
+    if (currentStep.type === 'MARCADO_CAJAS' && isEmpaque) nextLabel = 'ETIQUETAS LISTAS ✓';
+    // ENSAMBLE within EMPAQUE uses the default FINALIZAR label (isLastStep)
+
 
     // ── Main render ──────────────────────────────────────────────────────────
     return (
@@ -959,6 +1490,17 @@ const AssemblyExecutionWizard = () => {
                     allBatchNotes={allBatchNotes}
                     conteoActuals={conteoActuals}
                     onConteoActualChange={setConteoActual}
+                    conteoPhotos={conteoPhotos}
+                    onConteoPhotoChange={setConteoPhoto}
+                    isPackagingRole={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)}
+                    carriots={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || wizardSteps[currentStepIndex]?.type === 'EMPAQUE'
+                        ? empaqueCarriots
+                        : carriots}
+                    onAddCarrito={handleAddCarrito}
+                    onRemoveCarrito={handleRemoveCarrito}
+                    onConfirmCarrito={handleConfirmCarrito}
+                    onRotuladoChange={setRotuladoStatus}
+
                     empaqueDefective={empaqueDefective}
                     onEmpaqueDefectiveChange={setEmpaqueDefective}
                     onCoccionChange={setCoccionData}
@@ -971,7 +1513,24 @@ const AssemblyExecutionWizard = () => {
                     empaqueDefectReasons={empaqueDefectReasons}
                     onEmpaqueDefectReasonChange={setDefectReason}
                     empaqueReceptionConfirmed={empaqueReceptionConfirmed}
-                    onReceptionConfirm={() => setEmpaqueReceptionConfirmed(true)}
+                    savedReceptionPhotos={savedReceptionPhotos}
+                    onReceptionConfirm={async (receptionPhotos) => {
+                        // Persist to backend BEFORE setting local state
+                        try {
+                            await api.patch(`/assembly-notes/${note.id}/process-params`, {
+                                processParameters: {
+                                    empaque_reception_confirmed: true,
+                                    empaque_reception_confirmed_at: new Date().toISOString(),
+                                    empaque_reception_confirmed_by: user?.name || user?.email,
+                                    reception_photos: receptionPhotos || {},
+                                }
+                            });
+                        } catch (e) {
+                            console.error('Error persisting reception:', e);
+                        }
+                        setEmpaqueReceptionConfirmed(true);
+                        if (receptionPhotos) setSavedReceptionPhotos(receptionPhotos);
+                    }}
                     esferaOutputFactor={esferaOutputFactor}
                     onMarcadoChange={setMarcadoCajas}
                     onProteccionValidated={setProteccionValidated}
@@ -1010,9 +1569,9 @@ const AssemblyExecutionWizard = () => {
                 onPrev={handlePrev}
                 onComplete={handleComplete}
                 canGoNext={canAdvance && !submitting}
-                canGoPrev={currentStepIndex > 0 && !submitting}
+                canGoPrev={currentStepIndex > 0 && !submitting && currentStep.type !== 'CONTEO'}
                 isLastStep={isLastStep}
-                isFirstStep={currentStepIndex === 0}
+                isFirstStep={currentStepIndex === 0 || currentStep.type === 'CONTEO'}
                 nextLabel={nextLabel}
                 submitting={submitting}
             />

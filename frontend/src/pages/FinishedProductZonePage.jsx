@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { message, Modal, Empty, Spin, Tag } from 'antd';
-import { Package, ArrowRightLeft, RefreshCw, Clock, ChevronDown, ChevronUp, ChevronRight, Search, Warehouse, Plus, Printer, Bluetooth, BluetoothOff } from 'lucide-react';
+import { Package, ArrowRightLeft, RefreshCw, Clock, ChevronDown, ChevronUp, ChevronRight, Search, Warehouse, Plus, Printer, Bluetooth, BluetoothOff, Wifi, WifiOff, Settings } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import QRCode from 'qrcode';
 import printer from '../services/bluetoothPrinter';
 import { buildLotLabel } from '../services/tsplLabelBuilder';
+import { buildLotLabelZPL } from '../services/zplLabelBuilder';
 import { generateQrDataUrl } from '../services/qrService';
+import { useZebra } from '../context/ZebraContext';
+
 
 const ZONES = [
     { key: 'PRODUCCION', label: 'Producción', color: '#f59e0b', icon: '🏭', bg: '#fffbeb' },
@@ -44,7 +47,9 @@ const TRANSFER_REASONS = {
 
 const FinishedProductZonePage = () => {
     const { user } = useAuth();
-    const [activeZone, setActiveZone] = useState('PRODUCCION');
+    const [activeZone, setActiveZone] = useState(() =>
+        user?.role === 'LOGISTICA' ? 'PRODUCTO_TERMINADO' : 'PRODUCCION'
+    );
     const [stocks, setStocks] = useState([]);
     const [loading, setLoading] = useState(false);
     const [expandedProduct, setExpandedProduct] = useState(null);
@@ -87,7 +92,7 @@ const FinishedProductZonePage = () => {
 
     // ── Fetch lot stock summary by zone ──
     const loadLotSummary = async (lotNumber) => {
-        if (!lotNumber) { setLotSummary([]); setLotZones([]); return []; }
+        if (!lotNumber) { setLotSummary([]); setLotZones([]); setLotNcData(null); return []; }
         try {
             const res = await api.get(`/finished-lots/lot-summary/${encodeURIComponent(lotNumber)}`);
             setLotSummary(res.data || []);
@@ -100,15 +105,51 @@ const FinishedProductZonePage = () => {
                 const allLots = [...(Array.isArray(flsRes.data) ? flsRes.data : []), ...(Array.isArray(mlRes.data) ? mlRes.data : (mlRes.data?.data || []))];
                 const zones = allLots.filter(l => l.lotNumber === lotNumber && l.currentQuantity > 0);
                 setLotZones(zones);
+
+                // Load NC defective data (from lot-summary, then fallback to assembly note)
+                const entry = (res.data || []).find(e => e.productId === ingestionProduct.id);
+                let defective = entry?.defective || 0;
+                let defectReasons = [];
+                if (defective === 0) {
+                    try {
+                        const notesRes = await api.get(`/assembly-notes?productId=${ingestionProduct.id}`);
+                        const empaqueNote = (notesRes.data || []).find(n =>
+                            n.processType?.code === 'EMPAQUE' &&
+                            n.productId === ingestionProduct.id &&
+                            n.processParameters?.empaque &&
+                            (n.productionBatch?.batchNumber === lotNumber ||
+                             n.processParameters?.empaque?.lot === lotNumber)
+                        );
+                        const emp = empaqueNote?.processParameters?.empaque;
+                        if (emp?.defective_qty > 0) {
+                            defective = emp.defective_qty;
+                            defectReasons = emp.defect_reasons || [];
+                        }
+                    } catch (_) {}
+                } else {
+                    defectReasons = entry?.defect_reasons || [];
+                }
+                setLotNcData(defective > 0 ? { defective, approved: entry?.approved ?? null, defect_reasons: defectReasons } : null);
             }
             return res.data || [];
-        } catch (e) { console.error('lot-summary error:', e); setLotSummary([]); setLotZones([]); return []; }
+        } catch (e) { console.error('lot-summary error:', e); setLotSummary([]); setLotZones([]); setLotNcData(null); return []; }
     };
 
-    // Printer state
+    // ── Printer mode: 'bluetooth' (SAT) or 'network' (Zebra) ──
+    const [printerMode, setPrinterMode] = useState(() => localStorage.getItem('zone_printer_mode') || 'network');
+
+    // Bluetooth (SAT) state
     const [printerConnected, setPrinterConnected] = useState(printer.isConnected());
     const [printerName, setPrinterName] = useState(printer.getDeviceName() || '');
     const [printing, setPrinting] = useState(false);
+
+    // Network (Zebra) state from global context
+    const { zebraStatus, zebraIp, printZPL, recheckNow, isRechecking, configIp, relayIp, updateConfig } = useZebra();
+    const [showZebraSettings, setShowZebraSettings] = useState(false);
+    const [editIp, setEditIp] = useState(configIp);
+    const [editRelay, setEditRelay] = useState(relayIp);
+
+
     // Print label modal state
     const [printModal, setPrintModal] = useState({ open: false, product: null, lot: null, totalUnits: 0 });
     const [printBoxSize, setPrintBoxSize] = useState(12);
@@ -116,25 +157,48 @@ const FinishedProductZonePage = () => {
     const [printFrom, setPrintFrom] = useState(1);
     const [printTo, setPrintTo] = useState(999);
 
-    // ── Listen for printer state changes + auto-reconnect on load ──
+    // NC Reprint state (manual labeling panel)
+    const [ncReprintLoading, setNcReprintLoading] = useState(false);
+    const [lotNcData, setLotNcData] = useState(null); // { defective, approved, defect_reasons } fetched when lot is selected
+    const [ncManualQty, setNcManualQty] = useState(''); // custom label count for manual NC reprint
+
+    // Persist printer mode
+    useEffect(() => { localStorage.setItem('zone_printer_mode', printerMode); }, [printerMode]);
+
+    // ── Listen for Bluetooth state changes + auto-reconnect ──
     useEffect(() => {
+        if (printerMode !== 'bluetooth') return;
         const unsub = printer.onStateChange(({ connected, name }) => {
             setPrinterConnected(connected);
             setPrinterName(name || '');
         });
-
-        // Try to reconnect to previously paired printer
         printer.tryAutoReconnect().then(result => {
             if (result.connected) {
                 setPrinterConnected(true);
                 setPrinterName(result.name || '');
             }
         });
-
         return unsub;
-    }, []);
+    }, [printerMode]);
 
-    // ── Connect printer ──
+    // Auto-switch al modo Zebra si la Zebra está conectada y el Bluetooth no lo está
+    useEffect(() => {
+        if (zebraStatus === 'connected' && !printerConnected) {
+            setPrinterMode('network');
+        }
+    }, [zebraStatus, printerConnected]);
+
+    const checkZebraRelay = recheckNow;
+
+    const sendToZebra = async (zpl) => {
+        const result = await printZPL(zpl);
+        if (!result.ok) { throw new Error(result.error || 'Error de impresión'); }
+    };
+
+
+    const isPrinterReady = printerMode === 'bluetooth' ? printerConnected : zebraStatus === 'connected';
+
+    // ── Connect Bluetooth printer ──
     const handleConnectPrinter = async () => {
         try {
             if (printerConnected) {
@@ -246,9 +310,26 @@ const FinishedProductZonePage = () => {
             setIngestionRegistered(true);
             loadStock(); loadSummary(); loadMovements();
         } catch (e) {
-            message.error(e.response?.data?.error || 'Error al registrar');
+            const errMsg = e.response?.data?.error || e.message || 'Error al registrar';
+            if (errMsg.startsWith('DUPLICATE_INGESTION:')) {
+                const detail = errMsg.replace('DUPLICATE_INGESTION:', '').trim();
+                message.warning({
+                    content: `⚠️ Ingreso duplicado detectado – ${detail}`,
+                    duration: 8,
+                });
+            } else if (errMsg.startsWith('ASSEMBLY_INCOMPLETE:')) {
+                const detail = errMsg.replace('ASSEMBLY_INCOMPLETE:', '').trim();
+                message.error({
+                    content: `🚫 Ensamble incompleto – ${detail}`,
+                    duration: 10,
+                });
+            } else {
+                message.error(errMsg);
+            }
         } finally { setIngesting(false); }
+
     };
+
 
     // ── QR Generation for label (centralized via qrService) ──
     const generateIngestionQR = async () => {
@@ -274,8 +355,8 @@ const FinishedProductZonePage = () => {
     const printIngestionLabel = async () => {
         if (!ingestionQrUrl || !ingestionProduct) return;
         
-        if (!printerConnected) {
-            message.warning('Conecte la impresora primero');
+        if (!isPrinterReady) {
+            message.warning(printerMode === 'bluetooth' ? 'Conecte la impresora Bluetooth' : 'Verifique la conexión Zebra');
             return;
         }
 
@@ -286,12 +367,13 @@ const FinishedProductZonePage = () => {
         const currentLot = ingestionLot.trim();
         const currentExpiry = ingestionExpiry || null;
 
-        // Calculate boxes: full + remainder
+        // Manual labeling: print ONLY what the user requests. No auto NC labels.
+        // Calculate boxes using the user-entered totalUnits
         const fullBoxes = Math.floor(totalUnits / uPerBox);
         const remainder = totalUnits % uPerBox;
         const totalLabels = fullBoxes + (remainder > 0 ? 1 : 0);
 
-        // Build TSPL: each label is standard (1 lot, 1 qty)
+        // Build TSPL: each normal label (approved units only)
         let tsplPayload = '';
         for (let i = 1; i <= totalLabels; i++) {
             const isRemainder = i === totalLabels && remainder > 0;
@@ -309,6 +391,7 @@ const FinishedProductZonePage = () => {
             }, 1, { maquila: isMaquilaLabel });
         }
 
+
         // Manage pending box (informational tracking)
         if (remainder > 0) {
             // There's an incomplete box — save/update pending box
@@ -325,12 +408,33 @@ const FinishedProductZonePage = () => {
             try { await api.delete(`/finished-lots/pending-box/${pendingBox.id}`); } catch {}
         }
 
-        // Send to printer
+        // Send to printer (dual mode)
         setPrinting(true);
         try {
-            await printer.sendTSPL(tsplPayload);
-            let msg = `✅ ${totalLabels} etiqueta(s) impresa(s) — ${fullBoxes} × ${uPerBox} uds`;
-            if (remainder > 0) msg += ` + 1 × ${remainder} uds (caja pendiente 📦)`;
+            if (printerMode === 'network') {
+                // Zebra: build ZPL for each label and send
+                for (let i = 1; i <= totalLabels; i++) {
+                    const isRem = i === totalLabels && remainder > 0;
+                    const boxQty = isRem ? remainder : uPerBox;
+                    const zpl = buildLotLabelZPL({
+                        productName: ingestionProduct.name,
+                        sku: ingestionProduct.sku,
+                        barcode: ingestionProduct.barcode || '',
+                        lotNumber: currentLot,
+                        quantity: boxQty,
+                        unit: 'und',
+                        receivedAt: new Date().toISOString(),
+                        expiresAt: currentExpiry ? new Date(currentExpiry).toISOString() : null,
+                        boxNumber: i, totalBoxes: totalLabels,
+                    }, 1);
+                    await sendToZebra(zpl);
+                }
+
+            } else {
+                await printer.sendTSPL(tsplPayload);
+            }
+            let msg = `✅ ${totalLabels} etiqueta(s) — ${totalUnits} uds`;
+            if (remainder > 0) msg += ` (última caja: ${remainder} uds)`;
             message.success(msg);
             setPendingBox(null);
         } catch (err) {
@@ -349,7 +453,7 @@ const FinishedProductZonePage = () => {
     const resetIngestionForm = () => {
         setIngestionProduct(null); setIngestionLot(''); setIngestionQty(''); setIngestionUnitsPerBox('');
         setIngestionExpiry(''); setIngestionSearch(''); setIngestionResults([]); setIngestionQrUrl('');
-        setIngestionRegistered(false); setAvailableLots([]); setManualLotMode(false);
+        setIngestionRegistered(false); setAvailableLots([]); setManualLotMode(false); setLotNcData(null); setNcManualQty('');
     };
 
     // ── Transfer ──
@@ -432,26 +536,85 @@ const FinishedProductZonePage = () => {
                     <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 800, color: '#1e293b' }}>Zonas de Producto Terminado</h1>
                     <p style={{ margin: 0, fontSize: '0.82rem', color: '#64748b' }}>Control de stock por lote y transferencias entre zonas</p>
                 </div>
-                {/* Inline printer connection */}
-                <div style={{
-                    display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
-                    background: printerConnected ? '#ecfdf5' : '#f8fafc',
-                    borderRadius: 10, border: `1.5px solid ${printerConnected ? '#6ee7b7' : '#e2e8f0'}`,
-                }}>
-                    {printerConnected
-                        ? <Bluetooth size={15} color="#059669" />
-                        : <BluetoothOff size={15} color="#94a3b8" />
-                    }
-                    <span style={{ fontSize: '0.72rem', fontWeight: 600, color: printerConnected ? '#065f46' : '#64748b', whiteSpace: 'nowrap' }}>
-                        {printerConnected ? printerName : 'Sin impresora'}
-                    </span>
-                    <button onClick={handleConnectPrinter} style={{
-                        padding: '4px 10px', borderRadius: 6, fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
-                        background: printerConnected ? '#fff' : '#4f46e5', color: printerConnected ? '#059669' : '#fff',
-                        border: printerConnected ? '1px solid #10b981' : 'none',
+                {/* Inline printer connection — mode toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button onClick={() => setPrinterMode('bluetooth')} style={{
+                        padding: '4px 10px', borderRadius: '8px 0 0 8px', fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer',
+                        background: printerMode === 'bluetooth' ? '#6366f1' : '#f1f5f9', color: printerMode === 'bluetooth' ? '#fff' : '#94a3b8',
+                        border: 'none', display: 'flex', alignItems: 'center', gap: 4,
+                    }}><Bluetooth size={12} /> SAT</button>
+                    <button onClick={() => setPrinterMode('network')} style={{
+                        padding: '4px 10px', borderRadius: '0 8px 8px 0', fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer',
+                        background: printerMode === 'network' ? '#059669' : '#f1f5f9', color: printerMode === 'network' ? '#fff' : '#94a3b8',
+                        border: 'none', display: 'flex', alignItems: 'center', gap: 4,
+                    }}><Wifi size={12} /> Zebra</button>
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+                        background: isPrinterReady ? '#ecfdf5' : '#f8fafc',
+                        borderRadius: 8, border: `1.5px solid ${isPrinterReady ? '#6ee7b7' : '#e2e8f0'}`,
                     }}>
-                        {printerConnected ? '🔄' : '🖨️ Conectar'}
-                    </button>
+                        {printerMode === 'bluetooth' ? (
+                            <>
+                                {printerConnected ? <Bluetooth size={13} color="#059669" /> : <BluetoothOff size={13} color="#94a3b8" />}
+                                <span style={{ fontSize: '0.68rem', fontWeight: 600, color: isPrinterReady ? '#065f46' : '#64748b', whiteSpace: 'nowrap' }}>
+                                    {printerConnected ? printerName : 'Sin impresora'}
+                                </span>
+                                <button onClick={handleConnectPrinter} style={{
+                                    padding: '2px 8px', borderRadius: 5, fontSize: '0.64rem', fontWeight: 700, cursor: 'pointer',
+                                    background: printerConnected ? '#fff' : '#4f46e5', color: printerConnected ? '#059669' : '#fff',
+                                    border: printerConnected ? '1px solid #10b981' : 'none',
+                                }}>{printerConnected ? '🔄' : 'Conectar'}</button>
+                            </>
+                        ) : (
+                            <div style={{ position: 'relative' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Wifi size={13} color={zebraStatus === 'connected' ? '#059669' : '#94a3b8'} className={isRechecking ? 'animate-pulse' : ''} />
+                                    <span style={{ fontSize: '0.68rem', fontWeight: 600, color: zebraStatus === 'connected' ? '#065f46' : '#64748b', whiteSpace: 'nowrap' }}>
+                                        {zebraStatus === 'connected' ? `🟢 Zebra ${zebraIp}` : isRechecking ? '🟡 Reconectando...' : '🔴 Sin conexión'}
+                                    </span>
+                                    <button 
+                                        onClick={() => {
+                                            recheckNow();
+                                            window.open(`http://${configIp || '192.168.68.113'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
+                                        }} 
+                                        disabled={isRechecking}
+                                        style={{
+                                            padding: '2px 8px', borderRadius: 5, fontSize: '0.64rem', fontWeight: 700, cursor: 'pointer',
+                                            background: isRechecking ? '#94a3b8' : '#fff', color: isRechecking ? '#fff' : '#059669', border: '1px solid #10b981',
+                                        }}
+                                    >
+                                        {isRechecking ? '...' : '🔄'}
+                                    </button>
+                                    <button onClick={() => setShowZebraSettings(!showZebraSettings)} style={{
+                                        padding: '2px 8px', borderRadius: 5, fontSize: '0.64rem', cursor: 'pointer',
+                                        background: showZebraSettings ? '#f3f4f6' : '#fff', color: '#4b5563', border: '1px solid #d1d5db',
+                                    }}>
+                                        <Settings size={12} />
+                                    </button>
+                                </div>
+                                {showZebraSettings && (
+                                    <div style={{ 
+                                        position: 'absolute', top: '100%', right: 0, marginTop: 10, width: 220, zIndex: 100,
+                                        background: '#fff', padding: 12, borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 8px 24px rgba(0,0,0,0.12)'
+                                    }}>
+                                        <div style={{ fontSize: '0.75rem', fontWeight: 700, marginBottom: 8, color: '#334155' }}>Ajustes Zebra (Tablet)</div>
+                                        <label style={{ fontSize: '0.65rem', color: '#64748b', display: 'block', marginBottom: 2 }}>IP Impresora</label>
+                                        <input value={editIp} onChange={e => setEditIp(e.target.value)} 
+                                            style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.75rem', marginBottom: 8 }} />
+                                        
+                                        <label style={{ fontSize: '0.65rem', color: '#64748b', display: 'block', marginBottom: 2 }}>IP Relay (PC Puente)</label>
+                                        <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.68.100"
+                                            style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.75rem', marginBottom: 12 }} />
+                                        
+                                        <button onClick={() => { updateConfig(editIp, editRelay); setShowZebraSettings(false); recheckNow(); }}
+                                            style={{ width: '100%', padding: '6px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer' }}>
+                                            Guardar y Aplicar
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -540,7 +703,9 @@ const FinishedProductZonePage = () => {
                                                         }
                                                         if (fabDate && !isNaN(fabDate.getTime())) {
                                                             const exp = new Date(fabDate);
-                                                            exp.setMonth(exp.getMonth() + 9);
+                                                            // Sirope: 12 months shelf life, others: 9 months
+                                                            const isSirope = /SIROPE/i.test(ingestionProduct?.name || '');
+                                                            exp.setMonth(exp.getMonth() + (isSirope ? 12 : 9));
                                                             setIngestionExpiry(exp.toISOString().split('T')[0]);
                                                         }
                                                     }
@@ -600,6 +765,148 @@ const FinishedProductZonePage = () => {
                             </div>
                         )}
 
+                        {/* ── NC Reprint Panel ── Show when selected lot has defective units */}
+                        {ingestionProduct && ingestionLot && lotNcData?.defective > 0 && (() => {
+                            // Exact same logic as MarcadoCajasStep defective label printing
+                            const defectiveTarros = lotNcData.defective;
+                            const printNc = async (mode, customN) => {
+                                // mode: 'individual' | 'grupal' | 'manual'
+                                // nDefective = how many labels; defPerBox = qty per label
+                                const nDefective = mode === 'individual' ? defectiveTarros
+                                    : mode === 'manual' ? (customN || 1)
+                                    : 1; // grupal
+                                const defPerBox  = nDefective > 0 ? Math.ceil(defectiveTarros / nDefective) : 0;
+                                const delay      = printerMode === 'bluetooth' ? 1500 : 300;
+                                const baseData   = {
+                                    productName: ingestionProduct.name,
+                                    sku:         ingestionProduct.sku,
+                                    barcode:     ingestionProduct.barcode || '',
+                                    lotNumber:   ingestionLot,
+                                    unit:        'und',
+                                    receivedAt:  new Date().toISOString(),
+                                    expiresAt:   ingestionExpiry ? new Date(ingestionExpiry).toISOString() : null,
+                                    statusText:  'OUTLET - PUBLICIDAD',
+                                };
+                                if (printerMode === 'network') {
+                                    // Zebra: single ZPL job with ^PQ{nDefective}
+                                    const zpl = buildLotLabelZPL({ ...baseData, quantity: defPerBox }, nDefective);
+                                    await sendToZebra(zpl);
+                                } else {
+                                    // Bluetooth: loop individual labels with delay (same as MarcadoCajas)
+                                    for (let i = 0; i < nDefective; i++) {
+                                        const qty = (i === nDefective - 1 && defectiveTarros > 0)
+                                            ? defectiveTarros - (defPerBox * i)
+                                            : defPerBox;
+                                        const tspl = buildLotLabel({ ...baseData, quantity: qty }, 1);
+                                        await printer.sendTSPL(tspl);
+                                        if (i < nDefective - 1) await new Promise(r => setTimeout(r, delay));
+                                    }
+                                }
+                            };
+                            return (
+                                <div style={{
+                                    background: 'linear-gradient(135deg, #fef2f2, #fff1f2)',
+                                    border: '2px solid #fca5a5',
+                                    borderRadius: 12, padding: '14px 16px', marginBottom: 10,
+                                }}>
+                                    <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#b91c1c', marginBottom: 6 }}>
+                                        📦 OUTLET - PUBLICIDAD &nbsp;·&nbsp; {defectiveTarros} unidad{defectiveTarros > 1 ? 'es' : ''} &nbsp;·&nbsp;
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{ingestionLot}</span>
+                                    </div>
+                                    {lotNcData.defect_reasons?.length > 0 && (
+                                        <div style={{ fontSize: '0.7rem', color: '#dc2626', marginBottom: 8 }}>
+                                            Causas: {lotNcData.defect_reasons.map(r => r.cause || r).filter(Boolean).join(', ')}
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                                        {/* Individual: 1 etiqueta por unidad (misma lógica MarcadoCajas) */}
+                                        <button
+                                            disabled={ncReprintLoading || !isPrinterReady}
+                                            onClick={async () => {
+                                                setNcReprintLoading(true);
+                                                try {
+                                                    await printNc('individual');
+                                                    message.success(`✅ ${defectiveTarros} etiqueta${defectiveTarros > 1 ? 's' : ''} OUTLET impresa${defectiveTarros > 1 ? 's' : ''} (1 por unidad)`);
+                                                } catch (err) { message.error('Error: ' + err.message); }
+                                                finally { setNcReprintLoading(false); }
+                                            }}
+                                            style={{
+                                                display: 'flex', alignItems: 'center', gap: 5,
+                                                padding: '7px 13px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                                                background: (!isPrinterReady || ncReprintLoading) ? '#fecaca' : '#dc2626',
+                                                color: '#fff', fontWeight: 800, fontSize: '0.78rem',
+                                                opacity: (!isPrinterReady || ncReprintLoading) ? 0.5 : 1,
+                                            }}
+                                        >
+                                            <Printer size={14} />
+                                            {ncReprintLoading ? 'Imprimiendo...' : `🔁 Individual (${defectiveTarros} etiqueta${defectiveTarros > 1 ? 's' : ''})`}
+                                        </button>
+                                        {/* Grupal: 1 etiqueta con el total */}
+                                        <button
+                                            disabled={ncReprintLoading || !isPrinterReady}
+                                            onClick={async () => {
+                                                setNcReprintLoading(true);
+                                                try {
+                                                    await printNc('grupal');
+                                                    message.success(`✅ 1 etiqueta OUTLET grupal — ${defectiveTarros} uds`);
+                                                } catch (err) { message.error('Error: ' + err.message); }
+                                                finally { setNcReprintLoading(false); }
+                                            }}
+                                            style={{
+                                                display: 'flex', alignItems: 'center', gap: 5,
+                                                padding: '7px 13px', borderRadius: 8, border: '2px solid #dc2626', cursor: 'pointer',
+                                                background: '#fff',
+                                                color: '#dc2626', fontWeight: 800, fontSize: '0.78rem',
+                                                opacity: (!isPrinterReady || ncReprintLoading) ? 0.5 : 1,
+                                            }}
+                                        >
+                                            <Printer size={14} />
+                                            📦 Grupal (1 — {defectiveTarros} uds)
+                                        </button>
+                                        {!isPrinterReady && (
+                                            <span style={{ fontSize: '0.7rem', color: '#9f1239', fontStyle: 'italic' }}>
+                                                ⚠️ Conecte impresora
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/* Manual: cantidad libre */}
+                                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1.5px dashed #fca5a5', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#7f1d1d' }}>✏️ Manual:</span>
+                                        <input
+                                            type="number" min="1" max={defectiveTarros * 10}
+                                            placeholder={`1 - ${defectiveTarros}`}
+                                            value={ncManualQty}
+                                            onChange={e => setNcManualQty(e.target.value)}
+                                            style={{ width: 60, padding: '4px 8px', borderRadius: 6, border: '1.5px solid #fca5a5', fontSize: '0.8rem', fontWeight: 700, textAlign: 'center' }}
+                                        />
+                                        <span style={{ fontSize: '0.68rem', color: '#9f1239' }}>etiqueta{Number(ncManualQty) !== 1 ? 's' : ''}</span>
+                                        <button
+                                            disabled={ncReprintLoading || !isPrinterReady || !Number(ncManualQty)}
+                                            onClick={async () => {
+                                                const n = Number(ncManualQty);
+                                                if (!n || n < 1) return;
+                                                setNcReprintLoading(true);
+                                                try {
+                                                    await printNc('manual', n);
+                                                    message.success(`✅ ${n} etiqueta${n > 1 ? 's' : ''} OUTLET impresa${n > 1 ? 's' : ''}`);
+                                                } catch (err) { message.error('Error: ' + err.message); }
+                                                finally { setNcReprintLoading(false); }
+                                            }}
+                                            style={{
+                                                display: 'flex', alignItems: 'center', gap: 4,
+                                                padding: '5px 12px', borderRadius: 7, border: 'none', cursor: 'pointer',
+                                                background: (!isPrinterReady || ncReprintLoading || !Number(ncManualQty)) ? '#fecaca' : '#991b1b',
+                                                color: '#fff', fontWeight: 800, fontSize: '0.75rem',
+                                                opacity: (!isPrinterReady || ncReprintLoading || !Number(ncManualQty)) ? 0.5 : 1,
+                                            }}
+                                        >
+                                            <Printer size={13} /> Imprimir
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
                         {/* Zone distribution for selected lot */}
                         {ingestionLot && lotZones.length > 0 && (
                             <div style={{ background: '#faf5ff', border: '1.5px solid #d8b4fe', borderRadius: 10, padding: '10px 14px', marginBottom: 10 }}>
@@ -640,15 +947,39 @@ const FinishedProductZonePage = () => {
                         {/* Row 3: Actions + QR Preview */}
                         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', borderTop: '2px solid #d1fae5', paddingTop: 14 }}>
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, flex: 1 }}>
-                                {/* Printer Connection UI */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: printerConnected ? '#ecfdf5' : '#f8fafc', borderRadius: 8, border: `1.5px solid ${printerConnected ? '#6ee7b7' : '#e2e8f0'}`, marginBottom: 4, width: '100%', maxWidth: '400px' }}>
-                                    {printerConnected ? <Bluetooth size={16} color="#059669" /> : <BluetoothOff size={16} color="#94a3b8" />}
-                                    <div style={{ flex: 1, fontSize: '0.75rem', fontWeight: 600, color: printerConnected ? '#065f46' : '#64748b' }}>
-                                        {printerConnected ? `🟢 ${printerName}` : 'Impresora Bluetooth no conectada'}
+                                {/* Printer Connection UI — dual mode */}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, width: '100%', maxWidth: '480px' }}>
+                                    <button onClick={() => setPrinterMode('bluetooth')} style={{
+                                        padding: '5px 10px', borderRadius: '8px 0 0 8px', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer',
+                                        background: printerMode === 'bluetooth' ? '#6366f1' : '#f1f5f9', color: printerMode === 'bluetooth' ? '#fff' : '#94a3b8',
+                                        border: 'none', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+                                    }}><Bluetooth size={13} /> SAT</button>
+                                    <button onClick={() => setPrinterMode('network')} style={{
+                                        padding: '5px 10px', borderRadius: '0 8px 8px 0', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer',
+                                        background: printerMode === 'network' ? '#059669' : '#f1f5f9', color: printerMode === 'network' ? '#fff' : '#94a3b8',
+                                        border: 'none', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+                                    }}><Wifi size={13} /> Zebra</button>
+                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', background: isPrinterReady ? '#ecfdf5' : '#f8fafc', borderRadius: 8, border: `1.5px solid ${isPrinterReady ? '#6ee7b7' : '#e2e8f0'}` }}>
+                                        {printerMode === 'bluetooth' ? (
+                                            <>
+                                                {printerConnected ? <Bluetooth size={14} color="#059669" /> : <BluetoothOff size={14} color="#94a3b8" />}
+                                                <span style={{ flex: 1, fontSize: '0.72rem', fontWeight: 600, color: isPrinterReady ? '#065f46' : '#64748b' }}>
+                                                    {printerConnected ? `🟢 ${printerName}` : 'Sin impresora'}
+                                                </span>
+                                                <button onClick={handleConnectPrinter} style={{ padding: '3px 8px', background: printerConnected ? '#fff' : '#6366f1', color: printerConnected ? '#059669' : '#fff', border: printerConnected ? '1.5px solid #10b981' : 'none', borderRadius: 5, fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer' }}>
+                                                    {printerConnected ? 'Reconectar' : 'Conectar'}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Wifi size={14} color={zebraStatus === 'connected' ? '#059669' : '#94a3b8'} />
+                                                <span style={{ flex: 1, fontSize: '0.72rem', fontWeight: 600, color: zebraStatus === 'connected' ? '#065f46' : '#64748b' }}>
+                                                    {zebraStatus === 'connected' ? `🟢 Zebra ${zebraIp}` : zebraStatus === 'checking' ? '🟡 Verificando...' : '🔴 Sin conexión'}
+                                                </span>
+                                                <button onClick={checkZebraRelay} style={{ padding: '3px 8px', background: '#fff', color: '#059669', border: '1.5px solid #10b981', borderRadius: 5, fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer' }}>🔄</button>
+                                            </>
+                                        )}
                                     </div>
-                                    <button onClick={handleConnectPrinter} style={{ padding: '4px 10px', background: printerConnected ? '#fff' : '#6366f1', color: printerConnected ? '#059669' : '#fff', border: printerConnected ? '1.5px solid #10b981' : 'none', borderRadius: 6, fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer' }}>
-                                        {printerConnected ? 'Reconectar' : 'Conectar SAT AF330'}
-                                    </button>
                                 </div>
 
                                 {/* Maquila label toggle */}
@@ -687,9 +1018,10 @@ const FinishedProductZonePage = () => {
                                 {ingestionQrUrl && (() => {
                                     const uPerBox = parseInt(ingestionUnitsPerBox) || 0;
                                     const totalU = parseInt(ingestionQty) || 0;
+                                    // Manual labeling: only user-entered quantity, no auto NC
                                     const fullBoxes = uPerBox > 0 ? Math.floor(totalU / uPerBox) : 0;
                                     const remainder = uPerBox > 0 ? totalU % uPerBox : 0;
-                                    const lblCount = fullBoxes + (remainder > 0 ? 1 : 0);
+                                    const totalPrint = fullBoxes + (remainder > 0 ? 1 : 0);
                                     return (
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -701,17 +1033,15 @@ const FinishedProductZonePage = () => {
                                                         display: 'flex', alignItems: 'center', gap: 6,
                                                         opacity: printing ? 0.5 : 1
                                                     }}>
-                                                    <Printer size={16} /> {printing ? 'Imprimiendo...' : `🖨️ Imprimir ${lblCount} Etiqueta${lblCount > 1 ? 's' : ''}`}
+                                                    <Printer size={16} /> {printing ? 'Imprimiendo...' : `🖨️ Imprimir ${totalPrint} Etiqueta${totalPrint > 1 ? 's' : ''}`}
                                                 </button>
                                             </div>
-                                            {lblCount > 1 && (
-                                                <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600, background: '#f1f5f9', padding: '4px 8px', borderRadius: 6, display: 'inline-block', width: 'fit-content' }}>
-                                                    📦 {fullBoxes > 0 && `${fullBoxes} etiqueta${fullBoxes > 1 ? 's' : ''} × ${uPerBox} uds`}
-                                                    {fullBoxes > 0 && remainder > 0 && ' + '}
-                                                    {remainder > 0 && <span style={{ color: '#f59e0b', fontWeight: 800 }}>1 etiqueta × {remainder} uds (→ caja pendiente)</span>}
-                                                    {' '}= {totalU} uds total
-                                                </div>
-                                            )}
+                                            <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600, background: '#f1f5f9', padding: '4px 8px', borderRadius: 6, display: 'inline-block', width: 'fit-content' }}>
+                                                ✅ {fullBoxes > 0 && `${fullBoxes} etiqueta${fullBoxes > 1 ? 's' : ''} × ${uPerBox} uds`}
+                                                {fullBoxes > 0 && remainder > 0 && ' + '}
+                                                {remainder > 0 && <span style={{ color: '#f59e0b', fontWeight: 800 }}>1 × {remainder} uds pendiente</span>}
+                                                {' '}= {totalU} uds a rotular
+                                            </div>
                                         </div>
                                     );
                                 })()}
@@ -830,7 +1160,14 @@ const FinishedProductZonePage = () => {
                     groups[pid].totalCurrent += Number(s.currentQuantity) || 0;
                     groups[pid].totalInitial += Number(s.initialQuantity) || 0;
                 });
-                const sortedGroups = Object.values(groups).sort((a, b) => (a.product?.name || '').localeCompare(b.product?.name || ''));
+                const sortedGroups = Object.values(groups).sort((a, b) => {
+                    // Products with stock > 0 come first
+                    const aHasStock = a.totalCurrent > 0 ? 0 : 1;
+                    const bHasStock = b.totalCurrent > 0 ? 0 : 1;
+                    if (aHasStock !== bHasStock) return aHasStock - bHasStock;
+                    // Within same group, sort alphabetically
+                    return (a.product?.name || '').localeCompare(b.product?.name || '');
+                });
                 return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
                         {sortedGroups.map(g => {
@@ -917,14 +1254,42 @@ const FinishedProductZonePage = () => {
                                                                 </Tag>
                                                                 {s.currentQuantity > 0 && (
                                                                     <>
-                                                                        <button onClick={(e) => {
+                                                                        <button onClick={async (e) => {
                                                                             e.stopPropagation();
-                                                                            if (!printerConnected) { message.warning('Conecta la impresora primero'); return; }
+                                                                            if (!isPrinterReady) { message.warning(printerMode === 'network' ? 'Verifique conexión Zebra' : 'Conecta la impresora primero'); return; }
                                                                             setPrintBoxSize(g.product?.packSize || 12);
                                                                             setPrintMaquila(activeZone === 'MAQUILA');
                                                                             setPrintFrom(1);
                                                                             setPrintTo(999);
-                                                                            setPrintModal({ open: true, product: g.product, lot: s, totalUnits: Number(s.currentQuantity) });
+                                                                            // Fetch defective/approved counts from lot-summary
+                                                                            let approved = null, defective = 0, defectReasons = [];
+                                                                            try {
+                                                                                const summaryRes = await api.get(`/finished-lots/lot-summary/${encodeURIComponent(s.lotNumber)}`);
+                                                                                const entry = (summaryRes.data || []).find(e => e.productId === (g.product?.id || s.productId));
+                                                                                if (entry) { approved = entry.approved; defective = entry.defective || 0; }
+                                                                            } catch (_) {}
+                                                                            // Fallback: if defective=0, check assembly note empaque params
+                                                                            // (handles carriots-flow where lot-summary doesn't carry defective count)
+                                                                            if (defective === 0 && s.lotNumber) {
+                                                                                try {
+                                                                                    const pid = g.product?.id || s.productId;
+                                                                                    const notesRes = await api.get(`/assembly-notes?productId=${pid}`);
+                                                                                    const empaqueNote = (notesRes.data || []).find(n =>
+                                                                                        n.processType?.code === 'EMPAQUE' &&
+                                                                                        n.productId === pid &&
+                                                                                        n.processParameters?.empaque &&
+                                                                                        (n.productionBatch?.batchNumber === s.lotNumber ||
+                                                                                         n.processParameters?.empaque?.lot === s.lotNumber)
+                                                                                    );
+                                                                                    const emp = empaqueNote?.processParameters?.empaque;
+                                                                                    if (emp?.defective_qty > 0) {
+                                                                                        defective = emp.defective_qty;
+                                                                                        if (approved === null) approved = emp.approved_qty ?? null;
+                                                                                        defectReasons = emp.defect_reasons || [];
+                                                                                    }
+                                                                                } catch (_) {}
+                                                                            }
+                                                                            setPrintModal({ open: true, product: g.product, lot: s, totalUnits: Number(s.currentQuantity), approved, defective, defect_reasons: defectReasons, isNoConforme: activeZone === 'NO_CONFORME' });
                                                                         }} style={{
                                                                             padding: '4px 10px', border: `1.5px solid ${s.labelPrinted ? '#f59e0b' : '#10b981'}`, borderRadius: 6,
                                                                             background: s.labelPrinted ? '#fffbeb' : '#ecfdf5',
@@ -1114,31 +1479,90 @@ const FinishedProductZonePage = () => {
                     const uPerBox = parseInt(printBoxSize) || 0;
                     if (uPerBox <= 0) { message.warning('Ingrese un número válido'); return; }
                     try {
-                        const fullBoxes = Math.floor(totalUnits / uPerBox);
-                        const remainder = totalUnits % uPerBox;
+                        // Use approved count for box distribution (not total which includes defectives)
+                        const approvedUnits = printModal.approved ?? totalUnits;
+                        const defectiveUnits = printModal.defective || 0;
+                        const fullBoxes = Math.floor(approvedUnits / uPerBox);
+                        const remainder = approvedUnits % uPerBox;
                         const totalLabels = fullBoxes + (remainder > 0 ? 1 : 0);
                         const from = Math.max(1, Math.min(printFrom, totalLabels));
                         const to = Math.min(printTo, totalLabels);
                         let tspl = '';
                         let printed = 0;
-                        for (let i = 1; i <= totalLabels; i++) {
-                            if (i < from || i > to) continue;
-                            const isRemainder = i === totalLabels && remainder > 0;
-                            const boxQty = isRemainder ? remainder : uPerBox;
-                            tspl += buildLotLabel({
-                                productName: product?.name || '',
-                                sku: product?.sku || '',
-                                barcode: product?.sku || '',
-                                lotNumber: lot?.lotNumber || '',
-                                quantity: boxQty,
-                                unit: 'und',
-                                receivedAt: lot?.createdAt || new Date().toISOString(),
-                                boxNumber: i, totalBoxes: totalLabels,
-                            }, 1, { maquila: printMaquila });
-                            printed++;
+                        // Build cause string for NC label
+                        const causas = (printModal.defect_reasons || []).map(r => r.cause || r).filter(Boolean);
+                        const causaText = causas.length > 0 ? causas[0] : 'No conforme';
+                        if (printerMode === 'network') {
+                            for (let i = 1; i <= totalLabels; i++) {
+                                if (i < from || i > to) continue;
+                                const isRem = i === totalLabels && remainder > 0;
+                                const boxQty = isRem ? remainder : uPerBox;
+                                const zpl = buildLotLabelZPL({
+                                    productName: product?.name || '',
+                                    sku: product?.sku || '',
+                                    barcode: product?.barcode || product?.sku || '',
+                                    lotNumber: lot?.lotNumber || '',
+                                    quantity: boxQty,
+                                    unit: 'und',
+                                    receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    boxNumber: i, totalBoxes: totalLabels,
+                                    statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
+                                }, 1);
+                                await sendToZebra(zpl);
+                                printed++;
+                            }
+                            // NC label: 1 label for all defective units
+                            if (defectiveUnits > 0 && !printModal.isNoConforme) {
+                                const nczpl = buildLotLabelZPL({
+                                    productName: product?.name || '',
+                                    sku: product?.sku || '',
+                                    barcode: product?.barcode || product?.sku || '',
+                                    lotNumber: lot?.lotNumber || '',
+                                    quantity: defectiveUnits,
+                                    unit: 'und',
+                                    receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    boxNumber: 1, totalBoxes: 1,
+                                    statusText: `NC: ${causaText}`,
+                                }, 1);
+                                await sendToZebra(nczpl);
+                                printed++;
+                            }
+                        } else {
+                            for (let i = 1; i <= totalLabels; i++) {
+                                if (i < from || i > to) continue;
+                                const isRemainder = i === totalLabels && remainder > 0;
+                                const boxQty = isRemainder ? remainder : uPerBox;
+                                tspl += buildLotLabel({
+                                    productName: product?.name || '',
+                                    sku: product?.sku || '',
+                                    barcode: product?.barcode || product?.sku || '',
+                                    lotNumber: lot?.lotNumber || '',
+                                    quantity: boxQty,
+                                    unit: 'und',
+                                    receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    boxNumber: i, totalBoxes: totalLabels,
+                                    statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
+                                }, 1, { maquila: printMaquila });
+                                printed++;
+                            }
+                            // NC label: 1 label for all defective units
+                            if (defectiveUnits > 0 && !printModal.isNoConforme) {
+                                tspl += buildLotLabel({
+                                    productName: product?.name || '',
+                                    sku: product?.sku || '',
+                                    barcode: product?.barcode || product?.sku || '',
+                                    lotNumber: lot?.lotNumber || '',
+                                    quantity: defectiveUnits,
+                                    unit: 'und',
+                                    receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    boxNumber: 1, totalBoxes: 1,
+                                    statusText: `NC: ${causaText}`,
+                                }, 1, { maquila: false });
+                                printed++;
+                            }
+                            await printer.sendTSPL(tspl);
                         }
-                        await printer.sendTSPL(tspl);
-                        message.success(`${printed} rótulo(s) impreso(s)`);
+                        message.success(`${printed} rótulo(s) impreso(s)${defectiveUnits > 0 && !printModal.isNoConforme ? ` (incl. 1 etiqueta No Conforme para ${defectiveUnits} uds)` : ''}`);
                         // Persist in DB
                         api.post('/finished-lots/mark-printed', { lotId: lot?.id, type: activeZone === 'BODEGA' ? 'material' : 'finished' }).catch(() => {});
                         // Update local state (stocks is a flat array of lot objects)
@@ -1156,8 +1580,9 @@ const FinishedProductZonePage = () => {
                 {printModal.product && (() => {
                     const uPerBox = parseInt(printBoxSize) || 0;
                     const totalUnits = printModal.totalUnits;
-                    const fullBoxes = uPerBox > 0 ? Math.floor(totalUnits / uPerBox) : 0;
-                    const remainder = uPerBox > 0 ? totalUnits % uPerBox : 0;
+                    const approvedUnits = printModal.approved ?? totalUnits;
+                    const fullBoxes = uPerBox > 0 ? Math.floor(approvedUnits / uPerBox) : 0;
+                    const remainder = uPerBox > 0 ? approvedUnits % uPerBox : 0;
                     const totalLabels = fullBoxes + (remainder > 0 ? 1 : 0);
 
                     return (
@@ -1165,10 +1590,17 @@ const FinishedProductZonePage = () => {
                             {/* Product info */}
                             <div style={{ background: '#f0f9ff', borderRadius: 12, padding: '12px 16px', border: '1.5px solid #bae6fd' }}>
                                 <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#0c4a6e' }}>{printModal.product.name}</div>
-                                <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: '0.8rem', color: '#475569' }}>
+                                <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: '0.8rem', color: '#475569', flexWrap: 'wrap' }}>
                                     <span>📋 Lote: <strong>{printModal.lot?.lotNumber}</strong></span>
                                     <span>📦 Total: <strong>{totalUnits} uds</strong></span>
+                                    {printModal.defective > 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}>⚠️ {printModal.defective} defectuosas excluidas</span>}
+                                    {printModal.isNoConforme && <span style={{ color: '#7c3aed', fontWeight: 700 }}>🔴 ZONA NO CONFORME</span>}
                                 </div>
+                                {printModal.defective > 0 && (
+                                    <div style={{ marginTop: 6, fontSize: '0.75rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 10px', color: '#991b1b', fontWeight: 600 }}>
+                                        ✅ {printModal.approved ?? totalUnits} aprobadas · ❌ {printModal.defective} defectuosas (no se imprimen)
+                                    </div>
+                                )}
                             </div>
 
                             {/* Box size selection */}

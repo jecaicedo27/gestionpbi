@@ -6,6 +6,40 @@ const browserManager = require('./siigoBrowserManager');
 const stripAccents = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 /**
+ * Calculate REAL production zone stock from MaterialLot sums.
+ * Auto-reconciles the productionZoneStock field if drift is detected.
+ * This prevents false "Producción Bloqueada" due to accumulated rounding drift
+ * from floor-to-zero consumption and tolerance adjustments.
+ */
+async function getProductionZoneStock(tx, productId) {
+    const lots = await tx.materialLot.findMany({
+        where: {
+            productId,
+            zone: 'PRODUCTION',
+            currentQuantity: { gt: 0 },
+            status: { in: ['AVAILABLE', 'LOW_STOCK'] }
+        },
+        select: { currentQuantity: true }
+    });
+    const realSum = lots.reduce((sum, l) => sum + l.currentQuantity, 0);
+
+    // Auto-reconcile the cached field when drift > 1g
+    const product = await tx.product.findUnique({
+        where: { id: productId },
+        select: { productionZoneStock: true }
+    });
+    const cached = product?.productionZoneStock || 0;
+    if (Math.abs(cached - realSum) > 1) {
+        console.log(`[zoneStock] 🔄 Auto-reconcile productId=${productId.slice(0,8)}: cached=${cached}g → real=${realSum}g (drift=${cached - realSum}g)`);
+        await tx.product.update({
+            where: { id: productId },
+            data: { productionZoneStock: realSum }
+        });
+    }
+    return realSum;
+}
+
+/**
  * Service to handle Assembly Notes generation and management
  */
 class AssemblyService {
@@ -182,11 +216,70 @@ class AssemblyService {
             }
 
 
+            // ── Pre-flight: validate flavor-specific ingredients exist in catalogue ──
+            // Runs BEFORE the transaction so any missing product aborts generation cleanly.
+            if (batch.flavor) {
+                const batchFlavorUp = batch.flavor.toUpperCase();
+                const knownFlavorsCheck = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA'];
+                const flavorKeywordsCheck = ['ESFERAS', 'PROTECCION', 'ETIQUETA'];
+                const missingProducts = [];
+
+                for (const stage of flatStages) {
+                    for (const input of (stage.inputs || [])) {
+                        const inputName = (input.product?.name || '').toUpperCase();
+                        const isFlavorSpecific = flavorKeywordsCheck.some(kw => inputName.includes(kw));
+                        if (!isFlavorSpecific) continue;
+                        // Already has the correct flavor → skip
+                        if (stripAccents(inputName).includes(stripAccents(batchFlavorUp))) continue;
+
+                        let found = false;
+                        // Strategy 1: direct prefix (ESFERAS CHAMOY, PROTECCION CHAMOY)
+                        const simplePrefix = ['ESFERAS', 'PROTECCION'].find(kw => inputName.startsWith(kw));
+                        if (simplePrefix) {
+                            const directName = `${simplePrefix} ${batch.flavor}`;
+                            const p = await prisma.product.findFirst({
+                                where: { name: { equals: directName, mode: 'insensitive' } },
+                                select: { id: true }
+                            });
+                            if (p) found = true;
+                        }
+                        // Strategy 2: replace known flavor substring
+                        if (!found) {
+                            for (const flv of knownFlavorsCheck) {
+                                if (stripAccents(inputName).includes(stripAccents(flv))) {
+                                    const escaped = flv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                    const searchName = inputName.replace(new RegExp(escaped, 'i'), batch.flavor);
+                                    const p = await prisma.product.findFirst({
+                                        where: { name: { equals: searchName, mode: 'insensitive' } },
+                                        select: { id: true }
+                                    });
+                                    if (p) found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!found) {
+                            missingProducts.push(`"${inputName}" → necesita "${batch.flavor}" (etapa: ${stage.stageName || '?'})`);
+                        }
+                    }
+                }
+
+                if (missingProducts.length > 0) {
+                    throw new Error(
+                        `⚠️ No se puede generar el lote con sabor "${batch.flavor}".\n` +
+                        `Ingredientes sin equivalente "${batch.flavor}" en el catálogo:\n` +
+                        missingProducts.map(m => `  • ${m}`).join('\n') +
+                        `\n\nSolución: registre los productos faltantes en Catálogo antes de crear el lote.`
+                    );
+                }
+            }
+
             // NOTE: PROTECCION is prepared separately via Premezclas panel.
             // The frontend checks stock via /api/assembly-notes/:id/check-proteccion
             // before allowing advancement past the COMPUESTO stage.
 
             console.log(`[generateNotes] Template "${template.templateCode || templateId}" — original: ${template.stages.length}, flat: ${flatStages.length}`);
+
 
             // 2. Wrap in a transaction
             let globalStageOrder = 0;
@@ -315,17 +408,20 @@ class AssemblyService {
                         noteProcessParams.conteo = conteoMap;
                     }
 
-                    if ((isEmpaque || (isEnsamble && stage.stageName?.includes('LIQUIPOPS'))) && outputTargets.length > 0) {
-                        // Match the stage to an outputTarget by product name in stageName
+                    if ((isEmpaque || isEnsamble) && outputTargets.length > 0) {
+                        // Match the stage to an outputTarget by product size in stageName
+                        // Supports LIQUIPOPS (3400/1150/350) and GENIALITY (1000/360)
+                        const SIZE_PATTERNS = ['3400', '1150', '1000', '360', '350'];
                         const matchedTarget = outputTargets.find(t => {
                             const pName = t.product?.name || '';
-                            return stage.stageName?.includes('3400') && pName.includes('3400')
-                                || stage.stageName?.includes('1150') && pName.includes('1150')
-                                || stage.stageName?.includes('350') && pName.includes('350');
+                            return SIZE_PATTERNS.some(size =>
+                                stage.stageName?.includes(size) && pName.includes(size)
+                            );
                         });
 
                         if (matchedTarget) {
                             targetQuantity = matchedTarget.plannedUnits || 1;
+                            targetUnit = 'units';
                             noteProcessParams.product_id = matchedTarget.productId;
 
                             // Auto-skip 0-unit steps
@@ -361,9 +457,16 @@ class AssemblyService {
                     // Create Note Items (inputs)
                     if (stage.inputs && stage.inputs.length > 0) {
                         for (const input of stage.inputs) {
-                            // Template inputs store ABSOLUTE quantities per batch (e.g. AGUA = 48,000g)
-                            // so plannedQuantity = quantityPerUnit directly (no scaling needed)
-                            const plannedQuantity = input.quantityPerUnit;
+                            // For ENSAMBLE steps matched to outputTargets: QPU is per-gram, so
+                            // scale by targetQuantity (container count). For packaging items
+                            // (TARRO/TAPA/FOIL/ETIQUETA), use container count directly.
+                            // For other types: QPU is already the absolute quantity.
+                            let plannedQuantity = input.quantityPerUnit;
+                            if ((isEnsamble || isEmpaque) && targetUnit === 'units' && targetQuantity > 1) {
+                                // Check if this is a packaging item (1:1 with containers)
+                                const isPackaging = /(TARRO|TAPA|FOIL|ETIQUETA|SELLO|LINER|ENVASE)/i.test(input.product?.name || '');
+                                plannedQuantity = isPackaging ? targetQuantity : input.quantityPerUnit * targetQuantity;
+                            }
 
                             // ── Dynamic flavor resolution for flavor-specific components ──
                             // Template may have CAFÉ products hardcoded (default flavor).
@@ -396,7 +499,7 @@ class AssemblyService {
                                     // Strategy 2: For complex names (ETIQUETA LIQUIPOPS SABOR A CAFE X 350 GR),
                                     // replace the old flavor with the batch flavor using known flavors list
                                     if (!flavorProduct) {
-                                        const knownFlavors = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA'];
+                                        const knownFlavors = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA'];
                                         let searchName = inputName;
                                         for (const flv of knownFlavors) {
                                             if (stripAccents(inputName).includes(stripAccents(flv))) {
@@ -460,6 +563,25 @@ class AssemblyService {
                     generatedNotes.push(note);
                 }
             });
+
+            // ── POST-GENERATION GUARD: warn if EMPAQUE stages expected but none generated ──
+            // LIQUIPOPS batches should always produce EMPAQUE notes. If the template has
+            // EMPAQUE stages but none appear in generatedNotes, something went wrong silently.
+            // This surfaces in pm2 logs for diagnosis before operators complete the batch.
+            const empaqueStages = flatStages.filter(s => s.processType?.code === 'EMPAQUE');
+            if (empaqueStages.length > 0 && generatedNotes.length > 0) {
+                const hasAnyEmpaque = generatedNotes.some(n => {
+                    return empaqueStages.some(es => es.id && es.id === n.stageId);
+                });
+                if (!hasAnyEmpaque) {
+                    console.error(
+                        `[generateNotes] ⚠️ CRITICAL — batch ${batchId} (${batch.batchNumber || 'unknown'}):\n`,
+                        `Template has ${empaqueStages.length} EMPAQUE stage(s) but ZERO were generated.\n`,
+                        `Generated ${generatedNotes.length} notes (stages: ${generatedNotes.map(n => n.stageOrder).join(',')}).\n`,
+                        `Run fix_chamoy_empaque.js or regenerate EMPAQUE notes manually.`
+                    );
+                }
+            }
 
             return {
                 success: true,
@@ -575,18 +697,20 @@ class AssemblyService {
 
                         const product = await tx.product.findUnique({
                             where: { id: item.componentId },
-                            select: { name: true, productionZoneStock: true, unit: true }
+                            select: { name: true, unit: true }
                         });
                         // AGUA is tap water — always available in zone, skip validation
                         if (product && product.name.toUpperCase() === 'AGUA') continue;
                         // Packaging materials (etiquetas, sellos, cajas) don't require zone transfer
                         const nameUpper = product?.name?.toUpperCase() || '';
                         if (nameUpper.includes('ETIQUETA') || nameUpper.includes('SELLO') || nameUpper.includes('CAJA')) continue;
-                        if (product && (product.productionZoneStock || 0) < qty * 0.995) {
+                        // Use REAL lot sums instead of cached productionZoneStock
+                        const realZoneStock = await getProductionZoneStock(tx, item.componentId);
+                        if (product && realZoneStock < qty * 0.95) {
                             const unit = product.unit || 'und';
                             const fmtQty = (v) => unit === 'gramo' ? `${v.toLocaleString('es-CO')}g (${(v/1000).toFixed(1)}kg)` : `${v} ${unit}`;
                             shortages.push(
-                                `${product.name}: necesita ${fmtQty(qty)}, zona tiene ${fmtQty(product.productionZoneStock || 0)}`
+                                `${product.name}: necesita ${fmtQty(qty)}, zona tiene ${fmtQty(realZoneStock)}`
                             );
                         }
                     }
@@ -619,7 +743,7 @@ class AssemblyService {
                             productionBatchId: note.productionBatchId,
                             processType: { code: 'EMPAQUE' }
                         },
-                        include: { items: { include: { component: { select: { name: true, productionZoneStock: true, unit: true } } } } }
+                        include: { items: { include: { component: { select: { name: true, unit: true } } } } }
                     });
 
                     const shortages = [];
@@ -637,8 +761,9 @@ class AssemblyService {
 
                             const qty = item.plannedQuantity || 0;
                             if (qty <= 0) continue;
-                            const zoneStock = item.component.productionZoneStock || 0;
-                            if (zoneStock < qty * 0.995) {
+                            // Use REAL lot sums instead of cached productionZoneStock
+                            const zoneStock = await getProductionZoneStock(tx, item.componentId);
+                            if (zoneStock < qty * 0.95) {
                                 const unit = item.component.unit || 'und';
                                 const fmtQty = (v) => unit === 'gramo' ? `${v.toLocaleString('es-CO')}g (${(v/1000).toFixed(1)}kg)` : `${v} ${unit}`;
                                 shortages.push(
@@ -725,7 +850,11 @@ class AssemblyService {
             });
 
             if (!note) throw new Error('Note not found');
-            if (note.status === 'COMPLETED') throw new Error('Note already completed');
+            if (note.status === 'COMPLETED') {
+                // Idempotent: already completed — return success instead of error
+                // (handles double-tap on mobile/tablet)
+                return { success: true, noteId, alreadyCompleted: true, status: 'COMPLETED' };
+            }
 
             // Update note
             const updatedNote = await tx.assemblyNote.update({
@@ -748,19 +877,216 @@ class AssemblyService {
                 if (conteoMap && typeof conteoMap === 'object') {
                     for (const [productName, data] of Object.entries(conteoMap)) {
                         if (data.productId && data.actual != null) {
-                            console.log(`[completeNote] CONTEO actual: ${productName} → ${data.actual} units`);
-                            // Update BatchOutputTarget so Ensamble Siigo META matches conteo
-                            await tx.batchOutputTarget.updateMany({
+                            const actualUnits = parseInt(data.actual, 10);
+                            console.log(`[completeNote] CONTEO actual: ${productName} → ${actualUnits} units`);
+                            // Update BatchOutputTarget: plannedUnits (for downstream Siigo META)
+                            // AND actualUnits (Fase 5 relational field — fuente de verdad para reportes)
+                            const updated = await tx.batchOutputTarget.updateMany({
                                 where: {
                                     batchId: note.productionBatchId,
                                     productId: data.productId,
                                 },
                                 data: {
-                                    plannedUnits: parseInt(data.actual, 10),
+                                    plannedUnits: actualUnits,
+                                    actualUnits: actualUnits,
                                 },
                             });
+                            // If no outputTarget existed (fully unplanned presentation), create one
+                            if (updated.count === 0 && actualUnits > 0) {
+                                console.log(`[completeNote] 🆕 Creating outputTarget for unplanned ${productName}`);
+                                await tx.batchOutputTarget.create({
+                                    data: {
+                                        batchId: note.productionBatchId,
+                                        productId: data.productId,
+                                        plannedUnits: actualUnits,
+                                        plannedWeightKg: 0,
+                                        actualUnits: actualUnits,
+                                    }
+                                });
+                            }
                         }
                     }
+                }
+            }
+
+            // ── CONTEO → Dynamic EMPAQUE/ENSAMBLE note generation ──
+            // When operator adds unplanned presentations (e.g. 3400g from leftover mix),
+            // auto-generate the missing EMPAQUE + ENSAMBLE notes so the full packaging
+            // and Siigo workflow can execute for those extra items.
+            if (note.processType?.code === 'CONTEO') {
+                try {
+                    const conteoMap = note.processParameters?.conteo;
+                    if (conteoMap && typeof conteoMap === 'object') {
+                        // Get all existing EMPAQUE/ENSAMBLE notes for this batch
+                        const existingNotes = await tx.assemblyNote.findMany({
+                            where: {
+                                productionBatchId: note.productionBatchId,
+                                processType: { code: { in: ['EMPAQUE', 'ENSAMBLE'] } }
+                            },
+                            select: { stageName: true, processType: { select: { code: true } }, processParameters: true }
+                        });
+
+                        // Identify which sizes already have notes
+                        const SIZE_PATTERNS = ['3400', '1150', '1000', '360', '350'];
+                        const coveredSizes = { EMPAQUE: new Set(), ENSAMBLE: new Set() };
+                        for (const en of existingNotes) {
+                            for (const size of SIZE_PATTERNS) {
+                                if (en.stageName?.includes(size)) {
+                                    coveredSizes[en.processType?.code]?.add(size);
+                                }
+                            }
+                        }
+
+                        // Find presentations with actual > 0 that are MISSING notes
+                        const missingSizes = [];
+                        for (const [productName, data] of Object.entries(conteoMap)) {
+                            const actual = parseInt(data.actual, 10) || 0;
+                            if (actual <= 0) continue;
+                            const matchedSize = SIZE_PATTERNS.find(s => productName.includes(s));
+                            if (matchedSize && !coveredSizes.EMPAQUE.has(matchedSize)) {
+                                missingSizes.push({ size: matchedSize, productId: data.productId, productName, actual });
+                            }
+                        }
+
+                        if (missingSizes.length > 0) {
+                            console.log(`[completeNote] 🆕 CONTEO detected ${missingSizes.length} unplanned presentation(s): ${missingSizes.map(m => m.productName).join(', ')}`);
+
+                            // Load batch template with EMPAQUE/ENSAMBLE stages + inputs
+                            const batchTemplate = await tx.assemblyTemplate.findUnique({
+                                where: { id: note.templateId },
+                                include: {
+                                    stages: {
+                                        where: { processType: { code: { in: ['EMPAQUE', 'ENSAMBLE'] } } },
+                                        include: {
+                                            processType: true,
+                                            inputs: { include: { product: true }, orderBy: { displayOrder: 'asc' } },
+                                            outputProduct: true
+                                        },
+                                        orderBy: { stageOrder: 'asc' }
+                                    }
+                                }
+                            });
+
+                            // Get max stageOrder for appending
+                            const maxOrder = await tx.assemblyNote.aggregate({
+                                where: { productionBatchId: note.productionBatchId },
+                                _max: { stageOrder: true }
+                            });
+                            let nextOrder = (maxOrder._max.stageOrder || 0);
+
+                            const batchFlavor = (note.productionBatch?.flavor || '').toUpperCase();
+                            const batchNumber = note.productionBatch?.batchNumber || '';
+
+                            for (const missing of missingSizes) {
+                                // Find the template stages that match this size (EMPAQUE + ENSAMBLE)
+                                for (const processCode of ['EMPAQUE', 'ENSAMBLE']) {
+                                    const templateStage = batchTemplate?.stages?.find(s =>
+                                        s.processType?.code === processCode && s.stageName?.includes(missing.size)
+                                    );
+                                    if (!templateStage) {
+                                        console.warn(`[completeNote] ⚠️ No ${processCode} template stage for size ${missing.size}`);
+                                        continue;
+                                    }
+
+                                    nextOrder++;
+                                    const ts = Date.now().toString().slice(-8);
+                                    const noteNumber = `ANTE-${batchNumber.replace(/^B-\d+-/, '').replace(/-/g, '')}-${ts}-S${nextOrder}`;
+
+                                    // Resolve stageName: replace {SABOR} with batch flavor
+                                    const resolvedStageName = templateStage.stageName
+                                        ?.replace('{SABOR}', batchFlavor)
+                                        ?.replace('{sabor}', batchFlavor) || templateStage.stageName;
+
+                                    const processTypeId = templateStage.processTypeId;
+
+                                    const newNote = await tx.assemblyNote.create({
+                                        data: {
+                                            noteNumber,
+                                            productId: missing.productId,
+                                            productionBatchId: note.productionBatchId,
+                                            templateId: note.templateId,
+                                            stageId: templateStage.id,
+                                            stageOrder: nextOrder,
+                                            stageName: resolvedStageName,
+                                            targetQuantity: missing.actual,
+                                            unit: 'units',
+                                            status: 'PENDING',
+                                            processTypeId,
+                                            processParameters: {
+                                                product_id: missing.productId,
+                                                _dynamicFromConteo: true
+                                            }
+                                        }
+                                    });
+
+                                    // Create note items (inputs) with flavor resolution
+                                    if (templateStage.inputs?.length > 0) {
+                                        for (const input of templateStage.inputs) {
+                                            const isPackaging = /(TARRO|TAPA|FOIL|ETIQUETA|SELLO|LINER|ENVASE)/i.test(input.product?.name || '');
+                                            const plannedQuantity = isPackaging
+                                                ? missing.actual
+                                                : input.quantityPerUnit * missing.actual;
+
+                                            // Flavor resolution (same logic as generateNotesForBatch)
+                                            let resolvedComponentId = input.productId;
+                                            const inputName = (input.product?.name || '').toUpperCase();
+                                            const flavorKeywords = ['ESFERAS', 'PROTECCION', 'ETIQUETA'];
+                                            const isFlavorSpecific = flavorKeywords.some(kw => inputName.includes(kw));
+
+                                            if (batchFlavor && isFlavorSpecific) {
+                                                const inputFlavorNorm = stripAccents(inputName);
+                                                const batchFlavorNorm = stripAccents(batchFlavor);
+
+                                                if (!inputFlavorNorm.includes(batchFlavorNorm)) {
+                                                    let flavorProduct = null;
+                                                    const simplePrefix = ['ESFERAS', 'PROTECCION'].find(kw => inputName.startsWith(kw));
+                                                    if (simplePrefix) {
+                                                        flavorProduct = await tx.product.findFirst({
+                                                            where: { name: { equals: `${simplePrefix} ${batchFlavor}`, mode: 'insensitive' } },
+                                                            select: { id: true, name: true }
+                                                        });
+                                                    }
+                                                    if (!flavorProduct) {
+                                                        const knownFlavors = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA', 'SANDIA'];
+                                                        let searchName = inputName;
+                                                        for (const flv of knownFlavors) {
+                                                            if (stripAccents(inputName).includes(stripAccents(flv))) {
+                                                                searchName = inputName.replace(new RegExp(flv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), batchFlavor);
+                                                                break;
+                                                            }
+                                                        }
+                                                        flavorProduct = await tx.product.findFirst({
+                                                            where: { name: { equals: searchName, mode: 'insensitive' } },
+                                                            select: { id: true, name: true }
+                                                        });
+                                                    }
+                                                    if (flavorProduct) {
+                                                        console.log(`[completeNote] 🔄 DynNote flavor swap: ${inputName} → ${flavorProduct.name}`);
+                                                        resolvedComponentId = flavorProduct.id;
+                                                    }
+                                                }
+                                            }
+
+                                            await tx.assemblyNoteItem.create({
+                                                data: {
+                                                    assemblyNoteId: newNote.id,
+                                                    componentId: resolvedComponentId,
+                                                    componentType: input.inputType || 'RAW_MATERIAL',
+                                                    plannedQuantity,
+                                                    unit: input.unit
+                                                }
+                                            });
+                                        }
+                                    }
+
+                                    console.log(`[completeNote] ✅ Created dynamic ${processCode} note: ${resolvedStageName} (${missing.actual} units) → S${nextOrder}`);
+                                }
+                            }
+                        }
+                    }
+                } catch (dynErr) {
+                    // Don't fail CONTEO completion if dynamic note generation fails
+                    console.error(`[completeNote] ❌ Dynamic EMPAQUE/ENSAMBLE generation failed (non-blocking):`, dynErr.message);
                 }
             }
 
@@ -790,18 +1116,20 @@ class AssemblyService {
 
                         const product = await tx.product.findUnique({
                             where: { id: item.componentId },
-                            select: { name: true, productionZoneStock: true, unit: true }
+                            select: { name: true, unit: true }
                         });
                         // AGUA is tap water — always available in zone, skip validation
                         if (product && product.name.toUpperCase() === 'AGUA') continue;
                         // Packaging materials (etiquetas, sellos, cajas) don't require zone transfer
                         const nameUpper2 = product?.name?.toUpperCase() || '';
                         if (nameUpper2.includes('ETIQUETA') || nameUpper2.includes('SELLO') || nameUpper2.includes('CAJA')) continue;
-                        if (product && product.productionZoneStock < qty * 0.995) {
+                        // Use REAL lot sums instead of cached productionZoneStock
+                        const realZoneStock = await getProductionZoneStock(tx, item.componentId);
+                        if (product && realZoneStock < qty * 0.95) {
                             const unit = product.unit || 'und';
                             const fmtQty = (v) => unit === 'gramo' ? `${v.toLocaleString('es-CO')}g (${(v/1000).toFixed(1)}kg)` : `${v} ${unit}`;
                             shortages.push(
-                                `${product.name}: necesita ${fmtQty(qty)}, zona tiene ${fmtQty(product.productionZoneStock)}`
+                                `${product.name}: necesita ${fmtQty(qty)}, zona tiene ${fmtQty(realZoneStock)}`
                             );
                         }
                     }
@@ -827,46 +1155,88 @@ class AssemblyService {
                     if (!lotId) continue;
 
                     const item = (note.items || []).find(i => i.id === itemId);
-                    if (!item || !item.actualQuantity || item.actualQuantity <= 0) continue;
+                    // Use actualQuantity if recorded; fall back to plannedQuantity if operator
+                    // didn't register actual weight (prevents ingredients from being silently skipped)
+                    const consumeQty = item?.actualQuantity || item?.plannedQuantity || 0;
+                    if (!item || consumeQty <= 0) continue;
 
-                    const lot = await tx.materialLot.findUnique({ where: { id: lotId } });
-                    if (!lot) {
+                    let remaining = Math.round(consumeQty);
+
+                    // ── MULTI-LOT CASCADING CONSUMPTION ──
+                    // Start with the selected lot, then cascade to other PRODUCTION lots
+                    // if the selected one doesn't have enough balance.
+                    const selectedLot = await tx.materialLot.findUnique({ where: { id: lotId } });
+                    if (!selectedLot) {
                         console.warn(`[completeNote] Lot ${lotId} not found, skipping`);
                         continue;
                     }
 
-                    const qtyToConsume = Math.round(item.actualQuantity);
-                    const newQty = Math.max(0, lot.currentQuantity - qtyToConsume);
-
-                    // Decrement lot quantity
-                    await tx.materialLot.update({
-                        where: { id: lotId },
-                        data: {
-                            currentQuantity: newQty,
-                            status: newQty <= 0 ? 'DEPLETED'
-                                : newQty < (lot.initialQuantity * 0.1) ? 'LOW_STOCK'
-                                    : 'AVAILABLE'
-                        }
+                    // Build ordered list: selected lot first, then others by receivedAt desc
+                    const otherLots = await tx.materialLot.findMany({
+                        where: {
+                            productId: item.componentId,
+                            zone: 'PRODUCTION',
+                            currentQuantity: { gt: 0 },
+                            status: { in: ['AVAILABLE', 'LOW_STOCK'] },
+                            id: { not: lotId }
+                        },
+                        orderBy: { receivedAt: 'asc' }
                     });
+                    const lotsToConsume = [selectedLot, ...otherLots];
 
-                    // Record consumption for traceability
-                    await tx.lotConsumption.create({
-                        data: {
-                            materialLotId: lotId,
-                            assemblyNoteId: noteId,
-                            quantityUsed: qtyToConsume,
-                            usedById: operatorId,
-                            observations: `${note.stageName || 'Producción'} — ${item.component?.name || 'Material'}`
+                    for (const lot of lotsToConsume) {
+                        if (remaining <= 0) break;
+                        if (lot.currentQuantity <= 0) continue;
+
+                        const consumeFromLot = Math.min(remaining, lot.currentQuantity);
+                        const newQty = lot.currentQuantity - consumeFromLot;
+
+                        await tx.materialLot.update({
+                            where: { id: lot.id },
+                            data: {
+                                currentQuantity: Math.max(0, newQty),
+                                status: newQty <= 0 ? 'DEPLETED'
+                                    : newQty < (lot.initialQuantity * 0.1) ? 'LOW_STOCK'
+                                        : 'AVAILABLE'
+                            }
+                        });
+
+                        await tx.lotConsumption.create({
+                            data: {
+                                materialLotId: lot.id,
+                                assemblyNoteId: noteId,
+                                quantityUsed: consumeFromLot,
+                                usedById: operatorId,
+                                observations: `${note.stageName || 'Producción'} — ${item.component?.name || 'Material'}${lotsToConsume.length > 1 ? ' (multi-lote)' : ''}`
+                            }
+                        });
+
+                        remaining -= consumeFromLot;
+                        console.log(`[completeNote] 📦 Consumed ${consumeFromLot}g from lot ${lot.lotNumber} (remaining: ${remaining}g)`);
+                    }
+
+                    if (remaining > 0 && processCode === 'PESAJE') {
+                        // Allow small tolerance (< 1%)
+                        const totalNeeded = Math.round(item.actualQuantity);
+                        const tolerancePct = totalNeeded > 0 ? (remaining / totalNeeded) : 1;
+                        if (tolerancePct > 0.01) {
+                            const componentName = item.component?.name || 'Material';
+                            throw new Error(
+                                `⛔ No hay suficiente saldo en lotes de zona PRODUCCIÓN para ${componentName}.\n` +
+                                `Necesita: ${(totalNeeded/1000).toFixed(1)} kg | Faltante: ${(remaining/1000).toFixed(1)} kg\n\n` +
+                                `Transfiera más material desde Bodega a Zona de Producción antes de continuar.`
+                            );
                         }
-                    });
+                    }
 
                     // Decrement production zone stock (floor-to-zero: prevent negative)
+                    const totalConsumed = Math.round(item.actualQuantity) - Math.max(0, remaining);
                     const curProd = await tx.product.findUnique({
                         where: { id: item.componentId },
                         select: { productionZoneStock: true }
                     });
                     const curZone = curProd?.productionZoneStock || 0;
-                    const safeDec = Math.min(qtyToConsume, Math.max(0, curZone));
+                    const safeDec = Math.min(totalConsumed, Math.max(0, curZone));
                     if (safeDec > 0) {
                         await tx.product.update({
                             where: { id: item.componentId },
@@ -901,62 +1271,81 @@ class AssemblyService {
                     const qty = item.actualQuantity || item.plannedQuantity || 0;
                     if (qty <= 0) continue;
 
-                    // Find the most recent available lot for this component
-                    // Look for lots in PRODUCTION zone first, fallback to any
-                    const autoLot = await tx.materialLot.findFirst({
+                    // ── MULTI-LOT CASCADING AUTO-CONSUMPTION ──
+                    // Find ALL available lots in PRODUCTION zone, consume across them
+                    const availableLots = await tx.materialLot.findMany({
                         where: {
                             productId: item.componentId,
                             currentQuantity: { gt: 0 },
                             status: { in: ['AVAILABLE', 'LOW_STOCK'] },
                             zone: 'PRODUCTION'
                         },
-                        orderBy: { receivedAt: 'desc' }
+                        orderBy: { receivedAt: 'asc' }
                     });
 
-                    if (autoLot) {
-                        const qtyToConsume = Math.round(qty);
-                        const newQty = Math.max(0, autoLot.currentQuantity - qtyToConsume);
+                    if (availableLots.length > 0) {
+                        let remaining = Math.round(qty);
 
-                        await tx.materialLot.update({
-                            where: { id: autoLot.id },
-                            data: {
-                                currentQuantity: newQty,
-                                status: newQty <= 0 ? 'DEPLETED'
-                                    : newQty < (autoLot.initialQuantity * 0.1) ? 'LOW_STOCK'
-                                        : 'AVAILABLE'
+                        for (const lot of availableLots) {
+                            if (remaining <= 0) break;
+                            if (lot.currentQuantity <= 0) continue;
+
+                            const consumeFromLot = Math.min(remaining, lot.currentQuantity);
+                            const newQty = lot.currentQuantity - consumeFromLot;
+
+                            await tx.materialLot.update({
+                                where: { id: lot.id },
+                                data: {
+                                    currentQuantity: Math.max(0, newQty),
+                                    status: newQty <= 0 ? 'DEPLETED'
+                                        : newQty < (lot.initialQuantity * 0.1) ? 'LOW_STOCK'
+                                            : 'AVAILABLE'
+                                }
+                            });
+
+                            await tx.lotConsumption.create({
+                                data: {
+                                    materialLotId: lot.id,
+                                    assemblyNoteId: noteId,
+                                    quantityUsed: consumeFromLot,
+                                    usedById: operatorId,
+                                    observations: `${note.stageName || 'Producción'} — ${item.component?.name || 'Material'} (auto${availableLots.length > 1 ? ', multi-lote' : ''})`
+                                }
+                            });
+
+                            remaining -= consumeFromLot;
+                            console.log(`[completeNote] 🔄 Auto-consumed ${consumeFromLot}g of ${item.component?.name} from lot ${lot.lotNumber} (remaining: ${remaining}g)`);
+                        }
+
+                        if (remaining > 0 && processCode === 'PESAJE') {
+                            const totalNeeded = Math.round(qty);
+                            const tolerancePct = totalNeeded > 0 ? (remaining / totalNeeded) : 1;
+                            if (tolerancePct > 0.01) {
+                                const componentName = item.component?.name || 'Material';
+                                throw new Error(
+                                    `⛔ No hay suficiente saldo en lotes de zona PRODUCCIÓN para ${componentName}.\n` +
+                                    `Necesita: ${(totalNeeded/1000).toFixed(1)} kg | Faltante: ${(remaining/1000).toFixed(1)} kg\n\n` +
+                                    `Transfiera más material desde Bodega a Zona de Producción antes de continuar.`
+                                );
                             }
-                        });
+                        }
 
-                        await tx.lotConsumption.create({
-                            data: {
-                                materialLotId: autoLot.id,
-                                assemblyNoteId: noteId,
-                                quantityUsed: qtyToConsume,
-                                usedById: operatorId,
-                                observations: `${note.stageName || 'Producción'} — ${item.component?.name || 'Material'} (auto)`
-                            }
-                        });
-
-                        if (item.componentId) {
-                            // Floor-to-zero: never let productionZoneStock go negative
+                        // Decrement production zone stock
+                        const totalConsumed = Math.round(qty) - Math.max(0, remaining);
+                        if (item.componentId && totalConsumed > 0) {
                             const currentProduct = await tx.product.findUnique({
                                 where: { id: item.componentId },
                                 select: { productionZoneStock: true }
                             });
                             const currentZoneStock = currentProduct?.productionZoneStock || 0;
-                            const safeDecrement = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
+                            const safeDecrement = Math.min(totalConsumed, Math.max(0, currentZoneStock));
                             if (safeDecrement > 0) {
                                 await tx.product.update({
                                     where: { id: item.componentId },
                                     data: { productionZoneStock: { decrement: safeDecrement } }
                                 });
                             }
-                            if (safeDecrement < qtyToConsume) {
-                                console.warn(`[completeNote] ⚠️ Stock insuficiente para ${item.component?.name}: necesita ${qtyToConsume}, zona tiene ${currentZoneStock}. Consumido solo ${safeDecrement}`);
-                            }
                         }
-
-                        console.log(`[completeNote] 🔄 Auto-consumed ${qtyToConsume}g of ${item.component?.name} from lot ${autoLot.lotNumber}`);
                     } else if (processCode === 'EMPAQUE' && item.componentId) {
                         // ── Packaging items without MaterialLot (tarros, tapas, etc.) ──
                         // Floor-to-zero: never let productionZoneStock go negative
@@ -973,18 +1362,107 @@ class AssemblyService {
                                 data: { productionZoneStock: { decrement: safeDecrement } }
                             });
                         }
-                        if (safeDecrement < qtyToConsume) {
-                            console.warn(`[completeNote] ⚠️ EMPAQUE stock insuficiente para ${item.component?.name}: necesita ${qtyToConsume}, zona tiene ${currentZoneStock}. Consumido solo ${safeDecrement}`);
-                        }
                         console.log(`[completeNote] 📦 EMPAQUE stock-only consumed ${safeDecrement} of ${item.component?.name} (no MaterialLot)`);
                     }
                 }
             }
 
-            // Process types that produce output — create MaterialLot + increment stock
-            // PESAJE/COCCION do NOT produce output lots; only the final ENSAMBLE step does.
-            const producesOutput = ['ENSAMBLE', 'FORMACION'].includes(note.processType?.code);
-            let createdLotNumber = null; // will be used for RPA after tx commits
+            // ── POST-CONSUMPTION VERIFICATION ──
+            // After all consumption, verify items were actually decremented.
+            let consumptionAlerts = [];
+            if (canAutoConsume && (note.items || []).length > 0) {
+                for (const item of note.items) {
+                    if (!item.componentId) continue;
+                    const expectedQty = item.actualQuantity || item.plannedQuantity || 0;
+                    if (expectedQty <= 0) continue;
+                    const componentName = item.component?.name || 'Material';
+                    if (componentName.toUpperCase() === 'AGUA') continue;
+
+                    // Check if lotConsumption records were created for this note + component
+                    const consumptions = await tx.lotConsumption.findMany({
+                        where: { assemblyNoteId: noteId, materialLot: { productId: item.componentId } },
+                        select: { quantityUsed: true }
+                    });
+                    const totalConsumed = consumptions.reduce((s, c) => s + c.quantityUsed, 0);
+
+                    if (totalConsumed <= 0 && expectedQty > 0) {
+                        consumptionAlerts.push({ component: componentName, expected: expectedQty, consumed: 0, issue: 'NO_CONSUMPTION' });
+                    } else if (totalConsumed < expectedQty * 0.9 && expectedQty > 1) {
+                        consumptionAlerts.push({ component: componentName, expected: expectedQty, consumed: totalConsumed, issue: 'PARTIAL_CONSUMPTION' });
+                    }
+                }
+                if (consumptionAlerts.length > 0) {
+                    const alertMsg = consumptionAlerts.map(a =>
+                        `⚠️ ${a.component}: esperado ${a.expected}, consumido ${a.consumed} [${a.issue}]`
+                    ).join('\n');
+                    console.error(`\n🚨 [CONSUMPTION ALERT] ${note.stageName} (${noteId}):\n${alertMsg}\n`);
+                    await tx.auditLog.create({
+                        data: {
+                            userId: operatorId,
+                            action: 'CONSUMPTION_ALERT',
+                            entity: 'AssemblyNote',
+                            entityId: noteId,
+                            changes: { stageName: note.stageName, processType: processCode, alerts: consumptionAlerts }
+                        }
+                    });
+                }
+            }
+
+            // ── DECOUPLED STOCK INJECTION (App-First, Siigo-Second) ──
+            // Stock injection happens at the PENULTIMATE step (the one right before
+            // the final ENSAMBLE Siigo step), NOT at ENSAMBLE completion.
+            // This decouples production from Siigo: if Siigo RPA fails, the
+            // production zone stock is already correct and downstream processes
+            // continue unblocked. The ENSAMBLE step only fires RPA (accounting).
+            let producesOutput = false;
+            let createdLotNumber = null;
+
+            if (note.processType?.code === 'ENSAMBLE') {
+                // ENSAMBLE step: INJECTS stock with the correct scaled actualQuantity.
+                // The actualQuantity here reflects the real formula output (e.g. 122,327g)
+                // which is more accurate than the Pesaje target (e.g. 120,347g).
+                producesOutput = true;
+                createdLotNumber = note.productionBatch?.batchNumber || null;
+                console.log(`[completeNote] 📊 ENSAMBLE step — WILL inject stock + fire RPA. lotNumber: ${createdLotNumber} | qty: ${actualQuantity}`);
+            } else if (note.processType?.code === 'FORMACION') {
+                // FORMACION (esferas) produces output directly — no ENSAMBLE follows it
+                producesOutput = true;
+                console.log(`[completeNote] 📊 FORMACION step — WILL inject stock. Stage: ${note.stageName} | qty: ${actualQuantity}`);
+            } else if (note.productionBatchId && note.productId) {
+                // For any other step: check if the NEXT step (by stageOrder) for the
+                // SAME productId is an ENSAMBLE. If so, this step does NOT inject
+                // (the ENSAMBLE will handle it with the correct quantity).
+                const batchNotes = await tx.assemblyNote.findMany({
+                    where: { productionBatchId: note.productionBatchId },
+                    select: { id: true, stageOrder: true, productId: true, processType: { select: { code: true } } },
+                    orderBy: { stageOrder: 'asc' }
+                });
+
+                // Find the current note's index
+                const myIdx = batchNotes.findIndex(n => n.id === noteId);
+                let nextEnsambleForProduct = false;
+
+                if (myIdx >= 0) {
+                    // Look for the next step with same productId
+                    for (let i = myIdx + 1; i < batchNotes.length; i++) {
+                        if (batchNotes[i].productId === note.productId) {
+                            // Found next step for same product — is it ENSAMBLE?
+                            nextEnsambleForProduct = batchNotes[i].processType?.code === 'ENSAMBLE';
+                            break; // only check the immediately next one for this product
+                        }
+                    }
+                }
+
+                if (nextEnsambleForProduct) {
+                    // PRE-ENSAMBLE: do NOT inject stock here — the ENSAMBLE step will
+                    // inject with the correct scaled quantity.
+                    producesOutput = false;
+                    console.log(`[completeNote] 📊 PRE-ENSAMBLE step — skipping stock injection (deferred to ENSAMBLE). Stage: ${note.stageName} | product: ${note.product?.name}`);
+                } else {
+                    console.log(`[completeNote] 📊 Intermediate step — no stock injection. Stage: ${note.stageName} | order: ${note.stageOrder}`);
+                }
+            }
+
             console.log(`[completeNote] 📊 Stage: ${note.stageName} | processType: ${note.processType?.code} | producesOutput: ${producesOutput} | productId: ${note.productId || 'NULL'} | actualQty: ${actualQuantity}`);
 
             if (producesOutput && note.productId && actualQuantity > 0) {
@@ -996,54 +1474,68 @@ class AssemblyService {
                     }
                 });
 
-                // Generate a readable lot number: PRODUCT-PREFIX-YYMMDD-HHMM
-                const now = new Date();
-                const co = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
-                const yy = String(co.getFullYear()).slice(-2);
-                const mm = String(co.getMonth() + 1).padStart(2, '0');
-                const dd = String(co.getDate()).padStart(2, '0');
-                const hh = String(co.getHours()).padStart(2, '0');
-                const mi = String(co.getMinutes()).padStart(2, '0');
-                // Smart shortening: remove filler words (SABOR, A, X, GR, DE, PREMEZCLA)
-                const rawName = (note.product?.name || '').toUpperCase();
-                const shortName = rawName
-                    .replace(/\bSABOR\b/g, '')
-                    .replace(/\bPREMEZCLA\b/g, '')
-                    .replace(/\bPERLAS\b/g, '')
-                    .replace(/\s+A\s+/g, ' ')
-                    .replace(/\s+X\s+/g, ' ')
-                    .replace(/\s+DE\s+/g, ' ')
-                    .replace(/\bGR\b/g, '')
-                    .replace(/\bML\b/g, '')
-                    .replace(/\bKG\b/g, '')
-                    .trim()
-                    .replace(/\s+/g, '-')
-                    .replace(/-+/g, '-')
-                    .replace(/-$/, '');
-                const lotNumber = `${shortName}-${yy}${mm}${dd}-${hh}${mi}`;
+                // Use the batch's own batchNumber as the traceability lot number.
+                // This is the number stamped on the physical containers (tarros, cajas)
+                // and must remain consistent across the entire batch lifecycle.
+                const lotNumber = note.productionBatch?.batchNumber || `${note.productId?.slice(-6)}-${Date.now()}`;
 
                 const qty = Math.round(actualQuantity);
-                await tx.materialLot.create({
-                    data: {
-                        productId: note.productId,
-                        siigoProductCode: note.product?.sku || '',
-                        siigoProductName: note.product?.name || '',
-                        lotNumber,
-                        initialQuantity: qty,
-                        currentQuantity: qty,
-                        unit: note.unit || note.product?.unit || 'unidad',
-                        receivedAt: new Date(),
-                        status: 'AVAILABLE',
-                        zone: 'PRODUCTION'
-                    }
-                });
+
+                // ── SKIP materialLot for finished products (accountGroup 1401/1402) ──
+                // Finished products (LIQUIPOPS, SIROPES, LIQUIMON) are tracked exclusively
+                // in finished_lot_stock via the operator ingestion flow.
+                // Only intermediate materials (bases, compuestos, protecciones) need a materialLot
+                // so they can be consumed by downstream assembly stages.
+                const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup);
+                if (!isFinishedProduct) {
+                    await tx.materialLot.create({
+                        data: {
+                            productId: note.productId,
+                            siigoProductCode: note.product?.sku || '',
+                            siigoProductName: note.product?.name || '',
+                            lotNumber,
+                            initialQuantity: qty,
+                            currentQuantity: qty,
+                            unit: note.unit || note.product?.unit || 'unidad',
+                            receivedAt: new Date(),
+                            status: 'AVAILABLE',
+                            zone: 'PRODUCTION'
+                        }
+                    });
+                    console.log(`[completeNote] ✅ MaterialLot created for ${note.product?.name} — lot: ${lotNumber} (${qty} uds)`);
+                } else {
+                    // ── FINISHED PRODUCTS: stock ingestion handled by EMPAQUE wizard ──
+                    // Finished products (LIQUIPOPS, SIROPES, etc.) are tracked in
+                    // FinishedLotStock via the operator's empaque/rotulado flow which
+                    // calls finishedLotService.ingestFromProduction(). We do NOT
+                    // auto-ingest here to avoid double-counting.
+                    console.log(`[completeNote] ℹ️ Finished product ${note.product?.name} — stock ingestion deferred to EMPAQUE wizard (lot: ${lotNumber}, ${qty} uds)`);
+                }
                 createdLotNumber = lotNumber;
-            }
+            } // end if (producesOutput)
 
             // ── Handle defective units from EMPAQUE (merma) ──
             // Frontend saves processParameters.empaque.defective_qty BEFORE calling complete
             const freshNote = await tx.assemblyNote.findUnique({ where: { id: noteId }, select: { processParameters: true } });
             const empaqueData = freshNote?.processParameters?.empaque;
+
+            // ── FASE 5: Escribir approved_units / defective_units al BatchOutputTarget ──
+            // Esto normaliza los datos del JSON a columnas relacionales para reportes.
+            // El target se identifica por batchId + productId de la nota EMPAQUE.
+            if (empaqueData && note.productionBatchId && note.productId) {
+                const approvedQty  = parseInt(empaqueData.approved_qty  || 0, 10);
+                const defectiveQty = parseInt(empaqueData.defective_qty || 0, 10);
+                const targetProductId = note.processParameters?.product_id || note.productId;
+                await tx.batchOutputTarget.updateMany({
+                    where: { batchId: note.productionBatchId, productId: targetProductId },
+                    data: {
+                        approvedUnits:  approvedQty,
+                        defectiveUnits: defectiveQty,
+                    },
+                }).catch(e => console.warn('[completeNote] ⚠️ Could not update approvedUnits on outputTarget:', e.message));
+                console.log(`[completeNote] 📊 EMPAQUE output recorded: approved=${approvedQty} defective=${defectiveQty} → product ${targetProductId}`);
+            }
+
             if (empaqueData?.defective_qty > 0 && note.productId) {
                 const defQty = parseInt(empaqueData.defective_qty, 10);
                 // Decrement product stock for defective units
@@ -1106,17 +1598,20 @@ class AssemblyService {
                 }
             }
 
-            return { updatedNote, createdLotNumber, producesOutput, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName, batchNumber: note.productionBatch?.batchNumber || null };
+            const isEnsambleStep = ['ENSAMBLE', 'FORMACION'].includes(note.processType?.code);
+            return { updatedNote, createdLotNumber, producesOutput, isEnsambleStep, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName, batchNumber: note.productionBatch?.batchNumber || null, targetQuantity: note.targetQuantity, consumptionAlerts: consumptionAlerts.length > 0 ? consumptionAlerts : undefined };
         });
 
         // ── Fire RPA after transaction commits (fire-and-forget) ──
-        if (result.producesOutput && result.createdLotNumber) {
+        // RPA fires when completing an ENSAMBLE step (Siigo accounting)
+        // regardless of stock injection (which now happens at penultimate step)
+        if (result.isEnsambleStep && result.createdLotNumber) {
             const productName = result.productName || '';
             const productSku = result.productSku || '';
             const stageName = result.stageName || '';
             const lotNum = result.createdLotNumber;
             const batchNum = result.batchNumber || '';
-            const qty = actualQuantity;
+            const qty = result.targetQuantity || actualQuantity; // Use targetQuantity (App-first), fallback to actualQuantity
 
             // Create RPA execution record + enqueue
             prisma.rpaExecution.create({
@@ -1180,7 +1675,7 @@ class AssemblyService {
             }).catch(e => console.error('RPA enqueue error:', e.message));
         }
 
-        return result.updatedNote;
+        return result;
     }
 }
 

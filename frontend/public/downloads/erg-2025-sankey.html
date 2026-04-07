@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estado de Resultados — POPPING BOBA INTERNATIONAL 2025</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #f8fafc; min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 24px; }
+        .page { width: 1440px; max-width: 100%; }
+        
+        .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; }
+        .brand { display: flex; align-items: center; gap: 16px; }
+        .logo { width: 52px; height: 52px; background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%); border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 26px; box-shadow: 0 6px 20px rgba(245,158,11,0.35); }
+        .brand h1 { font-size: 26px; font-weight: 900; color: #0f172a; letter-spacing: -0.5px; }
+        .brand p { font-size: 12px; font-weight: 600; color: #94a3b8; margin-top: 2px; }
+        .period-box { text-align: right; }
+        .period-box .year { font-size: 56px; font-weight: 900; color: #0f172a; letter-spacing: -3px; line-height: 1; }
+        .period-box .range { font-size: 13px; font-weight: 600; color: #94a3b8; }
+        
+        .chart-card { background: white; border-radius: 20px; border: 1px solid #e2e8f0; box-shadow: 0 8px 40px rgba(0,0,0,0.06); overflow: visible; }
+        .chart-header { display: flex; justify-content: space-between; padding: 16px 28px; border-bottom: 1px solid #f1f5f9; }
+        .chart-header span { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 2.5px; color: #94a3b8; }
+        .chart-header .arrow { color: #f59e0b; margin-right: 4px; }
+        
+        #chart { width: 100%; }
+        
+        .kpi-strip { display: grid; grid-template-columns: repeat(6, 1fr); border-top: 1px solid #f1f5f9; }
+        .kpi { padding: 16px 20px; text-align: center; border-right: 1px solid #f1f5f9; }
+        .kpi:last-child { border-right: none; }
+        .kpi .kpi-label { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #94a3b8; margin-bottom: 4px; }
+        .kpi .kpi-value { font-size: 18px; font-weight: 900; }
+        .kpi .kpi-sub { font-size: 10px; font-weight: 600; color: #94a3b8; margin-top: 2px; }
+        
+        .footer { margin-top: 16px; display: flex; justify-content: space-between; padding: 0 4px; }
+        .footer span { font-size: 11px; color: #94a3b8; }
+        
+        .link:hover { opacity: 0.6 !important; }
+        
+        @media print {
+            body { padding: 12px; background: white; }
+            .chart-card { box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <div class="header">
+        <div class="brand">
+            <div class="logo">🍬</div>
+            <div>
+                <h1>POPPING BOBA INTERNATIONAL S.A.S</h1>
+                <p>Perlas Explosivas · Boba International</p>
+            </div>
+        </div>
+        <div class="period-box">
+            <div class="range">Enero — Diciembre</div>
+            <div class="year">2025</div>
+        </div>
+    </div>
+
+    <div class="chart-card">
+        <div class="chart-header">
+            <span>De dónde vienen los ingresos</span>
+            <span><span class="arrow">→</span> Para qué se utilizan</span>
+        </div>
+        <div id="chart"></div>
+        <div class="kpi-strip">
+            <div class="kpi">
+                <div class="kpi-label">Ingreso Bruto</div>
+                <div class="kpi-value" style="color:#64748b">$6,153.8M</div>
+                <div class="kpi-sub">100%</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Ingreso Neto</div>
+                <div class="kpi-value" style="color:#059669">$3,819.1M</div>
+                <div class="kpi-sub">62.1% del bruto</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Beneficio Bruto</div>
+                <div class="kpi-value" style="color:#16a34a">$2,545.9M</div>
+                <div class="kpi-sub">Margen 66.7%</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Utilidad Operac.</div>
+                <div class="kpi-value" style="color:#059669">$1,206.3M</div>
+                <div class="kpi-sub">Margen 31.6%</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Resultado Oper.</div>
+                <div class="kpi-value" style="color:#047857">$304.4M</div>
+                <div class="kpi-sub">Margen 8.0%</div>
+            </div>
+            <div class="kpi">
+                <div class="kpi-label">Utilidad Neta</div>
+                <div class="kpi-value" style="color:#047857">$232.1M</div>
+                <div class="kpi-sub">Margen 6.1% ✦</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <span>Fuente: Estado de Resultados (ERG) — Contador certificado</span>
+        <span style="font-weight:700">POPPING BOBA INTERNATIONAL · gestionpbi.lat</span>
+    </div>
+</div>
+
+<script>
+// ─── Sankey Data ───
+const nodes = [
+    // Sources (col 0)
+    { name: "Liquipops\n$4,614.7M", id: "liquipops" },
+    { name: "Geniality\n$1,530.7M", id: "geniality" },
+    { name: "Otros\n$8.4M", id: "otros" },
+    // Stage 1 (col 1)
+    { name: "Ingresos Netos\n$3,819.1M", id: "netos" },
+    // Cost nodes (col 2+)
+    { name: "Devoluciones\n$356.8M", id: "devoluciones" },
+    { name: "Descuentos Comerciales\n$1,977.8M", id: "descuentos" },
+    // Stage 2
+    { name: "Beneficio Bruto\n$2,545.9M", id: "margen" },
+    { name: "Costo de Ventas\n(Materia Prima)\n$1,273.2M", id: "costo_ventas" },
+    // Stage 3
+    { name: "Utilidad Operacional\n$1,206.3M", id: "util_op" },
+    { name: "Costos de Producción\n$1,339.6M", id: "costo_prod" },
+    // Stage 4
+    { name: "Resultado Operativo\n$304.4M", id: "res_op" },
+    { name: "Gastos Administrativos\n$521.2M", id: "gastos_admin" },
+    { name: "Gastos de Ventas\n$380.7M", id: "gastos_ventas" },
+    // Stage 5
+    { name: "Utilidad Neta\n$232.1M", id: "util_neta" },
+    { name: "No Operacional\n+ Impuestos\n$72.3M", id: "impuestos" },
+];
+
+const links = [
+    // Sources → Netos (through deductions)
+    { source: "liquipops", target: "netos", value: 4614.7 - 298 - 1485 },  // proportional deductions
+    { source: "liquipops", target: "devoluciones", value: 298 },
+    { source: "liquipops", target: "descuentos", value: 1485 },
+    { source: "geniality", target: "netos", value: 1530.7 - 59 - 493 },
+    { source: "geniality", target: "devoluciones", value: 59 },
+    { source: "geniality", target: "descuentos", value: 493 },
+    { source: "otros", target: "netos", value: 8.4 },
+    // Netos → Margen + Costo Ventas
+    { source: "netos", target: "margen", value: 2545.9 },
+    { source: "netos", target: "costo_ventas", value: 1273.2 },
+    // Margen → Util Op + Costo Produccion
+    { source: "margen", target: "util_op", value: 1206.3 },
+    { source: "margen", target: "costo_prod", value: 1339.6 },
+    // Util Op → Resultado + Gastos
+    { source: "util_op", target: "res_op", value: 304.4 },
+    { source: "util_op", target: "gastos_admin", value: 521.2 },
+    { source: "util_op", target: "gastos_ventas", value: 380.7 },
+    // Resultado → Util Neta + Impuestos
+    { source: "res_op", target: "util_neta", value: 232.1 },
+    { source: "res_op", target: "impuestos", value: 72.3 },
+];
+
+// Map names
+const nodeMap = {};
+nodes.forEach((n, i) => { nodeMap[n.id] = i; });
+
+const sankeyData = {
+    nodes: nodes.map(n => ({ ...n })),
+    links: links.map(l => ({
+        source: nodeMap[l.source],
+        target: nodeMap[l.target],
+        value: l.value
+    }))
+};
+
+// ─── Render ───
+const width = 1560;
+const height = 640;
+
+const svg = d3.select("#chart")
+    .append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("width", "100%")
+    .style("display", "block");
+
+const sankey = d3.sankey()
+    .nodeId(d => d.id)
+    .nodeWidth(22)
+    .nodePadding(28)
+    .nodeAlign(d3.sankeyLeft)
+    .extent([[30, 30], [width - 300, height - 30]]);
+
+const { nodes: sNodes, links: sLinks } = sankey({
+    nodes: nodes.map(d => ({ ...d })),
+    links: links.map(d => ({ source: d.source, target: d.target, value: d.value }))
+});
+
+// Color scheme
+const colorMap = {
+    liquipops: '#f59e0b',
+    geniality: '#8b5cf6',
+    otros: '#06b6d4',
+    netos: '#34d399',
+    margen: '#22c55e',
+    util_op: '#10b981',
+    res_op: '#059669',
+    util_neta: '#047857',
+    devoluciones: '#fb923c',
+    descuentos: '#f87171',
+    costo_ventas: '#ef4444',
+    costo_prod: '#ef4444',
+    gastos_admin: '#f87171',
+    gastos_ventas: '#fb923c',
+    impuestos: '#f97316',
+};
+
+const isExpense = id => ['devoluciones','descuentos','costo_ventas','costo_prod','gastos_admin','gastos_ventas','impuestos'].includes(id);
+
+// Draw links
+svg.append("g")
+    .selectAll("path")
+    .data(sLinks)
+    .join("path")
+    .attr("class", "link")
+    .attr("d", d3.sankeyLinkHorizontal())
+    .attr("fill", "none")
+    .attr("stroke", d => {
+        const targetId = d.target.id;
+        if (isExpense(targetId)) return colorMap[targetId] || '#f87171';
+        return colorMap[d.source.id] || '#34d399';
+    })
+    .attr("stroke-opacity", 0.3)
+    .attr("stroke-width", d => Math.max(2, d.width))
+    .style("transition", "stroke-opacity 0.2s")
+    .on("mouseover", function() { d3.select(this).attr("stroke-opacity", 0.5); })
+    .on("mouseout", function() { d3.select(this).attr("stroke-opacity", 0.3); });
+
+// Draw nodes
+const node = svg.append("g")
+    .selectAll("g")
+    .data(sNodes)
+    .join("g");
+
+node.append("rect")
+    .attr("x", d => d.x0)
+    .attr("y", d => d.y0)
+    .attr("height", d => Math.max(4, d.y1 - d.y0))
+    .attr("width", d => d.x1 - d.x0)
+    .attr("fill", d => colorMap[d.id] || '#94a3b8')
+    .attr("rx", 4)
+    .attr("opacity", 0.9);
+
+// Labels
+node.each(function(d) {
+    const g = d3.select(this);
+    const isLeft = d.x0 < width / 2;
+    const isSource = ['liquipops', 'geniality', 'otros'].includes(d.id);
+    const isFinal = d.id === 'util_neta';
+    const textLines = d.name.split('\n');
+    const nodeH = d.y1 - d.y0;
+    
+    let tx, anchor;
+    if (isSource) {
+        tx = d.x1 + 10;
+        anchor = 'start';
+    } else if (isFinal || isExpense(d.id)) {
+        tx = d.x1 + 10;
+        anchor = 'start';
+    } else {
+        tx = d.x0 - 10;
+        anchor = 'end';
+    }
+    
+    const ty = d.y0 + nodeH / 2;
+    const lineH = isFinal ? 22 : textLines.length > 2 ? 14 : 16;
+    const startY = ty - ((textLines.length - 1) * lineH) / 2;
+    
+    textLines.forEach((line, i) => {
+        const isValue = line.startsWith('$');
+        g.append("text")
+            .attr("x", tx)
+            .attr("y", startY + i * lineH)
+            .attr("text-anchor", anchor)
+            .attr("dominant-baseline", "middle")
+            .attr("font-family", "Inter, sans-serif")
+            .attr("font-size", isValue ? (isFinal ? 22 : 14) : (isFinal ? 14 : 11))
+            .attr("font-weight", isValue ? 900 : 700)
+            .attr("fill", isValue ? colorMap[d.id] : '#334155')
+            .text(line);
+    });
+});
+
+</script>
+</body>
+</html>

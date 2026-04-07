@@ -22,7 +22,9 @@ export default {
                 },
             },
             fontFamily: {
-                sans: ['Inter', 'sans-serif'],
+                sans: ['Outfit', 'Inter', 'sans-serif'],
+                outfit: ['Outfit', 'sans-serif'],
+                playfair: ['"Playfair Display"', 'serif'],
             }
         },
     },

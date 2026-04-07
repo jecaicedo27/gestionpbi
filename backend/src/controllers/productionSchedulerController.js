@@ -1,7 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const XLSX = require('xlsx');
-const path = require('path');
 const configController = require('./configController');
 
 // Helper: Parse size to Kg
@@ -69,49 +67,71 @@ exports.getSuggestions = async (req, res) => {
             targetDays: globalConfig.geniality_targetDays || globalConfig.targetDays || 8,
             alertYellow: globalConfig.geniality_alertYellow || globalConfig.alertYellow || 12,
             alertRed: globalConfig.geniality_alertRed || globalConfig.alertRed || 3,
-            syrupRatio: 1.0 // Geniality has NO growth
+            syrupRatio: 1.0, // Geniality has NO growth
+            safetyStockDays: globalConfig.geniality_safetyStockDays || globalConfig.safetyStockDays || 2
         } : {
             targetDays: globalConfig.targetDays || 8,
             alertYellow: globalConfig.alertYellow || 12,
             alertRed: globalConfig.alertRed || 3,
-            syrupRatio: globalConfig.syrupRatio || 0.70
+            syrupRatio: globalConfig.syrupRatio || 0.70,
+            safetyStockDays: globalConfig.safetyStockDays || 2
         };
+
+        // 1c. Fetch Order Deficit (real remaining = requestedQty - scannedQty)
+        // Note: pendingQty is unreliable because approveOrder sets it to 0
+        const productIds = products.map(p => p.id);
+        const orderItemsForDeficit = await prisma.orderItem.findMany({
+            where: {
+                productId: { in: productIds },
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+            },
+            select: {
+                productId: true,
+                requestedQty: true,
+                pickingItems: { select: { scannedQty: true } }
+            }
+        });
+        // Map: productId -> deficit units (requested - scanned)
+        const orderDeficitMap = {};
+        for (const item of orderItemsForDeficit) {
+            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+            const remaining = Math.max(0, item.requestedQty - scanned);
+            if (remaining > 0) {
+                orderDeficitMap[item.productId] = (orderDeficitMap[item.productId] || 0) + remaining;
+            }
+        }
+
+        // 1d. Fetch In-Progress Production (batches not yet completed)
+        const inProgressRaw = await prisma.batchOutputTarget.groupBy({
+            by: ['productId'],
+            where: {
+                productId: { in: productIds },
+                batch: { status: { notIn: ['COMPLETED', 'FAILED'] } }
+            },
+            _sum: { plannedUnits: true }
+        });
+        const inProgressMap = {};
+        for (const p of inProgressRaw) {
+            inProgressMap[p.productId] = p._sum.plannedUnits || 0;
+        }
+
+        // 1e. Fetch Scheduled/Active production for per-size breakdown
+        const scheduledRaw = await prisma.batchOutputTarget.groupBy({
+            by: ['productId'],
+            where: {
+                productId: { in: productIds },
+                batch: { status: { notIn: ['COMPLETED', 'FAILED'] } }
+            },
+            _sum: { plannedUnits: true }
+        });
+        const scheduledMap = {};
+        for (const p of scheduledRaw) {
+            scheduledMap[p.productId] = p._sum.plannedUnits || 0;
+        }
 
         const BATCH_SIZE = line === 'geniality' ? 100 : 120;
     const DENSITY = line === 'geniality' ? 1.35 : 1.0; // Sirope density g/cm³
 
-
-        // 2. Read REAL Sales Data from Excel
-        const filePath = path.join(__dirname, '../../Movimiento 2025.xlsx');
-        let workbook;
-        try {
-            workbook = XLSX.readFile(filePath);
-        } catch (e) {
-            console.error("Excel not found, using DB Only");
-        }
-
-        const flavorSales = {}; // { Flavor: TotalKg }
-
-        if (workbook) {
-            const sheet = workbook.Sheets[workbook.SheetNames[0]];
-            const data = XLSX.utils.sheet_to_json(sheet);
-
-            data.forEach(row => {
-                const code = row['Código producto'];
-                // Match by SKU to our filtered Link products
-                const product = products.find(p => p.sku === code);
-
-                if (product && product.flavor) {
-                    const flavor = product.flavor.toUpperCase();
-                    const sizeInfo = parseSize(product.name, DENSITY); // Parse DB name as it's cleaner
-                    const soldUnits = (row['Cantidad salida'] || 0); // Correct Column Name
-                    const soldKg = soldUnits * sizeInfo.kgFactor;
-
-                    if (!flavorSales[flavor]) flavorSales[flavor] = 0;
-                    flavorSales[flavor] += soldKg;
-                }
-            });
-        }
 
         // 3. Group by Flavor & Build Suggestion
         const flavorGroups = {};
@@ -124,6 +144,10 @@ exports.getSuggestions = async (req, res) => {
 
         const suggestions = Object.entries(flavorGroups).map(([flavor, items]) => {
             let totalStockKg = 0;
+            let totalOrderDeficitUnits = 0;
+            let totalOrderDeficitKg = 0;
+            let totalInProgressUnits = 0;
+            let totalInProgressKg = 0;
             const stockDetails = [];
 
             items.forEach(p => {
@@ -132,95 +156,92 @@ exports.getSuggestions = async (req, res) => {
 
                 // USE GLOBAL STOCK (Include Maquilas)
                 const stockKg = p.currentStock * kgFactor;
-
                 totalStockKg += stockKg;
 
-                // FIX: Show ALL stock, even fitting negative/zero if meaningful
+                // Order deficit for this product
+                const deficitUnits = orderDeficitMap[p.id] || 0;
+                totalOrderDeficitUnits += deficitUnits;
+                totalOrderDeficitKg += deficitUnits * kgFactor;
+
+                // In-progress production for this product
+                const inProgressUnits = inProgressMap[p.id] || 0;
+                totalInProgressUnits += inProgressUnits;
+                totalInProgressKg += inProgressUnits * kgFactor;
+
                 let label = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit === 'KG' ? 'kg' : sizeInfo.unit}`;
                 stockDetails.push({
                     label,
-                    units: p.currentStock, // Show global units
+                    units: p.currentStock,
                     kg: stockKg,
-                    sizeWeight: kgFactor // Use this for sorting
+                    sizeWeight: kgFactor,
+                    deficitUnits, // per-size deficit for display
+                    scheduledUnits: scheduledMap[p.id] || 0
                 });
             });
 
-            // Calculate Metrics
-            // SWITCH: Use DB 'dailyVelocity' (calculated elsewhere, e.g. 3-months avg) 
-            // instead of Excel 1-year average.
+            // === EFFECTIVE STOCK ===
+            // Stock real = lo que tienes - lo que debes (pedidos) + lo que viene (producción en curso)
+            const effectiveStockKg = totalStockKg - totalOrderDeficitKg + totalInProgressKg;
+
+            // Calculate daily consumption
             let dailyConsumptionKg = 0;
             items.forEach(p => {
                 const sizeInfo = parseSize(p.name, DENSITY);
                 const kgFactor = sizeInfo.kgFactor || 0;
-                // dailyVelocity is in Units/Day. Convert to Kg/Day.
-                // Fallback to 0 if null
                 const velocity = p.dailyVelocity || 0;
                 dailyConsumptionKg += (velocity * kgFactor);
             });
 
-            // Days of Stock
-            // If No consumption, assume infinite coverage (999)
-            const daysRemaining = dailyConsumptionKg > 0.05 ? (totalStockKg / dailyConsumptionKg) : 999;
-
-            // Debug Log (To verify values in logs if needed)
-            // console.log(`Flavor: ${flavor}, DailyKg: ${dailyConsumptionKg.toFixed(2)}, StockKg: ${totalStockKg}`);
+            // Days of Stock — use EFFECTIVE stock (accounting for orders + production)
+            const daysRemaining = dailyConsumptionKg > 0.05 ? (effectiveStockKg / dailyConsumptionKg) : 999;
 
             let status = 'GREEN';
-            // Logic: Dynamic from Config
             if (daysRemaining < config.alertYellow) status = 'YELLOW';
             if (daysRemaining < config.alertRed) status = 'RED';
 
-            // FORCE RED if Negative Stock (Critical Deficit)
-            if (totalStockKg < 0) {
-                status = 'RED';
-            }
+            // FORCE RED if Effective Stock is negative
+            if (effectiveStockKg < 0) status = 'RED';
 
-
-            // User Request: "amarillo si al menos uno de los tamaños esta en riesgo"
+            // "amarillo si al menos uno de los tamaños esta en riesgo"
             const hasMissingSize = items.some(p => p.currentStock <= 0);
-            if (hasMissingSize && status === 'GREEN') {
-                status = 'YELLOW';
-            }
+            if (hasMissingSize && status === 'GREEN') status = 'YELLOW';
 
             // Available Sizes String
-            // Fix Sort: Sort by Unit Size (sizeWeight) not Total Stock Kg
             stockDetails.sort((a, b) => a.sizeWeight - b.sizeWeight);
-
-            // Show ALL items including zero (User request: "si no hay inventario... mostar lo que hay")
-            const displaySizes = stockDetails;
-
-            const availableSizesStr = displaySizes.length > 0
-                ? displaySizes.map(d => `${d.label}: ${d.units}`).join(', ')
+            const availableSizesStr = stockDetails.length > 0
+                ? stockDetails.map(d => `${d.label}: ${d.units}`).join(', ')
                 : "0";
 
-            // Suggestion Logic
+            // === SUGGESTION LOGIC (uses effective stock + safety stock) ===
             let suggestedAction = "OK";
-            if (status !== 'GREEN' || totalStockKg < 0) {
-                // Apply syrup ratio: we only need X% of product weight as syrup
+            if (status !== 'GREEN' || effectiveStockKg < 0) {
                 const SYRUP_RATIO = config.syrupRatio;
                 const TARGET_DAYS = config.targetDays;
-                const deficitKg = ((TARGET_DAYS * dailyConsumptionKg) - totalStockKg) * SYRUP_RATIO;
+                const SAFETY_DAYS = config.safetyStockDays;
 
-                // Target: Multiples of BATCH_SIZE
-                let baseTarget = Math.max(0, deficitKg); // No buffer
+                // Deficit = what we need for target days + safety - what we effectively have
+                const deficitKg = ((TARGET_DAYS + SAFETY_DAYS) * dailyConsumptionKg - effectiveStockKg) * SYRUP_RATIO;
 
-                // If negative stock, ensure we cover it (also apply syrup ratio)
-                if (totalStockKg < 0) baseTarget += Math.abs(totalStockKg) * SYRUP_RATIO;
+                let baseTarget = Math.max(0, deficitKg);
 
-                // Round UP to nearest BATCH_SIZE
+                // If effective stock is negative, ensure we cover the hole
+                if (effectiveStockKg < 0) baseTarget += Math.abs(effectiveStockKg) * SYRUP_RATIO;
+
                 let target = Math.ceil(Math.max(1, baseTarget) / BATCH_SIZE) * BATCH_SIZE;
-
-                // Minimum batch is BATCH_SIZE
                 if (target < BATCH_SIZE) target = BATCH_SIZE;
 
-                // Special Case: No consumption but Negative Stock
-                if (dailyConsumptionKg < 0.05 && totalStockKg < 0) {
-                    const hole = Math.abs(totalStockKg) * SYRUP_RATIO;
+                // Special Case: No consumption but Negative effective stock
+                if (dailyConsumptionKg < 0.05 && effectiveStockKg < 0) {
+                    const hole = Math.abs(effectiveStockKg) * SYRUP_RATIO;
                     target = Math.ceil(hole / BATCH_SIZE) * BATCH_SIZE;
                 }
 
                 suggestedAction = `Producir ${Math.round(target)}kg`;
             }
+
+            // Backorder: NET deficit = demand - current stock - in-progress production
+            // Shows how much STILL NEEDS to be scheduled
+            const totalBackorderKg = Math.max(0, Math.round(totalOrderDeficitKg - totalStockKg - totalInProgressKg));
 
             return {
                 flavor,
@@ -228,20 +249,32 @@ exports.getSuggestions = async (req, res) => {
                 status,
                 dailyConsumptionKg: Math.round(dailyConsumptionKg * 100) / 100,
                 currentStockKg: Math.round(totalStockKg),
+                effectiveStockKg: Math.round(effectiveStockKg),
+                orderDeficitUnits: totalOrderDeficitUnits,
+                totalBackorderKg,
+                inProgressUnits: totalInProgressUnits,
+                inProgressKg: Math.round(totalInProgressKg),
                 availableSizes: availableSizesStr || "Sin Stock",
+                stockDetails,
                 suggestedAction,
-                hasMissingSize // Flag for sorting
+                hasMissingSize
             };
         }).sort((a, b) => {
             // Sort Logic:
-            // Tier 1: CONFIRMED GLOBAL STOCKOUT (Red due to Global Negative)
-            // Removed 'hasMissingSize' from here to respect Volume Priority for "Yellow" items
-            const isStockoutA = a.currentStockKg < 0;
-            const isStockoutB = b.currentStockKg < 0;
+            // Tier 0: Items with BACKORDERS (unfulfilled orders) — highest priority
+            const hasBackorderA = a.totalBackorderKg > 0;
+            const hasBackorderB = b.totalBackorderKg > 0;
+            if (hasBackorderA && !hasBackorderB) return -1;
+            if (!hasBackorderA && hasBackorderB) return 1;
+            if (hasBackorderA && hasBackorderB) {
+                return b.totalBackorderKg - a.totalBackorderKg; // bigger deficit first
+            }
+
+            // Tier 1: CONFIRMED STOCKOUT (Effective stock negative)
+            const isStockoutA = a.effectiveStockKg < 0;
+            const isStockoutB = b.effectiveStockKg < 0;
             if (isStockoutA && !isStockoutB) return -1;
             if (!isStockoutA && isStockoutB) return 1;
-
-            // Tier 1 Tie-Breaker: Sort by Volume (Impact)
             if (isStockoutA && isStockoutB) {
                 return b.dailyConsumptionKg - a.dailyConsumptionKg;
             }
@@ -252,17 +285,12 @@ exports.getSuggestions = async (req, res) => {
             if (isPanicA && !isPanicB) return -1;
             if (!isPanicA && isPanicB) return 1;
 
-            // Tier 3: Action Needed (Red or Yellow status, i.e., days < 12)
-            const isActionA = a.daysRemaining < 12; // Updated to match yellow threshold
+            // Tier 3: Action Needed (days < 12)
+            const isActionA = a.daysRemaining < 12;
             const isActionB = b.daysRemaining < 12;
-
-            // If both need action (or both don't), sort by ROTATION (Volume)
-            // This answers user request: "Maracuya (High Vol, 3.4 days) > Mango Biche (Low Vol, 2.2 days)"
             if (isActionA === isActionB) {
                 return b.dailyConsumptionKg - a.dailyConsumptionKg;
             }
-
-            // Otherwise, Action Needed comes first
             return isActionA ? -1 : 1;
         });
 
@@ -291,10 +319,9 @@ exports.calculateBatchMix = async (req, res) => {
 
         const globalConfig = await configController.getInternalConfig() || {};
 
-        // Resolve Config based on Line
         const config = line === 'geniality' ? {
             targetDays: globalConfig.geniality_targetDays || globalConfig.targetDays || 8,
-            syrupRatio: 1.0 // Geniality has NO growth
+            syrupRatio: 1.0
         } : {
             targetDays: globalConfig.targetDays || 8,
             syrupRatio: globalConfig.syrupRatio || 0.70
@@ -303,7 +330,41 @@ exports.calculateBatchMix = async (req, res) => {
         const TARGET_DAYS = config.targetDays;
         const SYRUP_RATIO = config.syrupRatio;
         const BATCH_SIZE = line === 'geniality' ? 100 : 120;
-        const DENSITY = line === 'geniality' ? 1.35 : 1.0; // Sirope density g/cm³
+        const DENSITY = line === 'geniality' ? 1.35 : 1.0;
+
+        // Fetch real order demand per product
+        const productIds = products.map(p => p.id);
+        const orderItemsRaw = await prisma.orderItem.findMany({
+            where: {
+                productId: { in: productIds },
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+            },
+            select: {
+                productId: true,
+                requestedQty: true,
+                pickingItems: { select: { scannedQty: true } }
+            }
+        });
+        const orderDemandMap = {};
+        orderItemsRaw.forEach(item => {
+            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+            const remaining = Math.max(0, item.requestedQty - scanned);
+            if (remaining > 0) orderDemandMap[item.productId] = (orderDemandMap[item.productId] || 0) + remaining;
+        });
+
+        // Fetch in-progress production per product
+        const inProgressRaw = await prisma.batchOutputTarget.groupBy({
+            by: ['productId'],
+            where: {
+                productId: { in: productIds },
+                batch: { status: { notIn: ['COMPLETED', 'FAILED'] } }
+            },
+            _sum: { plannedUnits: true }
+        });
+        const inProgressMap = {};
+        for (const d of inProgressRaw) {
+            inProgressMap[d.productId] = d._sum.plannedUnits || 0;
+        }
 
         let totalNeedKg = 0;
         const productNeeds = [];
@@ -312,121 +373,123 @@ exports.calculateBatchMix = async (req, res) => {
             const sizeInfo = parseSize(p.name, DENSITY);
             if (sizeInfo.kgFactor === 0) return;
 
-            // Use Global Stock
-            const velocity = p.dailyVelocity || 0; // Use DB 3-month avg
+            const velocity = p.dailyVelocity || 0;
             const targetStock = velocity * TARGET_DAYS;
             const deficit = Math.max(0, targetStock - p.currentStock);
-            // IMPORTANTE: Solo el X% (default 70%) del peso final viene del jarabe
             const deficitKg = deficit * sizeInfo.kgFactor * SYRUP_RATIO;
+
+            const orderDemand = orderDemandMap[p.id] || 0;
+            const inProgress = inProgressMap[p.id] || 0;
+            const netOrderNeed = Math.max(0, orderDemand - Math.max(0, p.currentStock) - inProgress);
 
             productNeeds.push({
                 product: p,
                 kgFactor: sizeInfo.kgFactor,
+                packSize: p.packSize || 1,
+                sizeValue: sizeInfo.value,
                 deficitUnits: deficit,
-                deficitKg
+                deficitKg,
+                orderDemandUnits: orderDemand,
+                netOrderNeedUnits: netOrderNeed
             });
             totalNeedKg += deficitKg;
         });
 
-        // DYNAMIC MIX LOGIC: Calculate Sales Share for Fill Strategy
-        // Instead of DEFAULT_DISTRIBUTION (fixed %), use actual daily consumption ratio
         let totalDailyVolumeKg = 0;
         productNeeds.forEach(item => {
-            // Factor in Kg
-            const volumeKg = (item.product.dailyVelocity || 0); // Corrected to use DB Velocity
-            // avgDailyConsumption is typically Units/Day. So Convert to Kg.
-            const volumeKgVal = volumeKg * item.kgFactor;
+            const volumeKgVal = (item.product.dailyVelocity || 0) * item.kgFactor;
             item.dailyVolumeKg = volumeKgVal;
             totalDailyVolumeKg += volumeKgVal;
         });
 
-        // Fallback if no sales history: use equal distribution or keep old default as last resort?
-        // Let's use old default only if totalDailyVolume is 0
-        // Match 'getSuggestions' Aggressive Logic:
         const useFallback = totalDailyVolumeKg <= 0;
 
-        // Calculate Total Flavor Stock to see if we need negative stock recovery
         let totalFlavorStock = 0;
         products.forEach(p => {
             const sizeInfo = parseSize(p.name, DENSITY);
             if (sizeInfo.kgFactor) totalFlavorStock += (p.currentStock * sizeInfo.kgFactor);
         });
 
-        // If total stock is negative, add absolute value to recover deficit
         let boostedNeedKg = totalNeedKg;
         if (totalFlavorStock < 0) {
-            boostedNeedKg += Math.abs(totalFlavorStock) * SYRUP_RATIO; // Apply syrup ratio to negative stock too
+            boostedNeedKg += Math.abs(totalFlavorStock) * SYRUP_RATIO;
         }
 
-        // Determine Target Batch Size (Multiples of BATCH_SIZE)
-        // NO BUFFER - Calculate exactly what's needed
         let targetTotalKg = Math.ceil(boostedNeedKg / BATCH_SIZE) * BATCH_SIZE;
 
-        console.log('DEBUG MIX:', {
-            flavor,
-            totalNeedKg, // Original
-            boostedNeedKg,
-            totalFlavorStock,
-            targetTotalKg,
-            productsCount: products.length
-        });
+        console.log('DEBUG MIX:', { flavor, totalNeedKg, boostedNeedKg, totalFlavorStock, targetTotalKg });
 
-        // Strategy implies how we fill it
         let strategy = 'FILL_TO_BATCH';
 
-        const finalMix = [];
+        // === FIRST PASS: allocate raw units ===
+        const rawAllocations = [];
         productNeeds.forEach(item => {
-            let allocatedKg = 0;
-            if (strategy === 'EXACT') {
-                allocatedKg = item.deficitKg;
-            } else if (strategy === 'CAP_MAX') {
-                const ratio = item.deficitKg / totalNeedKg;
-                allocatedKg = targetTotalKg * ratio;
-            } else if (strategy === 'FILL_MIN' || strategy === 'FILL_TO_BATCH') { // Match Strategy
-                const remainder = targetTotalKg - totalNeedKg;
+            const remainder = targetTotalKg - totalNeedKg;
+            let extraKg = 0;
+            if (useFallback) {
+                let sizeKey = '350';
+                if (item.kgFactor > 3) sizeKey = '3400';
+                else if (item.kgFactor > 1) sizeKey = '1150';
+                extraKg = remainder * (DEFAULT_DISTRIBUTION[sizeKey] || 0.33);
+            } else {
+                const share = item.dailyVolumeKg / totalDailyVolumeKg;
+                extraKg = remainder * share;
+            }
+            const allocatedKg = item.deficitKg + extraKg;
 
-                let extraKg = 0;
-                if (useFallback) {
-                    // Identify size key
-                    let sizeKey = '350';
-                    if (item.kgFactor > 3) sizeKey = '3400';
-                    else if (item.kgFactor > 1) sizeKey = '1150';
-                    extraKg = remainder * (DEFAULT_DISTRIBUTION[sizeKey] || 0.33);
-                } else {
-                    // DYNAMIC ALLOCATION: Share of Volume
-                    const share = item.dailyVolumeKg / totalDailyVolumeKg;
-                    extraKg = remainder * share;
-                }
+            const syrupNeededPerUnit = item.kgFactor * SYRUP_RATIO;
+            const rawUnits = Math.max(0, Math.round(allocatedKg / syrupNeededPerUnit));
 
-                allocatedKg = item.deficitKg + extraKg;
+            // Ensure minimum covers net order demand
+            const effectiveUnits = Math.max(rawUnits, item.netOrderNeedUnits);
+
+            // Round UP to complete boxes (packSize)
+            const ps = item.packSize;
+            let boxRoundedUnits = ps > 1 ? Math.ceil(effectiveUnits / ps) * ps : effectiveUnits;
+
+            // For 350GR Liquipops: add 1 contramuestra per box-rounded batch
+            const is350 = item.sizeValue <= 400 && item.sizeValue >= 300;
+            if (is350 && boxRoundedUnits > 0) {
+                boxRoundedUnits += 1; // contramuestra
             }
 
-            // Calculate units
-            const syrupNeededPerUnit = item.kgFactor * SYRUP_RATIO;
-            const plannedUnits = Math.round(allocatedKg / syrupNeededPerUnit);
-            finalMix.push({
-                productId: item.product.id,
-                sku: item.product.sku,
-                name: item.product.name,
-                sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
-                kgFactor: Math.round(item.kgFactor * 1000) / 1000, // Exposed for frontend reactivity
-                plannedUnits,
-                plannedWeightKg: Math.round(plannedUnits * item.kgFactor * 100) / 100
+            rawAllocations.push({
+                ...item,
+                rawUnits,
+                boxRoundedUnits,
+                is350
             });
         });
 
+        // === Build final mix ===
+        const finalMix = rawAllocations.map(item => ({
+            productId: item.product.id,
+            sku: item.product.sku,
+            name: item.product.name,
+            sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
+            kgFactor: Math.round(item.kgFactor * 1000) / 1000,
+            packSize: item.packSize,
+            plannedUnits: item.boxRoundedUnits,
+            plannedWeightKg: Math.round(item.boxRoundedUnits * item.kgFactor * 100) / 100,
+            orderDemandUnits: item.orderDemandUnits,
+            boxes: item.packSize > 1 ? Math.floor(item.boxRoundedUnits / item.packSize) : null,
+            contramuestra: item.is350 ? 1 : 0
+        }));
+
         const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
 
-        // Calculate actual syrup batches needed (for display)
+        // Note: totalPlannedKg is PRODUCT weight, targetTotalKg is SYRUP weight.
+        // Product weight naturally exceeds syrup weight (syrupRatio < 1). Don't inflate targetTotalKg.
+
         const syrupBatchesNeeded = Math.ceil(targetTotalKg / BATCH_SIZE);
 
         res.json({
             flavor,
             strategy,
-            totalPlannedKg, // Total weight of final products
-            totalSyrupKg: targetTotalKg, // Total syrup needed from batches 
-            targetBatchCount: syrupBatchesNeeded, // Number of BATCH_SIZE batches needed
-            targetTotalKg, // Legacy field
+            totalPlannedKg,
+            totalSyrupKg: targetTotalKg,
+            targetBatchCount: syrupBatchesNeeded,
+            targetTotalKg,
             mix: finalMix
         });
 
@@ -448,8 +511,10 @@ exports.createBatch = async (req, res) => {
         const dd = String(co.getDate()).padStart(2, '0');
         const hh = String(co.getHours()).padStart(2, '0');
         const mm = String(co.getMinutes()).padStart(2, '0');
+        const ss = String(co.getSeconds()).padStart(2, '0');
         const flavorCode = (flavor || 'BATCH').toUpperCase().replace(/\s+/g, '-');
-        const batchNumber = `${flavorCode}-${yy}${MM}${dd}-${hh}${mm}`;
+        const rnd = Math.random().toString(36).substring(2, 5).toUpperCase();
+        const batchNumber = `${flavorCode}-${yy}${MM}${dd}-${hh}${mm}${ss}-${rnd}`;
         const totalOutput = mix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
 
         const batch = await prisma.productionBatch.create({
@@ -481,7 +546,7 @@ exports.createBatch = async (req, res) => {
 exports.updateBatch = async (req, res) => {
     try {
         const { id } = req.params;
-        const { scheduledStart, scheduledEnd, status, notes } = req.body;
+        const { scheduledStart, scheduledEnd, status, notes, mix } = req.body;
 
         const updateData = {};
         if (scheduledStart) updateData.scheduledStart = new Date(scheduledStart);
@@ -493,6 +558,21 @@ exports.updateBatch = async (req, res) => {
             where: { id },
             data: updateData
         });
+
+        // Update outputTargets if mix is provided
+        if (mix && Array.isArray(mix)) {
+            for (const item of mix) {
+                if (!item.productId) continue;
+                await prisma.batchOutputTarget.updateMany({
+                    where: { batchId: id, productId: item.productId },
+                    data: {
+                        plannedUnits: item.plannedUnits,
+                        plannedWeightKg: item.plannedWeightKg || 0
+                    }
+                });
+            }
+        }
+
         res.json(batch);
     } catch (error) {
         console.error("Error updating batch:", error);
@@ -511,14 +591,12 @@ exports.getSchedule = async (req, res) => {
                 status: {
                     in: ['PENDING', 'STAGE_1_BASE', 'STAGE_2_JARABE', 'STAGE_3_ESFERIFICACION', 'STAGE_4_PRODUCTO_FINAL', 'LABELING', 'COMPLETED']
                 },
-                // Filter by Line: Look for batches that produce items of the correct group
-                outputTargets: {
-                    some: {
-                        product: {
-                            group: { name: groupName }
-                        }
-                    }
-                }
+                OR: [
+                    // Production batches for the active line
+                    { outputTargets: { some: { product: { group: { name: groupName } } } } },
+                    // Auxiliary events (LAVADO, PAUSA, etc.)
+                    { flavor: { in: ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION'] } }
+                ]
             },
             include: {
                 outputTargets: {
@@ -605,18 +683,159 @@ exports.deleteAllBatches = async (req, res) => {
         }
         const batchIds = ids;
 
-        // Step 1: Delete assembly notes (NoteItems, ProcessVariables, QualityChecks cascade automatically via FK)
+        // Step 1: Find assembly note IDs for all batches
+        const noteIds = (await prisma.assemblyNote.findMany({
+            where: { productionBatchId: { in: batchIds } },
+            select: { id: true }
+        })).map(n => n.id);
+
+        // Step 2: Delete lot consumptions linked to these notes BEFORE deleting notes
+        // Without this, onDelete:SetNull orphans the consumption records
+        if (noteIds.length > 0) {
+            await prisma.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
+        }
+
+        // Step 3: Delete assembly notes (NoteItems, ProcessVariables, QualityChecks cascade via FK)
         await prisma.assemblyNote.deleteMany({ where: { productionBatchId: { in: batchIds } } });
 
-        // Step 2: Delete output targets
+        // Step 4: Delete output targets
         await prisma.batchOutputTarget.deleteMany({ where: { batchId: { in: batchIds } } });
 
-        // Now delete the batches
+        // Step 5: Delete the batches
         const deleted = await prisma.productionBatch.deleteMany({ where: { id: { in: batchIds } } });
 
         res.json({ success: true, deleted: deleted.count });
     } catch (error) {
         console.error("Error deleting all batches:", error);
         res.status(500).json({ error: 'Error deleting batches: ' + error.message });
+    }
+};
+
+// NEW: Per-distributor demand + safety stock for a flavor
+exports.getFlavorDemand = async (req, res) => {
+    try {
+        const flavor = req.query.flavor || req.params.flavor;
+        const line = req.query.line || 'liquipops';
+        const groupName = line === 'geniality' ? 'GENIALITY' : 'LIQUIPOPS';
+        const DENSITY = line === 'geniality' ? 1.35 : 1.0;
+
+        const products = await prisma.product.findMany({
+            where: {
+                group: { name: groupName },
+                flavor: { equals: flavor, mode: 'insensitive' },
+                active: true
+            }
+        });
+
+        if (products.length === 0) return res.json({ distributors: [], safetyStock: [], sizeTotals: {} });
+
+        const productIds = products.map(p => p.id);
+        const productMap = {};
+        products.forEach(p => {
+            const sizeInfo = parseSize(p.name, DENSITY);
+            productMap[p.id] = { ...p, sizeInfo };
+        });
+
+        // Pending order items with distributor info
+        // Note: APPROVED orders set pendingQty=0 on approval, so we also check requestedQty > scanned
+        const orderItems = await prisma.orderItem.findMany({
+            where: {
+                productId: { in: productIds },
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+            },
+            include: {
+                order: {
+                    select: {
+                        orderNumber: true,
+                        status: true,
+                        createdAt: true,
+                        distributor: { select: { id: true, name: true } }
+                    }
+                },
+                product: { select: { id: true, name: true } },
+                pickingItems: { select: { scannedQty: true } }
+            }
+        });
+
+        // Filter to only items that still need fulfillment
+        const pendingItems = orderItems.filter(item => {
+            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+            const remaining = item.requestedQty - scanned;
+            return remaining > 0;
+        });
+
+        // Group by distributor
+        const distMap = {};
+        pendingItems.forEach(item => {
+            const dist = item.order.distributor;
+            const distKey = dist.id;
+            if (!distMap[distKey]) {
+                distMap[distKey] = { distributorName: dist.name, items: [] };
+            }
+            const prod = productMap[item.productId];
+            const sizeLabel = prod ? `${prod.sizeInfo.value}${prod.sizeInfo.unit === 'ML' ? 'ml' : prod.sizeInfo.unit}` : '?';
+            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+            const remaining = item.requestedQty - scanned;
+            distMap[distKey].items.push({
+                sizeLabel,
+                qty: remaining
+            });
+        });
+
+        // Flatten and aggregate per size per distributor
+        const distributors = Object.values(distMap).map(d => {
+            const sizeAgg = {};
+            d.items.forEach(it => {
+                if (!sizeAgg[it.sizeLabel]) sizeAgg[it.sizeLabel] = 0;
+                sizeAgg[it.sizeLabel] += it.qty;
+            });
+            return {
+                distributorName: d.distributorName,
+                sizes: sizeAgg,
+                totalUnits: d.items.reduce((a, it) => a + it.qty, 0)
+            };
+        }).sort((a, b) => b.totalUnits - a.totalUnits);
+
+        // Per-size totals
+        const sizeTotals = {};
+        pendingItems.forEach(item => {
+            const prod = productMap[item.productId];
+            const sizeLabel = prod ? `${prod.sizeInfo.value}${prod.sizeInfo.unit === 'ML' ? 'ml' : prod.sizeInfo.unit}` : '?';
+            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
+            const remaining = item.requestedQty - scanned;
+            if (!sizeTotals[sizeLabel]) sizeTotals[sizeLabel] = 0;
+            sizeTotals[sizeLabel] += remaining;
+        });
+
+        // Safety stock: 7 days per size — includes scheduled production
+        // Get pending batch production for each product
+        const pendingTargets = await prisma.batchOutputTarget.findMany({
+            where: {
+                productId: { in: productIds },
+                batch: { status: { in: ['PENDING', 'STAGE_1_BASE', 'STAGE_2_JARABE', 'STAGE_3_ESFERIFICACION', 'STAGE_4_PRODUCTO_FINAL'] } }
+            },
+            select: { productId: true, plannedUnits: true }
+        });
+        const scheduledByProduct = {};
+        pendingTargets.forEach(t => {
+            scheduledByProduct[t.productId] = (scheduledByProduct[t.productId] || 0) + t.plannedUnits;
+        });
+
+        const safetyStock = products.map(p => {
+            const sizeInfo = parseSize(p.name, DENSITY);
+            const sizeLabel = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit}`;
+            const dailyVelocity = p.dailyVelocity || 0;
+            const need7d = Math.ceil(dailyVelocity * 7);
+            const current = p.currentStock || 0;
+            const scheduled = scheduledByProduct[p.id] || 0;
+            const effectiveStock = current + scheduled;
+            const deficit = Math.max(0, need7d - effectiveStock);
+            return { sizeLabel, dailyVelocity: Math.round(dailyVelocity * 10) / 10, need7d, currentStock: current, scheduled, effectiveStock, deficit };
+        }).sort((a, b) => (parseFloat(a.sizeLabel) || 0) - (parseFloat(b.sizeLabel) || 0));
+
+        res.json({ flavor, distributors, sizeTotals, safetyStock });
+    } catch (error) {
+        console.error('Error fetching flavor demand:', error);
+        res.status(500).json({ error: 'Error fetching demand' });
     }
 };

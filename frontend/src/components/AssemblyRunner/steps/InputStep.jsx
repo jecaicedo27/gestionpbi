@@ -315,7 +315,11 @@ const InputStep = ({
                             <div className="text-xs text-violet-400">{item.unit}</div>
                             {batchMultiplier > 1 && (
                                 <div className="mt-1.5 inline-block bg-amber-100 text-amber-700 border border-amber-300 rounded-full px-2.5 py-0.5 text-[11px] font-extrabold">
-                                    ×{batchMultiplier} baches
+                                    {note?.processParameters?.aggregateNote
+                                        ? `Total ×${batchMultiplier} baches`
+                                        : note?.processParameters?.repeatBatch
+                                            ? `Bache ${note.processParameters.repeatBatch} de ${batchMultiplier}`
+                                            : `×${batchMultiplier} baches`}
                                 </div>
                             )}
                         </div>
@@ -382,22 +386,24 @@ const InputStep = ({
                         </div>
                     )}
 
-                    {/* Photo evidence — all ingredients */}
+                    {/* Photo evidence — MANDATORY for all ingredients */}
                     <div className="w-full max-w-lg">
-                        <label className="text-xs font-bold text-slate-500 uppercase mb-1.5 block">
+                        <label className={`text-xs font-bold uppercase mb-1.5 flex items-center gap-1.5 ${photoPreview ? 'text-emerald-600' : 'text-red-500'}`}>
                             📷 Foto del Pesaje
+                            {!photoPreview && <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black animate-pulse">OBLIGATORIO</span>}
+                            {photoPreview && <span className="text-emerald-500 text-[9px]">✅</span>}
                         </label>
                         {photoPreview && (
                             <img src={photoPreview} alt="Pesaje"
-                                className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm" />
+                                className="w-full max-h-32 object-cover rounded-xl border-2 border-emerald-300 mb-2 shadow-sm" />
                         )}
                         <label className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95
                             ${photoPreview
                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
-                                : 'border-violet-300 bg-violet-50 text-violet-600 hover:bg-violet-100'}`}>
+                                : 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 animate-pulse'}`}>
                             {photoPreview
                                 ? <><CheckCircle size={18} /> <span className="font-bold text-xs">Foto tomada — Cambiar</span></>
-                                : <><Camera size={18} /> <span className="font-bold text-xs">Tomar foto del pesaje</span></>
+                                : <><Camera size={18} /> <span className="font-bold text-xs">⚠️ TOMAR FOTO DEL PESAJE</span></>
                             }
                             <input
                                 type="file"

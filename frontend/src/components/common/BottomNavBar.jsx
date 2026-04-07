@@ -6,18 +6,24 @@ const tabsByRole = {
     PRODUCCION: [
         { icon: LayoutDashboard, label: 'Inicio', path: '/' },
         { icon: Package, label: 'Inventario', path: '/inventory' },
+        { icon: ClipboardList, label: 'Conteo', path: '/inventory/count' },
         { icon: Calendar, label: 'Producción', path: '/production/view' },
         { icon: PlayCircle, label: 'Producir', path: '/production/operator' },
         { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel' },
         { icon: Activity, label: 'RPA', path: '/rpa-history' },
         { icon: Layers, label: 'Lotes', path: '/lots/traceability' },
+        { icon: Truck, label: 'Entregas', path: '/production/handoffs' },
     ],
     LOGISTICA: [
         { icon: Package, label: 'Pedidos', path: '/orders' },
         { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },
+        { icon: Layers, label: 'Zonas PT', path: '/production/finished-zone' },
         { icon: ClipboardList, label: 'Conteo', path: '/production/physical-count' },
         { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
         { icon: Tag, label: 'Etiquetas', path: '/labeling' },
+        { icon: Truck, label: 'Entregas', path: '/production/handoffs' },
+        { icon: Activity, label: 'Recall', path: '/recall-report' },
+        { icon: FlaskConical, label: 'PQR', path: '/pqr/manage' },
     ],
     CARTERA: [
         { icon: LayoutDashboard, label: 'Inventario', path: '/inventory' },
@@ -27,6 +33,17 @@ const tabsByRole = {
     CONTABILIDAD: [
         { icon: ShoppingCart, label: 'Compras', path: '/procurement/purchase-orders' },
         { icon: Truck, label: 'Forecast', path: '/procurement/forecast' },
+    ],
+    OPERARIO_PICKING: [
+        { icon: LayoutDashboard, label: 'Inicio', path: '/' },
+        { icon: Package, label: 'Inventario', path: '/inventory' },
+        { icon: Calendar, label: 'Producción', path: '/production/view' },
+        { icon: PlayCircle, label: 'Producir', path: '/production/operator' },
+        { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel' },
+        { icon: Activity, label: 'RPA', path: '/rpa-history' },
+        { icon: Layers, label: 'Lotes', path: '/lots/traceability' },
+        { icon: Tag, label: 'Lotes PT', path: '/production/finished-zone' },
+        { icon: Truck, label: 'Entregas', path: '/production/handoffs' },
     ],
 };
 
@@ -43,7 +60,7 @@ const BottomNavBar = ({ userRole }) => (
                     `btm-nav__tab ${isActive ? 'btm-nav__tab--active' : ''}`
                 }
             >
-                <tab.icon size={22} strokeWidth={1.8} />
+                <tab.icon size={20} strokeWidth={1.8} />
                 <span className="btm-nav__label">{tab.label}</span>
             </NavLink>
         ))}

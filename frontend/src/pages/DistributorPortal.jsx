@@ -14,8 +14,9 @@ export default function DistributorPortal() {
     const [cart, setCart] = useState([]);
     const [notes, setNotes] = useState('');
     const [expandedOrder, setExpandedOrder] = useState(null);
-    const [recallDismissed, setRecallDismissed] = useState(false);
+    const [recallDismissed, setRecallDismissed] = useState(true);
     const [cartLoading, setCartLoading] = useState({});
+    const [orderResult, setOrderResult] = useState(null); // { type: 'success' | 'error', message: string }
     const queryClient = useQueryClient();
     const socketRef = useRef(null);
 
@@ -104,20 +105,17 @@ export default function DistributorPortal() {
             setCart([]);
             setNotes('');
             setActiveTab('orders');
-            alert('✅ Pedido creado exitosamente');
+            setOrderResult({ type: 'success', message: 'Tu pedido ha sido registrado y está en cola de procesamiento.' });
         },
         onError: (error) => {
-            alert('❌ ' + (error.response?.data?.error || 'Error al crear pedido'));
+            setOrderResult({ type: 'error', message: error.response?.data?.error || 'Error al crear pedido. Intenta de nuevo.' });
         }
     });
 
     // ═══ CART FUNCTIONS: API-backed ═══
-    const addToCart = useCallback(async (product, qty = 1) => {
-        const packSize = product.packSize || 1;
-        const quantityToAdd = qty * packSize;
-        const existing = cart.find(item => item.id === product.id);
-        const newTotal = existing ? existing.quantity + quantityToAdd : quantityToAdd;
+    const [backorderPrompt, setBackorderPrompt] = useState(null);
 
+    const executeCartUpdate = useCallback(async (product, newTotal, isUpdate = false) => {
         setCartLoading(prev => ({ ...prev, [product.id]: true }));
         try {
             const res = await axios.post(`${API_URL}/cart/reserve`, {
@@ -132,48 +130,52 @@ export default function DistributorPortal() {
                         item.id === product.id ? { ...item, quantity: newTotal } : item
                     );
                 }
-                return [...prev, { ...product, quantity: quantityToAdd }];
+                return [...prev, { ...product, quantity: newTotal }];
             });
             queryClient.invalidateQueries(['distributor-inventory']);
-
-            // Show backorder warning with production date
-            if (res.data.backorder) {
-                const prodDate = product.nextProductionDate
-                    ? new Date(product.nextProductionDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })
-                    : null;
-                const dateMsg = prodDate
-                    ? `\n📅 Próxima producción: ${prodDate}\n⏱️ Disponible aprox. 2 días después de producción.`
-                    : '\n⚠️ No hay fecha de producción programada aún.';
-                alert(`📦 Pedido en backorder\n\nStock actual insuficiente. Se solicitarán ${res.data.backorderQty} unidades adicionales de próxima producción.${dateMsg}\n\nNota: Pueden presentarse retrasos.`);
-            }
         } catch (e) {
             const msg = e.response?.data?.error || 'Error al reservar';
             alert('⚠️ ' + msg);
         } finally {
             setCartLoading(prev => ({ ...prev, [product.id]: false }));
         }
-    }, [cart, queryClient]);
-
-    const updateCartQty = useCallback(async (productId, newQty, packSize = 1) => {
-        const validQty = Math.max(packSize, newQty);
-
-        setCartLoading(prev => ({ ...prev, [productId]: true }));
-        try {
-            await axios.post(`${API_URL}/cart/reserve`, {
-                productId,
-                quantity: validQty
-            }, { headers: AUTH_HEADER() });
-
-            setCart(prev => prev.map(item =>
-                item.id === productId ? { ...item, quantity: validQty } : item
-            ));
-            queryClient.invalidateQueries(['distributor-inventory']);
-        } catch (e) {
-            alert('⚠️ ' + (e.response?.data?.error || 'Error al actualizar'));
-        } finally {
-            setCartLoading(prev => ({ ...prev, [productId]: false }));
-        }
     }, [queryClient]);
+
+    const confirmBackorder = () => {
+        if (!backorderPrompt) return;
+        executeCartUpdate(backorderPrompt.product, backorderPrompt.newTotal, backorderPrompt.isUpdate);
+        setBackorderPrompt(null);
+    };
+
+    const addToCart = useCallback((product, qty = 1) => {
+        const packSize = product.packSize || 1;
+        const quantityToAdd = qty * packSize;
+        const existing = cart.find(item => item.id === product.id);
+        const newTotal = existing ? existing.quantity + quantityToAdd : quantityToAdd;
+
+        // Si excede el stock físico, mostrar modal de backorder
+        if (newTotal > (product.qty || 0)) {
+            setBackorderPrompt({ product, newTotal, isUpdate: false });
+            return;
+        }
+
+        executeCartUpdate(product, newTotal, false);
+    }, [cart, executeCartUpdate]);
+
+    const updateCartQty = useCallback((product, newQty, packSize = 1) => {
+        const validQty = Math.max(packSize, newQty);
+        
+        // Si excede el stock físico y estamos subiendo la cantidad
+        if (validQty > (product.qty || 0)) {
+            const existing = cart.find(item => item.id === product.id);
+            if (!existing || validQty > existing.quantity) {
+                 setBackorderPrompt({ product, newTotal: validQty, isUpdate: true });
+                 return;
+            }
+        }
+        
+        executeCartUpdate(product, validQty, true);
+    }, [cart, executeCartUpdate]);
 
     const removeFromCart = useCallback(async (productId) => {
         setCartLoading(prev => ({ ...prev, [productId]: true }));
@@ -323,6 +325,104 @@ export default function DistributorPortal() {
                             <ShieldAlert size={16} />
                             Hay {recallLots.length} lote(s) en alerta de recall — Click para ver
                         </button>
+                    </div>
+                )}
+
+                {/* Backorder Modal */}
+                {backorderPrompt && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                            <div className="bg-red-600 p-6 flex flex-col items-center justify-center text-center relative">
+                                <button onClick={() => setBackorderPrompt(null)} className="absolute top-4 right-4 text-white/80 hover:text-white">
+                                    <X size={24} />
+                                </button>
+                                <div className="bg-white/20 p-3 rounded-full mb-4">
+                                    <AlertTriangle size={32} className="text-white" />
+                                </div>
+                                <h3 className="text-xl font-black text-white">Producto Bajo Pedido 🏭</h3>
+                            </div>
+                            <div className="p-6">
+                                <p className="text-gray-700 text-center mb-6">
+                                    <span className="font-bold text-gray-900 block mb-2">{backorderPrompt.product.name}</span>
+                                    Estás solicitando <strong className="text-red-600">{backorderPrompt.newTotal} unidades</strong>, pero actualmente no hay stock físico suficiente para cubrirlo todo. 
+                                    <br/><br/>
+                                    Este producto <strong>se fabricará bajo tu solicitud</strong>. Producción ya ha sido notificada para priorizarlo, sin embargo, el tiempo de despacho es variable según la programación de fábrica.
+                                </p>
+                                
+                                <div className="flex gap-3 mt-6">
+                                    <button 
+                                        onClick={() => setBackorderPrompt(null)}
+                                        className="flex-1 px-4 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-xl transition-colors"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button 
+                                        onClick={confirmBackorder}
+                                        className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
+                                    >
+                                        <Package size={18} />
+                                        Agregar al Pedido
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Order Result Modal (Success / Error) */}
+                {orderResult && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+                        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden" style={{ animation: 'modalIn 0.3s ease-out' }}>
+                            {/* Header */}
+                            <div className={`p-8 flex flex-col items-center justify-center text-center relative ${
+                                orderResult.type === 'success'
+                                    ? 'bg-gradient-to-br from-emerald-500 to-green-600'
+                                    : 'bg-gradient-to-br from-red-500 to-red-700'
+                            }`}>
+                                <div className="p-4 rounded-full mb-4 bg-white/20" style={{ animation: 'iconPop 0.5s ease-out 0.2s both' }}>
+                                    {orderResult.type === 'success'
+                                        ? <CheckCircle size={48} className="text-white" strokeWidth={2.5} />
+                                        : <XCircle size={48} className="text-white" strokeWidth={2.5} />
+                                    }
+                                </div>
+                                <h3 className="text-2xl font-black text-white">
+                                    {orderResult.type === 'success' ? '¡Pedido Creado!' : 'Error en el Pedido'}
+                                </h3>
+                                <p className="text-white/80 text-sm mt-1">
+                                    {orderResult.type === 'success' ? 'LIQUIPOPS & GENIALITY' : 'No se pudo procesar'}
+                                </p>
+                            </div>
+
+                            {/* Body */}
+                            <div className="p-6">
+                                <p className="text-gray-700 text-center text-[15px] leading-relaxed">
+                                    {orderResult.message}
+                                </p>
+
+                                {orderResult.type === 'success' && (
+                                    <div className="mt-5 bg-blue-50 border border-blue-200 rounded-xl p-4">
+                                        <div className="flex items-start gap-3">
+                                            <Info size={18} className="text-blue-600 mt-0.5 flex-shrink-0" />
+                                            <div className="text-sm text-blue-800 space-y-1">
+                                                <p><strong>FIFO:</strong> Los pedidos se procesan en orden de llegada.</p>
+                                                <p><strong>Seguimiento:</strong> Revisa el estado en la pestaña "Mis Pedidos".</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <button
+                                    onClick={() => setOrderResult(null)}
+                                    className={`w-full mt-6 py-3.5 rounded-xl font-bold text-white text-[15px] transition-all active:scale-[0.98] shadow-lg ${
+                                        orderResult.type === 'success'
+                                            ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+                                            : 'bg-red-600 hover:bg-red-700 shadow-red-200'
+                                    }`}
+                                >
+                                    {orderResult.type === 'success' ? 'Ver Mis Pedidos' : 'Entendido'}
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 )}
 
@@ -657,7 +757,7 @@ export default function DistributorPortal() {
                                                                 </div>
                                                                 <div className="flex items-center gap-2">
                                                                     <button
-                                                                        onClick={() => updateCartQty(item.id, item.quantity - packSize, packSize)}
+                                                                        onClick={() => updateCartQty(item, item.quantity - packSize, packSize)}
                                                                         className="text-gray-400 hover:text-red-500"
                                                                     >
                                                                         <Minus className="w-3 h-3" />
@@ -666,7 +766,7 @@ export default function DistributorPortal() {
                                                                         {boxes} Cajas
                                                                     </span>
                                                                     <button
-                                                                        onClick={() => updateCartQty(item.id, item.quantity + packSize, packSize)}
+                                                                        onClick={() => updateCartQty(item, item.quantity + packSize, packSize)}
                                                                         className="text-gray-400 hover:text-green-500"
                                                                     >
                                                                         <Plus className="w-3 h-3" />
@@ -795,9 +895,9 @@ export default function DistributorPortal() {
                                                         </div>
                                                     </div>
 
-                                                    <div className="flex items-center gap-3 bg-white rounded-lg border-2 border-gray-300 px-3 py-2">
+                                                        <div className="flex items-center gap-3 bg-white rounded-lg border-2 border-gray-300 px-3 py-2">
                                                         <button
-                                                            onClick={() => updateCartQty(item.id, item.quantity - packSize, packSize)}
+                                                            onClick={() => updateCartQty(item, item.quantity - packSize, packSize)}
                                                             className="text-gray-600 hover:text-red-600 transition-colors"
                                                         >
                                                             <Minus className="w-5 h-5" />
@@ -806,7 +906,7 @@ export default function DistributorPortal() {
                                                             {boxes}
                                                         </div>
                                                         <button
-                                                            onClick={() => updateCartQty(item.id, item.quantity + packSize, packSize)}
+                                                            onClick={() => updateCartQty(item, item.quantity + packSize, packSize)}
                                                             className="text-gray-600 hover:text-green-600 transition-colors"
                                                         >
                                                             <Plus className="w-5 h-5" />

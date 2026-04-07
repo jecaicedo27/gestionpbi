@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Download, Filter, ChevronDown, ChevronRight, Package, Factory, List, AlertTriangle, PackageOpen } from 'lucide-react';
+import { Search, Download, Filter, ChevronDown, ChevronLeft, ChevronRight, Package, Factory, Layers, List, AlertTriangle, PackageOpen } from 'lucide-react';
 import api from '../services/api';
 
 /* ─── Helpers ─────────────────────────────────────────────────── */
@@ -321,14 +321,19 @@ const StockTable = ({ items, loading, zone, search, onSearchChange, onRefresh })
 
 /* ─── Movements Table (existing traceability) ────────────────── */
 const MovementsTable = ({ data, loading }) => {
+    const [page, setPage] = useState(1);
+    const [perPage, setPerPage] = useState(50);
+
+    // Reset page when data changes
+    useEffect(() => { setPage(1); }, [data]);
+
     if (loading) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Cargando...</div>;
     if (data.length === 0) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Sin registros</div>;
 
 
     // Compute running balance per PRODUCT — data is sorted DESC by date
-    // 1. Collect current quantity of each unique lot, summed per product
-    const lotSeen = {};   // "product::lot" → true
-    const prodBalance = {}; // productName → total current balance
+    const lotSeen = {};
+    const prodBalance = {};
     data.forEach(c => {
         const prodKey = c.materialLot?.siigoProductName || c.id;
         const lotKey = c.materialLot?.lotNumber || c.id;
@@ -338,21 +343,57 @@ const MovementsTable = ({ data, loading }) => {
             prodBalance[prodKey] = (prodBalance[prodKey] || 0) + (c.materialLot?.currentQuantity ?? 0);
         }
     });
-    // 2. Walk through rows (desc) and assign balance after each movement
     const rows = data.map(c => {
         const prodKey = c.materialLot?.siigoProductName || c.id;
         const isPositive = c.type === 'INGRESS' || c.type === 'PRODUCTION';
         const qty = Math.abs(c.quantity || c.quantityUsed || 0);
         const balanceAfter = prodBalance[prodKey] ?? null;
-        // Reverse the operation to get the balance BEFORE this movement
         if (typeof balanceAfter === 'number') {
             prodBalance[prodKey] = isPositive ? balanceAfter - qty : balanceAfter + qty;
         }
         return { ...c, _balance: balanceAfter, _isPositive: isPositive, _qty: qty };
     });
 
+    // Pagination
+    const totalPages = Math.max(1, Math.ceil(rows.length / perPage));
+    const pagedRows = rows.slice((page - 1) * perPage, page * perPage);
+
     return (
         <div style={S.card}>
+            {/* Pagination header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#fafafa' }}>
+                <span style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>
+                    {rows.length.toLocaleString()} registros
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <select
+                        value={perPage}
+                        onChange={e => { setPerPage(Number(e.target.value)); setPage(1); }}
+                        style={{ padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: '0.78rem', background: '#fff' }}
+                    >
+                        <option value={50}>50/pág</option>
+                        <option value={100}>100/pág</option>
+                        <option value={200}>200/pág</option>
+                    </select>
+                    <button
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page <= 1}
+                        style={{ padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', cursor: page <= 1 ? 'not-allowed' : 'pointer', opacity: page <= 1 ? 0.4 : 1, display: 'flex', alignItems: 'center', gap: 2, fontSize: '0.78rem', fontWeight: 600 }}
+                    >
+                        <ChevronLeft size={14} /> Ant
+                    </button>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#475569' }}>
+                        {page} / {totalPages}
+                    </span>
+                    <button
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page >= totalPages}
+                        style={{ padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', cursor: page >= totalPages ? 'not-allowed' : 'pointer', opacity: page >= totalPages ? 0.4 : 1, display: 'flex', alignItems: 'center', gap: 2, fontSize: '0.78rem', fontWeight: 600 }}
+                    >
+                        Sig <ChevronRight size={14} />
+                    </button>
+                </div>
+            </div>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
                 <thead>
                     <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
@@ -366,7 +407,7 @@ const MovementsTable = ({ data, loading }) => {
                     </tr>
                 </thead>
                 <tbody>
-                    {rows.map((c, idx) => (
+                    {pagedRows.map((c, idx) => (
                         <tr key={c.id || idx} style={{ borderBottom: '1px solid #f1f5f9', background: c._isPositive ? '#f0fdf4' : idx % 2 === 0 ? '#fff' : '#fafafa' }}>
                             <td style={{ padding: '8px 12px', fontWeight: 600, color: '#1e293b', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {c.materialLot?.siigoProductName || '—'}
@@ -405,6 +446,267 @@ const MovementsTable = ({ data, loading }) => {
                     ))}
                 </tbody>
             </table>
+            {/* Pagination footer */}
+            {totalPages > 1 && (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '12px 14px', borderTop: '1px solid #f1f5f9' }}>
+                    <button
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page <= 1}
+                        style={{ padding: '6px 14px', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', cursor: page <= 1 ? 'not-allowed' : 'pointer', opacity: page <= 1 ? 0.4 : 1, fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
+                    >
+                        <ChevronLeft size={14} /> Anterior
+                    </button>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569' }}>
+                        Página {page} de {totalPages}
+                    </span>
+                    <button
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page >= totalPages}
+                        style={{ padding: '6px 14px', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff', cursor: page >= totalPages ? 'not-allowed' : 'pointer', opacity: page >= totalPages ? 0.4 : 1, fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
+                    >
+                        Siguiente <ChevronRight size={14} />
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+};
+
+/* ─── Batch-Grouped View ─────────────────────────────────────── */
+const BatchGroupedView = ({ data, allMovements, loading }) => {
+    const [expanded, setExpanded] = useState({});
+
+    if (loading) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Cargando...</div>;
+    if (data.length === 0) return <div style={{ ...S.card, textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>Sin registros</div>;
+
+    // Group by batch number
+    const groups = {};
+    data.forEach(c => {
+        const batch = c.processInfo?.productionBatch?.batchNumber || null;
+        const key = batch || '__sin_batch__';
+        if (!groups[key]) groups[key] = { batch: batch, rows: [] };
+        groups[key].rows.push(c);
+    });
+
+    // Sort: named batches first (newest first), then "sin batch" at end
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+        if (a === '__sin_batch__') return 1;
+        if (b === '__sin_batch__') return -1;
+        const dateA = groups[a].rows[0]?.date || groups[a].rows[0]?.usedAt;
+        const dateB = groups[b].rows[0]?.date || groups[b].rows[0]?.usedAt;
+        return new Date(dateB) - new Date(dateA);
+    });
+
+    const toggle = (key) => setExpanded(p => ({ ...p, [key]: !p[key] }));
+
+    const typeLabel = (t) => {
+        switch(t) {
+            case 'CONSUMPTION': return '🔴 Consumo';
+            case 'INGRESS': return '📥 Ingreso';
+            case 'PRODUCTION': return '🏭 Producción';
+            case 'TRANSFER_OUT': return '↗️ Salida';
+            case 'TRANSFER_IN': return '↙️ Entrada';
+            default: return t;
+        }
+    };
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600, padding: '0 4px' }}>
+                {sortedKeys.filter(k => k !== '__sin_batch__').length} batches · {data.length.toLocaleString()} movimientos totales
+            </div>
+            {sortedKeys.map(key => {
+                const g = groups[key];
+                const isOpen = expanded[key] !== false; // default open for first 3
+                const rows = [...g.rows].sort((a, b) => new Date(a.date || a.usedAt) - new Date(b.date || b.usedAt));
+                const isSinBatch = key === '__sin_batch__';
+
+                // Stats
+                const consumed = rows.filter(r => r.type === 'CONSUMPTION').reduce((s, r) => s + Math.abs(r.quantity || r.quantityUsed || 0), 0);
+                const produced = rows.filter(r => r.type === 'PRODUCTION' || r.type === 'INGRESS').reduce((s, r) => s + Math.abs(r.quantity || 0), 0);
+                const operators = [...new Set(rows.map(r => r.usedBy?.name).filter(Boolean))];
+                const processes = [...new Set(rows.map(r => r.processInfo?.stageName).filter(Boolean))];
+                const products = [...new Set(rows.map(r => r.materialLot?.siigoProductName).filter(Boolean))];
+                const dateRange = rows.length ? `${fmtDate(rows[0].date || rows[0].usedAt)} → ${fmtDate(rows[rows.length-1].date || rows[rows.length-1].usedAt)}` : '';
+
+                return (
+                    <div key={key} style={{ ...S.card, overflow: 'hidden' }}>
+                        {/* Batch Header */}
+                        <button
+                            onClick={() => toggle(key)}
+                            style={{
+                                width: '100%', border: 'none', cursor: 'pointer', textAlign: 'left',
+                                padding: '14px 16px',
+                                background: isSinBatch ? '#fefce8' : 'linear-gradient(135deg, #1e1b4b 0%, #4c1d95 100%)',
+                                color: isSinBatch ? '#92400e' : '#fff',
+                                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12
+                            }}
+                        >
+                            <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <span style={{
+                                        fontSize: '0.9rem', fontWeight: 800, fontFamily: 'monospace',
+                                        background: isSinBatch ? '#fde68a' : 'rgba(255,255,255,0.2)',
+                                        padding: '2px 10px', borderRadius: 6
+                                    }}>
+                                        {isSinBatch ? '⚠️ Sin Batch' : g.batch}
+                                    </span>
+                                    <span style={{ fontSize: '0.72rem', opacity: 0.8 }}>{rows.length} mov.</span>
+                                    <span style={{ fontSize: '0.72rem', opacity: 0.7 }}>{dateRange}</span>
+                                </div>
+                                {!isSinBatch && (
+                                    <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: '0.72rem', opacity: 0.85, flexWrap: 'wrap' }}>
+                                        {consumed > 0 && <span>🔴 {Math.round(consumed).toLocaleString()}g consumido</span>}
+                                        {produced > 0 && <span>🟢 {Math.round(produced).toLocaleString()}g producido</span>}
+                                        {operators.length > 0 && <span>👤 {operators.slice(0, 3).join(', ')}</span>}
+                                        {processes.length > 0 && <span>⚙️ {processes.length} etapas</span>}
+                                    </div>
+                                )}
+                            </div>
+                            {isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                        </button>
+
+                        {/* Expanded rows */}
+                        {isOpen && (() => {
+                            // Build ingress lookup: materialLotId → ingress row
+                            const ingressByLotId = {};
+                            (allMovements || data).forEach(r => {
+                                if ((r.type === 'INGRESS' || r.type === 'PRODUCTION') && r.materialLotId) {
+                                    ingressByLotId[r.materialLotId] = r;
+                                }
+                            });
+
+                            // Collect consumed lotIds in this batch
+                            const consumedLotIds = new Set();
+                            rows.forEach(r => {
+                                if (r.type === 'CONSUMPTION' && r.materialLotId) consumedLotIds.add(r.materialLotId);
+                            });
+
+                            // Enrich rows: add ingress records for consumed lots (if not already present)
+                            const rowIds = new Set(rows.map(r => r.id));
+                            const enrichedRows = [...rows];
+                            consumedLotIds.forEach(lotId => {
+                                const ingressRow = ingressByLotId[lotId];
+                                if (ingressRow && !rowIds.has(ingressRow.id)) {
+                                    enrichedRows.push(ingressRow);
+                                }
+                            });
+                            enrichedRows.sort((a, b) => new Date(a.date || a.usedAt) - new Date(b.date || b.usedAt));
+
+                            // Build per-ingredient balance from enriched rows
+                            const balanceMap = {};
+                            enrichedRows.forEach(r => {
+                                const name = r.materialLot?.siigoProductName;
+                                if (!name) return;
+                                if (!balanceMap[name]) balanceMap[name] = { ingress: 0, consumption: 0, lots: new Set(), initialQty: 0, currentQty: 0, seenLots: new Set() };
+                                const qty = Math.abs(r.quantity || r.quantityUsed || 0);
+                                const isIn = r.type === 'INGRESS' || r.type === 'PRODUCTION' || r.type === 'TRANSFER_IN';
+                                if (isIn) balanceMap[name].ingress += qty;
+                                else balanceMap[name].consumption += qty;
+                                if (r.materialLot?.lotNumber) balanceMap[name].lots.add(r.materialLot.lotNumber);
+                                // Track initial/current per unique lot
+                                const lotKey = r.materialLotId || r.materialLot?.id;
+                                if (lotKey && !balanceMap[name].seenLots.has(lotKey)) {
+                                    balanceMap[name].seenLots.add(lotKey);
+                                    balanceMap[name].initialQty += (r.materialLot?.initialQuantity || 0);
+                                    balanceMap[name].currentQty += (r.materialLot?.currentQuantity || 0);
+                                }
+                            });
+                            const balanceRows = Object.entries(balanceMap)
+                                .map(([name, v]) => ({ name, ...v, balance: v.ingress - v.consumption, lotCount: v.lots.size }))
+                                .sort((a, b) => Math.abs(a.balance) > Math.abs(b.balance) ? -1 : 1);
+                            const discrepancies = balanceRows.filter(r => Math.abs(r.balance) > 1);
+
+                            return (
+                            <div style={{ padding: 0 }}>
+                                {/* Per-ingredient Balance Summary */}
+                                <div style={{ borderBottom: '2px solid #e2e8f0' }}>
+                                    <div style={{ padding: '10px 14px', background: '#f8fafc' }}>
+                                        <span style={{ fontSize: '0.76rem', fontWeight: 700, color: '#475569' }}>
+                                            📊 Balance por Ingrediente
+                                        </span>
+                                    </div>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.76rem' }}>
+                                        <thead>
+                                            <tr style={{ background: '#f1f5f9' }}>
+                                                <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Ingrediente</th>
+                                                <th style={{ padding: '6px 12px', textAlign: 'center', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Lotes</th>
+                                                <th style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#dc2626', fontSize: '0.68rem', textTransform: 'uppercase' }}>Salida</th>
+                                                <th style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#3b82f6', fontSize: '0.68rem', textTransform: 'uppercase' }}>Saldo</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {balanceRows.map(row => {
+                                                const salida = row.consumption;
+                                                const saldo = row.currentQty;
+                                                return (
+                                                    <tr key={row.name} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                                        <td style={{ padding: '5px 12px', fontWeight: 600, color: '#1e293b', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {row.name}
+                                                        </td>
+                                                        <td style={{ padding: '5px 12px', textAlign: 'center' }}>
+                                                            <span style={S.lotBadge}>{row.lotCount}</span>
+                                                        </td>
+                                                        <td style={{ padding: '5px 12px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>
+                                                            {salida > 0 ? `${Math.round(salida).toLocaleString()} g` : '—'}
+                                                        </td>
+                                                        <td style={{ padding: '5px 12px', textAlign: 'right', fontWeight: 800, fontSize: '0.82rem', color: saldo > 0 ? '#3b82f6' : saldo === 0 ? '#94a3b8' : '#dc2626' }}>
+                                                            {Math.round(saldo).toLocaleString()} g
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
+                                    <thead>
+                                        <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                                            <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Tipo</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Producto</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Lote</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Cantidad</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Proceso</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'left', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Operario</th>
+                                            <th style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 700, color: '#475569', fontSize: '0.68rem', textTransform: 'uppercase' }}>Fecha</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {enrichedRows.map((c, idx) => {
+                                            const isPositive = c.type === 'INGRESS' || c.type === 'PRODUCTION' || c.type === 'TRANSFER_IN';
+                                            const qty = Math.abs(c.quantity || c.quantityUsed || 0);
+                                            return (
+                                                <tr key={c.id || idx} style={{ borderBottom: '1px solid #f1f5f9', background: isPositive ? '#f0fdf4' : idx % 2 === 0 ? '#fff' : '#fafafa' }}>
+                                                    <td style={{ padding: '6px 12px', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>{typeLabel(c.type)}</td>
+                                                    <td style={{ padding: '6px 12px', fontWeight: 600, color: '#1e293b', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {c.materialLot?.siigoProductName || '—'}
+                                                    </td>
+                                                    <td style={{ padding: '6px 12px' }}>
+                                                        {c.materialLot?.lotNumber ? <span style={S.lotBadge}>{c.materialLot.lotNumber}</span> : '—'}
+                                                    </td>
+                                                    <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 800, color: isPositive ? '#16a34a' : '#dc2626', fontSize: '0.82rem' }}>
+                                                        {isPositive ? '+' : '-'}{Math.round(qty).toLocaleString()} g
+                                                    </td>
+                                                    <td style={{ padding: '6px 12px', fontSize: '0.72rem', color: '#475569', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {c.processInfo?.stageName || c.observations || '—'}
+                                                    </td>
+                                                    <td style={{ padding: '6px 12px', fontSize: '0.72rem', color: '#475569' }}>
+                                                        {c.usedBy?.name || '—'}
+                                                    </td>
+                                                    <td style={{ padding: '6px 12px', fontSize: '0.72rem', color: '#64748b', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                        {fmtDate(c.date || c.usedAt)}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                        })()}
+                    </div>
+                );
+            })}
         </div>
     );
 };
@@ -419,6 +721,7 @@ const LotTraceabilityPage = () => {
     const [search, setSearch] = useState('');
     const [movFilters, setMovFilters] = useState({ search: '', startDate: '', endDate: '', zone: '' });
     const [showMovFilters, setShowMovFilters] = useState(false);
+    const [movViewMode, setMovViewMode] = useState('list'); // 'list' | 'batch'
 
     const loadStock = async () => {
         setLoading(true);
@@ -440,7 +743,7 @@ const LotTraceabilityPage = () => {
             if (movFilters.endDate) params.append('endDate', movFilters.endDate);
             const z = zoneOverride || movFilters.zone;
             if (z) params.append('zone', z);
-            params.append('limit', '300');
+            params.append('limit', '1000');
             const res = await api.get(`/inventory/lots/traceability?${params}`);
             setMovements(res.data);
         } catch (err) {
@@ -622,9 +925,38 @@ const LotTraceabilityPage = () => {
                                 }}>
                                     Buscar
                                 </button>
+                                {/* View toggle */}
+                                <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #e2e8f0', flexShrink: 0 }}>
+                                    <button
+                                        onClick={() => setMovViewMode('list')}
+                                        style={{
+                                            padding: '6px 12px', border: 'none', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600,
+                                            display: 'flex', alignItems: 'center', gap: 4,
+                                            background: movViewMode === 'list' ? '#4f46e5' : '#fff',
+                                            color: movViewMode === 'list' ? '#fff' : '#64748b'
+                                        }}
+                                    >
+                                        <List size={14} /> Lista
+                                    </button>
+                                    <button
+                                        onClick={() => setMovViewMode('batch')}
+                                        style={{
+                                            padding: '6px 12px', border: 'none', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600,
+                                            borderLeft: '1px solid #e2e8f0',
+                                            display: 'flex', alignItems: 'center', gap: 4,
+                                            background: movViewMode === 'batch' ? '#4f46e5' : '#fff',
+                                            color: movViewMode === 'batch' ? '#fff' : '#64748b'
+                                        }}
+                                    >
+                                        <Layers size={14} /> Por Batch
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                        <MovementsTable data={filteredMovements} loading={loading} />
+                        {movViewMode === 'list'
+                            ? <MovementsTable data={filteredMovements} loading={loading} />
+                            : <BatchGroupedView data={filteredMovements} allMovements={movements} loading={loading} />
+                        }
                     </>
                 )}
                 {activeTab === 'UNASSIGNED' && (() => {

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 // QueryClientProvider moved to main.jsx
 import { AuthProvider } from './context/AuthContext';
+import { ZebraProvider } from './context/ZebraContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
 import Login from './pages/Login';
 import Layout from './components/common/Layout';
@@ -33,8 +34,17 @@ import ProductionKpiPage from './pages/ProductionKpiPage';
 import BatchHistoryPage from './pages/BatchHistoryPage';
 import ProductionZonePage from './pages/ProductionZonePage';
 import FinishedProductZonePage from './pages/FinishedProductZonePage';
+import HandoffsPage from './pages/HandoffsPage';
 import RecallReportPage from './pages/RecallReportPage';
 import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
+
+// ── Geniality Parallel Production System ──
+import GenialityTemplatesPage from './pages/Geniality/GenialityTemplatesPage';
+import GenialityTemplateEditorPage from './pages/Geniality/GenialityTemplateEditorPage';
+import GenialityFormulasPage from './pages/Geniality/GenialityFormulasPage';
+import GenialityOperatorPage from './pages/Geniality/GenialityOperatorPage';
+import GenialityExecutionPage from './pages/Geniality/GenialityExecutionPage';
+
 
 import MovementsPage from './pages/MovementsPage';
 import LotTraceabilityPage from './pages/LotTraceabilityPage';
@@ -48,12 +58,20 @@ import InternalPQRCreate from './pages/PQR/InternalPQRCreate';
 
 import MicroModulePage from './pages/Micro/MicroModulePage';
 
+// ── Sanitación (POES) ──
+import SanitationDashboard from './pages/Sanitation/SanitationDashboard';
+import SanitationForm from './pages/Sanitation/SanitationForm';
+import SanitationConfig from './pages/Sanitation/SanitationConfig';
+
 import ForecastPage from './pages/ForecastPage';
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage';
 import SuppliersPage from './pages/SuppliersPage';
 import PremixQuickPanel from './pages/PremixQuickPanel';
 import ReconciliationPage from './pages/ReconciliationPage';
 import PhysicalCountPage from './pages/PhysicalCountPage';
+import InventoryCountPage from './pages/InventoryCountPage';
+import SalesAnalyticsDashboard from './pages/SalesAnalyticsDashboard';
+
 
 import { useEffect } from 'react';
 import { io } from 'socket.io-client';
@@ -91,6 +109,7 @@ function App() {
     return (
         <BrowserRouter>
             <AuthProvider>
+                <ZebraProvider>
                 <Routes>
                     <Route path="/login" element={<Login />} />
                     <Route element={<ProtectedRoute />}>
@@ -108,7 +127,7 @@ function App() {
                             <Route path="labeling" element={<Labeling />} />
 
 
-                            {/* Assembly System */}
+                            {/* Assembly System - Liquipops */}
                             <Route path="assembly-templates" element={<AssemblyTemplatesPage />} />
                             <Route path="assembly-templates/:id" element={<TemplateEditorPage />} />
                             <Route path="formulas" element={<FormulasPage />} />
@@ -121,8 +140,21 @@ function App() {
                             <Route path="production/batch-history" element={<BatchHistoryPage />} />
                             <Route path="production/zone" element={<ProductionZonePage />} />
                             <Route path="production/finished-zone" element={<FinishedProductZonePage />} />
+                            <Route path="production/handoffs" element={<HandoffsPage />} />
                             <Route path="production/physical-count" element={<PhysicalCountPage />} />
+                            <Route path="inventory/count" element={<InventoryCountPage />} />
                             <Route path="recall-report" element={<RecallReportPage />} />
+
+
+                            {/* Assembly System - Geniality (Siropes) */}
+                            <Route path="geniality/assembly-templates" element={<GenialityTemplatesPage />} />
+                            <Route path="geniality/assembly-templates/:id" element={<GenialityTemplateEditorPage />} />
+                            <Route path="geniality/formulas" element={<GenialityFormulasPage />} />
+                            <Route path="geniality/formulas/new" element={<FormulaEditorPage />} />
+                            <Route path="geniality/formulas/:id" element={<FormulaEditorPage />} />
+                            <Route path="geniality/operator" element={<GenialityOperatorPage />} />
+                            <Route path="geniality/assembly-execution/:id" element={<GenialityExecutionPage />} />
+
 
                             <Route path="admin/users" element={<Users />} />
                             <Route path="admin/reports" element={<Reports />} />
@@ -130,6 +162,7 @@ function App() {
                             <Route path="admin/orders" element={<OrderManagement />} /> {/* NEW */}
                             <Route path="distributor/portal" element={<DistributorPortal />} /> {/* NEW */}
                             <Route path="analytics/executive" element={<ExecutiveAnalysis />} />
+                            <Route path="analytics/sales" element={<SalesAnalyticsDashboard />} />
 
                             <Route path="admin/movements" element={<MovementsPage />} />
                             <Route path="pqr/list" element={<PQRDistributor />} />
@@ -144,6 +177,10 @@ function App() {
                             <Route path="micro/dashboard" element={<MicroModulePage />} />
                             <Route path="micro/trends" element={<Navigate to="/micro/dashboard?tab=trends" replace />} />
 
+                            <Route path="sanitation/dashboard" element={<SanitationDashboard />} />
+                            <Route path="sanitation/operator" element={<SanitationForm />} />
+                            <Route path="sanitation/config" element={<SanitationConfig />} />
+
                             {/* Procurement System */}
                             <Route path="procurement/forecast" element={<ForecastPage />} />
                             <Route path="procurement/purchase-orders" element={<PurchaseOrdersPage />} />
@@ -152,6 +189,7 @@ function App() {
                         </Route>
                     </Route>
                 </Routes>
+                </ZebraProvider>
             </AuthProvider>
         </BrowserRouter>
     );

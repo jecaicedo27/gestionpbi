@@ -11,9 +11,12 @@ const fs = require('fs');
 router.get('/catalog', auth, distributorController.getCatalog);
 router.post('/', auth, roles(['DISTRIBUIDOR', 'ADMIN', 'LOGISTICA']), orderController.createOrder);
 
+// Excel template download — any authenticated user can download
+router.get('/template', auth, orderController.getOrderTemplate);
+
 // Excel upload — uses memory storage (xlsx reads from buffer)
 const excelUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-router.post('/upload-excel', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']),
+router.post('/upload-excel', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL', 'DISTRIBUIDOR']),
     excelUpload.single('file'), orderController.createOrderFromExcel);
 
 // Admin/Logistics Routes
@@ -21,9 +24,10 @@ router.get('/counts', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERC
 router.get('/', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getAllOrders);
 router.get('/:id', auth, orderController.getOrderById);
 router.patch('/:id/status', auth, roles(['ADMIN', 'LOGISTICA']), orderController.updateOrderStatus);
+router.patch('/:id', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']), orderController.patchOrder);
 
 // Workflow endpoints
-router.post('/:id/approve', auth, roles(['ADMIN', 'LOGISTICA']), orderController.approveOrder);
+router.post('/:id/approve', auth, roles(['ADMIN', 'COMERCIAL']), orderController.approveOrder);
 router.post('/:id/reject', auth, roles(['ADMIN', 'LOGISTICA']), orderController.rejectOrder);
 router.post('/:id/mark-ready', auth, roles(['LOGISTICA']), orderController.markReady);
 
@@ -48,6 +52,9 @@ router.post('/:id/deliver', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR']),
 
 // Transport guide (printable HTML — no auth since it opens in a new browser tab)
 router.get('/:id/transport-guide', orderController.getTransportGuide);
+
+// Picking sheet (printable HTML — no auth since it opens in a new browser tab for printing)
+router.get('/:id/picking-sheet', orderController.getPickingSheet);
 
 // Siigo invoice PDF proxy — streams PDF from Siigo API
 router.get('/:id/siigo-pdf', auth, async (req, res) => {
