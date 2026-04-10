@@ -1,0 +1,101 @@
+diff --git a/frontend/src/components/AssemblyRunner/steps/ConteoStep.jsx b/frontend/src/components/AssemblyRunner/steps/ConteoStep.jsx
+index a806438..f126d17 100644
+--- a/frontend/src/components/AssemblyRunner/steps/ConteoStep.jsx
++++ b/frontend/src/components/AssemblyRunner/steps/ConteoStep.jsx
+@@ -15,12 +15,17 @@ const ConteoStep = ({
+     conteoPhotos = {},
+     onConteoPhotoChange,
+     isPackagingRole = false,
++    carriots = [],
++    onAddCarrito,
++    onRemoveCarrito,
+ }) => {
+     const noteData = stepData;
+     const outputTargets = noteData.productionBatch?.outputTargets || [];
+     const batchNumber = noteData.productionBatch?.batchNumber || '';
+     const esferaFactors = noteData.processParameters?.esfera_factors || {};
+     const [uploading, setUploading] = useState({});
++    const [activeCarritoForm, setActiveCarritoForm] = useState(null);
++    const [newCarritoQty, setNewCarritoQty] = useState('');
+ 
+     // ── GATE: Packaging roles must NOT see the production counting form ──
+     if (isPackagingRole) {
+@@ -214,6 +219,9 @@ const ConteoStep = ({
+                         const isUploading = uploading[target.productId];
+                         const actualEntered = actual !== undefined && actual !== '' && !isNaN(parseInt(actual, 10));
+                         const needsPhoto = actualEntered && parseInt(actual, 10) > 0 && !photoUrl;
++                        
++                        const targetCarritos = carriots.filter(c => c.productId === target.productId);
++                        const sumCarritos = targetCarritos.reduce((sum, c) => sum + c.qty, 0);
+ 
+                         return (
+                             <div key={target.id} className={`rounded-lg border-2 px-3 py-2 transition-all ${actual !== undefined
+@@ -309,6 +317,68 @@ const ConteoStep = ({
+                                         )}
+                                     </div>
+                                 </div>
++                                
++                                {/* Sub-row for Carritos (Deliveries) */}
++                                <div className="mt-2 pl-[70px]">
++                                    <div className="flex flex-wrap items-center gap-2">
++                                        <button 
++                                            onClick={() => setActiveCarritoForm(activeCarritoForm === target.productId ? null : target.productId)}
++                                            className="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-1 rounded border border-amber-300 hover:bg-amber-200"
++                                        >
++                                            + Entrega Parcial Carrito
++                                        </button>
++                                        
++                                        {activeCarritoForm === target.productId && (
++                                            <div className="flex items-center gap-1 bg-amber-50 rounded border border-amber-300 p-1">
++                                                <input 
++                                                    type="number" 
++                                                    min="1"
++                                                    value={newCarritoQty}
++                                                    onChange={(e) => setNewCarritoQty(e.target.value)}
++                                                    placeholder="Uds" 
++                                                    className="w-16 px-1.5 py-0.5 text-xs text-center border-2 border-amber-200 rounded font-bold"
++                                                />
++                                                <button
++                                                    onClick={() => {
++                                                        const qty = parseInt(newCarritoQty, 10);
++                                                        if (qty > 0 && onAddCarrito) {
++                                                            onAddCarrito(target.productId, target.product?.name, qty);
++                                                            // Auto-update real producido if empty or lower
++                                                            const newTotal = sumCarritos + qty;
++                                                            if (onConteoActualChange) {
++                                                                onConteoActualChange(target.productId, newTotal);
++                                                            }
++                                                            setNewCarritoQty('');
++                                                            setActiveCarritoForm(null);
++                                                        }
++                                                    }}
++                                                    className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] uppercase font-bold px-2 py-1 rounded"
++                                                >
++                                                    Entregar
++                                                </button>
++                                            </div>
++                                        )}
++                                        
++                                        {targetCarritos.length > 0 && (
++                                            <div className="flex items-center gap-1.5 flex-wrap">
++                                                {targetCarritos.map((c, idx) => (
++                                                    <div key={c.id} className="text-[10px] bg-amber-50 border border-slate-300 text-slate-600 px-2 py-0.5 rounded flex items-center gap-1 shadow-sm font-semibold">
++                                                        <span>C#{idx + 1}: <strong className="text-slate-800">{c.qty} uds</strong></span>
++                                                        <button 
++                                                            onClick={() => onRemoveCarrito && onRemoveCarrito(c.id)}
++                                                            className="text-red-500 hover:text-red-700 px-1 ml-1"
++                                                        >
++                                                            ×
++                                                        </button>
++                                                    </div>
++                                                ))}
++                                                <div className="text-[10px] font-bold text-amber-700 bg-amber-200 px-2 py-0.5 rounded shadow-sm">
++                                                    Sum: {sumCarritos} uds
++                                                </div>
++                                            </div>
++                                        )}
++                                    </div>
++                                </div>
+                             </div>
+                         );
+                     })}

@@ -1,0 +1,12 @@
+--- src/services/genialityAssemblyService.js
++++ src/services/genialityAssemblyService.js
+@@ -1461,8 +1461,9 @@
+                     }
+                 });
+                 console.log(`🤖 RPA enqueued for ${productName} — lot ${lotNum} (${Math.round(qty)} uds)`);
+-            }).catch(e => console.error('RPA enqueue error:', e.message));
++            }).catch(e => console.error('RPA execution error:', e.message));
++            }).catch(e => console.error('RPA duplicate check error:', e.message));
+         }
+ 
+         return result.updatedNote;

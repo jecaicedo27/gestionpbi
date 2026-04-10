@@ -1,0 +1,38 @@
+--- Analizando Cuellos de Botella en Producción ---
+Analizando 100 lotes de producción completados recientemente...
+
+Lotes válidos con tiempos completos: 67
+
+--- DURACIÓN PROMEDIO POR ETAPA (Tiempo Activo) ---
+CONTEO               :     9h 12m (Basado en 16 registros)
+EMPAQUE              :     4h 34m (Basado en 45 registros)
+FORMACION            :     2h 18m (Basado en 15 registros)
+COCCION              :     1h 59m (Basado en 93 registros)
+PESAJE               :        35m (Basado en 131 registros)
+ENSAMBLE             :         6m (Basado en 128 registros)
+MEDICION             :         3m (Basado en 11 registros)
+PROTECCION_GATE      :         0m (Basado en 15 registros)
+
+--- TIEMPO MUERTO PROMEDIO ENTRE ETAPAS (Tiempos de Espera) ---
+CONTEO -> EMPAQUE         :    23h 27m (Basado en 16 transiciones)
+ENSAMBLE -> EMPAQUE       :     2h 48m (Basado en 1 transiciones)
+COCCION -> PESAJE         :        47m (Basado en 21 transiciones)
+ENSAMBLE -> ENSAMBLE      :        16m (Basado en 25 transiciones)
+PROTECCION_GATE -> FORMACION :        11m (Basado en 15 transiciones)
+EMPAQUE -> EMPAQUE        :        10m (Basado en 24 transiciones)
+ENSAMBLE -> PESAJE        :         8m (Basado en 16 transiciones)
+PESAJE -> PESAJE          :         7m (Basado en 27 transiciones)
+COCCION -> MEDICION       :         7m (Basado en 11 transiciones)
+FORMACION -> CONTEO       :         5m (Basado en 15 transiciones)
+PESAJE -> COCCION         :         5m (Basado en 57 transiciones)
+COCCION -> COCCION        :         2m (Basado en 36 transiciones)
+PESAJE -> ENSAMBLE        :         1m (Basado en 47 transiciones)
+MEDICION -> ENSAMBLE      :         1m (Basado en 11 transiciones)
+EMPAQUE -> ENSAMBLE       :         0m (Basado en 4 transiciones)
+ENSAMBLE -> PROTECCION_GATE :         0m (Basado en 15 transiciones)
+COCCION -> ENSAMBLE       :         0m (Basado en 25 transiciones)
+ENSAMBLE -> CONTEO        :         0m (Basado en 1 transiciones)
+
+--- CONCLUSIONES PRELIMINARES ---
+🚨 Peor etapa (más activa): CONTEO toma en promedio 9h 12m.
+🐢 Peor transición (más espera): CONTEO -> EMPAQUE tiene un tiempo muerto promedio de 23h 27m.

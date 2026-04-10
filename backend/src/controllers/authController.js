@@ -9,8 +9,16 @@ const prisma = new PrismaClient();
 
 const login = async (req, res) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, geoLat, geoLon } = req.body;
         const clientIp = getClientIp(req);
+        const userAgent = req.headers['user-agent'] || null;
+
+        // Helper: save audit record (fire-and-forget)
+        const saveAudit = (auditData) => {
+            prisma.loginAudit.create({ data: auditData }).catch(e =>
+                logger.error('LoginAudit save failed:', e.message)
+            );
+        };
 
         // Find user
         const user = await prisma.user.findUnique({
@@ -18,54 +26,54 @@ const login = async (req, res) => {
         });
 
         if (!user || !user.active) {
+            saveAudit({ email: email || 'unknown', ip: clientIp, allowed: false, reason: 'USER_NOT_FOUND', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
             return res.status(401).json({ error: 'Credenciales inválidas o usuario inactivo' });
         }
 
         // ── Network Access Control ──────────────────────────────────────
-        // External networks: only EXTERNAL_ADMIN_EMAIL and DISTRIBUIDOR users can log in.
-        // Internal network (ALLOWED_IPS): any user can log in.
         const externalAdmin = (process.env.EXTERNAL_ADMIN_EMAIL || '').toLowerCase();
         if (!isInternalNetwork(clientIp)) {
             const isAdmin = email?.toLowerCase() === externalAdmin;
             const isDistribuidor = user.role === 'DISTRIBUIDOR';
             if (!isAdmin && !isDistribuidor) {
                 logger.warn(`⛔ External login blocked: ${email} (${user.role}) from IP ${clientIp}`);
+                saveAudit({ email, role: user.role, ip: clientIp, allowed: false, reason: 'EXTERNAL_BLOCKED', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
                 return res.status(403).json({
                     error: '⛔ Acceso denegado. Solo se permite el ingreso desde la red interna de la empresa.'
                 });
             }
-            logger.info(`🌐 External login allowed: ${email} (${user.role}) from IP ${clientIp}`);
         }
 
         // Verify password
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
+            saveAudit({ email, role: user.role, ip: clientIp, allowed: false, reason: 'WRONG_PASSWORD', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
             return res.status(401).json({ error: 'Credenciales inválidas' });
         }
 
-        // Update last login
+        // ── Successful login ────────────────────────────────────────────
+        const isInternal = isInternalNetwork(clientIp);
+        const reason = isInternal ? 'INTERNAL'
+            : email?.toLowerCase() === externalAdmin ? 'ADMIN_EXTERNAL'
+                : 'DISTRIBUIDOR_EXTERNAL';
+
+        saveAudit({ email, role: user.role, ip: clientIp, allowed: true, reason, geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
+
         await prisma.user.update({
             where: { id: user.id },
             data: { lastLogin: new Date() }
         });
 
-        // Generate token
         const token = jwt.sign(
             { userId: user.id, role: user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
 
-        // Return user data (excluding password) and token
         const { password: _, ...userData } = user;
 
-        res.json({
-            success: true,
-            user: userData,
-            token
-        });
-
-        logger.info(`User logged in: ${user.email}`);
+        res.json({ success: true, user: userData, token });
+        logger.info(`User logged in: ${user.email} from ${clientIp} (${reason})`);
     } catch (error) {
         logger.error('Login error:', error);
         res.status(500).json({ success: false, error: 'Error en el servidor' });

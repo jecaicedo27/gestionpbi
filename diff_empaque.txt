@@ -1,0 +1,707 @@
+diff --git a/frontend/src/components/AssemblyRunner/steps/EmpaqueStep.jsx b/frontend/src/components/AssemblyRunner/steps/EmpaqueStep.jsx
+index 0a8c6f6..482a862 100644
+--- a/frontend/src/components/AssemblyRunner/steps/EmpaqueStep.jsx
++++ b/frontend/src/components/AssemblyRunner/steps/EmpaqueStep.jsx
+@@ -1,4 +1,4 @@
+-import React from 'react';
++import React, { useState } from 'react';
+ 
+ /**
+  * EmpaqueStep – Tablet-optimized Empaque QC step
+@@ -9,17 +9,133 @@ import React from 'react';
+  * - Grid-based defect evidence cards
+  * - Clear approval summary
+  */
++
++const DefectCard = ({ defect, index, onUpdateDefect, onRemoveDefect, noteData }) => {
++    return (
++        <div style={{
++            background: '#fff', borderRadius: '16px', padding: '16px',
++            boxShadow: '0 2px 12px rgba(0,0,0,0.05)',
++            border: defect.photoUrl ? '2px solid #a7f3d0' : '2px solid #fde68a',
++            transition: 'border-color 0.2s', position: 'relative'
++        }}>
++            <button onClick={() => onRemoveDefect(defect.id)} style={{
++                position: 'absolute', top: '-10px', right: '-10px', background: '#fee2e2', color: '#dc2626', 
++                border: '2px solid #fff', borderRadius: '50%', width: 28, height: 28, cursor: 'pointer', 
++                fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 5px rgba(0,0,0,0.1)'
++            }}>✕</button>
++            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', marginRight: '16px' }}>
++                <span style={{ fontSize: '11px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
++                    Defectuoso #{index + 1}
++                </span>
++                <span style={{
++                    fontSize: '10px', fontWeight: 700, padding: '3px 10px', borderRadius: '10px',
++                    background: defect.photoUrl ? '#d1fae5' : '#fef3c7',
++                    color: defect.photoUrl ? '#059669' : '#d97706',
++                }}>
++                    {defect.photoUrl ? '✓ Foto cargada' : '📷 Pendiente'}
++                </span>
++            </div>
++
++            {defect.photoUrl && (
++                <img src={defect.photoUrl} alt={`Defectuoso #${index + 1}`} style={{
++                    width: '100%', maxHeight: '140px', objectFit: 'cover',
++                    borderRadius: '12px', border: '1px solid #a7f3d0', marginBottom: '12px',
++                }} />
++            )}
++
++            <div style={{ marginBottom: '10px' }}>
++                <label style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: '4px' }}>
++                    Causa
++                </label>
++                <select
++                    value={defect.cause || ''}
++                    onChange={e => onUpdateDefect(defect.id, 'cause', e.target.value)}
++                    style={{
++                        width: '100%', padding: '10px 12px', borderRadius: '12px',
++                        border: '2px solid #e2e8f0', background: '#fff',
++                        fontSize: '13px', fontWeight: 600, color: '#334155', outline: 'none',
++                    }}
++                >
++                    <option value="">— Seleccionar causa —</option>
++                    <option value="mal_sellado">Mal Sellado</option>
++                    <option value="tarro_deforme">Tarro Deforme</option>
++                    <option value="tarro_danado">Tarro se Dañó</option>
++                    <option value="cuerpo_extrano">Cuerpo Extraño</option>
++                    <option value="medio_lleno">Medio Lleno</option>
++                </select>
++            </div>
++
++            <div style={{ marginBottom: '10px' }}>
++                <label style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: '4px' }}>
++                    Descripción (opcional)
++                </label>
++                <input
++                    type="text"
++                    value={defect.description || ''}
++                    onChange={e => onUpdateDefect(defect.id, 'description', e.target.value)}
++                    placeholder="Detalle del defecto..."
++                    style={{
++                        width: '100%', padding: '8px 12px', borderRadius: '12px',
++                        border: '2px solid #e2e8f0', background: '#fff',
++                        fontSize: '13px', color: '#334155', outline: 'none',
++                        boxSizing: 'border-box',
++                    }}
++                />
++            </div>
++
++            <label style={{
++                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
++                width: '100%', padding: '12px 0', borderRadius: '12px', cursor: 'pointer',
++                border: defect.photoUrl ? '2px dashed #a7f3d0' : '2px dashed #fde68a',
++                background: defect.photoUrl ? '#ecfdf5' : '#fffbeb',
++                color: defect.photoUrl ? '#059669' : '#d97706',
++                fontWeight: 600, fontSize: '13px', transition: 'all 0.15s',
++                boxSizing: 'border-box',
++            }}>
++                <span style={{ fontSize: '18px' }}>{defect.photoUrl ? '🔄' : '📷'}</span>
++                <span>{defect.photoUrl ? 'Cambiar foto' : 'Tomar foto'}</span>
++                <input
++                    type="file"
++                    accept="image/*"
++                    capture="environment"
++                    style={{ display: 'none' }}
++                    onChange={async (e) => {
++                        const file = e.target.files?.[0];
++                        if (!file) return;
++                        const localUrl = URL.createObjectURL(file);
++                        onUpdateDefect(defect.id, 'photoUrl', localUrl);
++                        try {
++                            const fd = new FormData();
++                            fd.append('photo', file);
++                            fd.append('noteId', noteData?.id || '');
++                            fd.append('context', `empaque_defecto_${defect.id}`);
++                            const token = localStorage.getItem('token');
++                            const res = await fetch('/api/assembly-notes/upload-photo', { method: 'POST', body: fd, headers: token ? { Authorization: `Bearer ${token}` } : {} });
++                            const data = await res.json();
++                            if (data.url) onUpdateDefect(defect.id, 'photoUrl', data.url);
++                        } catch (err) {
++                            console.warn('Upload failed, using local preview:', err);
++                        }
++                    }}
++                />
++            </label>
++        </div>
++    );
++};
++
+ const EmpaqueStep = ({
+     stepData,
+-    empaqueDefective = 0,
+-    onEmpaqueDefectiveChange,
+-    empaquePhotoUrls = [],
+-    onEmpaquePhotoChange,
+-    empaqueDefectReasons = [],
+-    onEmpaqueDefectReasonChange,
++    empaqueDefects = [],
++    onAddDefect,
++    onRemoveDefect,
++    onUpdateDefect,
++    onEmpaqueDefectiveCountChange,
+     carriots = [],
+     onConfirmCarrito,
++    savedReceptionPhotos = {},
++    onReceptionConfirm,
+ }) => {
++    const [uploadingCarritoId, setUploadingCarritoId] = useState(null);
+     const noteData = stepData;
+     const empData = noteData.empaqueData || {};
+     const empRef = noteData.processParameters?.empaqueRef || {};
+@@ -45,16 +161,11 @@ const EmpaqueStep = ({
+     }
+     if (plannedQty === null) plannedQty = noteData.targetQuantity || null;
+ 
+-    const defectivos = parseInt(empaqueDefective || 0, 10);
++    const defectivos = empaqueDefects?.length || 0;
+     const aprobados = conteoQty !== null ? Math.max(0, conteoQty - defectivos) : null;
+-    const needsPhoto = defectivos > 0 && empaquePhotoUrls.filter(Boolean).length < defectivos;
++    const needsPhoto = defectivos > 0 && empaqueDefects.some(d => !d.photoUrl);
+     const pctAprobados = conteoQty > 0 && aprobados !== null ? Math.round((aprobados / conteoQty) * 100) : 100;
+ 
+-    const receivedCarriots = carriots.filter(c => c.receivedAt);
+-    const pendingCarriots = carriots.filter(c => !c.receivedAt);
+-    const totalCarriotUnits = carriots.reduce((s, c) => s + (c.qty || 0), 0);
+-    const receivedQty = receivedCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+-
+     const pctColor = pctAprobados === 100 ? '#34d399' : pctAprobados > 80 ? '#fbbf24' : '#f87171';
+ 
+     return (
+@@ -64,72 +175,6 @@ const EmpaqueStep = ({
+             padding: '16px 16px 140px', boxSizing: 'border-box',
+         }}>
+ 
+-            {/* ── CARRIOTS ── */}
+-            {carriots.length > 0 && (
+-                <div style={{
+-                    background: '#fff', borderRadius: '20px', overflow: 'hidden',
+-                    boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+-                    border: pendingCarriots.length > 0 ? '2px solid #fed7aa' : '2px solid #a7f3d0',
+-                }}>
+-                    <div style={{
+-                        background: pendingCarriots.length > 0
+-                            ? 'linear-gradient(135deg, #f97316, #f59e0b)'
+-                            : 'linear-gradient(135deg, #10b981, #14b8a6)',
+-                        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+-                    }}>
+-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+-                            <span style={{ fontSize: '24px' }}>🛒</span>
+-                            <div>
+-                                <div style={{ fontWeight: 900, color: '#fff', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+-                                    Carriots de Producción
+-                                </div>
+-                                <div style={{ color: 'rgba(255,255,255,0.8)', fontSize: '11px' }}>
+-                                    {receivedCarriots.length}/{carriots.length} recibidos · {totalCarriotUnits} uds
+-                                </div>
+-                            </div>
+-                        </div>
+-                        <span style={{
+-                            background: 'rgba(255,255,255,0.2)', color: '#fff', fontSize: '11px', fontWeight: 800,
+-                            padding: '4px 12px', borderRadius: '20px',
+-                        }}>
+-                            {pendingCarriots.length > 0 ? `${pendingCarriots.length} en camino` : '✅ Todos recibidos'}
+-                        </span>
+-                    </div>
+-                    <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+-                        {[...carriots].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)).map(c => (
+-                            <div key={c.id} style={{
+-                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+-                                borderRadius: '12px', padding: '12px 16px',
+-                                background: c.receivedAt ? '#ecfdf5' : '#fff7ed',
+-                                border: c.receivedAt ? '1px solid #a7f3d0' : '1px solid #fed7aa',
+-                            }}>
+-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+-                                    <span style={{ fontSize: '20px' }}>{c.receivedAt ? '✅' : '🛒'}</span>
+-                                    <div>
+-                                        <div style={{ fontWeight: 700, color: '#1e293b', fontSize: '13px' }}>
+-                                            Carrito #{c.carritoNum} · <span style={{ color: c.receivedAt ? '#059669' : '#ea580c' }}>{c.qty} uds</span>
+-                                        </div>
+-                                        <div style={{ color: '#94a3b8', fontSize: '11px' }}>
+-                                            {c.productName} · Enviado {fmtTime(c.timestamp)}
+-                                            {c.receivedAt && ` · Recibido ${fmtTime(c.receivedAt)}`}
+-                                        </div>
+-                                    </div>
+-                                </div>
+-                                {!c.receivedAt && onConfirmCarrito && (
+-                                    <button onClick={() => onConfirmCarrito(c.id)} style={{
+-                                        padding: '8px 16px', background: '#10b981', color: '#fff',
+-                                        fontSize: '12px', fontWeight: 800, borderRadius: '12px', border: 'none',
+-                                        cursor: 'pointer', boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+-                                    }}>
+-                                        ✅ Recibir
+-                                    </button>
+-                                )}
+-                            </div>
+-                        ))}
+-                    </div>
+-                </div>
+-            )}
+-
+             {/* ── COMPACT HEADER + STATS ── */}
+             <div style={{
+                 borderRadius: '16px', overflow: 'hidden',
+@@ -164,18 +209,18 @@ const EmpaqueStep = ({
+                     </div>
+                 </div>
+ 
+-                {/* 5 stats — compact */}
++                {/* Compact Stats */}
+                 <div style={{
+-                    display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
++                    display: 'grid', 
++                    gridTemplateColumns: carriots.length > 0 ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)',
+                     borderTop: '1px solid rgba(255,255,255,0.1)',
+                 }}>
+                     {[
+-                        { label: 'Planificados', value: plannedQty, color: 'rgba(255,255,255,0.6)' },
+-                        { label: 'Producidos', value: conteoQty, color: '#67e8f9' },
+-                        { label: 'Recibidos', value: carriots.length > 0 ? receivedQty : conteoQty, color: '#c4b5fd' },
+-                        { label: 'Buen Estado', value: aprobados, color: aprobados === conteoQty ? '#6ee7b7' : '#fde68a' },
+-                        { label: 'No Conformes', value: defectivos, color: defectivos === 0 ? '#6ee7b7' : '#fca5a5' },
+-                    ].map(({ label, value, color }, idx) => (
++                        { label: 'Planificados', value: plannedQty, color: 'rgba(255,255,255,0.6)', show: true },
++                        { label: 'Producidos', value: conteoQty, color: '#67e8f9', show: true },
++                        { label: 'Buen Estado', value: aprobados, color: aprobados === conteoQty ? '#6ee7b7' : '#fde68a', show: carriots.length === 0 },
++                        { label: 'No Conformes', value: defectivos, color: defectivos === 0 ? '#6ee7b7' : '#fca5a5', show: carriots.length === 0 },
++                    ].filter(item => item.show).map(({ label, value, color }, idx) => (
+                         <div key={label} style={{
+                             padding: '8px 4px', textAlign: 'center',
+                             borderLeft: idx > 0 ? '1px solid rgba(255,255,255,0.08)' : 'none',
+@@ -197,180 +242,271 @@ const EmpaqueStep = ({
+                 </div>
+             </div>
+ 
+-            {/* ── DEFECTIVE COUNTER (compact inline) ── */}
+-            <div style={{
+-                background: '#fff', borderRadius: '14px', padding: '12px 16px',
+-                boxShadow: '0 2px 10px rgba(0,0,0,0.05)', border: '1px solid #f1f5f9',
+-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+-            }}>
+-                <div style={{ flex: 1, minWidth: 0 }}>
+-                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>No Conformes</div>
+-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>Sellado, etiqueta o formulación</div>
+-                </div>
+-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+-                    <button
+-                        onClick={() => onEmpaqueDefectiveChange && onEmpaqueDefectiveChange(Math.max(0, defectivos - 1))}
+-                        style={{
+-                            width: '40px', height: '40px', borderRadius: '12px', border: '2px solid #e2e8f0',
+-                            background: '#f8fafc', color: '#475569', fontSize: '20px', fontWeight: 700,
+-                            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+-                        }}
+-                    >−</button>
+-                    <input
+-                        type="number"
+-                        min="0"
+-                        max={conteoQty ?? 9999}
+-                        value={empaqueDefective}
+-                        onChange={e => onEmpaqueDefectiveChange && onEmpaqueDefectiveChange(Math.max(0, parseInt(e.target.value || 0, 10)))}
+-                        style={{
+-                            width: '70px', textAlign: 'center', fontSize: '28px', fontWeight: 900,
+-                            color: '#1e293b', padding: '4px 0', borderRadius: '12px',
+-                            border: '2px solid #e2e8f0', background: '#f8fafc', outline: 'none',
+-                        }}
+-                    />
+-                    <button
+-                        onClick={() => onEmpaqueDefectiveChange && onEmpaqueDefectiveChange(Math.min(conteoQty ?? 9999, defectivos + 1))}
+-                        style={{
+-                            width: '40px', height: '40px', borderRadius: '12px', border: '2px solid #e2e8f0',
+-                            background: '#f8fafc', color: '#475569', fontSize: '20px', fontWeight: 700,
+-                            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+-                        }}
+-                    >+</button>
+-                </div>
+-                <span style={{
+-                    background: defectivos === 0 ? '#d1fae5' : '#fee2e2',
+-                    color: defectivos === 0 ? '#059669' : '#dc2626',
+-                    fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '14px', flexShrink: 0,
+-                }}>
+-                    {defectivos === 0 ? '✓ OK' : `⚠ ${defectivos}`}
+-                </span>
+-            </div>
++            {/* ── CARRITOS DE RECEPCION (Geniality/Siropes) ── */}
++            {(() => {
++                const productCarriots = carriots?.filter?.(c => c.productId === noteData.productId) || [];
++                if (productCarriots.length === 0) return null;
+ 
+-            {/* ── PER-TARRO EVIDENCE ── */}
+-            {defectivos > 0 && (
+-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 4px' }}>
+-                        <span style={{ fontSize: '18px' }}>📸</span>
+-                        <div>
+-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#334155' }}>Evidencia Fotográfica — 1 foto por defectuoso</div>
+-                            <div style={{ fontSize: '12px', color: '#94a3b8' }}>{empaquePhotoUrls.filter(Boolean).length} de {defectivos} fotos</div>
+-                        </div>
+-                    </div>
++                const handleCarritoPhoto = async (e, cId, cQty) => {
++                    const file = e.target.files?.[0];
++                    if (!file) return;
++                    
++                    setUploadingCarritoId(cId);
++                    // Generate local preview immediately for speed
++                    const localUrl = URL.createObjectURL(file);
++                    const updatedPhotos = { ...savedReceptionPhotos, [cId]: localUrl };
++                    if (onReceptionConfirm) onReceptionConfirm(updatedPhotos);
++                    if (onConfirmCarrito) onConfirmCarrito(cId, 0, ''); // Mark as received
+ 
+-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
+-                        {Array.from({ length: defectivos }).map((_, i) => {
+-                            const photoUrl = empaquePhotoUrls[i] || '';
+-                            const isUploaded = !!photoUrl;
+-                            return (
+-                                <div key={i} style={{
+-                                    background: '#fff', borderRadius: '16px', padding: '16px',
+-                                    boxShadow: '0 2px 12px rgba(0,0,0,0.05)',
+-                                    border: isUploaded ? '2px solid #a7f3d0' : '2px solid #fde68a',
+-                                    transition: 'border-color 0.2s',
+-                                }}>
+-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+-                                        <span style={{ fontSize: '11px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+-                                            Defectuoso #{i + 1}
+-                                        </span>
+-                                        <span style={{
+-                                            fontSize: '10px', fontWeight: 700, padding: '3px 10px', borderRadius: '10px',
+-                                            background: isUploaded ? '#d1fae5' : '#fef3c7',
+-                                            color: isUploaded ? '#059669' : '#d97706',
+-                                        }}>
+-                                            {isUploaded ? '✓ Foto cargada' : '📷 Pendiente'}
+-                                        </span>
+-                                    </div>
++                    try {
++                        const fd = new FormData();
++                        fd.append('photo', file);
++                        fd.append('noteId', noteData.id || '');
++                        fd.append('context', `recepcion_carrito_${cId}`);
++                        const res = await fetch('/api/assembly-notes/upload-photo', { method: 'POST', body: fd, headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
++                        const data = await res.json();
++                        if (data.url) {
++                            const finalPhotos = { ...savedReceptionPhotos, [cId]: data.url };
++                            if (onReceptionConfirm) onReceptionConfirm(finalPhotos);
++                        }
++                    } catch (err) {
++                        console.warn('Upload failed, retaining local preview', err);
++                    } finally {
++                        setUploadingCarritoId(null);
++                    }
++                };
+ 
+-                                    {photoUrl && (
+-                                        <img src={photoUrl} alt={`Defectuoso #${i + 1}`} style={{
+-                                            width: '100%', maxHeight: '140px', objectFit: 'cover',
+-                                            borderRadius: '12px', border: '1px solid #a7f3d0', marginBottom: '12px',
+-                                        }} />
+-                                    )}
++                const allReceived = productCarriots.every(c => c.receivedAt);
++
++                return (
++                    <div style={{
++                        background: '#10b981', borderRadius: '16px', overflow: 'hidden',
++                        boxShadow: '0 4px 15px rgba(16, 185, 129, 0.2)', marginBottom: '16px'
++                    }}>
++                        <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
++                            <div style={{ color: '#fff' }}>
++                                <div style={{ fontSize: '13px', fontWeight: 900, letterSpacing: '0.05em' }}>CARRIOTS DE PRODUCCIÓN</div>
++                                <div style={{ fontSize: '11px', opacity: 0.9, marginTop: '2px', fontWeight: 600 }}>
++                                    {productCarriots.filter(c => c.receivedAt).length}/{productCarriots.length} recibidos · {productCarriots.reduce((s, c) => s + (c.qty || 0), 0)} uds
++                                </div>
++                            </div>
++                            {allReceived && (
++                                <div style={{ background: '#34d399', color: '#fff', fontSize: '10px', fontWeight: 800, padding: '4px 10px', borderRadius: '10px' }}>
++                                    ✓ Todos recibidos
++                                </div>
++                            )}
++                        </div>
++                        <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
++                            {productCarriots.map((c, i) => {
++                                const isReceived = !!c.receivedAt;
++                                const isUploading = uploadingCarritoId === c.id;
++                                const photoUrl = savedReceptionPhotos[c.id] || c.receptionPhoto || c.photoUrl;
+ 
+-                                    {/* Cause */}
+-                                    <div style={{ marginBottom: '10px' }}>
+-                                        <label style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: '4px' }}>
+-                                            Causa
+-                                        </label>
+-                                        <select
+-                                            value={empaqueDefectReasons[i]?.cause || ''}
+-                                            onChange={e => onEmpaqueDefectReasonChange && onEmpaqueDefectReasonChange(i, 'cause', e.target.value)}
+-                                            style={{
+-                                                width: '100%', padding: '10px 12px', borderRadius: '12px',
+-                                                border: '2px solid #e2e8f0', background: '#fff',
+-                                                fontSize: '13px', fontWeight: 600, color: '#334155', outline: 'none',
+-                                            }}
+-                                        >
+-                                            <option value="">— Seleccionar causa —</option>
+-                                            <option value="mal_sellado">Mal Sellado</option>
+-                                            <option value="tarro_deforme">Tarro Deforme</option>
+-                                            <option value="tarro_danado">Tarro se Dañó</option>
+-                                            <option value="cuerpo_extrano">Cuerpo Extraño</option>
+-                                            <option value="medio_lleno">Medio Lleno</option>
+-                                        </select>
+-                                    </div>
++                                return (
++                                    <React.Fragment key={c.id}>
++                                        <div style={{
++                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
++                                            padding: '12px', borderRadius: '12px', border: '2px solid',
++                                            borderColor: isReceived ? '#a7f3d0' : '#fcd34d',
++                                            background: isReceived ? '#ecfdf5' : '#fff',
++                                        }}>
++                                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
++                                                <span style={{
++                                                    width: '36px', height: '36px', borderRadius: '50%',
++                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
++                                                    fontSize: '14px', fontWeight: 800,
++                                                    background: isReceived ? '#d1fae5' : '#fef3c7',
++                                                    color: isReceived ? '#059669' : '#d97706'
++                                                }}>
++                                                    #{c.carritoNum || i + 1}
++                                                </span>
++                                                <div>
++                                                    <div style={{ fontSize: '15px', fontWeight: 900, color: isReceived ? '#065f46' : '#92400e' }}>
++                                                        {c.qty} <span style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(0,0,0,0.4)', textTransform: 'uppercase' }}>uds</span>
++                                                    </div>
++                                                    <div style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 600 }}>
++                                                        Enviado: {new Date(c.timestamp).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }).toLowerCase()}
++                                                        {isReceived && ` · Recibido ${new Date(c.receivedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }).toLowerCase()}`}
++                                                        {c.ingestedAt && ` · Creado en Siigo ${new Date(c.ingestedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }).toLowerCase()}`}
++                                                    </div>
++                                                </div>
++                                            </div>
+ 
+-                                    {/* Description */}
+-                                    <div style={{ marginBottom: '10px' }}>
+-                                        <label style={{ fontSize: '10px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: '4px' }}>
+-                                            Descripción (opcional)
+-                                        </label>
+-                                        <input
+-                                            type="text"
+-                                            value={empaqueDefectReasons[i]?.description || ''}
+-                                            onChange={e => onEmpaqueDefectReasonChange && onEmpaqueDefectReasonChange(i, 'description', e.target.value)}
+-                                            placeholder="Detalle del defecto..."
+-                                            style={{
+-                                                width: '100%', padding: '8px 12px', borderRadius: '12px',
+-                                                border: '2px solid #e2e8f0', background: '#fff',
+-                                                fontSize: '13px', color: '#334155', outline: 'none',
+-                                                boxSizing: 'border-box',
+-                                            }}
+-                                        />
+-                                    </div>
++                                            <div style={{ flexShrink: 0 }}>
++                                                {isReceived ? (
++                                                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
++                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
++                                                            {photoUrl && <img src={photoUrl} alt="Recepción" style={{ width: '40px', height: '40px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #6ee7b7' }} />}
++                                                            <div style={{ color: '#059669', fontWeight: 800, fontSize: '12px', background: '#a7f3d0', padding: '6px 12px', borderRadius: '10px' }}>
++                                                                ✓ Finalizado
++                                                            </div>
++                                                        </div>
++                                                        <button 
++                                                            onClick={async () => {
++                                                                try {
++                                                                    // Attempt to invoke the same local print function if available
++                                                                    if (window.printCartLabel) {
++                                                                        window.printCartLabel(c);
++                                                                    } else {
++                                                                        message.info('Etiqueta enviada a impresión');
++                                                                    }
++                                                                } catch(e) {}
++                                                            }}
++                                                            style={{
++                                                                background: '#e0e7ff', color: '#4f46e5', border: '1px solid #c7d2fe',
++                                                                padding: '6px 12px', borderRadius: '10px', fontSize: '12px', fontWeight: 800, cursor: 'pointer'
++                                                            }}
++                                                        >
++                                                            🖨️ Imprimir
++                                                        </button>
++                                                        {onAddDefect && empaqueDefects && (
++                                                            <button 
++                                                                onClick={() => onAddDefect(c.id)}
++                                                                style={{
++                                                                    background: '#fee2e2', color: '#dc2626', border: '1px solid #fca5a5',
++                                                                    padding: '6px 12px', borderRadius: '10px', fontSize: '12px', fontWeight: 800, cursor: 'pointer'
++                                                                }}
++                                                            >
++                                                                ⚠ Añadir No Conforme
++                                                            </button>
++                                                        )}
++                                                    </div>
++                                                ) : isUploading ? (
++                                                    <div style={{ color: '#059669', fontWeight: 800, fontSize: '12px', padding: '6px 12px' }}>Recibiendo...</div>
++                                                ) : (
++                                                    <label style={{
++                                                        display: 'flex', alignItems: 'center', gap: '6px',
++                                                        background: '#10b981', color: '#fff', fontWeight: 800, fontSize: '12px',
++                                                        padding: '8px 16px', borderRadius: '10px', cursor: 'pointer', transition: 'all 0.15s',
++                                                        boxShadow: '0 2px 8px rgba(16,185,129,0.3)'
++                                                    }}>
++                                                        📷 Tomar Foto y Recibir
++                                                        <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={(e) => handleCarritoPhoto(e, c.id, c.qty)} />
++                                                    </label>
++                                                )}
++                                            </div>
++                                        </div>
++                                        
++                                        {/* Defect Block for this Carrito */}
++                                        {isReceived && empaqueDefects?.filter(d => d.carritoId === c.id).map((defect, dIdx) => (
++                                            <div key={defect.id} style={{
++                                                background: '#fff', border: '2px solid #fecaca', borderRadius: '12px', padding: '12px', marginTop: '4px',
++                                                display: 'flex', flexDirection: 'column', gap: '8px'
++                                            }}>
++                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                                                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#dc2626' }}>⚠ No Conforme #{dIdx + 1}</span>
++                                                    <button onClick={() => onRemoveDefect(defect.id)} style={{ color: '#ef4444', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '16px' }}>×</button>
++                                                </div>
++                                                <select
++                                                    value={defect.cause || ''}
++                                                    onChange={(e) => onUpdateDefect(defect.id, 'cause', e.target.value)}
++                                                    style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #f87171', background: '#fef2f2', color: '#991b1b', fontSize: '13px', fontWeight: 600, outline: 'none' }}
++                                                >
++                                                    <option value="" disabled>Seleccione Causa...</option>
++                                                    <option value="SELLADO_DEFICIENTE">Sellado Deficiente</option>
++                                                    <option value="ENVASE_ROTO">Envase Roto/Abollado</option>
++                                                    <option value="ETIQUETA_MALA">Etiqueta Torcida/Dañada</option>
++                                                    <option value="FECHA_BORROSA">Fecha/Lote Ilegible</option>
++                                                    <option value="CONTAMINACION">Contaminación Visible</option>
++                                                    <option value="FALTA_VOLUMEN">Volumen Incompleto</option>
++                                                </select>
++                                                <input
++                                                    type="text"
++                                                    value={defect.description || ''}
++                                                    onChange={(e) => onUpdateDefect(defect.id, 'description', e.target.value)}
++                                                    placeholder="Descripción del detalle..."
++                                                    style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #f87171', background: '#fff', color: '#7f1d1d', fontSize: '13px' }}
++                                                />
++                                                {/* Camera for Defect */}
++                                                <label style={{
++                                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
++                                                    padding: '8px', borderRadius: '8px', border: defect.photoUrl ? '2px dashed #a7f3d0' : '2px dashed #fcd34d',
++                                                    background: defect.photoUrl ? '#ecfdf5' : '#fffbeb', color: defect.photoUrl ? '#059669' : '#d97706',
++                                                    fontWeight: 700, fontSize: '12px', cursor: 'pointer'
++                                                }}>
++                                                    <span>{defect.photoUrl ? '🔄 Cambiar Foto' : '📷 Evidencia'}</span>
++                                                    <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={async (e) => {
++                                                        const file = e.target.files?.[0];
++                                                        if (!file) return;
++                                                        const localUrl = URL.createObjectURL(file);
++                                                        onUpdateDefect(defect.id, 'photoUrl', localUrl);
++                                                        try {
++                                                            const fd = new FormData();
++                                                            fd.append('photo', file);
++                                                            fd.append('noteId', noteData?.id || '');
++                                                            fd.append('context', `empaque_defecto_${defect.id}`);
++                                                            const res = await fetch('/api/assembly-notes/upload-photo', { method: 'POST', body: fd, headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
++                                                            const data = await res.json();
++                                                            if (data.url) onUpdateDefect(defect.id, 'photoUrl', data.url);
++                                                        } catch (err) {}
++                                                    }} />
++                                                </label>
++                                            </div>
++                                        ))}
++                                    </React.Fragment>
++                                );
++                            })}
++                        </div>
++                    </div>
++                );
++            })()}
+ 
+-                                    {/* Camera */}
+-                                    <label style={{
+-                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+-                                        width: '100%', padding: '12px 0', borderRadius: '12px', cursor: 'pointer',
+-                                        border: isUploaded ? '2px dashed #a7f3d0' : '2px dashed #fde68a',
+-                                        background: isUploaded ? '#ecfdf5' : '#fffbeb',
+-                                        color: isUploaded ? '#059669' : '#d97706',
+-                                        fontWeight: 600, fontSize: '13px', transition: 'all 0.15s',
+-                                        boxSizing: 'border-box',
+-                                    }}>
+-                                        <span style={{ fontSize: '18px' }}>{isUploaded ? '🔄' : '📷'}</span>
+-                                        <span>{isUploaded ? 'Cambiar foto' : 'Tomar foto'}</span>
+-                                        <input
+-                                            type="file"
+-                                            accept="image/*"
+-                                            capture="environment"
+-                                            style={{ display: 'none' }}
+-                                            onChange={async (e) => {
+-                                                const file = e.target.files?.[0];
+-                                                if (!file) return;
+-                                                const localUrl = URL.createObjectURL(file);
+-                                                onEmpaquePhotoChange && onEmpaquePhotoChange(i, localUrl);
+-                                                try {
+-                                                    const fd = new FormData();
+-                                                    fd.append('photo', file);
+-                                                    fd.append('noteId', noteData?.id || '');
+-                                                    fd.append('context', `empaque_defecto_${i + 1}`);
+-                                                    const res = await fetch('/api/assembly-notes/upload-photo', { method: 'POST', body: fd });
+-                                                    const data = await res.json();
+-                                                    if (data.url) onEmpaquePhotoChange && onEmpaquePhotoChange(i, data.url);
+-                                                } catch (err) {
+-                                                    console.warn('Upload failed, using local preview:', err);
+-                                                }
+-                                            }}
+-                                        />
+-                                    </label>
+-                                </div>
+-                            );
+-                        })}
++            
++            {/* ── GLOBAL DEFECTIVE COUNTER (only shown if no carritos exist for this flow) ── */}
++            {(!carriots || carriots.filter(c => c.productId === noteData.productId).length === 0) && (
++                <>
++                <div style={{
++                    background: '#fff', borderRadius: '14px', padding: '12px 16px',
++                    boxShadow: '0 2px 10px rgba(0,0,0,0.05)', border: '1px solid #f1f5f9',
++                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
++                }}>
++                    <div style={{ flex: 1, minWidth: 0 }}>
++                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>No Conformes (Global)</div>
++                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Operación sin carritos. Defectos contabilizados globalmente.</div>
++                    </div>
++                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
++                        <button
++                            onClick={() => onEmpaqueDefectiveCountChange && onEmpaqueDefectiveCountChange(Math.max(0, empaqueDefects.filter(d => !d.carritoId).length - 1))}
++                            style={{
++                                width: '40px', height: '40px', borderRadius: '12px', border: '2px solid #e2e8f0',
++                                background: '#f8fafc', color: '#475569', fontSize: '20px', fontWeight: 700,
++                                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
++                            }}
++                        >−</button>
++                        <div style={{
++                                width: '70px', textAlign: 'center', fontSize: '28px', fontWeight: 900,
++                                color: '#1e293b', padding: '4px 0', borderRadius: '12px',
++                                border: '2px solid #e2e8f0', background: '#f8fafc',
++                            }}
++                        >
++                            {empaqueDefects.filter(d => !d.carritoId).length}
++                        </div>
++                        <button
++                            onClick={() => onEmpaqueDefectiveCountChange && onEmpaqueDefectiveCountChange(Math.min(conteoQty ?? 9999, empaqueDefects.filter(d => !d.carritoId).length + 1))}
++                            style={{
++                                width: '40px', height: '40px', borderRadius: '12px', border: '2px solid #e2e8f0',
++                                background: '#f8fafc', color: '#475569', fontSize: '20px', fontWeight: 700,
++                                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
++                            }}
++                        >+</button>
+                     </div>
+                 </div>
++
++                {/* ── GLOBAL PER-TARRO EVIDENCE ── */}
++                {(() => {
++                    const globalDefects = empaqueDefects.filter(d => !d.carritoId);
++                    if (globalDefects.length === 0) return null;
++                    return (
++                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
++                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
++                                {globalDefects.map((def, idx) => (
++                                    <DefectCard key={def.id} defect={def} index={idx} updateDefect={onUpdateDefect} removeDefect={onRemoveDefect} noteData={noteData} />
++                                ))}
++                            </div>
++                        </div>
++                    );
++                })()}
++                </>
+             )}
+ 
+             {/* ── BOTTOM SUMMARY ── */}

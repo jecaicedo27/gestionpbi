@@ -1,0 +1,174 @@
+diff --git a/frontend/src/components/AssemblyRunner/hooks/useEmpaqueState.js b/frontend/src/components/AssemblyRunner/hooks/useEmpaqueState.js
+index a10ecff..7760f5b 100644
+--- a/frontend/src/components/AssemblyRunner/hooks/useEmpaqueState.js
++++ b/frontend/src/components/AssemblyRunner/hooks/useEmpaqueState.js
+@@ -8,16 +8,14 @@ import api from '../../../services/api';
+  * so tablet screen-lock / F5 doesn't lose data.
+  */
+ export function useEmpaqueState() {
+-    const [empaqueDefective, setEmpaqueDefectiveRaw] = useState(0);
+-    const [empaquePhotoUrls, setEmpaquePhotoUrls] = useState([]); // string[] — one per defective tarro
+-    const [empaqueDefectReasons, setEmpaqueDefectReasons] = useState([]); // { cause, description }[]
++    const [empaqueDefects, setEmpaqueDefects] = useState([]); // Array of { id, carritoId, cause, description, photoUrl }
+ 
+     // Ref to noteId for persistence calls
+     const noteIdRef = useRef(null);
+     const saveTimerRef = useRef(null);
+ 
+     // ── Debounced auto-save to backend ──
+-    const persistDraft = useCallback((defective, photos, reasons) => {
++    const persistDraft = useCallback((defectsList) => {
+         if (!noteIdRef.current) return;
+         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+         saveTimerRef.current = setTimeout(async () => {
+@@ -25,10 +23,7 @@ export function useEmpaqueState() {
+                 await api.patch(`/assembly-notes/${noteIdRef.current}`, {
+                     processParameters: {
+                         empaque_draft: {
+-                            defective_qty: defective,
+-                            photo_urls: photos,
+-                            defect_reasons: reasons,
+-                            saved_at: new Date().toISOString(),
++                            defects: defectsList,
+                         }
+                     }
+                 });
+@@ -39,58 +34,72 @@ export function useEmpaqueState() {
+         }, 800); // 800ms debounce — fast enough for user, not too many API calls
+     }, []);
+ 
+-    // ── Wrapped setters that trigger auto-save ──
+-    const setEmpaqueDefective = useCallback((val) => {
+-        setEmpaqueDefectiveRaw(val);
+-        // Need to read latest photos+reasons from state — use functional pattern
+-        setEmpaquePhotoUrls(photos => {
+-            setEmpaqueDefectReasons(reasons => {
+-                persistDraft(val, photos, reasons);
+-                return reasons;
+-            });
+-            return photos;
++    const addDefect = useCallback((carritoId = null) => {
++        setEmpaqueDefects(prev => {
++            const newArr = [...prev, { id: Date.now().toString() + Math.random().toString(36).substr(2, 5), carritoId, cause: '', description: '', photoUrl: '' }];
++            persistDraft(newArr);
++            return newArr;
+         });
+     }, [persistDraft]);
+ 
+-    const setPhotoUrl = useCallback((index, url) => {
+-        setEmpaquePhotoUrls(prev => {
+-            const arr = [...prev];
+-            arr[index] = url;
+-            // Trigger save after photo set
+-            setEmpaqueDefectiveRaw(def => {
+-                setEmpaqueDefectReasons(reasons => {
+-                    persistDraft(def, arr, reasons);
+-                    return reasons;
+-                });
+-                return def;
+-            });
+-            return arr;
++    const removeDefect = useCallback((idToRemove) => {
++        setEmpaqueDefects(prev => {
++            const newArr = prev.filter(d => d.id !== idToRemove);
++            persistDraft(newArr);
++            return newArr;
+         });
+     }, [persistDraft]);
+ 
+-    const setDefectReason = useCallback((index, field, value) => {
+-        setEmpaqueDefectReasons(prev => {
+-            const arr = [...prev];
+-            arr[index] = { ...arr[index], [field]: value };
+-            // Trigger save after reason set
+-            setEmpaqueDefectiveRaw(def => {
+-                setEmpaquePhotoUrls(photos => {
+-                    persistDraft(def, photos, arr);
+-                    return photos;
+-                });
+-                return def;
+-            });
+-            return arr;
++    const updateDefect = useCallback((id, field, value) => {
++        setEmpaqueDefects(prev => {
++            const newArr = prev.map(d => d.id === id ? { ...d, [field]: value } : d);
++            persistDraft(newArr);
++            return newArr;
++        });
++    }, [persistDraft]);
++
++    // Used purely for the "global" +/- counter if needed, but per-carrito will use addDefect/removeDefect.
++    // If the global + is clicked, we add a generic defect.
++    // If the global - is clicked, we remove the last generic defect.
++    const setEmpaqueDefectiveCount = useCallback((newCount) => {
++        setEmpaqueDefects(prev => {
++            const genericDefects = prev.filter(d => !d.carritoId);
++            const carritoDefects = prev.filter(d => d.carritoId);
++            let newGeneric = [...genericDefects];
++            
++            if (newCount > genericDefects.length) {
++                // Add generic
++                for (let i = 0; i < newCount - genericDefects.length; i++) {
++                    newGeneric.push({ id: Date.now().toString() + Math.random().toString(36).substr(2, 5), carritoId: null, cause: '', description: '', photoUrl: '' });
++                }
++            } else if (newCount < genericDefects.length) {
++                // Remove generic from end
++                newGeneric = newGeneric.slice(0, newCount);
++            }
++            const newArr = [...carritoDefects, ...newGeneric];
++            persistDraft(newArr);
++            return newArr;
+         });
+     }, [persistDraft]);
+ 
+     // ── Restore from saved draft (called from Wizard useEffect) ──
+     const restoreFromDraft = useCallback((draft) => {
+         if (!draft) return;
+-        if (draft.defective_qty != null) setEmpaqueDefectiveRaw(draft.defective_qty);
+-        if (Array.isArray(draft.photo_urls)) setEmpaquePhotoUrls(draft.photo_urls);
+-        if (Array.isArray(draft.defect_reasons)) setEmpaqueDefectReasons(draft.defect_reasons);
+-        console.log('[useEmpaqueState] Restored from draft — defective:', draft.defective_qty, 'photos:', draft.photo_urls?.length);
++        if (Array.isArray(draft.defects)) {
++            setEmpaqueDefects(draft.defects);
++            console.log('[useEmpaqueState] Restored defects from draft — count:', draft.defects.length);
++        } else if (draft.defective_qty != null) {
++            // Legacy draft format support
++            const legacyDefects = Array.from({ length: draft.defective_qty }).map((_, i) => ({
++                id: Date.now().toString() + i,
++                carritoId: null,
++                cause: draft.defect_reasons?.[i]?.cause || '',
++                description: draft.defect_reasons?.[i]?.description || '',
++                photoUrl: draft.photo_urls?.[i] || ''
++            }));
++            setEmpaqueDefects(legacyDefects);
++            console.log('[useEmpaqueState] Restored legacy draft — defective:', draft.defective_qty);
++        }
+     }, []);
+ 
+     // ── Set noteId for persistence (called from Wizard) ──
+@@ -99,18 +108,16 @@ export function useEmpaqueState() {
+     }, []);
+ 
+     const reset = () => {
+-        setEmpaqueDefectiveRaw(0);
+-        setEmpaquePhotoUrls([]);
+-        setEmpaqueDefectReasons([]);
++        setEmpaqueDefects([]);
+     };
+ 
+     return {
+-        empaqueDefective,
+-        setEmpaqueDefective,
+-        empaquePhotoUrls,
+-        setPhotoUrl,
+-        empaqueDefectReasons,
+-        setDefectReason,
++        empaqueDefects,
++        setEmpaqueDefects,
++        addDefect,
++        removeDefect,
++        updateDefect,
++        setEmpaqueDefectiveCount,
+         restoreFromDraft,
+         setNoteId,
+         reset,

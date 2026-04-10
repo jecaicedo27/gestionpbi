@@ -228,13 +228,18 @@ const ProductionAuditPage = () => {
                                                 {Math.round(row.planned)}
                                             </td>
                                             <td className="px-4 py-4 text-right text-sm font-semibold text-neutral-700">
-                                                {Math.round(row.actual)}
+                                                {row.status !== 'COMPLETED' ? '-' : Math.round(row.actual)}
                                             </td>
                                             <td className="px-4 py-4 text-right text-sm text-neutral-600 bg-neutral-50/30">
-                                                {Math.round(row.consumed)}
+                                                {row.status !== 'COMPLETED' ? '-' : Math.round(row.consumed)}
                                             </td>
                                             <td className="px-6 py-4 text-right text-sm font-bold">
-                                                {diff === 0 ? (
+                                                {row.status !== 'COMPLETED' ? (
+                                                    <span className="text-blue-600 bg-blue-50 px-2.5 py-1 text-xs rounded-md border border-blue-100 flex items-center gap-1 w-max ml-auto">
+                                                        <Clock size={14} />
+                                                        En Proceso
+                                                    </span>
+                                                ) : diff === 0 ? (
                                                     <span className="text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">Perfecto</span>
                                                 ) : isCritical ? (
                                                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-red-50 text-red-700 border border-red-100">

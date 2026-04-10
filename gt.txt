@@ -1,0 +1,154 @@
+On branch main
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   backend/prisma/schema.prisma
+	modified:   backend/src/controllers/analyticsController.js
+	modified:   backend/src/controllers/batchHistoryController.js
+	modified:   backend/src/controllers/kpiController.js
+	modified:   backend/src/controllers/lotController.js
+	modified:   backend/src/controllers/orderController.js
+	modified:   backend/src/controllers/orderControllerExtensions.js
+	modified:   backend/src/controllers/orderWorkflowController.js
+	modified:   backend/src/controllers/purchaseOrderController.js
+	modified:   backend/src/routes/analyticsRoutes.js
+	modified:   backend/src/routes/assemblyNoteRoutes.js
+	modified:   backend/src/routes/genialityAssemblyRoutes.js
+	modified:   backend/src/routes/orderRoutes.js
+	modified:   backend/src/services/assemblyService.js
+	modified:   backend/src/services/finishedLotService.js
+	modified:   backend/src/services/genialityAssemblyService.js
+	modified:   backend/src/services/siigoBrowserManager.js
+	modified:   frontend/package.json
+	modified:   frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx
+	modified:   frontend/src/components/AssemblyRunner/GiantControls.jsx
+	modified:   frontend/src/components/AssemblyRunner/hooks/useConteoState.js
+	modified:   frontend/src/components/AssemblyRunner/hooks/useEmpaqueState.js
+	modified:   frontend/src/components/AssemblyRunner/steps/CoccionStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/ConteoStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/EmpaqueStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/EnsambleStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/IntroStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/MarcadoCajasStep.jsx
+	modified:   frontend/src/components/AssemblyRunner/steps/OutputStep.jsx
+	modified:   frontend/src/components/GenialityRunner/GenialityExecutionWizard.jsx
+	modified:   frontend/src/components/GenialityRunner/steps/GEmpaqueStep.jsx
+	modified:   frontend/src/components/GenialityRunner/steps/GEnsambleStep.jsx
+	modified:   frontend/src/components/common/Layout.jsx
+	modified:   frontend/src/components/common/Sidebar.jsx
+	modified:   frontend/src/context/ZebraContext.jsx
+	modified:   frontend/src/pages/Dashboard.jsx
+	modified:   frontend/src/pages/DistributorPortal.jsx
+	modified:   frontend/src/pages/Geniality/GenialityOperatorPage.jsx
+	modified:   frontend/src/pages/Geniality/GenialityScheduler.jsx
+	modified:   frontend/src/pages/HandoffsPage.jsx
+	modified:   frontend/src/pages/Login.jsx
+	modified:   frontend/src/pages/LotTraceabilityPage.jsx
+	modified:   frontend/src/pages/OrderManagement.jsx
+	modified:   frontend/src/pages/ProductionKpiPage.jsx
+	modified:   frontend/src/pages/ProductionOperatorPage.jsx
+	modified:   frontend/src/pages/PurchaseOrdersPage.jsx
+	modified:   frontend/src/pages/SuppliersPage.jsx
+	modified:   frontend/src/services/api.js
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	backend/analyze_mango.js
+	backend/carritos.json
+	backend/checkSql.js
+	backend/check_formula_sab.js
+	backend/check_formula_sab2.js
+	backend/check_formula_sab3.js
+	backend/check_lc_1000.js
+	backend/check_traceability.js
+	backend/complete_ensamble_mirror.js
+	backend/delete_rpa.js
+	backend/fix.patch
+	backend/fix_cereza_stock.js
+	backend/fix_sab_lotes_viejos.js
+	backend/fix_tarro_360.js
+	backend/fix_today.js
+	backend/fix_todays_consumptions.js
+	backend/fix_traceability_mango.js
+	backend/fix_units.js
+	backend/inject_cereza_stock.js
+	backend/query_consumption.js
+	backend/query_geniality.js
+	backend/query_l_params.js
+	backend/query_logs.js
+	backend/query_note.js
+	backend/query_params.js
+	backend/query_params2.js
+	backend/query_params3.js
+	backend/query_stock.js
+	backend/query_tasks.js
+	backend/query_templates.js
+	backend/scripts/create-puchos-handoff.js
+	backend/scripts/fix-mango-biche.js
+	backend/src/services/genialityAssemblyService.js.orig
+	backend/test-kpi.js
+	backend/track5units.js
+	backend/track_cereza.js
+	backend/track_cereza_v2.js
+	backend/track_chicle.js
+	backend/track_geni_cereza.js
+	backend/track_lot.js
+	backend/track_maquila.js
+	backend/update_rpa.sh
+	backend/verify_acido.js
+	backend/verify_lc.js
+	frontend/src/utils/
+	git_history_empaque.patch
+	gt.txt
+	nohup.out
+	plan.md
+	pm2_list.txt
+	scratch.jsx
+	scratch_carriots.jsx
+	videos/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+---LOG---
+commit 13cd6d7d04e71611a5bfc28bf1f0f18e1fed7b50
+Author: GestionPBI <admin@gestionpbi.lat>
+Date:   2026-04-06 21:39:16
+
+    feat: Geniality production module, inventory count improvements, production scheduler suggestions redesign, RPA stability fixes
+
+commit 8e7bb0f7be319fd93652fb5e0c47e665118b36d2
+Author: GestionPBI <admin@gestionpbi.lat>
+Date:   2026-03-24 00:35:07
+
+    feat: Zebra ZD230 network printer integration + Physical Count module updates
+    
+    - Add Zebra ZD230t network label printing via local relay (TCP:9100)
+    - Create zebra-relay.js (auto-discovers printer, HTTP relay on port 3939)
+    - Create zplLabelBuilder.js (ZPL commands for 40x50mm 2-up labels)
+    - Update Labeling.jsx with dual mode: Bluetooth (SAT AF330) + WiFi (Zebra ZD230)
+    - Mode toggle persisted in localStorage
+    - Zebra status bar with relay health check
+    - Physical Count: per-item validation with immediate feedback
+    - Physical Count: fruit emoji flavor headers
+    - Physical Count: Cerrar Conteo only after full validation
+    - BottomNavBar: add Conteo tab for LOGISTICA role
+
+commit bdbddfdea1b4a1ea8b4f1ab2f53a4109c894de07
+Author: GestionPBI <admin@gestionpbi.lat>
+Date:   2026-03-13 15:46:13
+
+    v1.1 - Movimientos separados Producción/Bodega, validación lotes vs Siigo, fix balance progresivo
+
+commit e92e8b37823afeba7b4daa8f63f4c3d3e6a59dcf
+Author: GestionPBI <admin@gestionpbi.lat>
+Date:   2026-03-13 04:55:41
+
+    v1.0 - ERP GestionPBI completo: inventario, producción, lotes, forecast, PQR, Siigo RPA
+---REFLOG---
+13cd6d7 HEAD@{2026-04-06 21:39:16}: commit: feat: Geniality production module, inventory count improvements, production scheduler suggestions redesign, RPA stability fixes
+8e7bb0f HEAD@{2026-03-24 00:35:07}: commit: feat: Zebra ZD230 network printer integration + Physical Count module updates
+bdbddfd HEAD@{2026-03-13 15:46:42}: commit (amend): v1.1 - Movimientos separados Producción/Bodega, validación lotes vs Siigo, fix balance progresivo
+d507206 HEAD@{2026-03-13 15:46:13}: commit: v1.1 - Movimientos separados Producción/Bodega, validación lotes vs Siigo, fix balance progresivo
+e92e8b3 HEAD@{2026-03-13 04:55:41}: commit (initial): v1.0 - ERP GestionPBI completo: inventario, producción, lotes, forecast, PQR, Siigo RPA

@@ -8,7 +8,17 @@ const app = express();
 const path = require('path');
 
 // Middleware
-app.use(cors({ exposedHeaders: ['Content-Disposition'] }));
+app.use(cors({
+    origin: [
+        'https://gestionpbi.lat',
+        'https://www.gestionpbi.lat',
+        'http://72.60.175.159',     // Tablet LAN access
+        'http://localhost:5173',     // Dev mode
+        'http://localhost:3000'      // Dev mode
+    ],
+    credentials: true,
+    exposedHeaders: ['Content-Disposition']
+}));
 
 // Serve static files
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));

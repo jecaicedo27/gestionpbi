@@ -81,7 +81,26 @@ export const AuthProvider = ({ children }) => {
 
     // ── Login (email + password) ────────────────────────────────
     const login = async (email, password) => {
-        const res = await api.post('/auth/login', { email, password });
+        // Capture GPS location silently (don't block login if denied)
+        let geoLat = null, geoLon = null;
+        try {
+            if (navigator.geolocation) {
+                const pos = await new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(resolve, reject, {
+                        timeout: 5000,
+                        enableHighAccuracy: false,
+                        maximumAge: 60000
+                    });
+                });
+                geoLat = pos.coords.latitude;
+                geoLon = pos.coords.longitude;
+            }
+        } catch (e) {
+            // GPS denied or unavailable — proceed without it
+            console.log('GPS not available:', e.message);
+        }
+
+        const res = await api.post('/auth/login', { email, password, geoLat, geoLon });
         if (res.data.success) {
             localStorage.setItem('token', res.data.token);
             setUser(res.data.user);

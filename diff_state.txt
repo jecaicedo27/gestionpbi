@@ -1,0 +1,55 @@
+diff --git a/frontend/src/components/AssemblyRunner/hooks/useConteoState.js b/frontend/src/components/AssemblyRunner/hooks/useConteoState.js
+index 257a501..0da950f 100644
+--- a/frontend/src/components/AssemblyRunner/hooks/useConteoState.js
++++ b/frontend/src/components/AssemblyRunner/hooks/useConteoState.js
+@@ -24,9 +24,10 @@ export function useConteoState() {
+      * @param {string} productId
+      * @param {string} productName
+      * @param {number} qty   (1–150)
++     * @param {string} photoUrl
+      * @returns CarritoEntry
+      */
+-    const addCarritoLocal = (productId, productName, qty) => {
++    const addCarritoLocal = (productId, productName, qty, photoUrl) => {
+         const newEntry = {
+             id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+             productId,
+@@ -35,6 +36,7 @@ export function useConteoState() {
+             carritoNum: null, // will be set below
+             timestamp: new Date().toISOString(),
+             receivedAt: null,
++            dispatchPhoto: photoUrl || null,
+         };
+ 
+         setCarriots(prev => {
+@@ -67,6 +69,10 @@ export function useConteoState() {
+         });
+     };
+ 
++    const setCarritoPhotoLocal = (carritoId, url) => {
++        setCarriots(prev => prev.map(c => c.id === carritoId ? { ...c, dispatchPhoto: url } : c));
++    };
++
+     /**
+      * Pre-load carriots (e.g. from processParameters when resuming a session).
+      * Syncs conteoActuals from the loaded list.
+@@ -81,12 +87,18 @@ export function useConteoState() {
+         }
+     };
+ 
++    const preloadConteoData = (savedActuals = {}, savedPhotos = {}) => {
++        setConteoActuals(prev => Object.keys(prev).length === 0 ? savedActuals : prev);
++        setConteoPhotos(prev => Object.keys(prev).length === 0 ? savedPhotos : prev);
++    };
++
+     const reset = () => { setConteoActuals({}); setConteoPhotos({}); setCarriots([]); };
+ 
+     return {
+         conteoActuals, setConteoActual,
+         conteoPhotos, setConteoPhoto,
+-        carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
++        carriots, addCarritoLocal, removeCarritoLocal, setCarritoPhotoLocal, preloadCarriots,
++        preloadConteoData,
+         reset,
+     };
+ }

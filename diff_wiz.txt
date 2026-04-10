@@ -1,0 +1,81 @@
+diff --git a/frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx b/frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx
+index 5e7f8f4..f757a76 100644
+--- a/frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx
++++ b/frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx
+@@ -84,9 +84,11 @@ const AssemblyExecutionWizard = () => {
+     };
+ 
+     const {
+-        empaqueDefective, setEmpaqueDefective,
+-        empaquePhotoUrls, setPhotoUrl,
+-        empaqueDefectReasons, setDefectReason,
++        empaqueDefects,
++        setEmpaqueDefectiveCount,
++        addDefect,
++        removeDefect,
++        updateDefect,
+         restoreFromDraft: restoreEmpaqueDraft,
+         setNoteId: setEmpaqueNoteId,
+     } = useEmpaqueState();
+@@ -468,18 +470,22 @@ const AssemblyExecutionWizard = () => {
+                 ?? note.processParameters?.empaqueRef?.conteo_qty
+                 ?? note.targetQuantity
+                 ?? 0;
+-            const defectivos = parseInt(empaqueDefective || 0, 10);
++            const defectivos = empaqueDefects.length;
+             const aprobados = Math.max(0, conteoQty - defectivos);
+ 
+             // Validate: every defective jar must have a cause selected
+             if (defectivos > 0) {
+-                const missingCauses = Array.from({ length: defectivos }).filter((_, i) => !empaqueDefectReasons[i]?.cause);
++                const missingCauses = empaqueDefects.filter(d => !d.cause);
+                 if (missingCauses.length > 0) {
+                     message.error(`⚠️ Debe seleccionar la causa del defecto para ${missingCauses.length === 1 ? 'el tarro defectuoso' : `los ${missingCauses.length} tarros defectuosos`}`);
+                     return;
+                 }
+             }
+ 
++            // Maps for backend backward compatibility
++            const defect_reasons = empaqueDefects.map(d => ({ carritoId: d.carritoId, cause: d.cause, description: d.description }));
++            const defect_photos = empaqueDefects.map(d => d.photoUrl).filter(Boolean);
++
+             // Persist empaque QC data (survive F5/logout)
+             try {
+                 await api.patch(`/assembly-notes/${note.id}`, {
+@@ -1405,10 +1411,9 @@ const AssemblyExecutionWizard = () => {
+ 
+     // Block EMPAQUE step until all defective jars have a cause + photo
+     if (currentStep.type === 'EMPAQUE') {
+-        const defectivos = parseInt(empaqueDefective || 0, 10);
+-        if (defectivos > 0) {
+-            const allHaveCause = Array.from({ length: defectivos }).every((_, i) => empaqueDefectReasons[i]?.cause);
+-            const allHavePhoto = empaquePhotoUrls.filter(Boolean).length >= defectivos;
++        if (empaqueDefects.length > 0) {
++            const allHaveCause = empaqueDefects.every(d => d.cause);
++            const allHavePhoto = empaqueDefects.every(d => d.photoUrl);
+             if (!allHaveCause || !allHavePhoto) canAdvance = false;
+         }
+     }
+@@ -1501,17 +1506,16 @@ const AssemblyExecutionWizard = () => {
+                     onConfirmCarrito={handleConfirmCarrito}
+                     onRotuladoChange={setRotuladoStatus}
+ 
+-                    empaqueDefective={empaqueDefective}
+-                    onEmpaqueDefectiveChange={setEmpaqueDefective}
++                    empaqueDefects={empaqueDefects}
++                    onAddDefect={addDefect}
++                    onRemoveDefect={removeDefect}
++                    onUpdateDefect={updateDefect}
++                    onEmpaqueDefectiveCountChange={setEmpaqueDefectiveCount}
+                     onCoccionChange={setCoccionData}
+                     onMedicionChange={setMedicionData}
+                     onQcDataChange={setQcData}
+                     onFormacionQcChange={setFormacionQcData}
+                     onEsferificacionChange={setEsferificacionData}
+-                    empaquePhotoUrls={empaquePhotoUrls}
+-                    onEmpaquePhotoChange={setPhotoUrl}
+-                    empaqueDefectReasons={empaqueDefectReasons}
+-                    onEmpaqueDefectReasonChange={setDefectReason}
+                     empaqueReceptionConfirmed={empaqueReceptionConfirmed}
+                     savedReceptionPhotos={savedReceptionPhotos}
+                     onReceptionConfirm={async (receptionPhotos) => {

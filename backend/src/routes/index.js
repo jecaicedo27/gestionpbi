@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { auth } = require('../middleware/auth');
 
 const authRoutes = require('./authRoutes');
 const siigoRoutes = require('./siigoRoutes');
@@ -68,7 +69,7 @@ router.use('/push', pushRoutes);
 
 // Assembly System
 const inventoryController = require('../controllers/inventoryController');
-router.get('/products', inventoryController.getProductsSimple);
+router.get('/products', auth, inventoryController.getProductsSimple);
 
 router.use('/process-types', processTypeRoutes);
 router.use('/assembly-templates', assemblyTemplateRoutes);
@@ -84,7 +85,7 @@ const genialityAssemblyNoteRoutes = require('./genialityAssemblyRoutes');
 const genialitySchedulerRoutes = require('./genialitySchedulerRoutes');
 
 // Geniality process-types: ONLY G_* codes (exclusive to Geniality production line)
-router.get('/geniality/process-types', async (req, res) => {
+router.get('/geniality/process-types', auth, async (req, res) => {
     try {
         const { PrismaClient: PC } = require('@prisma/client');
         const _pt = new PC();
@@ -98,7 +99,7 @@ router.get('/geniality/process-types', async (req, res) => {
 });
 
 // Geniality products: ONLY accountGroups 1402 and 1405 (siropes)
-router.get('/geniality/products', async (req, res) => {
+router.get('/geniality/products', auth, async (req, res) => {
     try {
         const { PrismaClient: PC2 } = require('@prisma/client');
         const _pp = new PC2();
@@ -120,7 +121,7 @@ router.use('/geniality/production', genialitySchedulerRoutes);
 // Lightweight production batch list (for premix conflict detection)
 const { PrismaClient } = require('@prisma/client');
 const _prisma = new PrismaClient();
-router.get('/production-batches', async (req, res) => {
+router.get('/production-batches', auth, async (req, res) => {
     try {
         const { productId, active } = req.query;
         const where = {};
@@ -139,7 +140,7 @@ router.get('/production-batches', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-router.delete('/production-batches/:id', async (req, res) => {
+router.delete('/production-batches/:id', auth, async (req, res) => {
     try {
         const { id } = req.params;
 
@@ -155,7 +156,8 @@ router.delete('/production-batches/:id', async (req, res) => {
                 // 2. Get all lot consumptions to REVERT before deleting
                 const consumptions = await tx.lotConsumption.findMany({
                     where: { assemblyNoteId: { in: noteIds } },
-                    select: { materialLotId: true, quantityUsed: true,
+                    select: {
+                        materialLotId: true, quantityUsed: true,
                         materialLot: { select: { productId: true } }
                     }
                 });
@@ -201,8 +203,8 @@ router.delete('/production-batches/:id', async (req, res) => {
 
 // Batch History (admin audit view)
 const batchHistoryController = require('../controllers/batchHistoryController');
-router.get('/batch-history', batchHistoryController.list);
-router.get('/batch-history/:batchId', batchHistoryController.detail);
+router.get('/batch-history', auth, batchHistoryController.list);
+router.get('/batch-history/:batchId', auth, batchHistoryController.detail);
 
 router.use('/reports', reportRoutes);
 router.use('/admin', adminRoutes);

@@ -1,0 +1,70 @@
+[
+  [
+    {
+      "id": "c-1775707034727-sz3ul",
+      "qty": 135,
+      "productId": "825732a1-cb3c-45bc-9aab-2aa803303a94",
+      "timestamp": "2026-04-09T03:57:14.727Z",
+      "carritoNum": 1,
+      "receivedAt": null,
+      "productName": "SIROPE GENIALITY SABOR A SANDIA X 1000 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775707031430.jpg"
+    },
+    {
+      "id": "c-1775707079467-w5lee",
+      "qty": 120,
+      "productId": "825732a1-cb3c-45bc-9aab-2aa803303a94",
+      "timestamp": "2026-04-09T03:57:59.467Z",
+      "carritoNum": 2,
+      "receivedAt": null,
+      "productName": "SIROPE GENIALITY SABOR A SANDIA X 1000 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775707077844.jpg"
+    },
+    {
+      "id": "c-1775707112637-e0j87",
+      "qty": 41,
+      "productId": "825732a1-cb3c-45bc-9aab-2aa803303a94",
+      "timestamp": "2026-04-09T03:58:32.637Z",
+      "carritoNum": 3,
+      "receivedAt": null,
+      "productName": "SIROPE GENIALITY SABOR A SANDIA X 1000 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775707111301.jpg"
+    },
+    {
+      "id": "c-1775707171829-lk2pz",
+      "qty": 22,
+      "productId": "e964d26b-52fd-4d56-a6a0-6baa1e1088da",
+      "timestamp": "2026-04-09T03:59:31.829Z",
+      "carritoNum": 1,
+      "receivedAt": null,
+      "productName": "SIROPE GENIALITY SABOR A SANDIA X 360 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775707167750.jpg"
+    }
+  ],
+  [
+    {
+      "id": "c-1775671044872-lv518",
+      "qty": 132,
+      "productId": "981c104f-f8d7-4ba0-8017-d491c96de779",
+      "timestamp": "2026-04-08T17:57:24.872Z",
+      "carritoNum": 1,
+      "ingestedAt": "2026-04-08T19:07:44.872Z",
+      "receivedAt": "2026-04-08T18:28:38.132Z",
+      "productName": "SIROPE GENIALITY SABOR A CHICLE X 1000 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775671037547.jpg",
+      "receptionPhoto": "/uploads/production/note-photo-1775672918817.jpg"
+    },
+    {
+      "id": "c-1775671204634-1o10a",
+      "qty": 81,
+      "productId": "981c104f-f8d7-4ba0-8017-d491c96de779",
+      "timestamp": "2026-04-08T18:00:04.634Z",
+      "carritoNum": 2,
+      "ingestedAt": "2026-04-09T00:55:05.823Z",
+      "receivedAt": "2026-04-09T00:54:23.454Z",
+      "productName": "SIROPE GENIALITY SABOR A CHICLE X 1000 ML",
+      "dispatchPhoto": "/uploads/production/note-photo-1775671190334.jpg",
+      "receptionPhoto": "/uploads/production/note-photo-1775696063701.jpg"
+    }
+  ]
+]

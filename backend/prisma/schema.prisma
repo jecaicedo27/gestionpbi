@@ -1956,3 +1956,24 @@ model CustomProcurementItem {
 
   @@map("custom_procurement_items")
 }
+
+// ── Security: Login audit trail with GPS ─────────────────────
+model LoginAudit {
+  id        String   @id @default(uuid())
+  email     String
+  role      String?
+  ip        String
+  allowed   Boolean  @default(true)
+  reason    String?  // e.g. "EXTERNAL_BLOCKED", "INTERNAL", "ADMIN_EXTERNAL", "DISTRIBUIDOR_EXTERNAL"
+  geoLat    Float?   @map("geo_lat")   // GPS latitude from browser
+  geoLon    Float?   @map("geo_lon")   // GPS longitude from browser
+  ipCity    String?  @map("ip_city")   // City from IP geolocation
+  ipCountry String?  @map("ip_country") // Country from IP geolocation
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([ip])
+  @@index([createdAt])
+  @@map("login_audits")
+}

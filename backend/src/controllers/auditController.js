@@ -47,7 +47,7 @@ const getAuditReport = async (req, res) => {
                     
                     const planned = item.plannedQuantity || 0;
                     const direction = planned === 0 ? 'Salida' : 'Entrada';
-                    let actual = item.actualQuantity || planned;
+                    let actual = item.actualQuantity !== null ? item.actualQuantity : (note.status === 'COMPLETED' ? planned : 0);
                     
                     let consumedQty = 0;
                     if (isPackaging) {
@@ -59,13 +59,14 @@ const getAuditReport = async (req, res) => {
                         consumedQty = itemCons.reduce((acc, c) => acc + c.quantityUsed, 0);
                     }
                     
-                    const diff = consumedQty - actual;
+                    const diff = note.status === 'COMPLETED' ? consumedQty - actual : 0;
                     
                     report.push({
                         id: `${note.id}-${item.id}`,
                         batchNumber: batch.batchNumber,
                         type: typeFlag,
                         process: processName,
+                        status: note.status,
                         component: compName,
                         componentType: compType,
                         direction: direction,

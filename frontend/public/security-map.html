@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔒 Mapa de Accesos — GestionPBI</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0a0e1a;
+            color: #e0e0e0;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a1f35 0%, #0d1117 100%);
+            padding: 20px 30px;
+            border-bottom: 1px solid rgba(99, 179, 237, 0.2);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            font-weight: 600;
+            background: linear-gradient(90deg, #63b3ed, #4fd1c5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header .badge {
+            background: rgba(72, 187, 120, 0.15);
+            border: 1px solid rgba(72, 187, 120, 0.4);
+            color: #48bb78;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+
+        #map {
+            height: calc(100vh - 200px);
+            width: 100%;
+        }
+
+        .stats {
+            display: flex;
+            gap: 16px;
+            padding: 16px 30px;
+            background: #0d1117;
+            border-top: 1px solid rgba(99, 179, 237, 0.1);
+            flex-wrap: wrap;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #1a1f35, #151b2e);
+            border: 1px solid rgba(99, 179, 237, 0.15);
+            border-radius: 10px;
+            padding: 12px 20px;
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .stat-card .label {
+            font-size: 11px;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: 700;
+            margin-top: 4px;
+        }
+
+        .stat-card.green .value {
+            color: #48bb78;
+        }
+
+        .stat-card.blue .value {
+            color: #63b3ed;
+        }
+
+        .stat-card.yellow .value {
+            color: #ecc94b;
+        }
+
+        .stat-card.red .value {
+            color: #fc8181;
+        }
+
+        .leaflet-popup-content-wrapper {
+            background: #1a1f35 !important;
+            color: #e0e0e0 !important;
+            border: 1px solid rgba(99, 179, 237, 0.3) !important;
+            border-radius: 10px !important;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+        }
+
+        .leaflet-popup-tip {
+            background: #1a1f35 !important;
+        }
+
+        .popup-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #63b3ed;
+            margin-bottom: 6px;
+        }
+
+        .popup-row {
+            font-size: 12px;
+            margin: 3px 0;
+            display: flex;
+            gap: 6px;
+        }
+
+        .popup-row .k {
+            color: #718096;
+            min-width: 40px;
+        }
+
+        .popup-row .v {
+            color: #e0e0e0;
+        }
+
+        .popup-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+
+        .badge-internal {
+            background: rgba(72, 187, 120, 0.2);
+            color: #48bb78;
+            border: 1px solid rgba(72, 187, 120, 0.4);
+        }
+
+        .badge-external {
+            background: rgba(237, 137, 54, 0.2);
+            color: #ed8936;
+            border: 1px solid rgba(237, 137, 54, 0.4);
+        }
+
+        .badge-suspicious {
+            background: rgba(252, 129, 129, 0.2);
+            color: #fc8181;
+            border: 1px solid rgba(252, 129, 129, 0.4);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>🔒 Mapa de Accesos — GestionPBI ERP</h1>
+        <span class="badge">Últimos 15 días</span>
+    </div>
+    <div id="map"></div>
+    <div class="stats">
+        <div class="stat-card green">
+            <div class="label">Red interna</div>
+            <div class="value">1 IP</div>
+        </div>
+        <div class="stat-card blue">
+            <div class="label">IPs externas (Colombia)</div>
+            <div class="value">14</div>
+        </div>
+        <div class="stat-card yellow">
+            <div class="label">IPs internacionales</div>
+            <div class="value">1</div>
+        </div>
+        <div class="stat-card red">
+            <div class="label">Ciudades</div>
+            <div class="value">5</div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map', { zoomControl: true }).setView([4.5, -74.0], 6);
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '© CartoDB © OpenStreetMap',
+            subdomains: 'abcd', maxZoom: 19
+        }).addTo(map);
+
+        const locations = [
+            // Medellín - Red Interna
+            { lat: 6.2529, lon: -75.5646, ip: '181.32.150.54', city: 'Medellín', isp: 'Movistar', logins: 196, type: 'internal', label: '🏭 Red Interna (Planta)' },
+            // Medellín - External
+            { lat: 6.256, lon: -75.560, ip: '152.203.116.86', city: 'Medellín', isp: 'Movistar', logins: 28, type: 'external', label: 'Acceso externo' },
+            { lat: 6.250, lon: -75.568, ip: '190.158.28.99', city: 'Medellín', isp: 'Telmex/Claro', logins: 42, type: 'external', label: 'Acceso externo' },
+            { lat: 6.248, lon: -75.572, ip: '186.80.29.235', city: 'Medellín', isp: 'Telmex/Claro', logins: 53, type: 'external', label: 'Acceso externo (más activo)' },
+            { lat: 6.258, lon: -75.558, ip: '190.70.104.104', city: 'Medellín', isp: 'EPM/UNE', logins: 6, type: 'external', label: 'Acceso externo' },
+            { lat: 6.254, lon: -75.562, ip: '179.32.16.218', city: 'Medellín', isp: 'Movistar', logins: 1, type: 'external', label: 'Acceso externo' },
+            { lat: 6.246, lon: -75.570, ip: '206.84.80.115', city: 'Medellín', isp: 'Somos Networks', logins: 1, type: 'external', label: 'Acceso externo' },
+            { lat: 6.260, lon: -75.556, ip: '191.156.34.47', city: 'Medellín', isp: 'Claro Móvil', logins: 3, type: 'external', label: 'Acceso externo (móvil)' },
+            { lat: 6.244, lon: -75.574, ip: '190.69.35.50', city: 'Medellín', isp: 'Movistar', logins: 1, type: 'external', label: 'Acceso externo' },
+            { lat: 6.262, lon: -75.554, ip: '186.80.28.161', city: 'Medellín', isp: 'Telmex/Claro', logins: 10, type: 'external', label: 'Acceso externo' },
+            // Pasto
+            { lat: 1.2146, lon: -77.2785, ip: '209.61.12.67', city: 'Pasto', isp: 'Intercomm de Nariño', logins: 6, type: 'external', label: 'Acceso desde Pasto' },
+            { lat: 1.2180, lon: -77.2750, ip: '190.90.79.228', city: 'Pasto', isp: 'IP Technologies', logins: 1, type: 'external', label: 'Acceso desde Pasto' },
+            // Cali
+            { lat: 3.4385, lon: -76.523, ip: '186.98.33.81', city: 'Cali', isp: 'Movistar', logins: 2, type: 'external', label: 'Acceso desde Cali' },
+            { lat: 3.4420, lon: -76.520, ip: '191.106.225.161', city: 'Cali', isp: 'Movistar', logins: 1, type: 'external', label: 'Acceso desde Cali' },
+            // Bogotá
+            { lat: 4.6011, lon: -74.0345, ip: '191.156.151.36', city: 'Bogotá', isp: 'Claro Móvil', logins: 2, type: 'external', label: 'Acceso desde Bogotá' },
+            // Ecuador!
+            { lat: -0.2309, lon: -78.5211, ip: '38.51.35.121', city: 'Quito, Ecuador', isp: 'PuntoNet S.A', logins: 1, type: 'suspicious', label: '⚠️ Acceso desde ECUADOR' }
+        ];
+
+        function getIcon(type, logins) {
+            const size = Math.min(Math.max(logins * 0.5, 12), 40);
+            const colors = {
+                internal: '#48bb78',
+                external: '#ed8936',
+                suspicious: '#fc8181'
+            };
+            const color = colors[type] || '#63b3ed';
+            return L.divIcon({
+                className: '',
+                html: `<div style="
+                    width: ${size + 12}px; height: ${size + 12}px;
+                    background: ${color}33; border: 2px solid ${color};
+                    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+                    font-size: ${Math.max(10, size * 0.5)}px; font-weight: 700; color: ${color};
+                    box-shadow: 0 0 ${size}px ${color}44;
+                    animation: pulse 2s ease-in-out infinite;
+                ">${logins}</div>
+                <style>@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.7} }</style>`,
+                iconSize: [size + 12, size + 12],
+                iconAnchor: [(size + 12) / 2, (size + 12) / 2]
+            });
+        }
+
+        locations.forEach(loc => {
+            const badgeClass = loc.type === 'internal' ? 'badge-internal' : loc.type === 'suspicious' ? 'badge-suspicious' : 'badge-external';
+            const badgeText = loc.type === 'internal' ? '✅ RED INTERNA' : loc.type === 'suspicious' ? '⚠️ INTERNACIONAL' : '🌐 EXTERNA';
+
+            const popup = `
+                <div class="popup-title">${loc.label}</div>
+                <div class="popup-row"><span class="k">IP:</span><span class="v">${loc.ip}</span></div>
+                <div class="popup-row"><span class="k">Ciudad:</span><span class="v">${loc.city}</span></div>
+                <div class="popup-row"><span class="k">ISP:</span><span class="v">${loc.isp}</span></div>
+                <div class="popup-row"><span class="k">Logins:</span><span class="v"><strong>${loc.logins}</strong> intentos exitosos</span></div>
+                <span class="popup-badge ${badgeClass}">${badgeText}</span>
+            `;
+
+            L.marker([loc.lat, loc.lon], { icon: getIcon(loc.type, loc.logins) })
+                .addTo(map)
+                .bindPopup(popup);
+        });
+
+        // Draw connection lines from each external IP to the plant
+        const plantCoords = [6.2529, -75.5646];
+        locations.filter(l => l.type !== 'internal').forEach(loc => {
+            const color = loc.type === 'suspicious' ? '#fc818155' : '#ed893655';
+            L.polyline([plantCoords, [loc.lat, loc.lon]], {
+                color, weight: 1.5, dashArray: '5, 10', opacity: 0.6
+            }).addTo(map);
+        });
+    </script>
+</body>
+
+</html>
