@@ -31,6 +31,11 @@ const getAuditReport = async (req, res) => {
             for (const note of batch.assemblyNotes) {
                 const processName = note.processType?.code || 'UNKNOWN';
 
+                // Skip virtual Siigo assembly notes as they don't hold physical consumptions
+                if (processName === 'ENSAMBLE' || processName === 'G_ENSAMBLE') {
+                    continue;
+                }
+
                 // Fetch lot consumptions associated directly with this note
                 const consumptions = await prisma.lotConsumption.findMany({
                     where: { assemblyNoteId: note.id },
