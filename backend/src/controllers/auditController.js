@@ -55,13 +55,16 @@ const getAuditReport = async (req, res) => {
                     let actual = item.actualQuantity !== null ? item.actualQuantity : (note.status === 'COMPLETED' ? planned : 0);
                     
                     let consumedQty = 0;
-                    if (isPackaging) {
-                        consumedQty = item.consumed ? actual : 0;
-                    } else {
-                        const itemCons = consumptions.filter(c => 
-                            c.materialLot?.productId === item.componentId || c.materialLotId === item.materialLotId
-                        );
-                        consumedQty = itemCons.reduce((acc, c) => acc + c.quantityUsed, 0);
+                    const itemCons = consumptions.filter(c => 
+                        c.materialLot?.productId === item.componentId || c.materialLotId === item.materialLotId
+                    );
+                    consumedQty = itemCons.reduce((acc, c) => acc + c.quantityUsed, 0);
+
+                    // Fallback: If no physical consumptions are explicitly linked to this note,
+                    // but the item was flagged as consumed logically (legacy/RPA behavior),
+                    // we assume the actual quantity was consumed.
+                    if (isPackaging && consumedQty === 0 && item.consumed) {
+                        consumedQty = actual;
                     }
                     
                     const diff = note.status === 'COMPLETED' ? consumedQty - actual : 0;
