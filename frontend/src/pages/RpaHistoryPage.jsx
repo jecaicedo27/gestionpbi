@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
-import { RefreshCw, Play, Eye, CheckCircle, XCircle, Loader, ChevronDown, ChevronUp } from 'lucide-react';
+import { RefreshCw, Play, Eye, CheckCircle, XCircle, Loader, ChevronDown, ChevronUp, Search } from 'lucide-react';
 
 const STATUS_CFG = {
     RUNNING: { label: 'Creando NE...', bg: 'bg-blue-100 text-blue-700', icon: Loader },
@@ -30,6 +30,11 @@ const RpaHistoryPage = () => {
     const [expanded, setExpanded] = useState(null);
     const [screenshotUrl, setScreenshotUrl] = useState(null);
     const [logsData, setLogsData] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [orphans, setOrphans] = useState([]);
+    const [orphanLoading, setOrphanLoading] = useState(false);
+    const [dispatching, setDispatching] = useState(null);
+    const [orphanExpanded, setOrphanExpanded] = useState(true);
     const isDesktop = useIsDesktop();
 
     const fetchHistory = async () => {
@@ -44,7 +49,19 @@ const RpaHistoryPage = () => {
         }
     };
 
-    useEffect(() => { fetchHistory(); }, []);
+    const fetchOrphans = async () => {
+        try {
+            setOrphanLoading(true);
+            const res = await api.get('/rpa/orphan-notes?days=30');
+            setOrphans(res.data.orphans || []);
+        } catch {
+            // silently fail
+        } finally {
+            setOrphanLoading(false);
+        }
+    };
+
+    useEffect(() => { fetchHistory(); fetchOrphans(); }, []);
 
     useEffect(() => {
         const hasRunning = executions.some(e => e.status === 'RUNNING');
@@ -65,15 +82,38 @@ const RpaHistoryPage = () => {
         }
     };
 
-    const successCount = executions.filter(e => e.status === 'SUCCESS').length;
-    const failedCount = executions.filter(e => e.status === 'FAILED').length;
-    const runningCount = executions.filter(e => e.status === 'RUNNING').length;
+    const handleDispatchOrphan = async (noteId) => {
+        try {
+            setDispatching(noteId);
+            await api.post('/rpa/dispatch-orphan', { assemblyNoteId: noteId });
+            // Remove from orphan list optimistically and refresh history
+            setOrphans(prev => prev.filter(o => o.id !== noteId));
+            setTimeout(fetchHistory, 2000);
+        } catch (err) {
+            alert(err.response?.data?.error || 'Error al despachar RPA');
+        } finally {
+            setDispatching(null);
+        }
+    };
 
     const getBatch = (obs) => {
         if (!obs) return null;
         const m = obs.match(/Lote:\s*([^.]+)/i);
         return m ? m[1].trim() : null;
     };
+
+    const filteredExecutions = executions.filter(exec => {
+        if (!searchTerm) return true;
+        const s = searchTerm.toLowerCase();
+        const batch = getBatch(exec.observations) || '';
+        return (exec.productName || '').toLowerCase().includes(s) || 
+               batch.toLowerCase().includes(s) || 
+               (exec.siigoNoteCode || '').toLowerCase().includes(s);
+    });
+
+    const successCount = filteredExecutions.filter(e => e.status === 'SUCCESS').length;
+    const failedCount = filteredExecutions.filter(e => e.status === 'FAILED').length;
+    const runningCount = filteredExecutions.filter(e => e.status === 'RUNNING').length;
 
     /* ─── DESKTOP TABLE LAYOUT ──────────────────────────────────── */
     if (isDesktop) {
@@ -98,24 +138,112 @@ const RpaHistoryPage = () => {
                                 </span>
                             )}
                             <span style={{ fontSize: '0.8rem', color: '#94a3b8', alignSelf: 'center' }}>
-                                Total: {executions.length}
+                                Total: {filteredExecutions.length}
                             </span>
                         </div>
                     </div>
-                    <button
-                        onClick={fetchHistory}
-                        disabled={loading}
-                        style={{
-                            display: 'flex', alignItems: 'center', gap: 6,
-                            padding: '8px 16px', borderRadius: 8, border: '1px solid #e2e8f0',
-                            background: '#fff', fontSize: '0.85rem', fontWeight: 600,
-                            cursor: 'pointer', color: '#475569'
-                        }}
-                    >
-                        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                        Refrescar
-                    </button>
+                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                        <div style={{ position: 'relative' }}>
+                            <Search size={16} color="#94a3b8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+                            <input
+                                type="text"
+                                placeholder="Buscar sabor, lote o NE..."
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                style={{
+                                    padding: '8px 16px 8px 34px',
+                                    borderRadius: 6,
+                                    border: '1px solid #e2e8f0',
+                                    fontSize: '0.85rem',
+                                    width: '250px',
+                                    outline: 'none'
+                                }}
+                            />
+                        </div>
+                        <button
+                            onClick={fetchHistory}
+                            disabled={loading}
+                            style={{
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                padding: '8px 16px', borderRadius: 8, border: '1px solid #e2e8f0',
+                                background: '#fff', fontSize: '0.85rem', fontWeight: 600,
+                                cursor: 'pointer', color: '#475569'
+                            }}
+                        >
+                            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                            Refrescar
+                        </button>
+                    </div>
                 </div>
+
+                {/* ── ORPHAN NOTES ALERT PANEL ──────────────────────────────────── */}
+                {orphans.length > 0 && (
+                    <div style={{ marginBottom: '1.25rem', background: '#fff7ed', border: '1.5px solid #fed7aa', borderRadius: 12, overflow: 'hidden' }}>
+                        <div
+                            onClick={() => setOrphanExpanded(e => !e)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', cursor: 'pointer' }}
+                        >
+                            <span style={{ fontSize: '1.1rem' }}>⚠️</span>
+                            <div style={{ flex: 1 }}>
+                                <span style={{ fontWeight: 800, color: '#92400e', fontSize: '0.9rem' }}>
+                                    {orphans.length} nota{orphans.length > 1 ? 's' : ''} sin registrar en Siigo
+                                </span>
+                                <span style={{ marginLeft: 8, fontSize: '0.75rem', color: '#b45309' }}>
+                                    (completadas pero sin RPA en los últimos 30 días)
+                                </span>
+                            </div>
+                            <span style={{ fontSize: '0.8rem', color: '#b45309', fontWeight: 600 }}>
+                                {orphanExpanded ? '▲ Ocultar' : '▼ Ver todas'}
+                            </span>
+                        </div>
+                        {orphanExpanded && (
+                            <div style={{ borderTop: '1px solid #fed7aa' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                                    <thead>
+                                        <tr style={{ background: '#fef3c7' }}>
+                                            <th style={{ padding: '8px 14px', textAlign: 'left', color: '#92400e', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>Producto</th>
+                                            <th style={{ padding: '8px 14px', textAlign: 'left', color: '#92400e', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>Lote</th>
+                                            <th style={{ padding: '8px 14px', textAlign: 'right', color: '#92400e', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>Qty</th>
+                                            <th style={{ padding: '8px 14px', textAlign: 'left', color: '#92400e', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>Completada</th>
+                                            <th style={{ padding: '8px 14px', textAlign: 'center', color: '#92400e', fontWeight: 700, fontSize: '0.7rem', textTransform: 'uppercase' }}>Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {orphans.map(o => (
+                                            <tr key={o.id} style={{ borderBottom: '1px solid #fde68a' }}>
+                                                <td style={{ padding: '8px 14px', fontWeight: 600, color: '#1e293b' }}>
+                                                    <div style={{ fontSize: '0.75rem' }}>{o.productName}</div>
+                                                    {o.productSku && <span style={{ fontSize: '0.65rem', padding: '1px 5px', borderRadius: 4, background: '#f1f5f9', color: '#475569', fontWeight: 700, fontFamily: 'monospace' }}>{o.productSku}</span>}
+                                                </td>
+                                                <td style={{ padding: '8px 14px' }}>
+                                                    <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4, background: '#dbeafe', color: '#1e40af', fontWeight: 600 }}>{o.batchNumber || '—'}</span>
+                                                </td>
+                                                <td style={{ padding: '8px 14px', textAlign: 'right', fontWeight: 800, color: '#1e293b' }}>{o.quantity?.toLocaleString('es-CO')}</td>
+                                                <td style={{ padding: '8px 14px', fontSize: '0.72rem', color: '#64748b' }}>
+                                                    {new Date(o.completedAt).toLocaleString('es-CO', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                                </td>
+                                                <td style={{ padding: '8px 14px', textAlign: 'center' }}>
+                                                    <button
+                                                        onClick={() => handleDispatchOrphan(o.id)}
+                                                        disabled={dispatching === o.id}
+                                                        style={{
+                                                            padding: '5px 12px', borderRadius: 6, border: 'none',
+                                                            background: dispatching === o.id ? '#e5e7eb' : '#f59e0b',
+                                                            color: dispatching === o.id ? '#9ca3af' : '#fff',
+                                                            fontSize: '0.72rem', fontWeight: 700, cursor: dispatching === o.id ? 'not-allowed' : 'pointer'
+                                                        }}
+                                                    >
+                                                        {dispatching === o.id ? '⏳ Encolando...' : '🤖 Enviar a Siigo'}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* Table */}
                 <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', overflow: 'hidden' }}>
@@ -133,7 +261,7 @@ const RpaHistoryPage = () => {
                             </tr>
                         </thead>
                         <tbody>
-                            {executions.map((exec, idx) => {
+                            {filteredExecutions.map((exec, idx) => {
                                 const cfg = STATUS_CFG[exec.status] || STATUS_CFG.FAILED;
                                 const Icon = cfg.icon;
                                 const batch = getBatch(exec.observations);
@@ -258,9 +386,9 @@ const RpaHistoryPage = () => {
                         </tbody>
                     </table>
 
-                    {executions.length === 0 && !loading && (
+                    {filteredExecutions.length === 0 && !loading && (
                         <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>
-                            No hay ejecuciones registradas
+                            No se encontraron ejecuciones
                         </div>
                     )}
                 </div>
@@ -320,8 +448,26 @@ const RpaHistoryPage = () => {
                         Refrescar
                     </button>
                 </div>
+                {/* Mobile Search */}
+                <div style={{ position: 'relative', marginTop: '0.75rem' }}>
+                    <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+                    <input
+                        type="text"
+                        placeholder="Buscar sabor, lote o NE..."
+                        value={searchTerm}
+                        onChange={e => setSearchTerm(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: '8px 12px 8px 32px',
+                            borderRadius: 6,
+                            border: '1px solid #e2e8f0',
+                            fontSize: '0.8rem',
+                            outline: 'none'
+                        }}
+                    />
+                </div>
                 {/* Stats */}
-                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                     <span style={{ padding: '2px 8px', borderRadius: 6, fontSize: '0.7rem', fontWeight: 700, background: '#dcfce7', color: '#166534' }}>
                         ✓ {successCount}
                     </span>
@@ -334,14 +480,14 @@ const RpaHistoryPage = () => {
                         </span>
                     )}
                     <span style={{ fontSize: '0.7rem', color: '#94a3b8', alignSelf: 'center' }}>
-                        Total: {executions.length}
+                        Total: {filteredExecutions.length}
                     </span>
                 </div>
             </div>
 
             {/* Cards */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {executions.map(exec => {
+                {filteredExecutions.map(exec => {
                     const cfg = STATUS_CFG[exec.status] || STATUS_CFG.FAILED;
                     const Icon = cfg.icon;
                     const batch = getBatch(exec.observations);
@@ -481,9 +627,9 @@ const RpaHistoryPage = () => {
                     );
                 })}
 
-                {executions.length === 0 && !loading && (
+                {filteredExecutions.length === 0 && !loading && (
                     <div style={{ textAlign: 'center', padding: '3rem', color: '#94a3b8' }}>
-                        No hay ejecuciones registradas
+                        No se encontraron ejecuciones
                     </div>
                 )}
             </div>

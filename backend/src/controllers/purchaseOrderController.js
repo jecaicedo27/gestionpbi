@@ -256,16 +256,67 @@ exports.cancel = async (req, res) => {
 };
 
 /**
+ * PUT /procurement/purchase-orders/:id/payment-method
+ */
+exports.updatePaymentMethod = async (req, res) => {
+    try {
+        const { paymentMethod } = req.body;
+        const validMethods = ['CONTADO', 'CREDITO'];
+        if (!validMethods.includes(paymentMethod)) {
+            return res.status(400).json({ error: 'Método de pago inválido' });
+        }
+        
+        let updateData = { paymentMethod };
+        if (paymentMethod === 'CONTADO') {
+            updateData.creditDueDate = null;
+            updateData.creditPaid = false;
+            updateData.creditPaidAt = null;
+        }
+
+        const updated = await prisma.purchaseOrder.update({
+            where: { id: req.params.id },
+            data: updateData
+        });
+
+        logger.info(`🔄 OC ${updated.orderNumber} cambió a ${paymentMethod} por ${req.user ? req.user.name : 'Unknown'}`);
+        res.json(updated);
+    } catch (error) {
+        logger.error('Error updating payment method:', error.message);
+        res.status(500).json({ error: 'Error actualizando el método de pago' });
+    }
+};
+
+/**
  * PUT /procurement/purchase-orders/:id/payment — Cartera registers costs + payment
  */
 exports.registerPayment = async (req, res) => {
     try {
-        const { itemCosts, paymentNotes } = req.body;
+        const { itemCosts, paymentNotes, taxConfig } = req.body;
         const order = await prisma.purchaseOrder.findUnique({
             where: { id: req.params.id },
-            include: { items: true, supplier: { select: { ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
+            include: { items: true, supplier: { select: { id: true, ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
         });
         if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+
+        // Auto-confirm fiscal config if provided from Cartera during payment
+        if (taxConfig && order.supplier) {
+            const parsedIva = parseFloat(taxConfig.ivaRate) || 0;
+            const parsedRete = parseFloat(taxConfig.reteFuenteRate) || 0;
+            await prisma.supplier.update({
+                where: { id: order.supplier.id },
+                data: {
+                    ivaRate: parsedIva,
+                    reteFuenteRate: parsedRete,
+                    fiscalConfigConfirmed: true,
+                    fiscalConfigAt: new Date(),
+                    fiscalConfigById: req.user?.id || null
+                }
+            });
+            order.supplier.ivaRate = parsedIva;
+            order.supplier.reteFuenteRate = parsedRete;
+            order.supplier.fiscalConfigConfirmed = true;
+        }
+
         // Block payment if supplier fiscal config not confirmed by accounting
         if (!order.supplier?.fiscalConfigConfirmed) {
             return res.status(400).json({ error: 'Contabilidad no ha configurado al proveedor. Vaya a Proveedores → Configuración Fiscal y confirme IVA/Retención antes de registrar el pago.' });
@@ -344,12 +395,32 @@ exports.registerPayment = async (req, res) => {
  */
 exports.registerCreditPayment = async (req, res) => {
     try {
-        const { itemCosts, paymentNotes } = req.body;
+        const { itemCosts, paymentNotes, taxConfig } = req.body;
         const order = await prisma.purchaseOrder.findUnique({
             where: { id: req.params.id },
-            include: { items: true, supplier: { select: { ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
+            include: { items: true, supplier: { select: { id: true, ivaRate: true, reteFuenteRate: true, fiscalConfigConfirmed: true } } }
         });
         if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+
+        // Auto-confirm fiscal config if provided from Cartera during payment
+        if (taxConfig && order.supplier) {
+            const parsedIva = parseFloat(taxConfig.ivaRate) || 0;
+            const parsedRete = parseFloat(taxConfig.reteFuenteRate) || 0;
+            await prisma.supplier.update({
+                where: { id: order.supplier.id },
+                data: {
+                    ivaRate: parsedIva,
+                    reteFuenteRate: parsedRete,
+                    fiscalConfigConfirmed: true,
+                    fiscalConfigAt: new Date(),
+                    fiscalConfigById: req.user?.id || null
+                }
+            });
+            order.supplier.ivaRate = parsedIva;
+            order.supplier.reteFuenteRate = parsedRete;
+            order.supplier.fiscalConfigConfirmed = true;
+        }
+
         // Block credit payment if supplier fiscal config not confirmed by accounting
         if (!order.supplier?.fiscalConfigConfirmed) {
             return res.status(400).json({ error: 'Contabilidad no ha configurado al proveedor. Vaya a Proveedores → Configuración Fiscal y confirme IVA/Retención antes de registrar el pago.' });
@@ -492,5 +563,77 @@ exports.getRawMaterials = async (req, res) => {
     } catch (error) {
         logger.error('Error fetching raw materials:', error.message);
         res.status(500).json({ error: 'Error obteniendo materias primas' });
+    }
+};
+
+/**
+ * GET /procurement/custom-items
+ */
+exports.getCustomItems = async (req, res) => {
+    try {
+        const items = await prisma.customProcurementItem.findMany({
+            where: { active: true },
+            orderBy: { name: 'asc' }
+        });
+        res.json(items);
+    } catch (error) {
+        logger.error('Error fetching custom items:', error.message);
+        res.status(500).json({ error: 'Error obteniendo insumos personalizados' });
+    }
+};
+
+/**
+ * POST /procurement/custom-items
+ */
+exports.createCustomItem = async (req, res) => {
+    try {
+        const { name } = req.body;
+        if (!name || name.trim().length === 0) {
+            return res.status(400).json({ error: 'El nombre es requerido' });
+        }
+
+        // Generate CUS-XXXX code
+        const lastItem = await prisma.customProcurementItem.findFirst({
+            where: { code: { startsWith: 'CUS-' } },
+            orderBy: { code: 'desc' }
+        });
+        let nextNumber = 1;
+        if (lastItem && lastItem.code) {
+            const matches = lastItem.code.match(/CUS-(\d+)/);
+            if (matches && matches[1]) {
+                nextNumber = parseInt(matches[1], 10) + 1;
+            }
+        }
+        const code = `CUS-${String(nextNumber).padStart(4, '0')}`;
+
+        const newItem = await prisma.customProcurementItem.create({
+            data: {
+                name: name.trim().toUpperCase(),
+                code,
+                active: true
+            }
+        });
+
+        logger.info(`📝 Nuevo insumo personalizado creado: ${newItem.code} - ${newItem.name}`);
+        res.status(201).json(newItem);
+    } catch (error) {
+        logger.error('Error creating custom item:', error.message);
+        res.status(500).json({ error: 'Error creando insumo personalizado' });
+    }
+};
+
+/**
+ * DELETE /procurement/custom-items/:id
+ */
+exports.deleteCustomItem = async (req, res) => {
+    try {
+        await prisma.customProcurementItem.update({
+            where: { id: req.params.id },
+            data: { active: false }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        logger.error('Error deleting custom item:', error.message);
+        res.status(500).json({ error: 'Error eliminando insumo personalizado' });
     }
 };

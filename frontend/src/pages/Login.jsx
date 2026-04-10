@@ -33,19 +33,23 @@ const Login = () => {
     };
 
     const handlePinChange = (index, value) => {
-        if (!/^\d?$/.test(value)) return;
+        // value might be '•3', '3', or ''
+        const realChar = value.replace(/\D/g, '').slice(-1);
+        
+        if (value.length > 0 && !realChar) return;
+
         const newDigits = [...pinDigits];
-        newDigits[index] = value;
+        newDigits[index] = realChar || '';
         setPinDigits(newDigits);
         setError('');
 
         // Auto-focus next input
-        if (value && index < 3) {
+        if (realChar && index < 3) {
             pinRefs[index + 1].current?.focus();
         }
 
         // Auto-submit when all 4 digits are entered
-        if (value && index === 3 && newDigits.every(d => d !== '')) {
+        if (realChar && index === 3 && newDigits.every(d => d !== '')) {
             submitPin(newDigits.join(''));
         }
     };
@@ -170,13 +174,14 @@ const Login = () => {
                                 <input
                                     key={i}
                                     ref={pinRefs[i]}
-                                    type="password"
+                                    type="tel"
                                     inputMode="numeric"
                                     pattern="[0-9]*"
-                                    maxLength={1}
-                                    value={digit}
+                                    maxLength={2}
+                                    value={digit ? '•' : ''}
                                     onChange={(e) => handlePinChange(i, e.target.value)}
                                     onKeyDown={(e) => handlePinKeyDown(i, e)}
+                                    style={{ WebkitTextSecurity: 'disc' }}
                                     className="w-14 h-16 text-center text-3xl font-bold font-mono border-2 border-neutral-200 rounded-xl focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none transition-all"
                                     autoFocus={i === 0}
                                     disabled={loading}

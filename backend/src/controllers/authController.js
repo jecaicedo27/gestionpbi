@@ -3,13 +3,14 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config({ path: '/var/www/gestionpbi/backend/.env' });
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
+const { getClientIp, isInternalNetwork } = require('../middleware/auth');
 
 const prisma = new PrismaClient();
 
 const login = async (req, res) => {
     try {
-        console.log('Login Request Body:', req.body);
         const { email, password } = req.body;
+        const clientIp = getClientIp(req);
 
         // Find user
         const user = await prisma.user.findUnique({
@@ -18,6 +19,22 @@ const login = async (req, res) => {
 
         if (!user || !user.active) {
             return res.status(401).json({ error: 'Credenciales inválidas o usuario inactivo' });
+        }
+
+        // ── Network Access Control ──────────────────────────────────────
+        // External networks: only EXTERNAL_ADMIN_EMAIL and DISTRIBUIDOR users can log in.
+        // Internal network (ALLOWED_IPS): any user can log in.
+        const externalAdmin = (process.env.EXTERNAL_ADMIN_EMAIL || '').toLowerCase();
+        if (!isInternalNetwork(clientIp)) {
+            const isAdmin = email?.toLowerCase() === externalAdmin;
+            const isDistribuidor = user.role === 'DISTRIBUIDOR';
+            if (!isAdmin && !isDistribuidor) {
+                logger.warn(`⛔ External login blocked: ${email} (${user.role}) from IP ${clientIp}`);
+                return res.status(403).json({
+                    error: '⛔ Acceso denegado. Solo se permite el ingreso desde la red interna de la empresa.'
+                });
+            }
+            logger.info(`🌐 External login allowed: ${email} (${user.role}) from IP ${clientIp}`);
         }
 
         // Verify password
@@ -68,6 +85,15 @@ const getMe = async (req, res) => {
 // ── PIN-based quick login (lock screen) ──────────────────────────
 const pinLogin = async (req, res) => {
     try {
+        // ── Network restriction: PIN login only from internal network ──
+        const clientIp = getClientIp(req);
+        if (!isInternalNetwork(clientIp)) {
+            logger.warn(`⛔ External PIN login blocked from IP ${clientIp}`);
+            return res.status(403).json({
+                error: '⛔ Acceso por PIN solo disponible desde la red interna de la empresa.'
+            });
+        }
+
         const { pin } = req.body;
         if (!pin || !/^\d{4}$/.test(pin)) {
             return res.status(400).json({ error: 'PIN debe ser exactamente 4 dígitos' });

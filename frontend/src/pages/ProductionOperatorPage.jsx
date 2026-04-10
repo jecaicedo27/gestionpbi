@@ -99,9 +99,18 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
             .trim()
             .slice(0, 30);
 
+    const isSiropeBatch = (batch.batchNumber || '').toUpperCase().includes('SIROPE')
+        || (batch.batchNumber || '').toUpperCase().includes('GENIALITY')
+        || (batch.allProductNames || []).some(p => {
+            const u = p.toUpperCase();
+            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY');
+        });
+
     // OPERARIO_PICKING can act on EMPAQUE / ETIQUETADO / ENSAMBLE (Siigo post-empaque)
-    // CONTEO is production-only for Liquipops (direct input counting)
+    // CONTEO is production-only for Liquipops (direct input counting), but SHARED for Siropes (Carrito delivery)
     const PICKING_STAGES = ['EMPAQUE', 'ETIQUETADO', 'ENSAMBLE'];
+    if (isSiropeBatch) PICKING_STAGES.push('CONTEO');
+    
     const isPickingRole = userRole === 'OPERARIO_PICKING';
     const nextStageCode = nextStage?.processType?.code || '';
     const canPickingAct = !isPickingRole || PICKING_STAGES.includes(nextStageCode);
@@ -501,8 +510,25 @@ const ProductionOperatorPage = () => {
         return () => clearInterval(interval);
     }, [fetchData]);
 
+    // Classify batch as sirope or perla — check ALL stage products, not just the first
+    const isSirope = (b) => {
+        const bn = (b.batchNumber || '').toUpperCase();
+        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY')) return true;
+        return (b.allProductNames || []).some(p => {
+            const u = p.toUpperCase();
+            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY');
+        });
+    };
+
     const handleStart = (batch) => {
-        if (batch.firstPending) navigate(`/assembly-execution/${batch.firstPending.id}`);
+        if (!batch.firstPending) return;
+        // All sirope (Geniality) batches → GenialityExecutionWizard
+        // It handles both native steps (G_/GE_) and shared steps (EMPAQUE/ENSAMBLE/CONTEO)
+        if (isSirope(batch)) {
+            navigate(`/geniality/assembly-execution/${batch.firstPending.id}`);
+        } else {
+            navigate(`/assembly-execution/${batch.firstPending.id}`);
+        }
     };
 
     const handleDelete = async (batch) => {
@@ -516,15 +542,7 @@ const ProductionOperatorPage = () => {
         }
     };
 
-    // Classify batch as sirope or perla — check ALL stage products, not just the first
-    const isSirope = (b) => {
-        const bn = (b.batchNumber || '').toUpperCase();
-        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY')) return true;
-        return (b.allProductNames || []).some(p => {
-            const u = p.toUpperCase();
-            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY');
-        });
-    };
+
 
     // ── SECRET FORMULA FILTER ──────────────────────────────────────────────
     // Only PREMEZCLAS are trade secrets (ingredient formulas).

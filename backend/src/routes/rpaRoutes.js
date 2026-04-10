@@ -13,4 +13,8 @@ router.post('/:id/retry', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.re
 // Queue status
 router.get('/queue-status', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.getQueueStatus);
 
+// Orphan notes (COMPLETED EMPAQUE notes with no RPA execution)
+router.get('/orphan-notes', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.getOrphanNotes);
+router.post('/dispatch-orphan', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.dispatchOrphan);
+
 module.exports = router;

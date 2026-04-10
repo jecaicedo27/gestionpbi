@@ -7,6 +7,7 @@ import api from '../../../services/api';
  * When timer finishes: alarm sound + vibration + modal until operator acknowledges.
  */
 const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) => {
+    const tempDebounceRef = useRef(null);
     const params = note?.processParameters || stepData?.processParameters || {};
     const targetTemp = params.targetTemperature || 105;
     const unit = params.temperatureUnit || '°C';
@@ -83,7 +84,28 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
                 setAlarmActive(true);
             }
         }
-    }, []);
+    }, []); // eslint-disable-line
+
+    // ── Auto-persist realTemperature on change (debounced 1.5s) ─────────────
+    useEffect(() => {
+        if (!realTemperature || !note?.id) return;
+        if (tempDebounceRef.current) clearTimeout(tempDebounceRef.current);
+        tempDebounceRef.current = setTimeout(() => {
+            const freshParams = note?.processParameters || {};
+            const updatedResult = {
+                ...(freshParams.coccion_result || {}),
+                realTemperature: parseFloat(realTemperature) || null
+            };
+            api.patch(`/assembly-notes/${note.id}`, {
+                processParameters: { ...freshParams, coccion_result: updatedResult }
+            }).then(() => {
+                if (note.processParameters) {
+                    note.processParameters.coccion_result = updatedResult;
+                }
+            }).catch(() => {});
+        }, 1500);
+        return () => { if (tempDebounceRef.current) clearTimeout(tempDebounceRef.current); };
+    }, [realTemperature]); // eslint-disable-line
 
     // Notify parent of state changes
     useEffect(() => {
@@ -177,11 +199,12 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
         setAlarmActive(false);
         setAlarmAcknowledged(true);
         // Save acknowledged state to server
+        const freshParams = note?.processParameters || {};
+        const updatedTimerState = { ...(freshParams.timerState || {}), acknowledged: true };
         api.patch(`/assembly-notes/${note?.id}`, {
-            processParameters: {
-                ...params,
-                timerState: { ...(params.timerState || {}), acknowledged: true }
-            }
+            processParameters: { ...freshParams, timerState: updatedTimerState }
+        }).then(() => {
+            if (note?.processParameters) note.processParameters.timerState = updatedTimerState;
         }).catch(() => { });
     };
 
@@ -193,10 +216,12 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
 
     // Photo upload
     const fileInputRef = useRef(null);
+    const [photoSaved, setPhotoSaved] = useState(false);
     const handlePhotoCapture = useCallback(async (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
         setUploading(true);
+        setPhotoSaved(false);
         try {
             const formData = new FormData();
             formData.append('photo', file);
@@ -207,25 +232,48 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
             });
             const savedUrl = res.data.url || URL.createObjectURL(file);
             setPhotoUrl(savedUrl);
-            // Immediately persist photo URL to processParameters so it survives refresh
+            // Immediately persist photo URL to processParameters so it survives refresh/app-switch
             if (res.data.url && note?.id) {
-                api.patch(`/assembly-notes/${note.id}`, {
-                    processParameters: {
-                        ...params,
-                        coccion_result: {
-                            ...(params.coccion_result || {}),
-                            photoUrl: res.data.url,
-                            capturedAt: new Date().toISOString()
-                        }
+                const freshParams = note?.processParameters || {};
+                const updatedResult = {
+                    ...(freshParams.coccion_result || {}),
+                    photoUrl: res.data.url,
+                    realTemperature: parseFloat(realTemperature) || null,
+                    capturedAt: new Date().toISOString()
+                };
+                try {
+                    await api.patch(`/assembly-notes/${note.id}`, {
+                        processParameters: { ...freshParams, coccion_result: updatedResult }
+                    });
+                    // ★ Critical: keep local note.processParameters in sync
+                    // so subsequent PATCHes (saveWizardStep, etc.) don't overwrite the photo
+                    if (note.processParameters) {
+                        note.processParameters.coccion_result = updatedResult;
                     }
-                }).catch(() => {});
+                    setPhotoSaved(true);
+                } catch (patchErr) {
+                    console.error('❌ Error guardando foto en processParameters:', patchErr.message);
+                    // Retry once after 2 seconds
+                    setTimeout(async () => {
+                        try {
+                            await api.patch(`/assembly-notes/${note.id}`, {
+                                processParameters: { ...freshParams, coccion_result: updatedResult }
+                            });
+                            if (note.processParameters) note.processParameters.coccion_result = updatedResult;
+                            setPhotoSaved(true);
+                        } catch (retryErr) {
+                            console.error('❌ Retry falló:', retryErr.message);
+                        }
+                    }, 2000);
+                }
             }
         } catch (err) {
+            console.error('Error subiendo foto:', err.message);
             setPhotoUrl(URL.createObjectURL(file));
         } finally {
             setUploading(false);
         }
-    }, [note?.id, targetTemp, params]);
+    }, [note?.id, targetTemp, realTemperature]);
 
     const tempDiff = realTemperature ? Math.abs(parseFloat(realTemperature) - targetTemp) : null;
     const tempOk = tempDiff !== null && tempDiff <= 3;
@@ -385,6 +433,7 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
                                 <img src={photoUrl} alt="Termómetro" className="w-24 h-24 rounded-xl object-cover border-2 border-green-400" />
                                 <div className="flex-1">
                                     <div className="text-green-700 font-bold text-sm">✅ Foto capturada</div>
+                                    {photoSaved && <div className="text-green-500 text-[10px] font-semibold">💾 Guardada en servidor</div>}
                                     <button onClick={() => fileInputRef.current?.click()} className="text-xs text-blue-500 underline mt-1">Cambiar foto</button>
                                 </div>
                             </div>
@@ -417,15 +466,16 @@ const CoccionStep = ({ stepData, note, onCoccionChange, allBatchNotes = [] }) =>
                                     onClick={() => {
                                         setTimerStarted(true);
                                         // Save start timestamp to server database
+                                        const freshParams = note?.processParameters || {};
+                                        const updatedTimerState = {
+                                            startedAt: Date.now(),
+                                            realTemperature: parseFloat(realTemperature) || null,
+                                            photoUrl
+                                        };
                                         api.patch(`/assembly-notes/${note?.id}`, {
-                                            processParameters: {
-                                                ...params,
-                                                timerState: {
-                                                    startedAt: Date.now(),
-                                                    realTemperature: parseFloat(realTemperature) || null,
-                                                    photoUrl
-                                                }
-                                            }
+                                            processParameters: { ...freshParams, timerState: updatedTimerState }
+                                        }).then(() => {
+                                            if (note?.processParameters) note.processParameters.timerState = updatedTimerState;
                                         }).catch(() => { });
                                     }}
                                     disabled={!photoUrl || !realTemperature}

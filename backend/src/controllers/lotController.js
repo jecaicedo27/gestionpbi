@@ -221,7 +221,8 @@ const lotController = {
                             initialQuantity: true,
                             currentQuantity: true,
                             unit: true,
-                            zone: true
+                            zone: true,
+                            product: { select: { name: true } }
                         }
                     },
                     usedBy: { select: { id: true, name: true, role: true } }
@@ -237,15 +238,20 @@ const lotController = {
             const noteMap = {};
             notes.forEach(n => { noteMap[n.id] = n; });
 
-            const consumptionRows = consumptions.map(c => ({
-                ...c,
-                type: 'CONSUMPTION',
-                date: c.usedAt,
-                quantity: -c.quantityUsed,
-                unit: c.materialLot?.unit || 'gramo',
-                zone: c.materialLot?.zone || null,
-                processInfo: c.assemblyNoteId ? noteMap[c.assemblyNoteId] || null : null
-            }));
+            const consumptionRows = consumptions.map(c => {
+                // Prefer linked product name over raw siigoProductName for display
+                const displayName = c.materialLot?.product?.name || c.materialLot?.siigoProductName;
+                return {
+                    ...c,
+                    materialLot: c.materialLot ? { ...c.materialLot, siigoProductName: displayName } : c.materialLot,
+                    type: 'CONSUMPTION',
+                    date: c.usedAt,
+                    quantity: -c.quantityUsed,
+                    unit: c.materialLot?.unit || 'gramo',
+                    zone: c.materialLot?.zone || null,
+                    processInfo: c.assemblyNoteId ? noteMap[c.assemblyNoteId] || null : null
+                };
+            });
 
             // ── 2. MaterialLot entries (positive — from production OR PO ingress) ──
             const lotWhere = {};
@@ -360,6 +366,23 @@ const lotController = {
                     zone: zt.materialLot.zone
                 } : null;
 
+                const destLot = zt.materialLot ? materialLots.find(l => 
+                    l.siigoProductCode === zt.materialLot.siigoProductCode && 
+                    l.lotNumber === zt.materialLot.lotNumber && 
+                    l.zone === toZone
+                ) : null;
+
+                const destLotData = destLot ? {
+                    id: destLot.id,
+                    lotNumber: destLot.lotNumber,
+                    siigoProductCode: destLot.siigoProductCode,
+                    siigoProductName: destLot.siigoProductName,
+                    initialQuantity: destLot.initialQuantity,
+                    currentQuantity: destLot.currentQuantity,
+                    unit: destLot.unit,
+                    zone: toZone
+                } : (zt.materialLot ? { ...lotData, currentQuantity: 0, zone: toZone } : null);
+
                 // Row 1: EGRESS from source zone
                 transferRows.push({
                     id: `zt-out-${zt.id}`,
@@ -382,8 +405,8 @@ const lotController = {
                     quantity: zt.quantity,
                     unit: zt.unit || 'gramo',
                     zone: toZone,
-                    materialLot: lotData,
-                    materialLotId: zt.materialLotId,
+                    materialLot: destLotData || lotData,
+                    materialLotId: destLot ? destLot.id : zt.materialLotId,
                     usedBy: zt.transferredBy,
                     processInfo: null,
                     observations: `Traslado ← ${fromZone === 'WAREHOUSE' ? 'Bodega' : 'Producción'}`

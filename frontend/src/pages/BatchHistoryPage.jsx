@@ -425,9 +425,9 @@ const BatchHistoryPage = () => {
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                             <KpiCard label="Duración" value={fmtDuration(detail.durationMinutes)} icon={<Clock size={16} />} color="blue" />
                             <KpiCard label="Etapas" value={`${detail.kpis?.stagesCompleted ?? 0}/${detail.kpis?.stagesTotal ?? 0}`} icon={<Layers size={16} />} color="indigo" />
-                            <KpiCard label="Producido" value={`${fmt(detail.actualOutput || detail.expectedOutput)} g`} icon={<Package size={16} />} color="emerald" />
-                            <KpiCard label="Uds Conteo" value={fmt(detail.kpis?.unitsActual)} icon={<BarChart2 size={16} />} color="cyan" />
-                            <KpiCard label="Defectuosas" value={fmt(detail.kpis?.unitsDefective)} icon={<AlertTriangle size={16} />} color="rose" />
+                            <KpiCard label="Producido" value={`${fmt(detail.actualOutput)} g`} subValue={`Plan: ${fmt(detail.expectedOutput)} g`} icon={<Package size={16} />} color="emerald" />
+                            <KpiCard label="Uds Conteo" value={detail.kpis?.unitsActual > 0 ? fmt(detail.kpis.unitsActual) : '—'} subValue={detail.kpis?.unitsPlanned > 0 ? `Plan: ${fmt(detail.kpis.unitsPlanned)}` : ''} icon={<BarChart2 size={16} />} color="cyan" />
+                            <KpiCard label="Defectuosas" value={detail.kpis?.unitsDefective > 0 ? fmt(detail.kpis.unitsDefective) : (detail.kpis?.unitsActual > 0 ? '0' : '—')} icon={<AlertTriangle size={16} />} color="rose" />
                             <KpiCard label="Efectividad" value={detail.kpis?.effectiveness != null ? `${detail.kpis.effectiveness}%` : '—'} icon={<CheckCircle2 size={16} />}
                                 color={detail.kpis?.effectiveness >= 95 ? 'emerald' : detail.kpis?.effectiveness >= 80 ? 'amber' : 'rose'} />
                         </div>
@@ -447,11 +447,18 @@ const BatchHistoryPage = () => {
                                 <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">Productos de Salida</h3>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                     {detail.outputTargets.map((t, i) => (
-                                        <div key={i} className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                                        <div key={i} className="bg-slate-50 rounded-xl p-3 border border-slate-100 flex flex-col justify-center">
                                             <div className="font-bold text-sm text-slate-700">{t.product}</div>
-                                            <div className="text-xs text-slate-400 mt-1">
-                                                {t.plannedUnits > 0 ? `${fmt(t.plannedUnits)} uds` : ''}
-                                                {t.plannedWeightKg > 0 ? ` · ${fmt(t.plannedWeightKg, 1)} kg` : ''}
+                                            <div className="text-xs mt-1">
+                                                {t.actualUnits > 0 ? (
+                                                    <span className="text-emerald-600 font-bold mix-blend-multiply">Real: {fmt(t.actualUnits)} uds</span>
+                                                ) : null}
+                                                {(t.plannedUnits > 0 || t.plannedWeightKg > 0) && (
+                                                    <span className="text-slate-400 ml-1">
+                                                        ({t.plannedUnits > 0 ? `Plan: ${fmt(t.plannedUnits)} uds` : ''}
+                                                        {t.plannedWeightKg > 0 ? ` · ${fmt(t.plannedWeightKg, 1)} kg` : ''})
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
@@ -477,19 +484,43 @@ const BatchHistoryPage = () => {
                         {/* Production lots */}
                         {detail.productionLots?.length > 0 && (
                             <div className="bg-white rounded-2xl border border-slate-200 p-4">
-                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">Lotes Producidos</h3>
-                                <div className="space-y-2">
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-2"><Package size={16} />Trazabilidad de Ventas / Destinos</h3>
+                                <div className="space-y-3">
                                     {detail.productionLots.map((lot, i) => (
-                                        <div key={i} className="flex justify-between items-center bg-emerald-50 rounded-xl p-3 border border-emerald-100">
-                                            <div>
-                                                <div className="font-bold text-sm text-slate-700">{lot.product}</div>
-                                                <div className="text-xs text-slate-400 font-mono">{lot.lotNumber}</div>
-                                            </div>
-                                            <div className="text-right">
-                                                <div className="font-bold text-sm text-emerald-600">{fmt(lot.initialQuantity)} g</div>
-                                                <div className="text-xs text-slate-400">
-                                                    {lot.expiresAt ? `Vence: ${fmtDate(lot.expiresAt)}` : ''}
+                                        <div key={i} className="flex flex-col bg-emerald-50/40 rounded-xl p-3 border border-emerald-100">
+                                            <div className="flex justify-between items-center mb-2">
+                                                <div>
+                                                    <div className="font-bold text-sm text-slate-700">{lot.product}</div>
+                                                    <div className="text-xs text-slate-400 font-mono">{lot.lotNumber}</div>
                                                 </div>
+                                                <div className="text-right">
+                                                    <div className="font-bold text-sm text-emerald-600">{fmt(lot.initialQuantity)} g producidos</div>
+                                                    <div className="text-xs text-slate-400">
+                                                        {lot.expiresAt ? `Vence: ${fmtDate(lot.expiresAt)}` : ''}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            {/* Tracing Data */}
+                                            <div className="text-xs bg-white rounded-lg p-2.5 border border-emerald-100 shadow-sm mt-1">
+                                                {lot.internalUses?.length > 0 || lot.externalUses?.length > 0 ? (
+                                                    <div className="space-y-2">
+                                                        {lot.internalUses?.map((iu, idx) => (
+                                                            <div key={`iu-${idx}`} className="flex items-center gap-1.5 text-slate-600">
+                                                                <Layers size={14} className="text-blue-500" />
+                                                                <span>Consumo local (<strong>{fmt(iu.quantity)} g</strong>) en ensamble siguiente: <span className="font-mono text-blue-600 font-bold">{iu.batchNumber || 'Otro lote'}</span></span>
+                                                            </div>
+                                                        ))}
+                                                        {lot.externalUses?.map((eu, idx) => (
+                                                            <div key={`eu-${idx}`} className="flex items-center gap-1.5 text-slate-600">
+                                                                <Package size={14} className="text-purple-500" />
+                                                                <span>Despachado <strong>{fmt(eu.quantity)} uds</strong> al cliente: <span className="font-bold">{eu.clientName || 'Desconocido'}</span> <span className="opacity-60">(Pedido #{eu.orderNumber})</span></span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-slate-400 italic">No registra ventas ni usos posteriores en Siigo aún. (Inventario / Bodega)</div>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
@@ -693,7 +724,7 @@ const BatchHistoryPage = () => {
    Sub-components
    ════════════════════════════════════════════════════════════════════════════ */
 
-const KpiCard = ({ label, value, icon, color = 'blue' }) => {
+const KpiCard = ({ label, value, subValue, icon, color = 'blue' }) => {
     const colors = {
         blue: 'bg-blue-50 text-blue-700 border-blue-100',
         indigo: 'bg-indigo-50 text-indigo-700 border-indigo-100',
@@ -703,11 +734,12 @@ const KpiCard = ({ label, value, icon, color = 'blue' }) => {
         amber: 'bg-amber-50 text-amber-700 border-amber-100',
     };
     return (
-        <div className={`rounded-2xl p-3 text-center border ${colors[color] || colors.blue}`}>
+        <div className={`rounded-2xl p-3 text-center border flex flex-col justify-center ${colors[color] || colors.blue}`}>
             <div className="flex items-center justify-center gap-1 text-xs font-bold uppercase opacity-60 mb-1">
                 {icon} {label}
             </div>
             <div className="text-xl font-black">{value}</div>
+            {subValue && <div className="text-[10px] font-bold opacity-70 mt-1 uppercase tracker-wide">{subValue}</div>}
         </div>
     );
 };

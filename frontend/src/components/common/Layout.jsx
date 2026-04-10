@@ -89,7 +89,7 @@ const Layout = () => {
 
                     <div className="flex items-center gap-4">
                         {/* Zebra printer status — shown to operational roles */}
-                        {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA'].includes(user?.role) && (
+                        {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA', 'SUPERADMIN'].includes(user?.role) && (
                             <div className="relative" ref={zebraRef}>
                                 <button
                                     onClick={() => { setInputRelay(relayIp || ''); setInputForce(forceIp || ''); setShowZebraConfig(v => !v); }}
@@ -108,7 +108,7 @@ const Layout = () => {
                                 </button>
 
                                 {showZebraConfig && (
-                                    <div className="absolute right-0 top-9 z-50 bg-white border border-neutral-200 rounded-xl shadow-xl p-4 w-72">
+                                    <div className="absolute left-0 lg:right-0 lg:left-auto top-9 z-50 bg-white border border-neutral-200 rounded-xl shadow-xl p-4 w-72">
                                         <p className="text-xs font-bold text-neutral-700 mb-2 flex items-center gap-1.5"><Wifi size={13}/> Configurar impresora Zebra</p>
                                         <p className="text-xs text-neutral-500 mb-3">Estado: <span className="font-semibold">{zebraStatus === 'connected' ? `🟢 Conectada (${zebraIp})` : zebraStatus === 'checking' ? '🔵 Verificando...' : '🔴 No alcanzable'}</span></p>
 
@@ -116,7 +116,16 @@ const Layout = () => {
                                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3">
                                             <p className="text-xs font-bold text-amber-800 mb-0.5">📱 IP directa Zebra (tablet)</p>
                                             <p className="text-xs text-amber-600 mb-1.5">Usa esto si Chrome bloquea la detección automática.</p>
-                                            {forceIp && <p className="text-xs text-emerald-700 font-semibold mb-1">✓ Activo: {forceIp} <button onClick={clearForce} className="ml-1 text-red-500 underline">Quitar</button></p>}
+                                            {forceIp && (
+                                                <div className="mb-2 p-1.5 bg-emerald-100/50 rounded flex flex-col items-start gap-1">
+                                                    <span className="text-[11px] text-emerald-800 font-bold break-all">
+                                                        ✓ IP Actual: {forceIp}
+                                                    </span>
+                                                    <button onClick={clearForce} className="text-[11px] font-bold text-red-600 underline">
+                                                        Quitar configuración
+                                                    </button>
+                                                </div>
+                                            )}
                                             <div className="flex gap-2">
                                                 <input
                                                     type="text"

@@ -2,7 +2,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import api from '../services/api';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { RefreshCw, Clock, TrendingUp, AlertTriangle, Star, ChevronUp, ChevronDown, Minus } from 'lucide-react';
+import { RefreshCw, Clock, TrendingUp, TrendingDown, AlertTriangle, Star, ChevronUp, ChevronDown, Minus, Beaker } from 'lucide-react';
+
+const fmtCOP = (v) => v != null ? `$${Number(v).toLocaleString('es-CO')}` : '—';
+const fmtKg = (g) => g != null ? `${(g / 1000).toLocaleString('es-CO', { maximumFractionDigits: 1 })} kg` : '—';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const fmtMin = (v) => {
@@ -33,6 +36,7 @@ const ProductionKpiPage = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [days, setDays] = useState(30);
+    const [lineFilter, setLineFilter] = useState('all'); // all, liquipops, geniality
     const [sortKey, setSortKey] = useState('overallScore');
     const [sortDir, setSortDir] = useState('desc');
 
@@ -40,14 +44,14 @@ const ProductionKpiPage = () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await api.get(`/production-kpis?days=${days}`);
+            const res = await api.get(`/production-kpis?days=${days}&line=${lineFilter}`);
             setData(res.data);
         } catch (e) {
             setError(e.response?.data?.error || 'Error cargando KPIs');
         } finally {
             setLoading(false);
         }
-    }, [days]);
+    }, [days, lineFilter]);
 
     useEffect(() => { loadData(); }, [loadData]);
 
@@ -78,6 +82,16 @@ const ProductionKpiPage = () => {
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
+                        {/* Line Filter */}
+                        <div className="flex bg-slate-100 p-1 rounded-lg text-sm font-medium">
+                            {['all', 'liquipops', 'geniality'].map(l => (
+                                <button key={l}
+                                    onClick={() => setLineFilter(l)}
+                                    className={`px-3 py-1.5 rounded-md capitalize transition-colors ${lineFilter === l ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>
+                                    {l === 'all' ? 'Global' : l}
+                                </button>
+                            ))}
+                        </div>
                         {/* Period selector */}
                         <div className="flex border border-slate-200 rounded-lg overflow-hidden text-sm font-medium">
                             {[7, 30, 90].map(d => (
@@ -237,6 +251,261 @@ const ProductionKpiPage = () => {
                                 </table>
                             </div>
                         </section>
+
+                        {/* ── Filling Efficiency KPI (Geniality) ─────────────────── */}
+                        {lineFilter !== 'liquipops' && data.fillingKpis?.batches?.length > 0 && (
+                            <section>
+                                <div className="flex items-center gap-2 mb-3">
+                                    <TrendingDown size={15} className="text-violet-400" />
+                                    <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Eficiencia de Llenado — Geniality</h2>
+                                    <span className="text-xs text-slate-400 ml-1">(saborizacion consumida vs. fórmula)</span>
+                                </div>
+
+                                {/* Summary chips */}
+                                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+                                    <div className="bg-violet-50 border border-violet-100 rounded-lg px-4 py-3">
+                                        <div className="text-2xl font-bold text-violet-700">{data.fillingKpis.summary.batchCount}</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Batches analizados</div>
+                                    </div>
+                                    <div className={`border rounded-lg px-4 py-3 ${
+                                        data.fillingKpis.summary.avgMermaPct <= 5 ? 'bg-emerald-50 border-emerald-200' :
+                                        data.fillingKpis.summary.avgMermaPct <= 10 ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'
+                                    }`}>
+                                        <div className={`text-2xl font-bold ${
+                                            data.fillingKpis.summary.avgMermaPct <= 5 ? 'text-emerald-600' :
+                                            data.fillingKpis.summary.avgMermaPct <= 10 ? 'text-amber-600' : 'text-rose-600'
+                                        }`}>{data.fillingKpis.summary.avgMermaPct}%</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Merma promedio</div>
+                                    </div>
+                                    <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                                        <div className="text-2xl font-bold text-slate-700">{fmtKg(data.fillingKpis.summary.totalMermaG)}</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Merma acumulada</div>
+                                    </div>
+
+                                    {(() => {
+                                        const lossDaño = data.fillingKpis.batches.reduce((sum, r) => sum + (r.lostMoney || 0), 0);
+                                        return (
+                                            <div className="bg-rose-50/50 border border-rose-200 rounded-lg px-4 py-3">
+                                                <div className="text-lg font-bold text-rose-600">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(lossDaño)}</div>
+                                                <div className="text-xs text-rose-400 mt-0.5 font-medium">Perdid. No Conformes</div>
+                                            </div>
+                                        );
+                                    })()}
+                                    
+                                    {(() => {
+                                        const lossMerma = data.fillingKpis.batches.reduce((sum, r) => sum + (r.mermaLostMoney || 0), 0);
+                                        return (
+                                            <div className="bg-rose-50/50 border border-rose-200 rounded-lg px-4 py-3">
+                                                <div className="text-lg font-bold text-rose-600">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(lossMerma)}</div>
+                                                <div className="text-xs text-rose-400 mt-0.5 font-medium">Perdid. Merma Exceso</div>
+                                            </div>
+                                        );
+                                    })()}
+                                </div>
+
+                                {/* Per-batch table */}
+                                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b border-slate-100 bg-slate-50">
+                                                <th className="text-left px-5 py-3 text-xs font-bold text-slate-500 uppercase">Batch</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Uds Planeadas</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Uds Reales</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Dañados</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Producidas (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Empacadas (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma%</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {data.fillingKpis.batches.map((row, i) => (
+                                                <tr key={i} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                                    <td className="px-5 py-3 font-mono text-xs font-bold text-violet-700">{row.batchNumber}</td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <div className="font-bold text-slate-800">{row.plannedUnits || 0}</div>
+                                                        {row.breakdown && Object.entries(row.breakdown).map(([size, counts]) => (
+                                                            <div key={size} className="text-[9px] text-slate-400 font-medium">
+                                                                {size}: {counts.planned || 0}
+                                                            </div>
+                                                        ))}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <div className="font-bold text-slate-800">{row.actualUnits || 0}</div>
+                                                        {row.breakdown && Object.entries(row.breakdown).map(([size, counts]) => (
+                                                            <div key={size} className="text-[9px] text-slate-400 font-medium">
+                                                                {size}: {counts.actual || 0}
+                                                            </div>
+                                                        ))}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-center">
+                                                        {row.defective > 0 ? (
+                                                            <>
+                                                                <span className="font-bold text-rose-600">{row.defective} <span className="text-[10px] font-semibold text-rose-400/80">{row.defectivePct}%</span></span>
+                                                                {row.defectiveBreakdown && row.defectiveBreakdown.map((db, idx) => (
+                                                                    <div key={idx} className="text-[10px] text-rose-400 mt-1 leading-tight">
+                                                                        <span className="font-semibold">{db.size}:</span> {db.qty}u ({db.reasonText})
+                                                                        {db.lostMoney > 0 && <span className="block mt-0.5 font-bold text-rose-500">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(db.lostMoney)}</span>}
+                                                                    </div>
+                                                                ))}
+                                                                {row.lostMoney > 0 && (
+                                                                    <div className="mt-2 pt-1 border-t border-rose-100 text-[10px] font-bold text-rose-600">
+                                                                        Total Perdido: -{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(row.lostMoney)}
+                                                                    </div>
+                                                                )}
+                                                            </>
+                                                        ) : (
+                                                            <span className="text-slate-300">—</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center text-slate-500">{fmtKg(row.productionG)}</td>
+                                                    <td className="px-4 py-3 text-center text-blue-600 font-medium">{fmtKg(row.expectedG)}</td>
+                                                    <td className="px-4 py-3 text-center text-slate-600 font-medium">{fmtKg(row.mermaG)}</td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                                                            row.mermaPct <= 5 ? 'bg-emerald-100 text-emerald-700' :
+                                                            row.mermaPct <= 10 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
+                                                        }`}>{row.mermaPct}%</span>
+                                                        {row.mermaPct > 5 && (
+                                                            <div className="mt-2 pt-1 border-t border-rose-100 text-[10px] leading-tight text-rose-500 font-bold">
+                                                                Pérdida (Sobre 5%): -{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(row.mermaLostMoney)}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        )}
+
+                        {/* ── Filling Efficiency KPI (Liquipops) ─────────────────── */}
+                        {lineFilter !== 'geniality' && data.fillingLiquipops?.batches?.length > 0 && (
+                            <section>
+                                <div className="flex items-center gap-2 mb-3">
+                                    <TrendingDown size={15} className="text-violet-400" />
+                                    <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Eficiencia de Empaque — Liquipops</h2>
+                                    <span className="text-xs text-slate-400 ml-1">(esferas empacadas vs producidas teóricas)</span>
+                                </div>
+
+                                {/* Summary chips */}
+                                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+                                    <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3">
+                                        <div className="text-2xl font-bold text-indigo-700">{data.fillingLiquipops.summary.batchCount}</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Batches analizados</div>
+                                    </div>
+                                    <div className={`border rounded-lg px-4 py-3 ${
+                                        data.fillingLiquipops.summary.avgMermaPct <= 5 ? 'bg-emerald-50 border-emerald-200' :
+                                        data.fillingLiquipops.summary.avgMermaPct <= 10 ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'
+                                    }`}>
+                                        <div className={`text-2xl font-bold ${
+                                            data.fillingLiquipops.summary.avgMermaPct <= 5 ? 'text-emerald-600' :
+                                            data.fillingLiquipops.summary.avgMermaPct <= 10 ? 'text-amber-600' : 'text-rose-600'
+                                        }`}>{data.fillingLiquipops.summary.avgMermaPct}%</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Merma promedio</div>
+                                    </div>
+                                    <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                                        <div className="text-2xl font-bold text-slate-700">{fmtKg(data.fillingLiquipops.summary.totalMermaG)}</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Merma acumulada</div>
+                                    </div>
+
+                                    {(() => {
+                                        const lossDaño = data.fillingLiquipops.batches.reduce((sum, r) => sum + (r.lostMoney || 0), 0);
+                                        return (
+                                            <div className="bg-rose-50/50 border border-rose-200 rounded-lg px-4 py-3">
+                                                <div className="text-lg font-bold text-rose-600">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(lossDaño)}</div>
+                                                <div className="text-xs text-rose-400 mt-0.5 font-medium">Perdid. No Conformes</div>
+                                            </div>
+                                        );
+                                    })()}
+                                    
+                                    {(() => {
+                                        const lossMerma = data.fillingLiquipops.batches.reduce((sum, r) => sum + (r.mermaLostMoney || 0), 0);
+                                        return (
+                                            <div className="bg-rose-50/50 border border-rose-200 rounded-lg px-4 py-3">
+                                                <div className="text-lg font-bold text-rose-600">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(lossMerma)}</div>
+                                                <div className="text-xs text-rose-400 mt-0.5 font-medium">Perdid. Merma Exceso</div>
+                                            </div>
+                                        );
+                                    })()}
+                                </div>
+
+                                {/* Per-batch table */}
+                                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b border-slate-100 bg-slate-50">
+                                                <th className="text-left px-5 py-3 text-xs font-bold text-slate-500 uppercase">Batch</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Uds Planeadas</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Uds Reales</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Dañados</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Producidas (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Empacadas (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma%</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {data.fillingLiquipops.batches.map((row, i) => (
+                                                <tr key={i} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                                    <td className="px-5 py-3 font-mono text-xs font-bold text-violet-700">{row.batchNumber}</td>
+                                                    <td className="px-4 py-3 text-center text-slate-500">
+                                                        <div className="font-bold text-slate-600">{row.plannedUnits}</div>
+                                                        {row.breakdown && Object.entries(row.breakdown).map(([size, dt]) => (
+                                                            <div key={size} className="text-[10px] text-slate-400">{size}: {dt.planned}</div>
+                                                        ))}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center text-slate-500">
+                                                        <div className="font-bold text-slate-600">{row.actualUnits}</div>
+                                                        {row.breakdown && Object.entries(row.breakdown).map(([size, dt]) => (
+                                                            <div key={size} className="text-[10px] text-emerald-600/70">{size}: {dt.actual}</div>
+                                                        ))}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center text-rose-500">
+                                                        {row.defective > 0 ? (
+                                                            <>
+                                                                <div className="font-bold flex items-center justify-center gap-1">
+                                                                    <span>{row.defective}</span>
+                                                                    <span className="text-[10px] bg-rose-100/50 text-rose-600 px-1 rounded-sm leading-none">{row.defectivePct}%</span>
+                                                                </div>
+                                                                {row.defectiveBreakdown && row.defectiveBreakdown.map((db, idx) => (
+                                                                    <div key={idx} className="text-[10px] text-rose-400 mt-1 leading-tight">
+                                                                        <span className="font-semibold">{db.size}:</span> {db.qty}u ({db.reasonText})
+                                                                        {db.lostMoney > 0 && <span className="block mt-0.5 font-bold text-rose-500">-{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(db.lostMoney)}</span>}
+                                                                    </div>
+                                                                ))}
+                                                                {row.lostMoney > 0 && (
+                                                                    <div className="mt-2 pt-1 border-t border-rose-100 text-[10px] font-bold text-rose-600">
+                                                                        Total Perdido: -{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(row.lostMoney)}
+                                                                    </div>
+                                                                )}
+                                                            </>
+                                                        ) : (
+                                                            <span className="text-slate-300">—</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center text-slate-500">{fmtKg(row.productionG)}</td>
+                                                    <td className="px-4 py-3 text-center text-emerald-600 font-medium">{fmtKg(row.expectedG)}</td>
+                                                    <td className="px-4 py-3 text-center text-amber-600 font-medium">{fmtKg(row.mermaG)}</td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                                                            row.mermaPct <= 5 ? 'bg-emerald-100 text-emerald-700' :
+                                                            row.mermaPct <= 10 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
+                                                        }`}>{row.mermaPct}%</span>
+                                                        {row.mermaPct > 5 && (
+                                                            <div className="mt-2 pt-1 border-t border-rose-100 text-[10px] leading-tight text-rose-500 font-bold">
+                                                                Pérdida (Sobre 5%): -{new Intl.NumberFormat('es-CO', {style:'currency', currency:'COP', maximumFractionDigits:0}).format(row.mermaLostMoney)}
+                                                            </div>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+                        )}
 
                         {/* ── Quality detail per batch (EMPAQUE) ─────────────────── */}
                         {data.qualityKpis?.detail?.length > 0 && (

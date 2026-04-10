@@ -11,6 +11,7 @@ import MedicionStep from './steps/MedicionStep';
 import FormacionQCStep from './steps/FormacionQCStep';
 import EsferificacionStep from './steps/EsferificacionStep';
 import ProteccionGateStep from './steps/ProteccionGateStep';
+import GConteoCarritosStep from '../GenialityRunner/steps/GConteoCarritosStep';
 
 /**
  * StepDisplay — thin router
@@ -33,6 +34,9 @@ const StepDisplay = (props) => {
     if (stepType === 'FORMACION_QC') return <FormacionQCStep {...props} />;
     if (stepType === 'ESFERIFICACION') return <EsferificacionStep {...props} />;
     if (stepType === 'PROTECCION_GATE') return <ProteccionGateStep {...props} />;
+    
+    // Geniality steps
+    if (stepType === 'G_CONTEO_CARRITOS') return <GConteoCarritosStep {...props} />;
 
     return null;
 };

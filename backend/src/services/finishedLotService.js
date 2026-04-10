@@ -403,13 +403,25 @@ async function getStockByZone(zone, productId) {
             },
             select: {
                 productId: true,
+                productionBatchId: true,
                 productionBatch: { select: { batchNumber: true } },
+                product: { select: { accountGroup: true } },
             },
         });
 
-        // Build a Set of "productId_lotNumber" keys that are still pending
+        // Geniality products (accountGroup 1402) inject stock dynamically per-carrito
+        // and do not wait for the Ensamble/Empaque note to complete before handoffs.
+
+        // Build pending set — skip Geniality products whose EMPAQUE is done
         const pendingKeys = new Set(
-            pendingNotes.map(n => `${n.productId}_${n.productionBatch?.batchNumber}`)
+            pendingNotes
+                .filter(n => {
+                    // Geniality products (1402) inject stock dynamically per-carrito.
+                    // We DO NOT block their handoffs, as partial deliveries to logistics are expected.
+                    if (n.product?.accountGroup === 1402) return false;
+                    return true;
+                })
+                .map(n => `${n.productId}_${n.productionBatch?.batchNumber}`)
         );
         for (const s of allStocks) {
             s.assemblyPending = pendingKeys.has(`${s.productId}_${s.lotNumber}`);

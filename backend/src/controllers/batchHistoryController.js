@@ -88,24 +88,39 @@ const batchHistoryController = {
                 const durationMs = firstStarted && lastCompleted
                     ? new Date(lastCompleted) - new Date(firstStarted) : null;
 
-                // Conteo/Empaque data from processParameters
+                // Conteo/Empaque data from processParameters deduplicated
                 let totalPlanned = 0, totalActual = 0, totalDefective = 0, totalProducedGrams = 0;
+                const actualsByProduct = {};
+                const plannedByProduct = {};
+                
                 for (const n of notes) {
                     if (n.processType?.code === 'CONTEO' && n.processParameters?.conteo) {
-                        for (const [, data] of Object.entries(n.processParameters.conteo)) {
-                            totalPlanned += data.planned || 0;
-                            totalActual += data.actual || 0;
+                        for (const [key, data] of Object.entries(n.processParameters.conteo)) {
+                            const prodId = data.productId || key;
+                            actualsByProduct[prodId] = Math.max(actualsByProduct[prodId] || 0, data.actual || 0);
+                            plannedByProduct[prodId] = Math.max(plannedByProduct[prodId] || 0, data.planned || 0);
                         }
                     }
                     if (n.processType?.code === 'EMPAQUE' && n.processParameters?.empaque) {
                         const emp = n.processParameters.empaque;
-                        // targetQuantity has the unit count (71, 13), conteo_qty has grams
-                        totalActual += n.targetQuantity || 0;
-                        totalPlanned += n.targetQuantity || 0;
                         totalDefective += emp.defective_qty || emp.defective || 0;
                         totalProducedGrams += emp.conteo_qty || 0;
+                        
+                        const actualQty = n.actualQuantity != null ? n.actualQuantity : (emp.approved_qty ?? n.targetQuantity ?? 0);
+                        
+                        if (n.productId) {
+                            actualsByProduct[n.productId] = Math.max(actualsByProduct[n.productId] || 0, actualQty);
+                            // Only fallback to targetQuantity if absolutely no plan exists, otherwise it inflates the plan when actuals > planned
+                            plannedByProduct[n.productId] = plannedByProduct[n.productId] ? Math.max(plannedByProduct[n.productId], emp.planned_qty || 0) : Math.max(0, emp.planned_qty || n.targetQuantity || 0);
+                        } else if (emp.product_id) {
+                            actualsByProduct[emp.product_id] = Math.max(actualsByProduct[emp.product_id] || 0, actualQty);
+                            plannedByProduct[emp.product_id] = plannedByProduct[emp.product_id] ? Math.max(plannedByProduct[emp.product_id], emp.planned_qty || 0) : Math.max(0, emp.planned_qty || n.targetQuantity || 0);
+                        }
                     }
                 }
+                
+                totalActual = Object.values(actualsByProduct).reduce((a, b) => a + b, 0);
+                totalPlanned = Object.values(plannedByProduct).reduce((a, b) => a + b, 0);
 
                 const effectiveness = totalActual > 0
                     ? Math.round(((totalActual - totalDefective) / totalActual) * 100) : null;
@@ -129,7 +144,7 @@ const batchHistoryController = {
                     effectiveness,
                     outputTargets: batch.outputTargets?.map(t => ({
                         product: t.product?.name,
-                        plannedUnits: t.plannedUnits,
+                        plannedUnits: plannedByProduct[t.productId] != null && plannedByProduct[t.productId] > 0 ? plannedByProduct[t.productId] : t.plannedUnits,
                         plannedWeightKg: t.plannedWeightKg
                     })),
                     createdAt: batch.createdAt
@@ -272,6 +287,29 @@ const batchHistoryController = {
                 if (pp.empaque?.photo_urls?.length > 0) {
                     pp.empaque.photo_urls.forEach((url, i) => photos.push({ url, label: `Empaque ${i + 1}` }));
                 }
+                
+                // Weighing (pesaje) photos for ingredients - LIQUIPOPS and GENERAL
+                if (pp.weighing_photos) {
+                    Object.entries(pp.weighing_photos).forEach(([itemId, url]) => {
+                        if (url) {
+                            // Try to find the ingredient name from the items array to use as label
+                            const item = (note.items || []).find(i => i.id === itemId);
+                            const label = item?.component?.name ? `Pesaje: ${item.component.name}` : `Pesaje Insumo`;
+                            photos.push({ url, label });
+                        }
+                    });
+                }
+                
+                // Weighing (pesaje) photos for ingredients - GENIALITY
+                if (pp.weighing_data) {
+                    Object.entries(pp.weighing_data).forEach(([itemId, data]) => {
+                        if (data.photoUrl) {
+                            const item = (note.items || []).find(i => i.id === itemId);
+                            const label = item?.component?.name ? `Pesaje: ${item.component.name}` : `Pesaje Insumo`;
+                            photos.push({ url: data.photoUrl, label });
+                        }
+                    });
+                }
                 // Temperature & sensory data from QC or cocción
                 const temperature = pp.coccion_result?.realTemperature || pp.qc_result?.temperature || null;
                 const targetTemperature = pp.coccion_result?.targetTemperature || pp.targetTemperature || null;
@@ -324,23 +362,148 @@ const batchHistoryController = {
                 };
             });
 
-            // Conteo/empaque summary
+            // Conteo/empaque summary deduplicated by product size
             let unitsPlanned = 0, unitsActual = 0, totalDefective = 0;
+            const actualsByProduct = {};
+            const plannedByProduct = {};
+            
             for (const n of notes) {
                 if (n.processType?.code === 'CONTEO' && n.processParameters?.conteo) {
-                    for (const [, data] of Object.entries(n.processParameters.conteo)) {
-                        unitsPlanned += data.planned || 0;
-                        unitsActual += data.actual || 0;
+                    for (const [key, data] of Object.entries(n.processParameters.conteo)) {
+                        const prodId = data.productId || key;
+                        actualsByProduct[prodId] = data.actual || 0;
+                        plannedByProduct[prodId] = data.planned || 0;
                     }
                 }
-                if (n.processType?.code === 'EMPAQUE' && n.processParameters?.empaque) {
-                    const emp = n.processParameters.empaque;
-                    // targetQuantity has the unit count (71, 13), conteo_qty has grams
-                    unitsActual += n.targetQuantity || 0;
-                    unitsPlanned += n.targetQuantity || 0;
+                if (n.processType?.code === 'EMPAQUE') {
+                    const emp = n.processParameters?.empaque || {};
                     totalDefective += emp.defective_qty || emp.defective || 0;
+                    
+                    const actualQty = n.actualQuantity != null ? n.actualQuantity : (emp.approved_qty ?? n.targetQuantity ?? 0);
+                    
+                    if (n.productId) {
+                        actualsByProduct[n.productId] = Math.max(actualsByProduct[n.productId] || 0, actualQty);
+                        plannedByProduct[n.productId] = plannedByProduct[n.productId] ? Math.max(plannedByProduct[n.productId], emp.planned_qty || 0) : Math.max(0, emp.planned_qty || n.targetQuantity || 0);
+                    } else if (emp.product_id) { // fallback
+                        actualsByProduct[emp.product_id] = Math.max(actualsByProduct[emp.product_id] || 0, actualQty);
+                        plannedByProduct[emp.product_id] = plannedByProduct[emp.product_id] ? Math.max(plannedByProduct[emp.product_id], emp.planned_qty || 0) : Math.max(0, emp.planned_qty || n.targetQuantity || 0);
+                    }
                 }
             }
+
+            for (const c of Object.values(actualsByProduct)) unitsActual += c;
+            for (const c of Object.values(plannedByProduct)) unitsPlanned += c;
+
+            // ── FILLING KPI (Geniality only) ─────────────────────────────────
+            // Detect Geniality batch: has EMPAQUE notes (carriots-based)
+            let fillingKpi = null;
+            const empaqueNotes = notes.filter(n => n.processType?.code === 'EMPAQUE');
+            if (empaqueNotes.length > 0 && batch.batchNumber) {
+                try {
+                    // Saborizacion g per unit from Formula table
+                    const SAB_PER_UNIT = { '1000': 1350, '360': 500, 'default': 1350 };
+
+                    // Consumption from the batch's OWN saborizacion lot only
+                    // The saborizacion lot for this batch has lotNumber === batch.batchNumber
+                    const sabLot = await prisma.materialLot.findFirst({
+                        where: {
+                            lotNumber: batch.batchNumber,
+                            siigoProductName: { contains: 'SABORIZACION', mode: 'insensitive' }
+                        },
+                        select: { id: true, initialQuantity: true, siigoProductName: true }
+                    });
+
+                    if (sabLot) {
+                        // Total consumed from this batch's saborizacion lot
+                        const sabLCs = await prisma.lotConsumption.findMany({
+                            where: { materialLotId: sabLot.id, assemblyNoteId: { in: noteIds } }
+                        });
+                        const actualConsumed = sabLCs.reduce((s, lc) => s + lc.quantityUsed, 0);
+
+                        // Expected: for each EMPAQUE note, get unit count and product size
+                        let expectedConsumed = 0;
+                        const breakdown = [];
+                        for (const en of empaqueNotes) {
+                            const unitCount = en.targetQuantity || 0;
+                            if (unitCount <= 0) continue;
+                            // Detect size from stage name ("1000 ML" or "360 ML")
+                            const stageName = en.stageName || '';
+                            const size = stageName.includes('1000') ? '1000' : stageName.includes('360') ? '360' : 'default';
+                            const gpv = SAB_PER_UNIT[size];
+                            const expected = unitCount * gpv;
+                            expectedConsumed += expected;
+                            breakdown.push({ stageName, unitCount, gpv, expected });
+                        }
+
+                        if (expectedConsumed > 0) {
+                            const mermaG = actualConsumed - expectedConsumed;
+                            const mermaP = Math.round((mermaG / expectedConsumed) * 1000) / 10; // 1 decimal
+                            const potentialExtra1000 = Math.floor(mermaG / 1350);
+                            const potentialExtra360 = Math.floor(mermaG / 500);
+                            const pricePer1000 = 27000; // COP
+                            const revenuePotential = potentialExtra1000 * pricePer1000;
+
+                            fillingKpi = {
+                                productionG: Math.round(sabLot.initialQuantity),
+                                actualConsumedG: Math.round(actualConsumed),
+                                expectedConsumedG: Math.round(expectedConsumed),
+                                mermaG: Math.round(mermaG),
+                                mermaPct: mermaP,
+                                potentialExtra1000,
+                                potentialExtra360,
+                                revenuePotential,
+                                breakdown
+                            };
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[fillingKpi] calc error:', e.message);
+                }
+            }
+
+            const enrichedProductionLots = await Promise.all(productionLots.map(async lot => {
+                const intern = await prisma.lotConsumption.findMany({
+                    where: { materialLotId: lot.id },
+                    include: { assemblyNote: { select: { productionBatch: { select: { batchNumber: true, flavor: true, product: true } } } } }
+                });
+                const extern = await prisma.orderPickingItem.findMany({
+                    where: { lotNumber: lot.lotNumber },
+                    include: { orderItem: { select: { order: { select: { orderNumber: true, distributor: { select: { name: true } } } } } } }
+                });
+
+                return {
+                    lotNumber: lot.lotNumber,
+                    product: lot.product?.name,
+                    initialQuantity: lot.initialQuantity,
+                    currentQuantity: lot.currentQuantity,
+                    status: lot.status,
+                    expiresAt: lot.expiresAt,
+                    receivedAt: lot.receivedAt,
+                    internalUses: intern.map(i => ({
+                        quantity: i.quantityUsed,
+                        batchNumber: i.assemblyNote?.productionBatch?.batchNumber
+                    })),
+                    externalUses: extern.map(e => ({
+                        quantity: e.scannedQty,
+                        orderNumber: e.orderItem?.order?.orderNumber,
+                        clientName: e.orderItem?.order?.distributor?.name
+                    }))
+                };
+            }));
+
+            const calcActualOutput = productionLots.reduce((acc, lot) => acc + lot.initialQuantity, 0);
+            const finalActualOutput = batch.actualOutput || calcActualOutput;
+
+            const enrichedOutputTargets = batch.outputTargets?.map(t => {
+                return {
+                    productId: t.productId,
+                    product: t.product?.name,
+                    sku: t.product?.sku,
+                    plannedUnits: plannedByProduct[t.productId] != null && plannedByProduct[t.productId] > 0 ? plannedByProduct[t.productId] : t.plannedUnits,
+                    actualUnits: actualsByProduct[t.productId] || t.actualUnits || 0,
+                    plannedWeightKg: t.plannedWeightKg
+                };
+            }) || [];
 
             res.json({
                 id: batch.id,
@@ -352,7 +515,8 @@ const batchHistoryController = {
                 completedAt: lastCompleted || batch.completedAt,
                 durationMinutes: durationMs ? Math.round(durationMs / 60000) : null,
                 expectedOutput: batch.expectedOutput,
-                actualOutput: batch.actualOutput,
+                actualOutput: finalActualOutput,
+                calculatedActualOutput: calcActualOutput,
                 notes: batch.notes,
                 kpis: {
                     stagesTotal: notes.length,
@@ -364,22 +528,10 @@ const batchHistoryController = {
                     effectiveness: unitsActual > 0
                         ? Math.round(((unitsActual - totalDefective) / unitsActual) * 100) : null
                 },
-                outputTargets: batch.outputTargets?.map(t => ({
-                    product: t.product?.name,
-                    sku: t.product?.sku,
-                    plannedUnits: t.plannedUnits,
-                    plannedWeightKg: t.plannedWeightKg
-                })),
+                outputTargets: enrichedOutputTargets,
                 timeline,
-                productionLots: productionLots.map(lot => ({
-                    lotNumber: lot.lotNumber,
-                    product: lot.product?.name,
-                    initialQuantity: lot.initialQuantity,
-                    currentQuantity: lot.currentQuantity,
-                    status: lot.status,
-                    expiresAt: lot.expiresAt,
-                    receivedAt: lot.receivedAt
-                })),
+                fillingKpi,
+                productionLots: enrichedProductionLots,
                 createdAt: batch.createdAt
             });
         } catch (error) {

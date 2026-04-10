@@ -55,7 +55,14 @@ const createOrder = async (req, res) => {
             const dateStr = `${dd}${mm}${yyyy}`;
             const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const todayCount = await tx.order.count({ where: { createdAt: { gte: startOfDay } } });
-            const orderNumber = `ORD-COMERCIAL-${dateStr}-${todayCount + 1}`;
+            
+            const safeName = (req.user.name || 'COMERCIAL')
+                .toUpperCase()
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^A-Z0-9 ]/g, '')
+                .trim().replace(/\s+/g, '-').substring(0, 15);
+
+            const orderNumber = `ORD-${safeName}-${dateStr}-${todayCount + 1}`;
 
             // Create Order
             const order = await tx.order.create({
@@ -457,7 +464,14 @@ const createOrderFromExcel = async (req, res) => {
             // Count orders created today to get the sequence number
             const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const todayCount = await tx.order.count({ where: { createdAt: { gte: startOfDay } } });
-            const orderNumber = `ORD-COMERCIAL-${dateStr}-${todayCount + 1}`;
+            
+            const safeName = (distributor.name || 'COMERCIAL')
+                .toUpperCase()
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^A-Z0-9 ]/g, '')
+                .trim().replace(/\s+/g, '-').substring(0, 15);
+                
+            const orderNumber = `ORD-${safeName}-${dateStr}-${todayCount + 1}`;
 
             const order = await tx.order.create({
                 data: {
@@ -529,14 +543,16 @@ const {
     getPickingSheet,
     getAllOrders,
     getOrderById,
-    getOrderCounts
+    getOrderCounts,
+    getPendingDeliverySummary
 } = require('./orderControllerExtensions');
 
 // ─── Partial Update (PATCH) ────────────────────────────────────
 const patchOrder = async (req, res) => {
     try {
         const { id } = req.params;
-        const allowedFields = ['packingMode', 'notes', 'dispatchNotes'];
+        const isDistributor = req.user?.role === 'DISTRIBUIDOR';
+        const allowedFields = isDistributor ? ['notes'] : ['packingMode', 'notes', 'dispatchNotes'];
         const data = {};
         for (const field of allowedFields) {
             if (req.body[field] !== undefined) {
@@ -571,5 +587,6 @@ module.exports = {
     getPickingSheet,
     getAllOrders,
     getOrderById,
-    getOrderCounts
+    getOrderCounts,
+    getPendingDeliverySummary
 };

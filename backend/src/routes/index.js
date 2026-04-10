@@ -6,6 +6,7 @@ const siigoRoutes = require('./siigoRoutes');
 const inventoryRoutes = require('./inventoryRoutes');
 const productionRoutes = require('./productionRoutes');
 const productionSchedulerRoutes = require('./productionSchedulerRoutes'); // New
+const auditRoutes = require('./auditRoutes');
 const rpaRoutes = require('./rpaRoutes');
 const labelRoutes = require('./labelRoutes');
 const billingRoutes = require('./billingRoutes');
@@ -55,6 +56,7 @@ router.use('/orders', orderWorkflowRoutes);
 router.use('/distributor', distributorRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/production', productionRoutes);
+router.use('/audit', auditRoutes);
 router.use('/production/liquipops', productionSchedulerRoutes); // New
 router.use('/rpa', rpaRoutes);
 router.use('/labels', labelRoutes);

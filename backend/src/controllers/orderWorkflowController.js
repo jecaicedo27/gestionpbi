@@ -637,19 +637,21 @@ exports.completePickingWithBackorder = async (req, res) => {
 
             // 6. Create backorder as APPROVED (already approved in original order, skip to picking queue)
             const backorderNotes = [
+                order.notes || '',
                 `[Backorder de ${order.orderNumber}]`,
                 `Origen: Separación parcial del pedido ${order.orderNumber} (${order.distributor?.name})`,
                 `Faltantes: ${faltanteDetail}`,
                 `Creado automáticamente el ${new Date().toLocaleDateString('es-CO')}`
-            ].join(' | ');
+            ].filter(Boolean).join(' | ');
 
             const newOrder = await tx.order.create({
                 data: {
                     orderNumber: newOrderNumber,
                     distributorId: order.distributorId,
                     status: 'APPROVED',
-                    approvedBy: req.user.id,
-                    approvedAt: new Date(),
+                    approvedBy: order.approvedBy || req.user.id,
+                    approvedAt: order.approvedAt || new Date(),
+                    createdAt: order.createdAt, // Inherited to keep FIFO ranking in production/picking
                     notes: backorderNotes,
                     items: { create: backorderItems }
                 },

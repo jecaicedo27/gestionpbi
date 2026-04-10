@@ -88,7 +88,7 @@ const GiantControls = ({
                             </>
                         ) : (
                             <>
-                                FINALIZAR
+                                {nextLabel !== 'SIGUIENTE' ? nextLabel : 'FINALIZAR'}
                                 <Check size={20} />
                             </>
                         )}

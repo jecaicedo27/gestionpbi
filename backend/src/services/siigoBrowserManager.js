@@ -537,21 +537,23 @@ class SiigoBrowserManager {
             }, quantity);
             log(`✅ Cantidad: ${quantity} (JS set: ${qtySet})`);
             await page.waitForTimeout(1000);
-            // Also try the triple-click + type approach as backup
-            if (!qtySet || qtySet === '1' || qtySet === '1.00') {
-                log('⚠️ JS set no funcionó, intentando triple-click + type');
-                const qtyInput = page.locator('#inputDecimal_siigoInputDecimal').first();
-                await qtyInput.click({ clickCount: 3 }).catch(() => { });
+            // ALWAYS use triple-click + type as primary strategy because 
+            // Siigo's masked inputs ignore JS dispatch events for large formatted numbers.
+            log('⚠️ Usando triple-click + type para garantizar que Siigo procese los eventos del teclado');
+            const qtyInput = page.locator('#inputDecimal_siigoInputDecimal').first();
+                await qtyInput.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+                await qtyInput.click({ clickCount: 3, force: true }).catch(() => { });
                 await page.waitForTimeout(300);
                 await page.keyboard.press('Backspace');
-                await page.waitForTimeout(300);
-                await qtyInput.pressSequentially(String(quantity), { delay: 80 });
+                await page.waitForTimeout(200);
+                await qtyInput.fill(String(quantity), { force: true }).catch(async () => {
+                   await qtyInput.pressSequentially(String(quantity), { delay: 100 });
+                });
                 await page.waitForTimeout(500);
-                await page.click('body', { position: { x: 500, y: 400 } });
+                await page.keyboard.press('Tab'); // tab out to trigger blur/change cleanly
                 await page.waitForTimeout(500);
                 const qtyVal2 = await qtyInput.inputValue().catch(() => '');
-                log(`✅ Cantidad (backup): ${qtyVal2}`);
-            }
+                log(`✅ Cantidad (backup estricto): ${qtyVal2}`);
             await page.waitForTimeout(1000);
 
             // === PRODUCT BODEGA (only the product row, ingredients come from template) ===
@@ -560,21 +562,63 @@ class SiigoBrowserManager {
             await page.waitForTimeout(3000); // Wait for template to load ingredients
             log('=== BODEGA PRODUCTO (forzar Sin asignar) ===');
             try {
-                const bodegaInput = page.locator('id=autocomplete_autocompleteInput').nth(3);
-                const bodegaVal = await bodegaInput.inputValue().catch(() => '');
-                log(`  Bodega actual: "${bodegaVal}" — forzando "Sin asignar"`);
-                await bodegaInput.click({ timeout: 5000 }).catch(() => { });
-                await page.waitForTimeout(500);
-                await bodegaInput.fill('');
-                await page.waitForTimeout(500);
-                await bodegaInput.pressSequentially('Sin asig', { delay: 100 });
-                await page.waitForTimeout(3000);
-                await page.keyboard.press('ArrowDown');
-                await page.waitForTimeout(500);
-                await page.keyboard.press('Enter');
-                await page.waitForTimeout(1000);
-                const bodegaVal2 = await bodegaInput.inputValue().catch(() => '');
-                log(`✅ Bodega producto: ${bodegaVal2 || '(set via keyboard)'}`);
+                // Find the exact Bodega input inside the "Entrada de producto" table
+                const foundBodega = await page.evaluate(() => {
+                    const tables = document.querySelectorAll('table');
+                    let targetInput = null;
+                    if (tables.length > 0) {
+                        const productTable = Array.from(tables).find(t => t.textContent.includes('Entrada de producto') || t.textContent.includes('ensamblar')) || tables[0];
+                        const inputs = productTable.querySelectorAll('#autocomplete_autocompleteInput');
+                        if (inputs.length >= 2) {
+                            targetInput = inputs[1]; // Usually second autocomplete is Bodega
+                        } else if (inputs.length === 1) {
+                            targetInput = inputs[0]; // If product turned to plain text, only 1 autocomplete left
+                        }
+                    }
+                    
+                    if (targetInput && targetInput.offsetHeight > 0) {
+                        targetInput.scrollIntoView();
+                        targetInput.focus();
+                        targetInput.click();
+                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSetter.call(targetInput, '');
+                        targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        return true;
+                    }
+                    return false;
+                });
+                
+                if (foundBodega) {
+                    await page.waitForTimeout(500);
+                    await page.keyboard.type('Sin asig', { delay: 100 });
+                    await page.waitForTimeout(3000);
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(1000);
+                    log(`✅ Bodega producto: forzada vía JS locator`);
+                } else {
+                    // Fallback to original `.nth(3)` behavior
+                    log(`⚠️ No se encontró la tabla de entrada vía JS, usando fallback nth(3)`);
+                    const bodegaInput = page.locator('id=autocomplete_autocompleteInput').nth(3);
+                    await bodegaInput.click({ timeout: 5000, force: true }).catch(() => { });
+                    await page.waitForTimeout(500);
+                    
+                    // Use keyboard backspaces instead of playwright .fill('') to avoid visibility strictness
+                    await bodegaInput.focus();
+                    await page.keyboard.press('End');
+                    for(let i=0; i<25; i++) await page.keyboard.press('Backspace');
+                    
+                    await page.waitForTimeout(500);
+                    await bodegaInput.pressSequentially('Sin asig', { delay: 100 });
+                    await page.waitForTimeout(3000);
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(1000);
+                    const bodegaVal2 = await bodegaInput.inputValue().catch(() => '');
+                    log(`✅ Bodega producto: ${bodegaVal2 || '(set via fallback keyboard)'}`);
+                }
             } catch (e) {
                 log(`⚠️ Bodega producto falló: ${e.message}`);
             }
@@ -609,7 +653,8 @@ class SiigoBrowserManager {
                             if (sel && (!sel.value || sel.value === '' || sel.value === 'undefined')) {
                                 empties.push({ rowIdx: r, type: 'select' });
                             }
-                            const inp = rows[r].querySelector('#autocomplete_autocompleteInput');
+                            const inp = rows[r].querySelector('#autocomplete_autocompleteInput:not([placeholder*="Buscar"]):not([placeholder*="buscar"])');
+                            // Exclude inputs that are clearly for searching products (they usually have placeholder="Buscar")
                             if (inp && (!inp.value || inp.value.trim() === '') && !inp.readOnly) {
                                 empties.push({ rowIdx: r, type: 'autocomplete' });
                             }
@@ -835,7 +880,11 @@ class SiigoBrowserManager {
                             const empties = [];
                             for (let i = 0; i < inputs.length; i++) {
                                 const inp = inputs[i];
-                                // Only bodega inputs inside table rows, not product or tercero
+                                // Skip product search inputs which trigger the "Crear producto" modal
+                                const placeholder = (inp.getAttribute('placeholder') || '').toLowerCase();
+                                if (placeholder.includes('buscar')) continue;
+                                
+                                // Only bodega inputs inside table rows
                                 const inRow = inp.closest('tr') || inp.closest('.tabla-body');
                                 if (inRow && (!inp.value || inp.value.trim() === '') && !inp.readOnly) {
                                     empties.push(i);

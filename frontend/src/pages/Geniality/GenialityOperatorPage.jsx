@@ -454,7 +454,10 @@ const GenialityOperatorPage = () => {
     }, [fetchData]);
 
     const handleStart = (batch) => {
-        if (batch.firstPending) navigate(`/assembly-execution/${batch.firstPending.id}`);
+        if (!batch.firstPending) return;
+        // GenialityExecutionWizard handles all process types:
+        // Native (G_/GE_) and shared (EMPAQUE/ENSAMBLE/CONTEO)
+        navigate(`/geniality/assembly-execution/${batch.firstPending.id}`);
     };
 
     const handleDelete = async (batch) => {

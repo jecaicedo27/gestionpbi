@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { compressImage } from '../utils/imageCompression.js';
 
 // Create axios instance
 const baseURL = (import.meta.env.VITE_API_URL || '').replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api';
@@ -6,12 +7,31 @@ const api = axios.create({
     baseURL
 });
 
-// Add interceptor to include token
-api.interceptors.request.use((config) => {
+// Add interceptor to include token and auto-compress images
+api.interceptors.request.use(async (config) => {
     const token = localStorage.getItem('token');
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
+
+    // Auto-compress any image Files inside FormData
+    if (config.data instanceof FormData) {
+        const newFormData = new FormData();
+        for (const [key, value] of config.data.entries()) {
+            if (value instanceof File && value.type.startsWith('image/')) {
+                try {
+                    const compressed = await compressImage(value);
+                    newFormData.append(key, compressed, value.name);
+                } catch (err) {
+                    newFormData.append(key, value);
+                }
+            } else {
+                newFormData.append(key, value);
+            }
+        }
+        config.data = newFormData;
+    }
+
     return config;
 });
 

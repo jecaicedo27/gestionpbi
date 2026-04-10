@@ -81,12 +81,21 @@ export function useConteoState() {
         }
     };
 
+    const preloadPhotos = (photos) => {
+        if (photos) setConteoPhotos(photos);
+    };
+
+    const preloadActuals = (actuals) => {
+        if (actuals) setConteoActuals(actuals);
+    };
+
     const reset = () => { setConteoActuals({}); setConteoPhotos({}); setCarriots([]); };
 
     return {
         conteoActuals, setConteoActual,
         conteoPhotos, setConteoPhoto,
         carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
+        preloadPhotos, preloadActuals,
         reset,
     };
 }

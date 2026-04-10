@@ -95,6 +95,7 @@ const AssemblyExecutionWizard = () => {
         conteoActuals, setConteoActual,
         conteoPhotos, setConteoPhoto,
         carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
+        preloadPhotos, preloadActuals
     } = useConteoState();
 
     // ── Empaque-side carriots (read from the CONTEO note) ─────────────────────
@@ -119,12 +120,18 @@ const AssemblyExecutionWizard = () => {
     // { productId: true } — tracks which presentations have been labeled by packaging
     const [rotuladoStatus, setRotuladoStatus] = useState({});
 
-    // ── Pre-load carriots from processParameters on note load (session resume) ─
+    // ── Pre-load carriots, conteo, and photos from processParameters on note load (session resume) ─
     useEffect(() => {
         if (!note) return;
-        const saved = note.processParameters?.carriots;
-        if (saved?.length > 0 && carriots.length === 0) {
-            preloadCarriots(saved);
+        const pp = note.processParameters || {};
+        if (pp.carriots?.length > 0 && carriots.length === 0) {
+            preloadCarriots(pp.carriots);
+        }
+        if (pp.conteo_draft && Object.keys(conteoActuals).length === 0) {
+            preloadActuals(pp.conteo_draft);
+        }
+        if (pp.conteo_photos_draft && Object.keys(conteoPhotos).length === 0) {
+            preloadPhotos(pp.conteo_photos_draft);
         }
     }, [note?.id]); // eslint-disable-line
 
@@ -149,6 +156,35 @@ const AssemblyExecutionWizard = () => {
             restoreEmpaqueDraft(draft);
         }
     }, [note?.id]); // eslint-disable-line
+
+    // ── Debounced auto-save for conteo actuals & photos (survive F5/logout) ──
+    const saveConteoDraftTimeout = useRef(null);
+    useEffect(() => {
+        if (!note?.id) return;
+        // Skip if everything is empty to avoid overwriting on initial mount
+        if (Object.keys(conteoActuals).length === 0 && Object.keys(conteoPhotos).length === 0) return;
+
+        if (saveConteoDraftTimeout.current) clearTimeout(saveConteoDraftTimeout.current);
+        saveConteoDraftTimeout.current = setTimeout(async () => {
+            try {
+                await api.patch(`/assembly-notes/${note.id}`, {
+                    processParameters: {
+                        ...note.processParameters,
+                        conteo_draft: conteoActuals,
+                        conteo_photos_draft: conteoPhotos
+                    }
+                });
+                // Keep local note in sync without triggering full re-render
+                if (note.processParameters) {
+                    note.processParameters.conteo_draft = conteoActuals;
+                    note.processParameters.conteo_photos_draft = conteoPhotos;
+                }
+            } catch (e) {
+                console.warn('Error saving conteo draft:', e.message);
+            }
+        }, 1500); // 1.5s debounce
+        return () => clearTimeout(saveConteoDraftTimeout.current);
+    }, [conteoActuals, conteoPhotos, note?.id]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
     const handleAddCarrito = useCallback(async (productId, productName, qty) => {
@@ -997,7 +1033,12 @@ const AssemblyExecutionWizard = () => {
                     };
                 });
                 await api.patch(`/assembly-notes/${note.id}`, {
-                    processParameters: { conteo: counts, esferas_total, conteo_photos: conteoPhotos }
+                    processParameters: { 
+                        ...note.processParameters,
+                        conteo: counts, 
+                        esferas_total, 
+                        conteo_photos: conteoPhotos 
+                    }
                 }).catch(() => { });
 
                 // Use the sum of all real counted units as the actualQuantity

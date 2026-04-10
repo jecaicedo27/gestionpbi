@@ -44,13 +44,14 @@ const receptionPhotoUpload = multer({ storage: makeStorage(RECEPTION_PHOTO_DIR, 
 router.get('/purchase-orders', auth, purchaseOrderController.list);
 router.get('/purchase-orders/:id', auth, purchaseOrderController.getById);
 router.get('/purchase-orders/:id/pdf', auth, generatePDF);
-router.post('/purchase-orders', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.create);
-router.put('/purchase-orders/:id/approve', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.approve);
-router.put('/purchase-orders/:id/send', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.markSent);
-router.put('/purchase-orders/:id/send-to-cartera', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.sendToCartera);
+router.post('/purchase-orders', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.create);
+router.put('/purchase-orders/:id/approve', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.approve);
+router.put('/purchase-orders/:id/send', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.markSent);
+router.put('/purchase-orders/:id/send-to-cartera', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.sendToCartera);
 router.put('/purchase-orders/:id/payment', auth, roles('ADMIN', 'CARTERA', 'CONTABILIDAD'), purchaseOrderController.registerPayment);
 router.put('/purchase-orders/:id/credit-payment', auth, roles('ADMIN', 'CARTERA', 'CONTABILIDAD'), purchaseOrderController.registerCreditPayment);
-router.put('/purchase-orders/:id/cancel', auth, roles('ADMIN', 'PRODUCCION'), purchaseOrderController.cancel);
+router.put('/purchase-orders/:id/payment-method', auth, roles('ADMIN', 'CARTERA'), purchaseOrderController.updatePaymentMethod);
+router.put('/purchase-orders/:id/cancel', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.cancel);
 
 // ── Payment Proof Upload ──
 const PAYMENT_DIR = path.join(UPLOAD_DIR, 'payment-proofs');
@@ -124,12 +125,17 @@ router.delete('/purchase-orders/:id/quotation', auth, async (req, res) => {
 router.get('/suppliers', auth, purchaseOrderController.getSuppliers);
 router.get('/raw-materials', auth, purchaseOrderController.getRawMaterials);
 
+// ── Custom Procurement Items ──
+router.get('/custom-items', auth, purchaseOrderController.getCustomItems);
+router.post('/custom-items', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.createCustomItem);
+router.delete('/custom-items/:id', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.deleteCustomItem);
+
 // ── Sync Suppliers from Siigo ──
 // ── In-memory sync status ──
 let supplierSyncStatus = { running: false, result: null, startedAt: null };
 const siigoQueue = require('../services/siigoQueue');
 
-router.post('/suppliers/sync', auth, roles('ADMIN', 'PRODUCCION', 'CONTABILIDAD'), async (req, res) => {
+router.post('/suppliers/sync', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO', 'CONTABILIDAD'), async (req, res) => {
     if (supplierSyncStatus.running) {
         const qStatus = siigoQueue.status();
         return res.json({ status: 'RUNNING', message: `Sincronización en progreso... ${qStatus.running ? '(esperando: ' + qStatus.running + ')' : ''}` });

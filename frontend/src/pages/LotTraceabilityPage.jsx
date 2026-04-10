@@ -345,7 +345,7 @@ const MovementsTable = ({ data, loading }) => {
     });
     const rows = data.map(c => {
         const prodKey = c.materialLot?.siigoProductName || c.id;
-        const isPositive = c.type === 'INGRESS' || c.type === 'PRODUCTION';
+        const isPositive = c.type === 'INGRESS' || c.type === 'PRODUCTION' || c.type === 'TRANSFER_IN';
         const qty = Math.abs(c.quantity || c.quantityUsed || 0);
         const balanceAfter = prodBalance[prodKey] ?? null;
         if (typeof balanceAfter === 'number') {
@@ -418,10 +418,10 @@ const MovementsTable = ({ data, loading }) => {
                                 ) : <span style={{ color: '#cbd5e1' }}>—</span>}
                             </td>
                             <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 800, color: '#16a34a', fontSize: '0.85rem' }}>
-                                {c._isPositive ? `+${Math.round(c._qty).toLocaleString()} g` : '—'}
+                                {c._isPositive ? `+${fmtQty(c._qty, c.unit || c.materialLot?.unit)}` : '—'}
                             </td>
                             <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 800, color: '#dc2626', fontSize: '0.85rem' }}>
-                                {!c._isPositive ? `-${Math.round(c._qty).toLocaleString()} g` : '—'}
+                                {!c._isPositive ? `-${fmtQty(c._qty, c.unit || c.materialLot?.unit)}` : '—'}
                             </td>
                             <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: c._balance <= 0 ? '#94a3b8' : '#475569', fontSize: '0.82rem' }}>
                                 {typeof c._balance === 'number' ? `${Math.round(c._balance).toLocaleString()} g` : '—'}
@@ -598,7 +598,7 @@ const BatchGroupedView = ({ data, allMovements, loading }) => {
                             enrichedRows.forEach(r => {
                                 const name = r.materialLot?.siigoProductName;
                                 if (!name) return;
-                                if (!balanceMap[name]) balanceMap[name] = { ingress: 0, consumption: 0, lots: new Set(), initialQty: 0, currentQty: 0, seenLots: new Set() };
+                                if (!balanceMap[name]) balanceMap[name] = { ingress: 0, consumption: 0, lots: new Set(), initialQty: 0, currentQty: 0, seenLots: new Set(), unit: r.unit || r.materialLot?.unit || 'gramo' };
                                 const qty = Math.abs(r.quantity || r.quantityUsed || 0);
                                 const isIn = r.type === 'INGRESS' || r.type === 'PRODUCTION' || r.type === 'TRANSFER_IN';
                                 if (isIn) balanceMap[name].ingress += qty;
@@ -648,10 +648,10 @@ const BatchGroupedView = ({ data, allMovements, loading }) => {
                                                             <span style={S.lotBadge}>{row.lotCount}</span>
                                                         </td>
                                                         <td style={{ padding: '5px 12px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>
-                                                            {salida > 0 ? `${Math.round(salida).toLocaleString()} g` : '—'}
+                                                            {salida > 0 ? fmtQty(salida, row.unit) : '—'}
                                                         </td>
                                                         <td style={{ padding: '5px 12px', textAlign: 'right', fontWeight: 800, fontSize: '0.82rem', color: saldo > 0 ? '#3b82f6' : saldo === 0 ? '#94a3b8' : '#dc2626' }}>
-                                                            {Math.round(saldo).toLocaleString()} g
+                                                            {fmtQty(saldo, row.unit)}
                                                         </td>
                                                     </tr>
                                                 );
@@ -685,7 +685,7 @@ const BatchGroupedView = ({ data, allMovements, loading }) => {
                                                         {c.materialLot?.lotNumber ? <span style={S.lotBadge}>{c.materialLot.lotNumber}</span> : '—'}
                                                     </td>
                                                     <td style={{ padding: '6px 12px', textAlign: 'right', fontWeight: 800, color: isPositive ? '#16a34a' : '#dc2626', fontSize: '0.82rem' }}>
-                                                        {isPositive ? '+' : '-'}{Math.round(qty).toLocaleString()} g
+                                                        {isPositive ? '+' : '-'}{fmtQty(qty, c.unit || c.materialLot?.unit)}
                                                     </td>
                                                     <td style={{ padding: '6px 12px', fontSize: '0.72rem', color: '#475569', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                                         {c.processInfo?.stageName || c.observations || '—'}

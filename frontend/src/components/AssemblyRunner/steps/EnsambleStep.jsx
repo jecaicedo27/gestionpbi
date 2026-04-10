@@ -7,18 +7,27 @@ import React from 'react';
  * 1. Standalone ENSAMBLE note — shows product + qty + ingredients (original)
  * 2. Within unified EMPAQUE wizard — shows pre-finalization summary with QC + marcado data
  */
-const EnsambleStep = ({ stepData, targetQuantityValue = '', allBatchNotes = [] }) => {
+const EnsambleStep = ({ stepData, targetQuantityValue = '', allBatchNotes = [], carriots = [], activeCarritoId }) => {
     const noteData = stepData;
     const productName = noteData.product?.name || 'Producto';
     const isEmpaqueNote = noteData.processType?.code === 'EMPAQUE';
+    const isGeniality = productName.toUpperCase().includes('GENIALITY');
 
     // ── Mode 2: Unified EMPAQUE wizard — pre-finalization summary ─────────
     if (isEmpaqueNote) {
+        let receivedQty = 0;
+        if (carriots?.length > 0) {
+            const received = activeCarritoId 
+                ? carriots.filter(c => c.id === activeCarritoId)
+                : carriots.filter(c => c.receivedAt && !c.ingestedAt && c.productId === noteData.productId);
+            receivedQty = received.reduce((sum, c) => sum + (Number(c.qty) || 0), 0);
+        }
+
         const emp = noteData.processParameters?.empaque || {};
         const mc = noteData.processParameters?.marcado_cajas || {};
-        const conteoQty = emp.conteo_qty || noteData.empaqueData?.conteo_qty || noteData.targetQuantity || 0;
-        const defectivos = emp.defective_qty || 0;
-        const aprobados = emp.approved_qty || Math.max(0, conteoQty - defectivos);
+        const conteoQty = receivedQty > 0 ? receivedQty : (emp.conteo_qty || noteData.empaqueData?.conteo_qty || noteData.targetQuantity || 0);
+        const defectivos = receivedQty > 0 ? 0 : (emp.defective_qty || 0); // Delta processing uses 0 defects by default until registered
+        const aprobados = receivedQty > 0 ? Math.max(0, conteoQty - defectivos) : (emp.approved_qty || Math.max(0, conteoQty - defectivos));
         const defReasons = emp.defect_reasons || [];
         const batchNumber = noteData.productionBatch?.batchNumber || noteData.noteNumber || '';
 
@@ -83,7 +92,7 @@ const EnsambleStep = ({ stepData, targetQuantityValue = '', allBatchNotes = [] }
                         )}
 
                         {/* Marcado Cajas Summary */}
-                        {mc.cajas_llenas != null && (
+                        {mc.cajas_llenas != null && !isGeniality && (
                             <div className="bg-orange-50 rounded-xl p-3 border border-orange-200">
                                 <div className="text-[10px] font-bold text-orange-600 uppercase tracking-wider mb-2">📦 Etiquetado</div>
                                 <div className="grid grid-cols-3 gap-2 text-center">
@@ -106,9 +115,11 @@ const EnsambleStep = ({ stepData, targetQuantityValue = '', allBatchNotes = [] }
                         {/* CTA */}
                         <div className="text-center pt-2">
                             <p className="text-sm text-slate-400 leading-relaxed">
-                                Al hacer clic en <b className="text-emerald-600">«FINALIZAR»</b>, se completará la nota de producción,
-                                {noteData.processParameters?.assembly_on_complete && ' el bot RPA creará la nota de ensamble en Siigo,'} y
-                                se registrará el inventario en zona PRODUCCIÓN.
+                                Al hacer clic en <b className="text-emerald-600">«FINALIZAR»</b>, se cerrará oficialmente el lote de empaque
+                                {noteData.processParameters?.assembly_on_complete && ' y el bot RPA creará la nota de ensamble en Siigo'}
+                                {isGeniality 
+                                    ? '. (El inventario ya fue ingresado dinámicamente carrito por carrito).' 
+                                    : ' e ingresará el inventario consolidado a la zona de PRODUCCIÓN.'}
                             </p>
                         </div>
                     </div>

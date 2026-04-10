@@ -103,8 +103,7 @@ const SuppliersPage = () => {
 
     // Actually save with the security code
     const doSaveRow = async (supplier, code) => {
-        const edits = editedRows[supplier.id];
-        if (!edits) return true;
+        const edits = editedRows[supplier.id] || {};
         try {
             await api.put(`/procurement/suppliers/${supplier.id}/tax-config`, {
                 ivaRate: edits.ivaRate !== undefined ? edits.ivaRate : supplier.ivaRate,
@@ -220,9 +219,9 @@ const SuppliersPage = () => {
         },
         {
             title: '', key: 'actions', width: '10%', align: 'center',
-            render: (_, r) => editedRows[r.id] ? (
+            render: (_, r) => (editedRows[r.id] || !r.fiscalConfigConfirmed) ? (
                 <Button size="small" type="primary" icon={<SaveOutlined />} loading={saving[r.id]} onClick={() => requestSave(r)}>
-                    Guardar
+                    {editedRows[r.id] ? 'Guardar' : 'Confirmar'}
                 </Button>
             ) : null
         }

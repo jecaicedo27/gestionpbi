@@ -13,6 +13,9 @@ router.get('/consumption', auth, analyticsController.getConsumption);
 // Trigger Calculation (Admin/Logistica only)
 router.post('/mine', auth, roles(['ADMIN', 'LOGISTICA']), analyticsController.runMining);
 
+// Role-based personalised KPIs for Dashboard
+router.get('/dashboard-kpis', auth, analyticsController.getRoleDashboardKpis);
+
 const analyticsExecutiveController = require('../controllers/analyticsExecutiveController');
 
 // Executive Stats

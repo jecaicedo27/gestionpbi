@@ -1266,7 +1266,7 @@ class AssemblyService {
                 // in finished_lot_stock via the operator ingestion flow.
                 // Only intermediate materials (bases, compuestos, protecciones) need a materialLot
                 // so they can be consumed by downstream assembly stages.
-                const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup);
+                const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup) && note.product?.type !== 'MATERIA_PRIMA';
                 if (!isFinishedProduct) {
                     await tx.materialLot.create({
                         data: {
@@ -1393,21 +1393,30 @@ class AssemblyService {
             const batchNum = result.batchNumber || '';
             const qty = result.targetQuantity || actualQuantity; // App-first quantity
 
-            // Create RPA execution record + enqueue
-            prisma.rpaExecution.create({
-                data: {
-                    executionType: 'SIIGO_ASSEMBLY',
-                    status: 'RUNNING',
-                    productName,
-                    quantity: Math.round(Number(qty)),
-                    assemblyType: 'proceso',
-                    observations: `Lote: ${batchNum}. Proceso: ${stageName}. Lote Material: ${lotNum}.`,
-                    assemblyNoteId: noteId,
-                    triggeredById: operatorId || null
+            // ── GLOBAL RPA DUPLICATE LOCK ──────────────────────────────────────────────
+            prisma.rpaExecution.findFirst({
+                where: { assemblyNoteId: noteId, status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] } }
+            }).then(duplicateLock => {
+                if (duplicateLock) {
+                    console.log(`[completeNote] ⏭️ RPA LOCKED — Execution already exists for note ${noteId}. Preventing Geniality duplicates.`);
+                    return; // Skip queueing RPA
                 }
-            }).then(execution => {
-                const startTime = Date.now();
-                browserManager.enqueue({
+
+                // Create RPA execution record + enqueue
+                prisma.rpaExecution.create({
+                    data: {
+                        executionType: 'SIIGO_ASSEMBLY',
+                        status: 'RUNNING',
+                        productName,
+                        quantity: Math.round(Number(qty)),
+                        assemblyType: 'proceso',
+                        observations: `Lote: ${batchNum}. Proceso: ${stageName}. Lote Material: ${lotNum}.`,
+                        assemblyNoteId: noteId,
+                        triggeredById: operatorId || null
+                    }
+                }).then(execution => {
+                    const startTime = Date.now();
+                    browserManager.enqueue({
                     params: {
                         productName: productSku || productName,
                         quantity: Math.round(Number(qty)),
@@ -1452,7 +1461,8 @@ class AssemblyService {
                     }
                 });
                 console.log(`🤖 RPA enqueued for ${productName} — lot ${lotNum} (${Math.round(qty)} uds)`);
-            }).catch(e => console.error('RPA enqueue error:', e.message));
+            }).catch(e => console.error('RPA execution error:', e.message));
+            }).catch(e => console.error('RPA duplicate check error:', e.message));
         }
 
         return result.updatedNote;

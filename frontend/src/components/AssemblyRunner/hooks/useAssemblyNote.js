@@ -117,17 +117,36 @@ export function useAssemblyNote(id) {
         const isMedicion = noteData.processType?.code === 'MEDICION';
         const isProteccionGate = noteData.processType?.code === 'PROTECCION_GATE';
 
+        const isSiropeGeniality = (
+            noteData.processType?.code === 'G_EMPAQUE' || 
+            noteData.processType?.code === 'EMPAQUE' || 
+            noteData.processType?.code === 'CONTEO'
+        ) && (
+            noteData.product?.name?.toUpperCase().includes('SIROPE') || 
+            noteData.product?.name?.toUpperCase().includes('MASA') ||
+            noteData.product?.name?.toUpperCase().includes('GENIALITY') ||
+            noteData.product?.name?.toUpperCase().includes('SABORIZACION')
+        );
+
         steps.push({ type: 'INTRO', data: noteData });
 
-        if (isConteo) {
-            steps.push({ type: 'CONTEO', data: noteData });
-        } else if (isEnsamble) {
-            steps.push({ type: 'MARCADO_CAJAS', data: noteData });
-            steps.push({ type: 'OUTPUT', data: noteData });   // Mandatory: operator enters REAL qty
-            steps.push({ type: 'ENSAMBLE', data: noteData });
-        } else if (isEmpaque) {
-            // If materials were pre-consumed at CONTEO, skip all INPUT steps
-            const preConsumed = noteData.processParameters?.materialsPreConsumed === true;
+        if (isSiropeGeniality) {
+            steps.push({ type: 'G_CONTEO_CARRITOS', data: noteData });
+            // If it's a CONTEO step, this is the only step needed (Production).
+            // If it's an EMPAQUE step, we must ALSO append the rest of the packaging workflow.
+        } 
+        
+        if (!isSiropeGeniality || (!isConteo && isSiropeGeniality)) {
+            // Only execute these standard flows if it's NOT a sirope Geniality CONTEO.
+            // If it IS a sirope Geniality Empaque, we will execute the Empaque branch.
+            if (isConteo) {
+                steps.push({ type: 'CONTEO', data: noteData });
+            } else if (isEnsamble) {
+                steps.push({ type: 'MARCADO_CAJAS', data: noteData });
+                steps.push({ type: 'OUTPUT', data: noteData });   // Mandatory: operator enters REAL qty
+                steps.push({ type: 'ENSAMBLE', data: noteData });
+            } else if (isEmpaque || noteData.processType?.code === 'G_EMPAQUE') {
+                const preConsumed = noteData.processParameters?.materialsPreConsumed === true;
             if (!preConsumed) {
                 // Exempt packaging materials AND bulk ingredients already weighed in earlier steps
                 const exemptKeywords = [
@@ -161,8 +180,9 @@ export function useAssemblyNote(id) {
                 steps.push({ type: 'ESFERIFICACION', data: noteData });
             }
         }
+        } // Close the outer if statement
 
-        if (!isEnsamble && !isConteo && !isEmpaque && !isCoccion && !isMedicion && !isProteccionGate) {
+        if (!isEnsamble && !isConteo && !isEmpaque && !isCoccion && !isMedicion && !isProteccionGate && !isSiropeGeniality) {
             steps.push({ type: 'OUTPUT', data: noteData });
         }
 

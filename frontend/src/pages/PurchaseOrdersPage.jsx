@@ -167,14 +167,17 @@ const PurchaseOrdersPage = () => {
         setLoadingSuppliers(false);
     };
     const [packagings, setPackagings] = useState([]);
+    const [customItems, setCustomItems] = useState([]);
     const loadRawMaterials = async () => {
         try {
-            const [matRes, pkgRes] = await Promise.all([
+            const [matRes, pkgRes, customRes] = await Promise.all([
                 api.get('/procurement/raw-materials'),
-                api.get('/procurement/packaging')
+                api.get('/procurement/packaging'),
+                api.get('/procurement/custom-items')
             ]);
             setRawMaterials(matRes.data);
             setPackagings(pkgRes.data);
+            setCustomItems(customRes.data);
         } catch (err) { console.error(err); }
     };
     const openCreate = () => {
@@ -186,7 +189,10 @@ const PurchaseOrdersPage = () => {
     const addItem = () => setOrderItems([...orderItems, { siigoProductCode: '', siigoProductName: '', quantityOrdered: 0, packagingDesc: '', packQty: null, unitsPerPack: null }]);
     const getProductUnit = (sku) => {
         const prod = rawMaterials.find(p => p.sku === sku);
-        return prod?.unit || 'unidad';
+        if (prod) return prod.unit || 'unidad';
+        const custom = customItems.find(p => p.code === sku);
+        if (custom) return 'unidad';
+        return 'unidad';
     };
     const getPackaging = (sku) => packagings.find(p => p.siigoProductCode === sku);
     const updateItem = (index, field, value) => {
@@ -194,12 +200,15 @@ const PurchaseOrdersPage = () => {
         newItems[index][field] = value;
         if (field === 'siigoProductCode') {
             const prod = rawMaterials.find(p => p.sku === value);
+            const customProd = customItems.find(p => p.code === value);
             if (prod) {
                 newItems[index].siigoProductName = prod.name;
-                // Auto-fill from product packSize
                 if (prod.packSize && prod.packSize > 0) {
                     newItems[index].unitsPerPack = prod.packSize;
                 }
+            } else if (customProd) {
+                newItems[index].siigoProductName = customProd.name;
+                newItems[index].unitsPerPack = null;
             }
         }
         const upp = newItems[index].unitsPerPack;
@@ -241,6 +250,22 @@ const PurchaseOrdersPage = () => {
             setCreateVisible(false); loadOrders();
         } catch (err) { message.error('Error creando orden'); }
         setCreating(false);
+    };
+
+    const [newCustomItemName, setNewCustomItemName] = useState('');
+    const [creatingCustom, setCreatingCustom] = useState(false);
+    const handleCreateCustomItem = async () => {
+        if (!newCustomItemName.trim()) return;
+        setCreatingCustom(true);
+        try {
+            const res = await api.post('/procurement/custom-items', { name: newCustomItemName });
+            setCustomItems([...customItems, res.data]);
+            setNewCustomItemName('');
+            message.success('Insumo personalizado creado');
+        } catch (err) {
+            message.error('Error creando insumo detallado');
+        }
+        setCreatingCustom(false);
     };
 
     // ── Detail ──
@@ -290,6 +315,17 @@ const PurchaseOrdersPage = () => {
                 catch (err) { message.error('Error'); }
             }
         });
+    };
+    
+    const switchPaymentMethod = async (id, newMethod) => {
+        try {
+            await api.put(`/procurement/purchase-orders/${id}/payment-method`, { paymentMethod: newMethod });
+            message.success(`Método de pago cambiado a ${newMethod}`);
+            loadOrders();
+            if (selectedOrder?.id === id) viewDetail(id);
+        } catch (err) {
+            message.error(err.response?.data?.error || 'Error cambiando método de pago');
+        }
     };
 
     // ── Reception ──
@@ -830,7 +866,10 @@ const PurchaseOrdersPage = () => {
                                 <Select showSearch placeholder="Buscar MP..." style={{ flex: 3 }}
                                     value={item.siigoProductCode || undefined} onChange={v => updateItem(idx, 'siigoProductCode', v)}
                                     filterOption={fuzzyFilter}
-                                    options={rawMaterials.map(p => ({ value: p.sku, label: `${p.name} (${p.sku})` }))} />
+                                    options={[
+                                        { label: 'Siigo (Materia Prima)', options: rawMaterials.map(p => ({ value: p.sku, label: `${p.name} (${p.sku})` })) },
+                                        { label: 'Insumos Libres', options: customItems.map(p => ({ value: p.code, label: `${p.name} (${p.code})` })) }
+                                    ]} />
                                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
                                     <InputNumber placeholder="Cantidad" style={{ width: '100%' }} min={1}
                                         value={item.quantityOrdered || undefined} onChange={v => updateItem(idx, 'quantityOrdered', v)}
@@ -857,7 +896,17 @@ const PurchaseOrdersPage = () => {
                             </div>
                         );
                     })}
-                    <Button type="dashed" icon={<PlusOutlined />} onClick={addItem} block>Agregar Producto</Button>
+                    <Button type="dashed" icon={<PlusOutlined />} onClick={addItem} block>Agregar Producto a la Orden</Button>
+                    
+                    <div style={{ background: '#f5f5f5', padding: 12, borderRadius: 8, marginTop: 16 }}>
+                        <Text strong style={{ fontSize: 12 }}>¿No encuentras el producto en Siigo?</Text>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                            <Input placeholder="Nombre de nuevo insumo (Ej: Jabón Rey)" 
+                                value={newCustomItemName} onChange={e => setNewCustomItemName(e.target.value)} 
+                                onPressEnter={handleCreateCustomItem} style={{ flex: 1 }} />
+                            <Button type="primary" ghost onClick={handleCreateCustomItem} loading={creatingCustom}>Registrar al Catálogo Libre</Button>
+                        </div>
+                    </div>
                 </Space>
             </Modal>
 
@@ -878,10 +927,23 @@ const PurchaseOrdersPage = () => {
                                 <Descriptions.Item label="Creado por">{selectedOrder.createdBy?.name}</Descriptions.Item>
                                 <Descriptions.Item label="Fecha">{dayjs(selectedOrder.createdAt).format('DD/MM/YYYY HH:mm')}</Descriptions.Item>
                                 <Descriptions.Item label="Pago">
-                                    {selectedOrder.paymentMethod === 'CREDITO'
-                                        ? <Tag color="blue">🏦 Crédito{selectedOrder.creditDueDate ? ` — vence ${dayjs(selectedOrder.creditDueDate).format('DD/MM/YY')}` : ''}{selectedOrder.creditPaid ? ' ✅ Pagado' : ''}</Tag>
-                                        : <Tag color="green">💵 Contado</Tag>
-                                    }
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        {selectedOrder.paymentMethod === 'CREDITO'
+                                            ? <Tag color="blue">🏦 Crédito{selectedOrder.creditDueDate ? ` — vence ${dayjs(selectedOrder.creditDueDate).format('DD/MM/YY')}` : ''}{selectedOrder.creditPaid ? ' ✅ Pagado' : ''}</Tag>
+                                            : <Tag color="green">💵 Contado</Tag>
+                                        }
+                                        {(!isRestrictedRole || isCartera) && !selectedOrder.creditPaid && !['PAID', 'CANCELLED'].includes(selectedOrder.status) && (
+                                            <Select 
+                                                size="small" 
+                                                value={selectedOrder.paymentMethod} 
+                                                onChange={(v) => switchPaymentMethod(selectedOrder.id, v)}
+                                                style={{ width: 100 }}
+                                            >
+                                                <Select.Option value="CONTADO">Contado</Select.Option>
+                                                <Select.Option value="CREDITO">Crédito</Select.Option>
+                                            </Select>
+                                        )}
+                                    </div>
                                 </Descriptions.Item>
                                 {selectedOrder.approvedBy && <Descriptions.Item label="Aprobado por">{selectedOrder.approvedBy?.name} — {dayjs(selectedOrder.approvedAt).format('DD/MM/YY')}</Descriptions.Item>}
                                 {selectedOrder.notes && <Descriptions.Item label="Notas" span={2}>{selectedOrder.notes}</Descriptions.Item>}
@@ -1290,7 +1352,11 @@ const PurchaseOrdersPage = () => {
                                                     ? `/procurement/purchase-orders/${selectedOrder.id}/credit-payment`
                                                     : `/procurement/purchase-orders/${selectedOrder.id}/payment`;
                                                 await api.put(endpoint, {
-                                                    itemCosts: carteraCosts, paymentNotes: carteraNotes
+                                                    itemCosts: carteraCosts, paymentNotes: carteraNotes,
+                                                    taxConfig: {
+                                                        ivaRate: carteraTaxes.ivaRate,
+                                                        reteFuenteRate: carteraTaxes.reteFuenteRate
+                                                    }
                                                 });
                                                 message.success('💳 Pago registrado');
                                                 viewDetail(selectedOrder.id); loadOrders();

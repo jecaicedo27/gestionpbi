@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
 import { io as socketIO } from 'socket.io-client';
-import { Search, ShoppingCart, Filter, ChevronDown, ChevronUp, Package, Calendar, CheckCircle, Clock, AlertCircle, TrendingUp, X, ChevronRight, ArrowRight, Menu, LogOut, Download, MapPin, Phone, Mail, User, Shield, Briefcase, Plus, Minus, XCircle, Info, AlertTriangle, Trash2, ShieldAlert } from 'lucide-react';
+import { Search, ShoppingCart, Filter, ChevronDown, ChevronUp, Package, Calendar, CheckCircle, Clock, AlertCircle, TrendingUp, X, ChevronRight, ArrowRight, Menu, LogOut, Download, MapPin, Phone, Mail, User, Shield, Briefcase, Plus, Minus, XCircle, Info, AlertTriangle, Trash2, ShieldAlert, BarChart3 } from 'lucide-react';
 
 // Use relative path for API to avoid mixed content/localhost issues in production
 const API_URL = `${import.meta.env.VITE_API_URL}/api` || '/api';
@@ -17,8 +17,13 @@ export default function DistributorPortal() {
     const [recallDismissed, setRecallDismissed] = useState(true);
     const [cartLoading, setCartLoading] = useState({});
     const [orderResult, setOrderResult] = useState(null); // { type: 'success' | 'error', message: string }
+    const [pendingSummaryModal, setPendingSummaryModal] = useState(false);
+    const [pendingCellDetail, setPendingCellDetail] = useState(null); // { brand, presentation, flavor }
+    const [expandedPendingCells, setExpandedPendingCells] = useState({});
+    const [expandAllPendingCells, setExpandAllPendingCells] = useState(false);
     const queryClient = useQueryClient();
     const socketRef = useRef(null);
+    const inventoryGridRef = useRef(null);
 
     // ═══ WEBSOCKET: Real-time inventory updates ═══
     useEffect(() => {
@@ -88,6 +93,18 @@ export default function DistributorPortal() {
             return response.data.data;
         },
         enabled: activeTab === 'orders'
+    });
+
+    const shouldLoadPendingSummary = activeTab === 'inventory' || pendingSummaryModal;
+
+    const { data: pendingSummary, isLoading: pendingSummaryLoading } = useQuery({
+        queryKey: ['orders-pending-summary'],
+        queryFn: async () => {
+            const response = await axios.get(`${API_URL}/orders/pending-summary`, { headers: AUTH_HEADER() });
+            return response.data;
+        },
+        enabled: shouldLoadPendingSummary,
+        staleTime: 60 * 1000
     });
 
     const createOrderMutation = useMutation({
@@ -222,6 +239,312 @@ export default function DistributorPortal() {
         if (status === 'DELIVERED') return <CheckCircle className="w-4 h-4" />;
         if (['CANCELLED', 'REJECTED'].includes(status)) return <XCircle className="w-4 h-4" />;
         return <Clock className="w-4 h-4" />;
+    };
+
+    const statusLabels = {
+        PENDING: 'Pendiente',
+        APPROVED: 'Aprobado',
+        IN_PICKING: 'En Alistamiento',
+        READY: 'Listo',
+        INVOICED: 'Facturado',
+        DISPATCHED: 'Despachado',
+        DELIVERED: 'Entregado',
+        CANCELLED: 'Cancelado',
+        REJECTED: 'Rechazado'
+    };
+
+    const normalizeFlavor = (productName, productFlavor) => {
+        if (productFlavor) return productFlavor.toUpperCase();
+        const name = (productName || '').toUpperCase();
+        const match = name.match(/SABOR\\s+(?:A\\s+)?(.+?)(?:\\s+X\\s+\\d|\\s*$)/);
+        return match ? match[1].trim() : (name || 'SIN SABOR');
+    };
+
+    const normalizePresentation = (productName, productSize) => {
+        const sizeStr = String(productSize || '').toUpperCase();
+        const match = (productName || '').match(/\\b(3400|1150|1000|500|360|350)\\b/);
+        const num = match ? match[1] : (sizeStr.match(/\\d+/) || [null])[0];
+        if (!num) return sizeStr || 'STD';
+        if (num === '3400') return '3.4KG';
+        if (num === '1150') return '1150G';
+        if (num === '1000') return '1000ML';
+        if (num === '500') return '500ML';
+        if (num === '360') return '360ML';
+        if (num === '350') return '350G';
+        return num;
+    };
+
+    const detectBrand = (product) => {
+        if (product?.accountGroup === 1401) return 'LIQUIPOPS';
+        if (product?.accountGroup === 1402) return 'GENIALITY';
+        const name = (product?.name || '').toUpperCase();
+        if (name.includes('LIQUIPOPS') || name.includes('LIQUIPOS')) return 'LIQUIPOPS';
+        if (name.includes('GENIALITY') || name.includes('SIROPE')) return 'GENIALITY';
+        return 'OTROS';
+    };
+
+    const getEffectiveQty = (orderStatus, item) => {
+        const allocated = item.allocatedQty ?? null;
+        const requested = item.requestedQty ?? 0;
+        if (allocated === null || allocated === undefined) return requested;
+        if (allocated > 0) return allocated;
+        if (allocated === 0 && requested > 0 && ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'].includes(orderStatus)) {
+            return requested;
+        }
+        return allocated;
+    };
+
+    const buildPendingMatrix = (ordersList = []) => {
+        const matrix = {};
+        const matrixDetails = {};
+        const orderTotals = ordersList.map(order => {
+            const total = (order.items || []).reduce((sum, item) => {
+                const qty = getEffectiveQty(order.status, item);
+                return sum + qty;
+            }, 0);
+            return { id: order.id, number: order.orderNumber, total, status: order.status };
+        });
+
+        ordersList.forEach(order => {
+            (order.items || []).forEach(item => {
+                const product = item.product || {};
+                const brand = detectBrand(product);
+                if (brand === 'OTROS') return;
+                const flavor = normalizeFlavor(product.name, product.flavor);
+                const presentation = normalizePresentation(product.name, product.size);
+                const qty = getEffectiveQty(order.status, item);
+
+                if (!matrix[brand]) matrix[brand] = {};
+                if (!matrix[brand][presentation]) matrix[brand][presentation] = {};
+                if (!matrix[brand][presentation][flavor]) matrix[brand][presentation][flavor] = 0;
+                matrix[brand][presentation][flavor] += qty;
+
+                if (!matrixDetails[brand]) matrixDetails[brand] = {};
+                if (!matrixDetails[brand][presentation]) matrixDetails[brand][presentation] = {};
+                if (!matrixDetails[brand][presentation][flavor]) matrixDetails[brand][presentation][flavor] = [];
+                matrixDetails[brand][presentation][flavor].push({
+                    orderNumber: order.orderNumber,
+                    status: order.status,
+                    qty
+                });
+            });
+        });
+
+        return { matrix, matrixDetails, orderTotals };
+    };
+
+    const { matrix: pendingMatrix, matrixDetails: pendingMatrixDetails, orderTotals: pendingOrderTotals } = useMemo(() => {
+        const ordersList = pendingSummary?.data || [];
+        return buildPendingMatrix(ordersList);
+    }, [pendingSummary]);
+
+    const getPendingBrandFromCategory = (category) => {
+        if (category === 'geniality') return 'GENIALITY';
+        if (category === 'liquipops') return 'LIQUIPOPS';
+        return 'OTROS';
+    };
+
+    const getInventoryPendingCell = (category, size, flavor) => {
+        const brand = getPendingBrandFromCategory(category);
+        const presentation = normalizePresentation('', size);
+        const normalizedFlavor = normalizeFlavor('', flavor);
+        const total = pendingMatrix?.[brand]?.[presentation]?.[normalizedFlavor] || 0;
+        const details = pendingMatrixDetails?.[brand]?.[presentation]?.[normalizedFlavor] || [];
+
+        return {
+            brand,
+            presentation,
+            flavor: normalizedFlavor,
+            total,
+            details
+        };
+    };
+
+    const compactStatusLabels = {
+        PENDING: 'Pend.',
+        APPROVED: 'Apr.',
+        IN_PICKING: 'Alist.',
+        READY: 'Listo',
+        INVOICED: 'Fact.',
+        DISPATCHED: 'Desp.',
+        DELIVERED: 'Entr.',
+        CANCELLED: 'Canc.',
+        REJECTED: 'Rech.'
+    };
+
+    const formatCompactOrderNumber = (orderNumber) => {
+        const value = String(orderNumber || '').trim();
+        if (!value) return 'Sin orden';
+        const parts = value.split('-');
+        if (parts.length >= 3) {
+            return `#${parts.slice(2).join('-')}`;
+        }
+        return value.replace(/^ORD-/, '#');
+    };
+
+    const getPendingCellKey = (category, size, flavor) => {
+        const presentation = normalizePresentation('', size);
+        const normalizedFlavor = normalizeFlavor('', flavor);
+        return `${category}__${presentation}__${normalizedFlavor}`;
+    };
+
+    const isPendingCellExpanded = (cellKey) => expandAllPendingCells || !!expandedPendingCells[cellKey];
+
+    const togglePendingCell = (cellKey) => {
+        setExpandedPendingCells(prev => ({
+            ...prev,
+            [cellKey]: !prev[cellKey]
+        }));
+    };
+
+    const handleToggleAllPendingCells = () => {
+        if (expandAllPendingCells) {
+            setExpandAllPendingCells(false);
+            setExpandedPendingCells({});
+            return;
+        }
+
+        setExpandAllPendingCells(true);
+    };
+
+    useLayoutEffect(() => {
+        const root = inventoryGridRef.current;
+        if (!root || activeTab !== 'inventory') return;
+
+        let frameId = null;
+
+        const syncRowHeights = () => {
+            const rows = root.querySelectorAll('[data-inventory-row-key]');
+            rows.forEach((row) => {
+                const cards = Array.from(row.querySelectorAll('[data-card-shell]'));
+                if (cards.length === 0) return;
+
+                cards.forEach((card) => {
+                    card.style.minHeight = '';
+                });
+
+                const maxHeight = cards.reduce((max, card) => {
+                    return Math.max(max, card.getBoundingClientRect().height);
+                }, 0);
+
+                cards.forEach((card) => {
+                    card.style.minHeight = `${Math.ceil(maxHeight)}px`;
+                });
+            });
+        };
+
+        const scheduleSync = () => {
+            if (frameId) cancelAnimationFrame(frameId);
+            frameId = requestAnimationFrame(syncRowHeights);
+        };
+
+        scheduleSync();
+
+        const resizeObserver = new ResizeObserver(scheduleSync);
+        root.querySelectorAll('[data-card-shell]').forEach((card) => resizeObserver.observe(card));
+        window.addEventListener('resize', scheduleSync);
+
+        return () => {
+            if (frameId) cancelAnimationFrame(frameId);
+            resizeObserver.disconnect();
+            window.removeEventListener('resize', scheduleSync);
+        };
+    }, [activeTab, inventory, expandedPendingCells, expandAllPendingCells, pendingSummary, cart]);
+
+    const renderPendingDeliveryBox = (category, size, flavor) => {
+        const { total, details } = getInventoryPendingCell(category, size, flavor);
+        const hasPending = total > 0;
+        const cellKey = getPendingCellKey(category, size, flavor);
+        const expanded = isPendingCellExpanded(cellKey);
+        const compactSize = normalizePresentation('', size);
+
+        return (
+            <div className={`w-full rounded-xl border px-2 py-1.5 text-left transition-all duration-300 ${
+                hasPending
+                    ? 'bg-gradient-to-br from-amber-50 to-white border-amber-200/90 shadow-[0_4px_18px_rgba(245,158,11,0.08)]'
+                    : 'bg-slate-50/90 border-slate-200'
+            }`}>
+                <div className="flex items-center justify-between gap-2">
+                    <span className={`truncate text-[8px] font-bold uppercase tracking-[0.08em] ${
+                        hasPending ? 'text-amber-800' : 'text-slate-500'
+                    }`}>
+                        Pend. entrega
+                    </span>
+                    <span className={`shrink-0 text-[11px] font-black ${
+                        hasPending ? 'text-amber-900' : 'text-slate-500'
+                    }`}>
+                        {pendingSummaryLoading ? '...' : `${total}u`}
+                    </span>
+                </div>
+
+                <div className={`mt-0.5 flex items-center justify-between text-[8px] ${
+                    hasPending ? 'text-amber-700' : 'text-slate-400'
+                }`}>
+                    <span>
+                        {pendingSummaryLoading
+                            ? 'Carg...'
+                            : `${details.length} ord${details.length === 1 ? '' : '.'}`}
+                    </span>
+                    <div className="flex items-center gap-1">
+                        <span className="rounded-full bg-white/80 px-1.5 py-0.5 font-semibold text-slate-500 md:hidden">
+                            {compactSize}
+                        </span>
+                        {!pendingSummaryLoading && hasPending && (
+                            <button
+                                type="button"
+                                onClick={() => togglePendingCell(cellKey)}
+                                className={`inline-flex items-center border border-amber-100 bg-white/80 text-[8px] font-semibold text-amber-800 transition-colors hover:bg-white ${
+                                    expanded
+                                        ? 'gap-1 rounded-full px-1.5 py-0.5'
+                                        : 'h-5 w-5 justify-center rounded-full p-0'
+                                }`}
+                                title={expanded ? 'Ocultar ordenes' : 'Ver ordenes'}
+                                aria-label={expanded ? 'Ocultar ordenes' : 'Ver ordenes'}
+                            >
+                                {expanded ? (
+                                    <>
+                                        <span>Ocultar</span>
+                                        <ChevronUp className="h-3 w-3" />
+                                    </>
+                                ) : (
+                                    <ChevronDown className="h-3 w-3" />
+                                )}
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {!pendingSummaryLoading && !hasPending && (
+                    <div className="mt-1 text-center text-[8px] text-slate-400">
+                        Sin ptes.
+                    </div>
+                )}
+
+                {!pendingSummaryLoading && hasPending && (
+                    <div className={`grid transition-all duration-300 ease-out ${expanded ? 'mt-1 grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                        <div className="overflow-hidden">
+                            <div className="space-y-0.5 pt-0.5">
+                                {details.map((detail, index) => (
+                                    <div
+                                        key={`${detail.orderNumber}-${detail.status}-${index}`}
+                                        className="flex items-center justify-between gap-2 rounded-md border border-amber-100 bg-white/95 px-1.5 py-1 shadow-[0_2px_10px_rgba(15,23,42,0.04)]"
+                                        title={`${detail.orderNumber} · ${statusLabels[detail.status] || detail.status} · ${detail.qty} und`}
+                                    >
+                                        <span className="min-w-0 truncate text-[8px] font-semibold text-slate-700">
+                                            {formatCompactOrderNumber(detail.orderNumber)}
+                                        </span>
+                                        <span className="shrink-0 text-[8px] font-bold text-amber-800">
+                                            {compactStatusLabels[detail.status] || detail.status}
+                                        </span>
+                                        <span className="shrink-0 text-[9px] font-black text-slate-900">{detail.qty}u</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
     };
 
     const getAllSizes = (productType) => {
@@ -479,7 +802,22 @@ export default function DistributorPortal() {
                 {activeTab === 'inventory' && (
                     <div className="flex flex-col lg:flex-row gap-6 relative">
                         {/* Left Column: Inventory Tables (Expandable) */}
-                        <div className="flex-1 min-w-0">
+                        <div ref={inventoryGridRef} className="flex-1 min-w-0">
+                            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                                <div>
+                                    <div className="text-sm font-bold text-slate-800">Pendientes por entregar</div>
+                                    <div className="text-xs text-slate-500">Las ordenes por sabor estan ocultas por defecto para mantener la grilla limpia.</div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={handleToggleAllPendingCells}
+                                    className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-100"
+                                >
+                                    {expandAllPendingCells ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                    {expandAllPendingCells ? 'Ocultar todas' : 'Desplegar todas'}
+                                </button>
+                            </div>
+
                             {/* Geniality Table */}
                             <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6">
                                 <div className="bg-white px-6 py-4 rounded-t-xl border-b border-gray-100 flex items-center justify-between">
@@ -512,7 +850,7 @@ export default function DistributorPortal() {
                                                 });
 
                                                 return (
-                                                    <tr key={size} className="border-b border-gray-200 last:border-0 hover:bg-gray-50/30 transition-colors duration-200">
+                                                    <tr key={size} data-inventory-row-key={`geniality-${size}`} className="border-b border-gray-200 last:border-0 hover:bg-gray-50/30 transition-colors duration-200">
                                                         <td className="sticky left-0 z-10 bg-white px-4 py-3 whitespace-nowrap border-r border-gray-200">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="w-1.5 h-8 bg-purple-500 rounded-full shadow-sm"></span>
@@ -530,48 +868,64 @@ export default function DistributorPortal() {
                                                             const remainingBoxes = Math.floor(remainingStock / packSize);
 
                                                             return (
-                                                                <td key={flavor} className="px-1.5 py-1.5">
-                                                                    <div className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-all duration-200 min-w-[110px] ${qtyInCart > 0
-                                                                        ? 'bg-lime-50 border-lime-400 shadow-md ring-1 ring-lime-200'
-                                                                        : 'bg-white border-gray-200 shadow-sm hover:border-purple-300 hover:shadow-md'
+                                                                <td key={flavor} className="h-full align-top px-1.5 py-1.5">
+                                                                    <div data-card-shell className={`group flex h-full min-h-[188px] flex-col justify-between rounded-2xl border p-2.5 transition-[transform,box-shadow,border-color,background] duration-300 ease-out min-w-[110px] ${
+                                                                        qtyInCart > 0
+                                                                            ? 'bg-gradient-to-br from-lime-50 to-white border-lime-400 shadow-[0_12px_28px_rgba(132,204,22,0.18)] ring-1 ring-lime-200'
+                                                                            : 'bg-gradient-to-br from-white via-white to-violet-50/60 border-gray-200 shadow-[0_8px_24px_rgba(15,23,42,0.06)] hover:-translate-y-0.5 hover:border-purple-300 hover:shadow-[0_16px_32px_rgba(124,58,237,0.12)]'
                                                                         }`}>
-                                                                        <span className={`text-xl font-black font-mono leading-none ${remainingStock > 0 ? 'text-gray-900' : 'text-red-500'}`}>
-                                                                            {remainingStock}
-                                                                        </span>
-                                                                        <span className="text-[10px] font-medium text-gray-500">
-                                                                            {remainingBoxes} cajas
-                                                                        </span>
-                                                                        <span className="text-[9px] font-semibold text-gray-400">
-                                                                            x{packSize} und/caja
-                                                                        </span>
+                                                                        <div className="flex flex-col items-center gap-1 text-center">
+                                                                            <span className="line-clamp-2 min-h-[24px] text-[9px] font-bold uppercase tracking-[0.08em] text-purple-700">
+                                                                                {item.flavor}
+                                                                            </span>
+                                                                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-500 md:hidden">
+                                                                                {normalizePresentation('', item.size)}
+                                                                            </span>
+                                                                            <span className={`text-xl font-black font-mono leading-none ${remainingStock > 0 ? 'text-gray-900' : 'text-red-500'}`}>
+                                                                                {remainingStock}
+                                                                            </span>
+                                                                            <span className="text-[10px] font-medium text-gray-500">
+                                                                                {remainingBoxes} cajas
+                                                                            </span>
+                                                                            <span className="text-[9px] font-semibold text-gray-400">
+                                                                                x{packSize} und/caja
+                                                                            </span>
 
-                                                                        {remainingStock <= 0 && item.products[0]?.nextProductionDate && (
-                                                                            <div className="flex items-center gap-1 bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200 text-[9px] font-bold">
-                                                                                <Calendar className="w-2.5 h-2.5" />
-                                                                                {new Date(item.products[0].nextProductionDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
-                                                                            </div>
-                                                                        )}
+                                                                            {remainingStock <= 0 && item.products[0]?.nextProductionDate && (
+                                                                                <div className="flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
+                                                                                    <Calendar className="h-2.5 w-2.5" />
+                                                                                    {new Date(item.products[0].nextProductionDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
+                                                                                </div>
+                                                                            )}
+                                                                            {!(remainingStock <= 0 && item.products[0]?.nextProductionDate) && (
+                                                                                <div className="h-[18px]" aria-hidden="true" />
+                                                                            )}
+                                                                        </div>
 
-                                                                        {item.products.map(prod => (
-                                                                            <button
-                                                                                key={prod.id}
-                                                                                onClick={() => addToCart(prod)}
-                                                                                disabled={cartLoading[prod.id]}
-                                                                                className={`w-full flex items-center justify-center gap-1 text-[10px] font-bold py-1.5 px-2 rounded-md transition-all active:scale-95 border ${qtyInCart > 0
-                                                                                    ? 'bg-lime-100 text-lime-800 border-lime-300 hover:bg-lime-200'
-                                                                                    : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
-                                                                                    } ${cartLoading[prod.id] ? 'opacity-50' : ''}`}
-                                                                                title={`Agregar caja de ${packSize} unidades`}
-                                                                            >
-                                                                                <Plus className="w-3 h-3" />
-                                                                                {cartLoading[prod.id] ? '...' : 'AGREGAR'}
-                                                                            </button>
-                                                                        ))}
-                                                                        {qtyInCart > 0 && (
-                                                                            <div className="text-[9px] font-bold text-lime-700 bg-lime-100 px-1.5 py-0.5 rounded-full">
-                                                                                🛒 {qtyInCart / packSize} caja{qtyInCart / packSize > 1 ? 's' : ''}
-                                                                            </div>
-                                                                        )}
+                                                                        <div className="mt-1 flex w-full flex-col gap-1">
+                                                                            {renderPendingDeliveryBox('geniality', item.size, item.flavor)}
+
+                                                                            {item.products.map(prod => (
+                                                                                <button
+                                                                                    key={prod.id}
+                                                                                    onClick={() => addToCart(prod)}
+                                                                                    disabled={cartLoading[prod.id]}
+                                                                                    className={`w-full flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[10px] font-bold transition-all active:scale-95 ${qtyInCart > 0
+                                                                                        ? 'bg-lime-100 text-lime-800 border-lime-300 hover:bg-lime-200'
+                                                                                        : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                                                                                        } ${cartLoading[prod.id] ? 'opacity-50' : ''}`}
+                                                                                    title={`Agregar caja de ${packSize} unidades`}
+                                                                                >
+                                                                                    <Plus className="w-3 h-3" />
+                                                                                    {cartLoading[prod.id] ? '...' : 'AGREGAR'}
+                                                                                </button>
+                                                                            ))}
+                                                                            {qtyInCart > 0 && (
+                                                                                <div className="text-center text-[9px] font-bold text-lime-700 bg-lime-100 px-1.5 py-0.5 rounded-full">
+                                                                                    🛒 {qtyInCart / packSize} caja{qtyInCart / packSize > 1 ? 's' : ''}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
                                                                     </div>
                                                                 </td>
                                                             );
@@ -615,7 +969,7 @@ export default function DistributorPortal() {
                                                 });
 
                                                 return (
-                                                    <tr key={size} className="border-b border-gray-200 last:border-0 hover:bg-gray-50/30 transition-colors duration-200">
+                                                    <tr key={size} data-inventory-row-key={`liquipops-${size}`} className="border-b border-gray-200 last:border-0 hover:bg-gray-50/30 transition-colors duration-200">
                                                         <td className="sticky left-0 z-10 bg-white px-4 py-3 whitespace-nowrap border-r border-gray-200">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="w-1.5 h-8 bg-cyan-500 rounded-full shadow-sm"></span>
@@ -633,48 +987,64 @@ export default function DistributorPortal() {
                                                             const remainingBoxes = Math.floor(remainingStock / packSize);
 
                                                             return (
-                                                                <td key={flavor} className="px-1.5 py-1.5">
-                                                                    <div className={`flex flex-col items-center gap-1 p-2 rounded-lg border transition-all duration-200 min-w-[110px] ${qtyInCart > 0
-                                                                        ? 'bg-lime-50 border-lime-400 shadow-md ring-1 ring-lime-200'
-                                                                        : 'bg-white border-gray-200 shadow-sm hover:border-cyan-300 hover:shadow-md'
+                                                                <td key={flavor} className="h-full align-top px-1.5 py-1.5">
+                                                                    <div data-card-shell className={`group flex h-full min-h-[188px] flex-col justify-between rounded-2xl border p-2.5 transition-[transform,box-shadow,border-color,background] duration-300 ease-out min-w-[110px] ${
+                                                                        qtyInCart > 0
+                                                                            ? 'bg-gradient-to-br from-lime-50 to-white border-lime-400 shadow-[0_12px_28px_rgba(132,204,22,0.18)] ring-1 ring-lime-200'
+                                                                            : 'bg-gradient-to-br from-white via-white to-cyan-50/60 border-gray-200 shadow-[0_8px_24px_rgba(15,23,42,0.06)] hover:-translate-y-0.5 hover:border-cyan-300 hover:shadow-[0_16px_32px_rgba(6,182,212,0.14)]'
                                                                         }`}>
-                                                                        <span className={`text-xl font-black font-mono leading-none ${remainingStock > 0 ? 'text-gray-900' : 'text-red-500'}`}>
-                                                                            {remainingStock}
-                                                                        </span>
-                                                                        <span className="text-[10px] font-medium text-gray-500">
-                                                                            {remainingBoxes} cajas
-                                                                        </span>
-                                                                        <span className="text-[9px] font-semibold text-gray-400">
-                                                                            x{packSize} und/caja
-                                                                        </span>
+                                                                        <div className="flex flex-col items-center gap-1 text-center">
+                                                                            <span className="line-clamp-2 min-h-[24px] text-[9px] font-bold uppercase tracking-[0.08em] text-cyan-700">
+                                                                                {item.flavor}
+                                                                            </span>
+                                                                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-500 md:hidden">
+                                                                                {normalizePresentation('', item.size)}
+                                                                            </span>
+                                                                            <span className={`text-xl font-black font-mono leading-none ${remainingStock > 0 ? 'text-gray-900' : 'text-red-500'}`}>
+                                                                                {remainingStock}
+                                                                            </span>
+                                                                            <span className="text-[10px] font-medium text-gray-500">
+                                                                                {remainingBoxes} cajas
+                                                                            </span>
+                                                                            <span className="text-[9px] font-semibold text-gray-400">
+                                                                                x{packSize} und/caja
+                                                                            </span>
 
-                                                                        {remainingStock <= 0 && item.products[0]?.nextProductionDate && (
-                                                                            <div className="flex items-center gap-1 bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200 text-[9px] font-bold">
-                                                                                <Calendar className="w-2.5 h-2.5" />
-                                                                                {new Date(item.products[0].nextProductionDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
-                                                                            </div>
-                                                                        )}
+                                                                            {remainingStock <= 0 && item.products[0]?.nextProductionDate && (
+                                                                                <div className="flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold text-amber-800">
+                                                                                    <Calendar className="h-2.5 w-2.5" />
+                                                                                    {new Date(item.products[0].nextProductionDate).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
+                                                                                </div>
+                                                                            )}
+                                                                            {!(remainingStock <= 0 && item.products[0]?.nextProductionDate) && (
+                                                                                <div className="h-[18px]" aria-hidden="true" />
+                                                                            )}
+                                                                        </div>
 
-                                                                        {item.products.map(prod => (
-                                                                            <button
-                                                                                key={prod.id}
-                                                                                onClick={() => addToCart(prod)}
-                                                                                disabled={cartLoading[prod.id]}
-                                                                                className={`w-full flex items-center justify-center gap-1 text-[10px] font-bold py-1.5 px-2 rounded-md transition-all active:scale-95 border ${qtyInCart > 0
-                                                                                    ? 'bg-lime-100 text-lime-800 border-lime-300 hover:bg-lime-200'
-                                                                                    : 'bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100'
-                                                                                    } ${cartLoading[prod.id] ? 'opacity-50' : ''}`}
-                                                                                title={`Agregar caja de ${packSize} unidades`}
-                                                                            >
-                                                                                <Plus className="w-3 h-3" />
-                                                                                {cartLoading[prod.id] ? '...' : 'AGREGAR'}
-                                                                            </button>
-                                                                        ))}
-                                                                        {qtyInCart > 0 && (
-                                                                            <div className="text-[9px] font-bold text-lime-700 bg-lime-100 px-1.5 py-0.5 rounded-full">
-                                                                                🛒 {qtyInCart / packSize} caja{qtyInCart / packSize > 1 ? 's' : ''}
-                                                                            </div>
-                                                                        )}
+                                                                        <div className="mt-1 flex w-full flex-col gap-1">
+                                                                            {renderPendingDeliveryBox('liquipops', item.size, item.flavor)}
+
+                                                                            {item.products.map(prod => (
+                                                                                <button
+                                                                                    key={prod.id}
+                                                                                    onClick={() => addToCart(prod)}
+                                                                                    disabled={cartLoading[prod.id]}
+                                                                                    className={`w-full flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[10px] font-bold transition-all active:scale-95 ${qtyInCart > 0
+                                                                                        ? 'bg-lime-100 text-lime-800 border-lime-300 hover:bg-lime-200'
+                                                                                        : 'bg-cyan-50 text-cyan-700 border-cyan-200 hover:bg-cyan-100'
+                                                                                        } ${cartLoading[prod.id] ? 'opacity-50' : ''}`}
+                                                                                    title={`Agregar caja de ${packSize} unidades`}
+                                                                                >
+                                                                                    <Plus className="w-3 h-3" />
+                                                                                    {cartLoading[prod.id] ? '...' : 'AGREGAR'}
+                                                                                </button>
+                                                                            ))}
+                                                                            {qtyInCart > 0 && (
+                                                                                <div className="text-center text-[9px] font-bold text-lime-700 bg-lime-100 px-1.5 py-0.5 rounded-full">
+                                                                                    🛒 {qtyInCart / packSize} caja{qtyInCart / packSize > 1 ? 's' : ''}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
                                                                     </div>
                                                                 </td>
                                                             );
@@ -963,7 +1333,17 @@ export default function DistributorPortal() {
 
                 {activeTab === 'orders' && (
                     <div className="space-y-4">
-                        <h2 className="text-3xl font-bold mb-6 text-gray-900">📦 Mis Pedidos</h2>
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-3xl font-bold text-gray-900">📦 Mis Pedidos</h2>
+                            <button
+                                onClick={() => setPendingSummaryModal(true)}
+                                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium text-sm"
+                                title="Consolidado de pedidos por entregar"
+                            >
+                                <BarChart3 className="w-4 h-4" />
+                                Consolidado Pendientes
+                            </button>
+                        </div>
                         {myOrders?.length === 0 ? (
                             <div className="bg-white rounded-2xl shadow-lg p-16 text-center border border-gray-200">
                                 <Package className="mx-auto h-24 w-24 text-gray-300 mb-6" />
@@ -1143,6 +1523,180 @@ export default function DistributorPortal() {
                         )}
                     </div>
                 )}
+
+                {pendingSummaryModal && (() => {
+                    const matrix = pendingMatrix;
+                    const matrixDetails = pendingMatrixDetails;
+                    const orderTotals = pendingOrderTotals;
+                    const totalOrders = orderTotals.length;
+                    const totalUnits = orderTotals.reduce((sum, o) => sum + o.total, 0);
+
+                    const renderMatrixTable = (brand, data) => {
+                        const detailData = matrixDetails?.[brand] || {};
+                        const presentations = Object.keys(data || {}).sort((a, b) => {
+                            const num = (v) => parseFloat(v) || 0;
+                            return num(b) - num(a);
+                        });
+                        const flavorSet = new Set();
+                        presentations.forEach(p => Object.keys(data[p] || {}).forEach(f => flavorSet.add(f)));
+                        const flavors = Array.from(flavorSet).sort();
+
+                        if (presentations.length === 0 || flavors.length === 0) return null;
+
+                        return (
+                            <div className="mb-4 border rounded-xl overflow-x-auto bg-white">
+                                <div className="px-4 py-2 bg-gray-50 border-b text-sm font-semibold text-gray-700">{brand}</div>
+                                <table className="min-w-full text-xs border-collapse">
+                                    <thead>
+                                        <tr>
+                                            <th className="p-2 border-b bg-white text-left font-bold text-gray-500 w-20">PRES</th>
+                                            {flavors.map(flavor => (
+                                                <th key={flavor} className="p-2 border-b bg-white font-bold text-gray-600 min-w-[70px] text-center">
+                                                    {flavor}
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {presentations.map(p => (
+                                            <tr key={p} className="hover:bg-gray-50">
+                                                <td className="p-2 border-b font-bold text-gray-700 bg-gray-50/50 whitespace-nowrap">{p}</td>
+                                                {flavors.map(flavor => {
+                                                    const val = data[p]?.[flavor] || 0;
+                                                    const details = detailData?.[p]?.[flavor] || [];
+                                                    const orderCount = details.length;
+                                                    return (
+                                                        <td key={`${p}-${flavor}`} className="p-2 border-b text-center">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (val <= 0) return;
+                                                                    setPendingCellDetail({ brand, presentation: p, flavor });
+                                                                }}
+                                                                className={`inline-flex flex-col items-center min-w-[50px] rounded-md border px-2 py-1 ${
+                                                                    val > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100' : 'bg-gray-50 text-gray-400 border-gray-100'
+                                                                }`}
+                                                                title={orderCount > 0 ? 'Ver detalle por pedido' : ''}
+                                                            >
+                                                                <span className="font-semibold">{val}</span>
+                                                                {orderCount > 0 && (
+                                                                    <span className="text-[10px] text-emerald-700">{orderCount} ord</span>
+                                                                )}
+                                                            </button>
+                                                        </td>
+                                                    );
+                                                })}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    };
+
+                    const detailList = pendingCellDetail
+                        ? (matrixDetails?.[pendingCellDetail.brand]?.[pendingCellDetail.presentation]?.[pendingCellDetail.flavor] || [])
+                        : [];
+
+                    return (
+                        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(4px)' }}>
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden">
+                                <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                                    <div>
+                                        <div className="text-lg font-bold">Consolidado de Pedidos por Entregar</div>
+                                        <div className="text-xs text-slate-300">Incluye pedidos no entregados</div>
+                                    </div>
+                                    <button onClick={() => { setPendingSummaryModal(false); setPendingCellDetail(null); }} className="text-white text-2xl">&times;</button>
+                                </div>
+
+                                <div className="p-5 overflow-y-auto max-h-[calc(90vh-120px)]">
+                                    {pendingSummaryLoading ? (
+                                        <div className="text-sm text-gray-500">Cargando consolidado...</div>
+                                    ) : (
+                                        <>
+                                            <div className="grid grid-cols-3 gap-3 mb-4">
+                                                <div className="p-3 rounded-lg bg-gray-50 border">
+                                                    <div className="text-xs text-gray-500">Pedidos</div>
+                                                    <div className="text-lg font-bold text-gray-900">{totalOrders}</div>
+                                                </div>
+                                                <div className="p-3 rounded-lg bg-gray-50 border">
+                                                    <div className="text-xs text-gray-500">Unidades Totales</div>
+                                                    <div className="text-lg font-bold text-gray-900">{totalUnits}</div>
+                                                </div>
+                                                <div className="p-3 rounded-lg bg-gray-50 border">
+                                                    <div className="text-xs text-gray-500">Estados</div>
+                                                    <div className="text-sm text-gray-700">
+                                                        {(pendingSummary?.meta?.statuses || []).join(', ')}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="mb-4 border rounded-xl bg-white">
+                                                <div className="px-4 py-2 bg-gray-50 border-b text-sm font-semibold text-gray-700">Pedidos incluidos</div>
+                                                <table className="min-w-full text-xs">
+                                                    <thead>
+                                                        <tr>
+                                                            <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                            <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
+                                                            <th className="p-2 border-b text-right font-bold text-gray-500">Unidades</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {orderTotals.map(o => (
+                                                            <tr key={o.id} className="border-b last:border-b-0">
+                                                                <td className="p-2 text-gray-700 font-semibold">{o.number}</td>
+                                                                <td className="p-2 text-gray-500">{statusLabels[o.status] || o.status}</td>
+                                                                <td className="p-2 text-right font-bold text-gray-900">{o.total}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+
+                                            {pendingCellDetail && detailList.length > 0 && (
+                                                <div className="mb-4 border rounded-xl bg-white">
+                                                    <div className="px-4 py-2 bg-emerald-50 border-b text-sm font-semibold text-emerald-800 flex items-center justify-between">
+                                                        <div>
+                                                            Detalle por pedido · {pendingCellDetail.brand} · {pendingCellDetail.presentation} · {pendingCellDetail.flavor}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setPendingCellDetail(null)}
+                                                            className="text-emerald-900 text-lg"
+                                                        >
+                                                            &times;
+                                                        </button>
+                                                    </div>
+                                                    <table className="min-w-full text-xs">
+                                                        <thead>
+                                                            <tr>
+                                                                <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                                <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
+                                                                <th className="p-2 border-b text-right font-bold text-gray-500">Cantidad</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {detailList.map((row, idx) => (
+                                                                <tr key={`${row.orderNumber}-${idx}`} className="border-b last:border-b-0">
+                                                                    <td className="p-2 text-gray-700 font-semibold">{row.orderNumber}</td>
+                                                                    <td className="p-2 text-gray-500">{statusLabels[row.status] || row.status}</td>
+                                                                    <td className="p-2 text-right font-bold text-gray-900">{row.qty}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+
+                                            {renderMatrixTable('GENIALITY', matrix.GENIALITY)}
+                                            {renderMatrixTable('LIQUIPOPS', matrix.LIQUIPOPS)}
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
             </div>
         </div>
     );

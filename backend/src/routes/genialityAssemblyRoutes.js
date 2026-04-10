@@ -43,6 +43,112 @@ router.post('/:id/variables', assemblyNoteController.recordVariable);
 router.get('/:id/check-proteccion', assemblyNoteController.checkProteccion);
 router.post('/:id/complete', auth, assemblyNoteController.completeNote);
 
+// ── POST /:id/consume-carrito — Geniality: consume packaging materials per carrito ──
+// Called when each carrito is processed in GEmpaqueStep (isPartialIngest).
+// Proportionally deducts packaging items (botellas, tapas, etiquetas, etc.) from
+// currentStock based on the carrito quantity. ONLY for Geniality G_EMPAQUE notes.
+// This is idempotent per carritoId — duplicate calls are silently ignored.
+router.post('/:id/consume-carrito', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { carritoId, carritoQty, operatorId } = req.body;
+        if (!carritoId || !carritoQty || carritoQty <= 0) {
+            return res.status(400).json({ error: 'carritoId y carritoQty son requeridos' });
+        }
+
+        const note = await _notePrisma.assemblyNote.findUnique({
+            where: { id },
+            include: {
+                processType: true,
+                product: true,
+                items: { include: { component: true } }
+            }
+        });
+        if (!note) return res.status(404).json({ error: 'Nota no encontrada' });
+        if (note.processType?.code !== 'G_EMPAQUE') {
+            return res.status(400).json({ error: 'Solo notas de G_EMPAQUE pueden usar consume-carrito' });
+        }
+
+        // Idempotency: check if this carritoId was already consumed
+        const alreadyConsumed = note.processParameters?.carriots_consumed || [];
+        if (alreadyConsumed.includes(carritoId)) {
+            return res.json({ ok: true, skipped: true, reason: 'carritoId ya fue consumido previamente' });
+        }
+
+        // The note's plannedQuantity represents the full-lot target.
+        // We consume proportionally: qty_this_carrito / note.targetQuantity * item.plannedQty
+        // BUT wait: For Geniality Siropes, the target is usually 1, and the quantity is dynamic.
+        // Let's rely on ratio: Math.min(1, carritoQty / noteTarget).
+        // Wait, for siropes, `note.targetQuantity` is usually the total planned kg or liters, not units!
+        // Actually, bottle templates define the units needed correctly per 1 base batch.
+        const noteTarget = note.targetQuantity || 1;
+        const ratio = Math.min(1, carritoQty / noteTarget);
+
+        const consumed = [];
+        for (const item of note.items) {
+            if (!item.componentId) continue;
+            const name = (item.component?.name || '').toUpperCase();
+            
+            // For siropes packaging we only consume discrete packaging items:
+            const isPackaging = /(ENVASE|TAPA|BOTELLA|ETIQUETA|SELLO|CAJA|GALON|BIDON|GARRAFA|LITRO)/i.test(name);
+            if (!isPackaging) continue;
+
+            const plannedForNote = item.plannedQuantity || 0;
+            const qtyForCarrito = Math.round(ratio * plannedForNote);
+            if (qtyForCarrito <= 0) continue;
+
+            const product = await _notePrisma.product.findUnique({
+                where: { id: item.componentId },
+                select: { productionZoneStock: true, currentStock: true, name: true }
+            });
+            const zone = product?.productionZoneStock || 0;
+            const fromZone = Math.min(qtyForCarrito, Math.max(0, zone));
+            const fromBodega = qtyForCarrito - fromZone;
+
+            if (fromZone > 0) {
+                await _notePrisma.product.update({
+                    where: { id: item.componentId },
+                    data: { productionZoneStock: { decrement: fromZone } }
+                });
+            }
+            if (fromBodega > 0) {
+                await _notePrisma.product.update({
+                    where: { id: item.componentId },
+                    data: { currentStock: { decrement: fromBodega } }
+                });
+            }
+            consumed.push({ component: item.component?.name, qty: qtyForCarrito, fromZone, fromBodega });
+        }
+
+        const updatedConsumed = [...alreadyConsumed, carritoId];
+        await _notePrisma.assemblyNote.update({
+            where: { id },
+            data: {
+                processParameters: {
+                    ...(note.processParameters || {}),
+                    carriots_consumed: updatedConsumed,
+                    materialsPreConsumed: true
+                }
+            }
+        });
+
+        await _notePrisma.auditLog.create({
+            data: {
+                userId: operatorId || null,
+                action: 'G_EMPAQUE_CARRITO_CONSUMED',
+                entity: 'AssemblyNote',
+                entityId: id,
+                changes: { carritoId, carritoQty, ratio, consumed }
+            }
+        }).catch(() => {});
+
+        res.json({ ok: true, consumed, carritoId, carritoQty });
+    } catch (err) {
+        console.error('[consume-carrito]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Production Batch Operations
 router.post('/batches/:id/close', productionBatchController.closeBatch);
 router.post('/:noteId/qc', productionBatchController.recordQC);

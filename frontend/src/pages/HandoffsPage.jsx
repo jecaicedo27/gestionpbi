@@ -21,6 +21,8 @@ const HandoffsPage = () => {
 
     // History State
     const [historyHandoffs, setHistoryHandoffs] = useState([]);
+    const [historySearch, setHistorySearch] = useState('');
+    const [historyStatus, setHistoryStatus] = useState('ALL'); // ALL | COMPLETED | REJECTED
 
     // Roles rules
     const isProduction = ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'].includes(user?.role);
@@ -51,7 +53,11 @@ const HandoffsPage = () => {
                         inTransitQty[key] = (inTransitQty[key] || 0) + (i.requestedQuantity || 0);
                     })
                 );
-                const filtered = stocks.filter(s => s.currentQuantity > 0 && !inTransit.has(`${s.productId}_${s.lotNumber}`));
+                const filtered = stocks.filter(s => {
+                    const key = `${s.productId}_${s.lotNumber}`;
+                    const transit = inTransitQty[key] || 0;
+                    return (s.currentQuantity - transit) > 0;
+                });
                 // Batch-fetch lot-summary to get approved/defective breakdown from EMPAQUE notes
                 const uniqueLots = [...new Set(filtered.map(s => s.lotNumber))];
                 const summaryMap = {};
@@ -63,7 +69,7 @@ const HandoffsPage = () => {
                         });
                     } catch(e) { /* non-blocking */ }
                 }));
-                setProductionStock(filtered.map(s => {
+                const mappedStock = filtered.map(s => {
                     const sm = summaryMap[`${s.productId}_${s.lotNumber}`];
                     const key = `${s.productId}_${s.lotNumber}`;
                     // alreadyDelivered = what left this zone = initialQuantity - currentQuantity
@@ -75,7 +81,9 @@ const HandoffsPage = () => {
                         alreadyDelivered,
                         inTransitQty: inTransitQty[key] || 0,
                     };
-                }));
+                });
+                
+                setProductionStock(mappedStock);
                 setSelectedItems({});
                 setSearchQuery('');
             } else if (activeTab === 'PENDING') {
@@ -308,36 +316,41 @@ const HandoffsPage = () => {
                                                     <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: 2 }}>
                                                         Lote: <strong style={{ color: '#0f172a' }}>{s.lotNumber}</strong>
                                                         <span style={{ margin: '0 6px' }}>•</span>
-                                                        <strong style={{ color: '#059669' }}>✅ {s.approved ?? s.initialQuantity} aprobadas</strong>
-                                                        {s.defective > 0 && (
-                                                            <span style={{ marginLeft: 8, color: '#b91c1c', fontWeight: 800, fontSize: '0.72rem', background: '#fef2f2', padding: '2px 7px', borderRadius: 4, border: '1px solid #fca5a5' }}>
-                                                                ⚠️ {s.defective} en mal estado
+                                                        {s.defective > 0 ? (
+                                                            <span style={{ background: '#fef2f2', color: '#ef4444', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
+                                                                {s.defective} en mal estado
+                                                            </span>
+                                                        ) : (
+                                                            <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
+                                                                sin defectos
                                                             </span>
                                                         )}
                                                     </div>
-                                                    {/* Inventory distribution breakdown */}
-                                                    {(s.alreadyDelivered > 0 || s.inTransitQty > 0) && (
-                                                        <div style={{ marginTop: 6, padding: '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd', fontSize: '0.72rem' }}>
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', color: '#475569' }}>
-                                                                <span style={{ fontWeight: 700, color: '#0284c7' }}>📊 Distribución:</span>
-                                                                <span>{s.approved ?? s.initialQuantity} producidas</span>
-                                                                {s.alreadyDelivered > 0 && (
-                                                                    <>
-                                                                        <span style={{ color: '#cbd5e1' }}>→</span>
-                                                                        <span style={{ color: '#059669', fontWeight: 700 }}>✅ {s.alreadyDelivered} ya entregadas</span>
-                                                                    </>
-                                                                )}
-                                                                {s.inTransitQty > 0 && (
-                                                                    <>
-                                                                        <span style={{ color: '#cbd5e1' }}>→</span>
-                                                                        <span style={{ color: '#f59e0b', fontWeight: 700 }}>🚚 {s.inTransitQty} en tránsito</span>
-                                                                    </>
-                                                                )}
-                                                                <span style={{ color: '#cbd5e1' }}>→</span>
-                                                                <span style={{ color: '#7c3aed', fontWeight: 800 }}>📦 {s.currentQuantity} disponibles aquí</span>
-                                                            </div>
+                                                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                            <span style={{ fontWeight: 700, color: '#0284c7' }}>📊 Balance:</span>
+                                                            <span>{s.initialQuantity} total ingresadas a zona</span>
+                                                            <span style={{ color: '#cbd5e1' }}>→</span>
+                                                            <span>{s.alreadyDelivered} entregadas a bodega</span>
                                                         </div>
-                                                    )}
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                            <span style={{ fontWeight: 700, color: '#f59e0b', marginLeft: 24 }}>↳</span>
+                                                            <span>{s.inTransitQty} en acta pendiente</span>
+                                                            <span style={{ color: '#cbd5e1' }}>→</span>
+                                                            <span style={{ fontWeight: 800, color: '#0f172a' }}>{Math.max(0, s.currentQuantity - s.inTransitQty)} libres para enviar</span>
+                                                        </div>
+                                                        {s.currentQuantity > 0 && s.defective > 0 && (
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', marginTop: 8, background: '#f8fafc', padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
+                                                                <span style={{ fontWeight: 800, color: '#ef4444' }}>⚠️ Libres para enviar {Math.max(0, s.currentQuantity - s.inTransitQty)}:</span>
+                                                                <span>{Math.max(0, s.currentQuantity - s.inTransitQty - s.defective)} sanas y {s.defective} en mal estado.</span>
+                                                            </div>
+                                                        )}
+                                                        {s.currentQuantity > 0 && s.defective === 0 && (
+                                                            <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: 8, padding: '4px 8px', background: '#ecfdf5', borderRadius: 4, fontStyle: 'italic', display: 'inline-block' }}>
+                                                                * Tienes {Math.max(0, s.currentQuantity - s.inTransitQty)} unidades sueltas listas y libres para enviarse a Logística.
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                     {locked && (
                                                         <div style={{ fontSize: '0.72rem', color: '#c2410c', marginTop: 4, fontStyle: 'italic' }}>
                                                             ⚠️ Este lote debe finalizarse en el paso de Ensamble Siigo antes de poder enviarse a logística.
@@ -346,21 +359,25 @@ const HandoffsPage = () => {
                                                 </div>
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12, flexShrink: 0 }}>
                                                     {!locked && <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>Enviar:</span>}
-                                                    {(() => { const maxSendable = s.currentQuantity; return (
-                                                    <>
-                                                    <InputNumber
-                                                        min={0}
-                                                        max={maxSendable}
-                                                        value={locked ? null : selectedQty}
-                                                        onChange={val => !locked && handleQtyChange(s, val)}
-                                                        placeholder={locked ? '—' : '0'}
-                                                        disabled={locked}
-                                                        style={{ width: 80 }}
-                                                    />
-                                                    {isSelected && !locked && (
-                                                        <Button type="primary" size="small" onClick={() => handleQtyChange(s, maxSendable)} style={{ background: '#10b981' }}>Max</Button>
-                                                    )}
-                                                    </>); })()}
+                                                    {(() => {
+                                                        const maxSendable = Math.max(0, s.currentQuantity - s.inTransitQty);
+                                                        return (
+                                                        <>
+                                                        <InputNumber
+                                                            min={0}
+                                                            max={maxSendable}
+                                                            value={locked ? null : selectedQty}
+                                                            onChange={val => !locked && handleQtyChange(s, val)}
+                                                            placeholder={locked ? '—' : '0'}
+                                                            disabled={locked}
+                                                            style={{ width: 80 }}
+                                                        />
+                                                        {isSelected && !locked && (
+                                                            <Button type="primary" size="small" onClick={() => handleQtyChange(s, maxSendable)} style={{ background: '#10b981' }}>Max</Button>
+                                                        )}
+                                                        </>
+                                                        );
+                                                    })()}
                                                 </div>
                                             </div>
                                         );
@@ -454,50 +471,117 @@ const HandoffsPage = () => {
 
                 {/* ── HISTORY TAB ── */}
                 {activeTab === 'HISTORY' && (
-                    <Table
-                        dataSource={historyHandoffs}
-                        rowKey="id"
-                        pagination={{ pageSize: 20 }}
-                        columns={[
-                            {
-                                title: 'Nº Acta',
-                                dataIndex: 'handoffNumber',
-                                key: 'num',
-                                render: text => <strong style={{ fontFamily: 'monospace' }}>{text}</strong>
-                            },
-                            {
-                                title: 'Fecha',
-                                dataIndex: 'createdAt',
-                                render: d => new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-                            },
-                            {
-                                title: 'Operario',
-                                dataIndex: ['createdBy', 'name'],
-                            },
-                            {
-                                title: 'Recibido por',
-                                dataIndex: ['receivedBy', 'name'],
-                                render: (t, r) => t ? t : (r.status === 'REJECTED' ? '-' : 'Pendiente')
-                            },
-                            {
-                                title: 'Lotes',
-                                render: (_, row) => (
-                                    <div style={{ fontSize: '0.75rem' }}>
-                                        {row.items.map(i => (
-                                            <div key={i.id}>{i.product?.sku} ({i.lotNumber}): {i.receivedQuantity ?? i.requestedQuantity} uds</div>
-                                        ))}
-                                    </div>
-                                )
-                            },
-                            {
-                                title: 'Estado',
-                                dataIndex: 'status',
-                                render: s => (
-                                    <Badge status={s === 'COMPLETED' ? 'success' : 'error'} text={s === 'COMPLETED' ? 'Recibido' : 'Rechazado'} />
-                                )
-                            }
-                        ]}
-                    />
+                    <div>
+                        {/* Filter bar */}
+                        <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
+                                <Search size={15} color="#94a3b8" style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
+                                <input
+                                    type="text"
+                                    placeholder="Buscar acta, operario, lote, SKU..."
+                                    value={historySearch}
+                                    onChange={e => setHistorySearch(e.target.value)}
+                                    style={{
+                                        width: '100%', padding: '8px 12px 8px 34px',
+                                        border: '1px solid #e2e8f0', borderRadius: 8,
+                                        fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box'
+                                    }}
+                                />
+                            </div>
+                            <select
+                                value={historyStatus}
+                                onChange={e => setHistoryStatus(e.target.value)}
+                                style={{
+                                    padding: '8px 14px', border: '1px solid #e2e8f0',
+                                    borderRadius: 8, fontSize: '0.85rem', cursor: 'pointer',
+                                    background: '#fff', color: '#334155', fontWeight: 600, outline: 'none'
+                                }}
+                            >
+                                <option value="ALL">Todos los estados</option>
+                                <option value="COMPLETED">✅ Recibido</option>
+                                <option value="REJECTED">❌ Rechazado</option>
+                                <option value="PENDING">⏳ Pendiente</option>
+                            </select>
+                            {(historySearch || historyStatus !== 'ALL') && (
+                                <button
+                                    onClick={() => { setHistorySearch(''); setHistoryStatus('ALL'); }}
+                                    style={{
+                                        padding: '7px 12px', border: '1px solid #e2e8f0',
+                                        borderRadius: 8, background: '#fff', color: '#64748b',
+                                        fontSize: '0.8rem', cursor: 'pointer', fontWeight: 600
+                                    }}
+                                >
+                                    ✕ Limpiar
+                                </button>
+                            )}
+                            <span style={{ fontSize: '0.78rem', color: '#94a3b8', marginLeft: 'auto' }}>
+                                {(() => {
+                                    const s = historySearch.toLowerCase();
+                                    const count = historyHandoffs.filter(h => {
+                                        const matchSearch = !s || h.handoffNumber?.toLowerCase().includes(s)
+                                            || h.createdBy?.name?.toLowerCase().includes(s)
+                                            || h.receivedBy?.name?.toLowerCase().includes(s)
+                                            || h.items?.some(i => i.lotNumber?.toLowerCase().includes(s) || i.product?.sku?.toLowerCase().includes(s));
+                                        const matchStatus = historyStatus === 'ALL' || h.status === historyStatus;
+                                        return matchSearch && matchStatus;
+                                    }).length;
+                                    return `${count} de ${historyHandoffs.length} actas`;
+                                })()}
+                            </span>
+                        </div>
+                        <Table
+                            dataSource={historyHandoffs.filter(h => {
+                                const s = historySearch.toLowerCase();
+                                const matchSearch = !s || h.handoffNumber?.toLowerCase().includes(s)
+                                    || h.createdBy?.name?.toLowerCase().includes(s)
+                                    || h.receivedBy?.name?.toLowerCase().includes(s)
+                                    || h.items?.some(i => i.lotNumber?.toLowerCase().includes(s) || i.product?.sku?.toLowerCase().includes(s));
+                                const matchStatus = historyStatus === 'ALL' || h.status === historyStatus;
+                                return matchSearch && matchStatus;
+                            })}
+                            rowKey="id"
+                            pagination={{ pageSize: 20 }}
+                            columns={[
+                                {
+                                    title: 'Nº Acta',
+                                    dataIndex: 'handoffNumber',
+                                    key: 'num',
+                                    render: text => <strong style={{ fontFamily: 'monospace' }}>{text}</strong>
+                                },
+                                {
+                                    title: 'Fecha',
+                                    dataIndex: 'createdAt',
+                                    render: d => new Date(d).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+                                },
+                                {
+                                    title: 'Operario',
+                                    dataIndex: ['createdBy', 'name'],
+                                },
+                                {
+                                    title: 'Recibido por',
+                                    dataIndex: ['receivedBy', 'name'],
+                                    render: (t, r) => t ? t : (r.status === 'REJECTED' ? '-' : 'Pendiente')
+                                },
+                                {
+                                    title: 'Lotes',
+                                    render: (_, row) => (
+                                        <div style={{ fontSize: '0.75rem' }}>
+                                            {row.items.map(i => (
+                                                <div key={i.id}>{i.product?.sku} ({i.lotNumber}): {i.receivedQuantity ?? i.requestedQuantity} uds</div>
+                                            ))}
+                                        </div>
+                                    )
+                                },
+                                {
+                                    title: 'Estado',
+                                    dataIndex: 'status',
+                                    render: s => (
+                                        <Badge status={s === 'COMPLETED' ? 'success' : s === 'REJECTED' ? 'error' : 'processing'} text={s === 'COMPLETED' ? 'Recibido' : s === 'REJECTED' ? 'Rechazado' : 'Pendiente'} />
+                                    )
+                                }
+                            ]}
+                        />
+                    </div>
                 )}
             </Spin>
 

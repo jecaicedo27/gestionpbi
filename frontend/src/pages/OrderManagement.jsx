@@ -54,6 +54,12 @@ export default function OrderManagement() {
     const [confirmSkipModal, setConfirmSkipModal] = useState(false);
     const [successModal, setSuccessModal] = useState(null); // { type: 'success'|'error', title, message, detail }
     const [packingModeModal, setPackingModeModal] = useState(null); // { order } — pending packing mode selection
+    const [pendingSummaryModal, setPendingSummaryModal] = useState(false);
+    const [pendingCellDetail, setPendingCellDetail] = useState(null); // { brand, presentation, flavor }
+    
+    // Edit notes
+    const [editingNoteId, setEditingNoteId] = useState(null);
+    const [editNoteContent, setEditNoteContent] = useState('');
 
     const { data: orders, isLoading } = useQuery({
         queryKey: ['admin-orders', statusFilter],
@@ -72,6 +78,15 @@ export default function OrderManagement() {
             return response.data.data;
         },
         refetchInterval: 30000
+    });
+
+    const { data: pendingSummary, isLoading: pendingSummaryLoading } = useQuery({
+        queryKey: ['orders-pending-summary'],
+        queryFn: async () => {
+            const response = await axios.get(`${API_URL}/orders/pending-summary`, { headers: AUTH() });
+            return response.data;
+        },
+        enabled: pendingSummaryModal
     });
 
     // ─── Mutations ───────────────────────────────────────────────
@@ -217,7 +232,6 @@ export default function OrderManagement() {
         onError: (error) => alert(error.response?.data?.error || 'Error al desmarcar item')
     });
 
-    // ADMIN ONLY: revert READY → IN_PICKING
     const revertToPickingMutation = useMutation({
         mutationFn: async ({ orderId }) => {
             const response = await axios.post(`${API_URL}/orders/${orderId}/revert-to-picking`, {}, { headers: AUTH() });
@@ -229,6 +243,19 @@ export default function OrderManagement() {
             alert(`✅ ${data.message}`);
         },
         onError: (error) => alert(error.response?.data?.error || 'Error al devolver pedido')
+    });
+
+    const updateNoteMutation = useMutation({
+        mutationFn: async ({ orderId, notes }) => {
+            const response = await axios.patch(`${API_URL}/orders/${orderId}`, { notes }, { headers: AUTH() });
+            return response.data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries(['admin-orders']);
+            setEditingNoteId(null);
+            setEditNoteContent('');
+        },
+        onError: (error) => alert(error.response?.data?.error || 'Error al actualizar nota')
     });
 
     const invoiceMutation = useMutation({
@@ -612,6 +639,86 @@ export default function OrderManagement() {
         return colors[status] || 'bg-gray-100 text-gray-800';
     };
 
+    const normalizeFlavor = (productName, productFlavor) => {
+        if (productFlavor) return productFlavor.toUpperCase();
+        const name = (productName || '').toUpperCase();
+        const match = name.match(/SABOR\s+(?:A\s+)?(.+?)(?:\s+X\s+\d|\s*$)/);
+        return match ? match[1].trim() : (name || 'SIN SABOR');
+    };
+
+    const normalizePresentation = (productName, productSize) => {
+        const sizeStr = String(productSize || '').toUpperCase();
+        const match = (productName || '').match(/\b(3400|1150|1000|500|360|350)\b/);
+        const num = match ? match[1] : (sizeStr.match(/\d+/) || [null])[0];
+        if (!num) return sizeStr || 'STD';
+        if (num === '3400') return '3.4KG';
+        if (num === '1150') return '1150G';
+        if (num === '1000') return '1000ML';
+        if (num === '500') return '500ML';
+        if (num === '360') return '360ML';
+        if (num === '350') return '350G';
+        return num;
+    };
+
+    const detectBrand = (product) => {
+        if (product?.accountGroup === 1401) return 'LIQUIPOPS';
+        if (product?.accountGroup === 1402) return 'GENIALITY';
+        const name = (product?.name || '').toUpperCase();
+        if (name.includes('LIQUIPOPS') || name.includes('LIQUIPOS')) return 'LIQUIPOPS';
+        if (name.includes('GENIALITY') || name.includes('SIROPE')) return 'GENIALITY';
+        return 'OTROS';
+    };
+
+    const getEffectiveQty = (orderStatus, item) => {
+        const allocated = item.allocatedQty ?? null;
+        const requested = item.requestedQty ?? 0;
+        if (allocated === null || allocated === undefined) return requested;
+        if (allocated > 0) return allocated;
+        if (allocated === 0 && requested > 0 && ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'].includes(orderStatus)) {
+            return requested;
+        }
+        return allocated;
+    };
+
+    const buildPendingMatrix = (ordersList = []) => {
+        const matrix = {};
+        const matrixDetails = {};
+        const orderTotals = ordersList.map(order => {
+            const total = (order.items || []).reduce((sum, item) => {
+                const qty = getEffectiveQty(order.status, item);
+                return sum + qty;
+            }, 0);
+            return { id: order.id, number: order.orderNumber, total, status: order.status };
+        });
+
+        ordersList.forEach(order => {
+            (order.items || []).forEach(item => {
+                const product = item.product || {};
+                const brand = detectBrand(product);
+                if (brand === 'OTROS') return;
+                const flavor = normalizeFlavor(product.name, product.flavor);
+                const presentation = normalizePresentation(product.name, product.size);
+                const qty = getEffectiveQty(order.status, item);
+
+                if (!matrix[brand]) matrix[brand] = {};
+                if (!matrix[brand][presentation]) matrix[brand][presentation] = {};
+                if (!matrix[brand][presentation][flavor]) matrix[brand][presentation][flavor] = 0;
+                matrix[brand][presentation][flavor] += qty;
+
+                if (!matrixDetails[brand]) matrixDetails[brand] = {};
+                if (!matrixDetails[brand][presentation]) matrixDetails[brand][presentation] = {};
+                if (!matrixDetails[brand][presentation][flavor]) matrixDetails[brand][presentation][flavor] = [];
+                matrixDetails[brand][presentation][flavor].push({
+                    orderNumber: order.orderNumber,
+                    status: order.status,
+                    qty
+                });
+            });
+        });
+
+        return { matrix, matrixDetails, orderTotals };
+    };
+
     if (isLoading) {
         return (
             <div className="flex items-center justify-center min-h-screen">
@@ -626,26 +733,36 @@ export default function OrderManagement() {
             <div className="max-w-7xl mx-auto">
                 <div className="flex justify-between items-center mb-6">
                     <h1 className="text-3xl font-bold text-gray-900">Gestión de Pedidos</h1>
-                    {(canManageOrders || isDistributor) && (
+                    <div className="flex items-center gap-2">
+                        {(canManageOrders || isDistributor) && (
+                            <button
+                                onClick={async () => {
+                                    setExcelModal(true);
+                                    setExcelFile(null);
+                                    setExcelPreview(null);
+                                    setExcelDistributor(isDistributor ? user.id : '');
+                                    if (!isDistributor) {
+                                        try {
+                                            const res = await axios.get(`${API_URL}/admin/users`, { headers: AUTH() });
+                                            setDistributors((res.data.data || res.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
+                                        } catch(e) { console.error(e); }
+                                    }
+                                }}
+                                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
+                            >
+                                <Upload className="w-4 h-4" />
+                                📋 Sube tu pedido por Excel
+                            </button>
+                        )}
                         <button
-                            onClick={async () => {
-                                setExcelModal(true);
-                                setExcelFile(null);
-                                setExcelPreview(null);
-                                setExcelDistributor(isDistributor ? user.id : '');
-                                if (!isDistributor) {
-                                    try {
-                                        const res = await axios.get(`${API_URL}/admin/users`, { headers: AUTH() });
-                                        setDistributors((res.data.data || res.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
-                                    } catch(e) { console.error(e); }
-                                }
-                            }}
-                            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-medium text-sm"
+                            onClick={() => setPendingSummaryModal(true)}
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium text-sm"
+                            title="Consolidado de pedidos por entregar"
                         >
-                            <Upload className="w-4 h-4" />
-                            📋 Sube tu pedido por Excel
+                            <BarChart3 className="w-4 h-4" />
+                            Consolidado Pendientes
                         </button>
-                    )}
+                    </div>
                 </div>
 
                 {/* Status Filter */}
@@ -680,7 +797,7 @@ export default function OrderManagement() {
                             <p>No hay pedidos con estado {statusLabels[statusFilter] || statusFilter}</p>
                         </div>
                     ) : (
-                        orders?.map(order => {
+                        orders?.map((order, index) => {
                             const progress = order.pickingProgress || 0;
                             const totalItems = order.items?.length || 0;
                             const completedItems = order.items?.filter(i => {
@@ -695,9 +812,14 @@ export default function OrderManagement() {
                                         {/* Header with inline progress */}
                                         <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
                                             <div className="flex justify-between items-center mb-2">
-                                                <div>
-                                                    <h3 className="text-lg font-bold text-white">{order.orderNumber}</h3>
-                                                    <p className="text-purple-200 text-xs">{new Date(order.createdAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                                                <div className="flex items-center">
+                                                    <div className="flex items-center justify-center min-w-[50px] w-[50px] h-[50px] bg-white/20 text-white rounded-xl text-3xl font-black mr-4 shadow-inner border border-white/30 flex-shrink-0">
+                                                        {order.globalFifoRank || index + 1}
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <h3 className="text-lg font-bold text-white">{order.orderNumber}</h3>
+                                                        <p className="text-purple-200 text-xs mt-1">{new Date(order.createdAt).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                                                    </div>
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <span className="relative flex h-2.5 w-2.5">
@@ -722,13 +844,43 @@ export default function OrderManagement() {
                                         </div>
 
                                         {/* Order Notes (visible to distributor) */}
-                                        {order.notes && (
-                                            <div className="mx-6 mt-3 flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
-                                                <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
-                                                <p className="text-sm text-amber-800 leading-relaxed">
-                                                    <span className="font-semibold text-amber-900">Nota:</span>{' '}
-                                                    {order.notes}
-                                                </p>
+                                        {(order.notes || editingNoteId === order.id) ? (
+                                            <div className="mx-6 mt-3 flex flex-col gap-2 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl relative group">
+                                                <div className="flex items-start gap-2.5">
+                                                    <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
+                                                    {editingNoteId === order.id ? (
+                                                        <div className="flex-1 w-full flex flex-col gap-2">
+                                                            <textarea
+                                                                className="w-full text-sm text-gray-800 p-2 rounded border border-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
+                                                                value={editNoteContent}
+                                                                onChange={(e) => setEditNoteContent(e.target.value)}
+                                                                rows="2"
+                                                            />
+                                                            <div className="flex gap-2 justify-end">
+                                                                <button onClick={() => setEditingNoteId(null)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Cancelar</button>
+                                                                <button onClick={() => updateNoteMutation.mutate({ orderId: order.id, notes: editNoteContent })} className="text-xs bg-amber-600 text-white px-3 py-1 rounded hover:bg-amber-700 disabled:opacity-50" disabled={updateNoteMutation.isPending}>Guardar</button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex-1">
+                                                            <p className="text-sm text-amber-800 leading-relaxed whitespace-pre-wrap">
+                                                                <span className="font-semibold text-amber-900">Nota:</span>{' '}
+                                                                {order.notes}
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                {editingNoteId !== order.id && (
+                                                    <button onClick={() => { setEditingNoteId(order.id); setEditNoteContent(order.notes || ''); }} className="absolute top-2 right-2 opacity-100 transition-opacity text-xs bg-white text-amber-700 border border-amber-300 px-2 py-0.5 rounded shadow-sm hover:bg-amber-100">
+                                                        Editar
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="mx-6 mt-3">
+                                                <button onClick={() => { setEditingNoteId(order.id); setEditNoteContent(''); }} className="text-xs text-amber-600 hover:text-amber-800 flex items-center gap-1 font-medium bg-amber-50 px-2 py-1 rounded border border-transparent hover:border-amber-200 transition">
+                                                    <span className="text-sm">+</span> Agregar nota
+                                                </button>
                                             </div>
                                         )}
 
@@ -796,16 +948,25 @@ export default function OrderManagement() {
 
                             // ── Standard order card (admin + other statuses) ──
                             return (
-                            <div key={order.id} className="bg-white rounded-lg shadow-md p-6">
+                            <div key={order.id} className="bg-white rounded-lg shadow-md p-6 relative overflow-hidden">
+                                {/* Optional: Subtle FIFO rank watermark or pill */}
+                                <div className="absolute top-0 right-0 bg-gray-100 text-gray-400 font-black text-xs px-3 py-1 rounded-bl-lg border-b border-l border-gray-200">
+                                    Turno #{order.globalFifoRank || index + 1}
+                                </div>
                                 <div className="flex justify-between items-start mb-4">
-                                    <div>
-                                        <h3 className="text-xl font-semibold text-gray-900">{order.orderNumber}</h3>
-                                        <p className="text-sm text-gray-600">
-                                            Distribuidor: <span className="font-medium">{order.distributor?.name}</span>
-                                        </p>
-                                        <p className="text-xs text-gray-500 mt-1">
-                                            {new Date(order.createdAt).toLocaleString('es-ES')}
-                                        </p>
+                                    <div className="pt-2 flex items-start">
+                                        <div className="flex items-center justify-center min-w-[56px] w-[56px] h-[56px] bg-purple-100 text-purple-700 rounded-xl text-4xl font-black mr-4 shadow-sm border border-purple-200 flex-shrink-0">
+                                            {order.globalFifoRank || index + 1}
+                                        </div>
+                                        <div>
+                                            <h3 className="text-xl font-semibold text-gray-900">{order.orderNumber}</h3>
+                                            <p className="text-sm text-gray-600 mt-1">
+                                                Distribuidor: <span className="font-medium">{order.distributor?.name}</span>
+                                            </p>
+                                            <p className="text-xs text-gray-500 mt-0.5">
+                                                {new Date(order.createdAt).toLocaleString('es-ES')}
+                                            </p>
+                                        </div>
                                     </div>
                                     <div className="flex items-center gap-3">
                                         {order.status === 'IN_PICKING' && (() => {
@@ -832,15 +993,45 @@ export default function OrderManagement() {
                                 </div>
 
                                 {/* Order Notes */}
-                                {order.notes && (
-                                    <div className="mb-3 flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
-                                        <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
-                                        <p className="text-sm text-amber-800 leading-relaxed">
-                                            <span className="font-semibold text-amber-900">Nota:</span>{' '}
-                                            {order.notes}
-                                        </p>
-                                    </div>
-                                )}
+                                        {(order.notes || editingNoteId === order.id) ? (
+                                            <div className="mb-3 flex flex-col gap-2 px-3.5 py-2.5 bg-amber-50 border border-amber-200 rounded-xl relative group">
+                                                <div className="flex items-start gap-2.5">
+                                                    <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">💬</span>
+                                                    {editingNoteId === order.id ? (
+                                                        <div className="flex-1 w-full flex flex-col gap-2">
+                                                            <textarea
+                                                                className="w-full text-sm text-gray-800 p-2 rounded border border-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
+                                                                value={editNoteContent}
+                                                                onChange={(e) => setEditNoteContent(e.target.value)}
+                                                                rows="2"
+                                                            />
+                                                            <div className="flex gap-2 justify-end">
+                                                                <button onClick={() => setEditingNoteId(null)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1">Cancelar</button>
+                                                                <button onClick={() => updateNoteMutation.mutate({ orderId: order.id, notes: editNoteContent })} className="text-xs bg-amber-600 text-white px-3 py-1 rounded hover:bg-amber-700 disabled:opacity-50" disabled={updateNoteMutation.isPending}>Guardar</button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex-1">
+                                                            <p className="text-sm text-amber-800 leading-relaxed whitespace-pre-wrap">
+                                                                <span className="font-semibold text-amber-900">Nota:</span>{' '}
+                                                                {order.notes}
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                {editingNoteId !== order.id && (
+                                                    <button onClick={() => { setEditingNoteId(order.id); setEditNoteContent(order.notes || ''); }} className="absolute top-2 right-2 opacity-100 transition-opacity text-xs bg-white text-amber-700 border border-amber-300 px-2 py-0.5 rounded shadow-sm hover:bg-amber-100">
+                                                        Editar
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="mb-3">
+                                                <button onClick={() => { setEditingNoteId(order.id); setEditNoteContent(''); }} className="text-xs text-amber-600 hover:text-amber-800 flex items-center gap-1 font-medium bg-amber-50 px-2 py-1 rounded border border-transparent hover:border-amber-200 transition">
+                                                    <span className="text-sm">+</span> Agregar nota
+                                                </button>
+                                            </div>
+                                        )}
 
                                 {/* Compact summary row — click to expand */}
                                 <div className="flex items-center justify-between border-t pt-3 mb-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2 py-1 -mx-2 transition"
@@ -1176,10 +1367,9 @@ export default function OrderManagement() {
                 </div>
             )}
 
-            {/* ════════════════ PENDING ORDER DETAIL / DISPATCH MODAL ════════════ */}
             {selectedOrder && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-lg max-w-3xl w-full p-6 max-h-[90vh] overflow-y-auto">
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 pb-24 md:pb-4 z-50">
+                    <div className="bg-white rounded-lg max-w-3xl w-full p-6 pb-8 md:pb-6 max-h-[85vh] overflow-y-auto">
                         <div className="flex justify-between items-center mb-4">
                             <h3 className="text-xl font-bold">{selectedOrder.orderNumber}</h3>
                             <button onClick={() => setSelectedOrder(null)}
@@ -1275,38 +1465,38 @@ export default function OrderManagement() {
                         {selectedOrder.status === 'PENDING' && (() => {
                             const hasInsufficient = selectedOrder.items?.some(i => (i.product?.currentStock || 0) < i.requestedQty);
                             return (
-                                <div className="flex justify-end gap-3 border-t pt-4 flex-wrap items-center">
+                                <div className="flex flex-col sm:flex-row sm:justify-end gap-4 border-t pt-5 mt-2">
                                     <button
                                         onClick={() => {
                                             const reason = prompt('Razón del rechazo:');
                                             if (reason) rejectMutation.mutate({ orderId: selectedOrder.id, reason });
                                         }}
-                                        className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 text-sm font-medium"
+                                        className="flex items-center justify-center gap-2 px-4 py-3 sm:py-2 bg-red-100 text-red-700 rounded-xl hover:bg-red-200 text-sm font-bold w-full sm:w-auto"
                                     >
-                                        <XCircle className="w-4 h-4" /> Rechazar
+                                        <XCircle className="w-5 h-5 sm:w-4 sm:h-4" /> Rechazar
                                     </button>
                                     {hasInsufficient && (
-                                        <div className="flex flex-col items-center gap-0.5">
+                                        <div className="flex flex-col items-center gap-1 w-full sm:w-auto">
                                             <button
                                                 onClick={() => setConfirmSkipModal(true)}
                                                 disabled={approveMutation.isPending}
-                                                className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-md hover:bg-amber-600 disabled:bg-gray-400 font-medium text-sm"
+                                                className="flex items-center justify-center gap-2 px-4 py-3 sm:py-2 w-full bg-amber-500 text-white rounded-xl hover:bg-amber-600 disabled:bg-gray-400 font-bold text-sm"
                                             >
                                                 ✂️ Aprobar solo lo disponible
                                             </button>
-                                            <span className="text-xs text-amber-700">Omite los faltantes</span>
+                                            <span className="text-xs text-amber-700 font-medium tracking-tight">Omite los faltantes</span>
                                         </div>
                                     )}
-                                    <div className="flex flex-col items-center gap-0.5">
+                                    <div className="flex flex-col items-center gap-1 w-full sm:w-auto">
                                         <button
                                             onClick={() => approveMutation.mutate({ orderId: selectedOrder.id })}
                                             disabled={approveMutation.isPending}
-                                            className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 font-medium text-sm"
+                                            className="flex items-center justify-center gap-2 px-5 py-3 sm:py-2 w-full bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:bg-gray-400 font-bold text-sm"
                                         >
-                                            <CheckCircle className="w-4 h-4" />
+                                            <CheckCircle className="w-5 h-5 sm:w-4 sm:h-4" />
                                             {hasInsufficient ? 'Aprobar con backorder' : 'Aprobar Pedido'}
                                         </button>
-                                        {hasInsufficient && <span className="text-xs text-green-700">Incluye todos, faltantes en cola</span>}
+                                        {hasInsufficient && <span className="text-xs text-green-700 font-medium tracking-tight">Incluye todos, faltantes en cola</span>}
                                     </div>
                                 </div>
                             );
@@ -2749,6 +2939,179 @@ export default function OrderManagement() {
                 <style>{`@keyframes slideUpFadeIn { from { opacity:0; transform:translateY(16px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }`}</style>
             </div>
         )}
+        {/* ── Pending Summary Modal ──────────────────────────── */}
+        {pendingSummaryModal && (() => {
+            const ordersList = pendingSummary?.data || [];
+            const { matrix, matrixDetails, orderTotals } = buildPendingMatrix(ordersList);
+            const totalOrders = orderTotals.length;
+            const totalUnits = orderTotals.reduce((sum, o) => sum + o.total, 0);
+
+            const renderMatrixTable = (brand, data) => {
+                const detailData = matrixDetails?.[brand] || {};
+                const presentations = Object.keys(data || {}).sort((a, b) => {
+                    const num = (v) => parseFloat(v) || 0;
+                    return num(b) - num(a);
+                });
+                const flavorSet = new Set();
+                presentations.forEach(p => Object.keys(data[p] || {}).forEach(f => flavorSet.add(f)));
+                const flavors = Array.from(flavorSet).sort();
+
+                if (presentations.length === 0 || flavors.length === 0) return null;
+
+                return (
+                    <div className="mb-4 border rounded-xl overflow-x-auto bg-white">
+                        <div className="px-4 py-2 bg-gray-50 border-b text-sm font-semibold text-gray-700">{brand}</div>
+                        <table className="min-w-full text-xs border-collapse">
+                            <thead>
+                                <tr>
+                                    <th className="p-2 border-b bg-white text-left font-bold text-gray-500 w-20">PRES</th>
+                                    {flavors.map(flavor => (
+                                        <th key={flavor} className="p-2 border-b bg-white font-bold text-gray-600 min-w-[70px] text-center">
+                                            {flavor}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {presentations.map(p => (
+                                    <tr key={p} className="hover:bg-gray-50">
+                                        <td className="p-2 border-b font-bold text-gray-700 bg-gray-50/50 whitespace-nowrap">{p}</td>
+                                        {flavors.map(flavor => {
+                                            const val = data[p]?.[flavor] || 0;
+                                            const details = detailData?.[p]?.[flavor] || [];
+                                            const orderCount = details.length;
+                                            return (
+                                                <td key={`${p}-${flavor}`} className="p-2 border-b text-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (val <= 0) return;
+                                                            setPendingCellDetail({ brand, presentation: p, flavor });
+                                                        }}
+                                                        className={`inline-flex flex-col items-center min-w-[50px] rounded-md border px-2 py-1 ${
+                                                            val > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100' : 'bg-gray-50 text-gray-400 border-gray-100'
+                                                        }`}
+                                                        title={orderCount > 0 ? 'Ver detalle por pedido' : ''}
+                                                    >
+                                                        <span className="font-semibold">{val}</span>
+                                                        {orderCount > 0 && (
+                                                            <span className="text-[10px] text-emerald-700">{orderCount} ord</span>
+                                                        )}
+                                                    </button>
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                );
+            };
+
+            const detailList = pendingCellDetail
+                ? (matrixDetails?.[pendingCellDetail.brand]?.[pendingCellDetail.presentation]?.[pendingCellDetail.flavor] || [])
+                : [];
+
+            return (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(4px)' }}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden">
+                        <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                            <div>
+                                <div className="text-lg font-bold">Consolidado de Pedidos por Entregar</div>
+                                <div className="text-xs text-slate-300">Incluye pedidos no entregados</div>
+                            </div>
+                            <button onClick={() => { setPendingSummaryModal(false); setPendingCellDetail(null); }} className="text-white text-2xl">&times;</button>
+                        </div>
+
+                        <div className="p-5 overflow-y-auto max-h-[calc(90vh-120px)]">
+                            {pendingSummaryLoading ? (
+                                <div className="text-sm text-gray-500">Cargando consolidado...</div>
+                            ) : (
+                                <>
+                                    <div className="grid grid-cols-3 gap-3 mb-4">
+                                        <div className="p-3 rounded-lg bg-gray-50 border">
+                                            <div className="text-xs text-gray-500">Pedidos</div>
+                                            <div className="text-lg font-bold text-gray-900">{totalOrders}</div>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border">
+                                            <div className="text-xs text-gray-500">Unidades Totales</div>
+                                            <div className="text-lg font-bold text-gray-900">{totalUnits}</div>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border">
+                                            <div className="text-xs text-gray-500">Estados</div>
+                                            <div className="text-sm text-gray-700">
+                                                {(pendingSummary?.meta?.statuses || []).join(', ')}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="mb-4 border rounded-xl bg-white">
+                                        <div className="px-4 py-2 bg-gray-50 border-b text-sm font-semibold text-gray-700">Pedidos incluidos</div>
+                                        <table className="min-w-full text-xs">
+                                            <thead>
+                                                <tr>
+                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
+                                                    <th className="p-2 border-b text-right font-bold text-gray-500">Unidades</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {orderTotals.map(o => (
+                                                    <tr key={o.id} className="border-b last:border-b-0">
+                                                        <td className="p-2 text-gray-700 font-semibold">{o.number}</td>
+                                                        <td className="p-2 text-gray-500">{statusLabels[o.status] || o.status}</td>
+                                                        <td className="p-2 text-right font-bold text-gray-900">{o.total}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {pendingCellDetail && detailList.length > 0 && (
+                                        <div className="mb-4 border rounded-xl bg-white">
+                                            <div className="px-4 py-2 bg-emerald-50 border-b text-sm font-semibold text-emerald-800 flex items-center justify-between">
+                                                <div>
+                                                    Detalle por pedido · {pendingCellDetail.brand} · {pendingCellDetail.presentation} · {pendingCellDetail.flavor}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setPendingCellDetail(null)}
+                                                    className="text-emerald-900 text-lg"
+                                                >
+                                                    &times;
+                                                </button>
+                                            </div>
+                                            <table className="min-w-full text-xs">
+                                                <thead>
+                                                    <tr>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
+                                                        <th className="p-2 border-b text-right font-bold text-gray-500">Cantidad</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {detailList.map((row, idx) => (
+                                                        <tr key={`${row.orderNumber}-${idx}`} className="border-b last:border-b-0">
+                                                            <td className="p-2 text-gray-700 font-semibold">{row.orderNumber}</td>
+                                                            <td className="p-2 text-gray-500">{statusLabels[row.status] || row.status}</td>
+                                                            <td className="p-2 text-right font-bold text-gray-900">{row.qty}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+
+                                    {renderMatrixTable('GENIALITY', matrix.GENIALITY)}
+                                    {renderMatrixTable('LIQUIPOPS', matrix.LIQUIPOPS)}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        })()}
         </>
     );
 }

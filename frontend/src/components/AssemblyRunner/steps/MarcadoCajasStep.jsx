@@ -17,7 +17,7 @@ import api from '../../../services/api';
  * Generates QR on mount and sends TSPL labels via Bluetooth.
  * Calls onMarcadoChange so the wizard can save the box data on SIGUIENTE.
  */
-const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => {
+const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carriots = [], activeCarritoId }) => {
     const noteData = stepData;
 
     // ── Derive data from note ────────────────────────────────────────────────
@@ -89,19 +89,39 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
     const relationalDefective = (matchedTarget?.defectiveUnits > 0) ? matchedTarget.defectiveUnits : null;
     const relationalActual    = (matchedTarget?.actualUnits    > 0) ? matchedTarget.actualUnits    : null;
 
-    const approvedTarros = relationalApproved
-        ?? ((empaqueData.approved_qty != null && empaqueData.approved_qty > 0)
-            ? empaqueData.approved_qty
-            : totalTarros);
+    // Filter relevant carriots using the explicit prop. 
+    // IMPORTANT: Only use UN-INGESTED carriots so we only pack/print labels for the delta (current cart), 
+    // instead of accumulating historically and duplicating labels.
+    const receivedCarriots = activeCarritoId
+        ? carriots.filter(c => c.id === activeCarritoId)
+        : carriots.filter(c => c.receivedAt && !c.ingestedAt && c.productId === product.id);
+    const receivedQtyFromCarriots = receivedCarriots.reduce((s, c) => s + (Number(c.qty) || 0), 0);
     const defectiveTarros = relationalDefective ?? (empaqueData.defective_qty ?? 0);
 
-    // Real Fabricado: relationalActual (Fase 5) > JSON conteo_qty > fallback sum
-    const receivedTarros = relationalActual
-        ?? (empaqueData.conteo_qty ?? empaqueData.received_qty ?? (approvedTarros + defectiveTarros));
+    // Real Fabricado: carritos (Delta) > relationalActual (Fase 5) > JSON conteo_qty > fallback
+    let receivedTarros = relationalActual;
+    const hasCarriots = carriots.length > 0;
+    
+    if (hasCarriots) {
+        receivedTarros = receivedQtyFromCarriots;
+    } else if (receivedTarros == null) {
+        receivedTarros = empaqueData.conteo_qty ?? empaqueData.received_qty ?? totalTarros;
+    }
 
-    // Programadas = original planned qty from CONTEO note (before overwrite by real production)
-    const conteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO' && n.status === 'COMPLETED');
-    const conteoData = conteoNote?.processParameters?.conteo || {};
+    let approvedTarros = relationalApproved;
+    if (hasCarriots) {
+        approvedTarros = Math.max(0, receivedQtyFromCarriots - defectiveTarros);
+    } else if (approvedTarros == null) {
+        if (empaqueData.approved_qty != null && empaqueData.approved_qty > 0) {
+            approvedTarros = empaqueData.approved_qty;
+        } else {
+            approvedTarros = Math.max(0, receivedTarros - defectiveTarros);
+        }
+    }
+
+    // Programadas
+    const anyConteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+    const conteoData = anyConteoNote?.processParameters?.conteo || {};
     const conteoEntry = Object.values(conteoData).find(entry => entry.productId === product.id);
     const plannedTarros = conteoEntry?.planned ?? totalTarros;
 
@@ -185,8 +205,10 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
     const totalIngested = (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
     // Valid if: regular packing is correct, OR there's nothing to pack but special labels exist
     const hasSpecialLabels = Number(contramuestraQty) > 0 || Number(defectiveBoxes) > 0 || maquilaLabelCount > 0;
+    const isCarritoDone = hasCarriots && receivedQtyFromCarriots === 0 && packableUnits === 0;
     const isValid = (totalIngested > 0 && totalIngested <= packableUnits)
-        || (totalIngested === 0 && packableUnits === 0 && hasSpecialLabels);
+        || (totalIngested === 0 && packableUnits === 0 && hasSpecialLabels)
+        || isCarritoDone;
     // Total labels = new full + partial + defective + contramuestra + pending + maquila
     const totalBoxesToPrint = (isWeightBased
         ? Number(labelCopies) + Number(defectiveBoxes)
@@ -220,10 +242,12 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
             maquilaQty: maquilaNum,
             pendingBoxFill: pendingFillQty,
             pendingBox: pendingBox && !pendingBoxDiscarded ? pendingBox : null,
+            pendingBoxOriginal: pendingBox,
+            pendingBoxDiscarded: pendingBoxDiscarded,
             newPartialUnits: Number(partialUnits),
             isValid
         });
-    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, isValid, contramuestraQty, maquilaNum, pendingFillQty, pendingBoxDiscarded, onMarcadoChange]);
+    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, isValid, contramuestraQty, maquilaNum, pendingFillQty, pendingBox, pendingBoxDiscarded, onMarcadoChange]);
 
     // ── Fix: recalculate when freshEmpaque arrives (async fetch corrects stale initial state) ──
     // On first mount, approvedTarros/defectiveTarros come from stale processParameters (or fallback to totalTarros).
@@ -233,8 +257,8 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
         if (!freshEmpaque || freshEmpaqueInitRef.current || isWeightBased) return;
         freshEmpaqueInitRef.current = true;
         // Recalculate from fresh data (pendingFillQty uses packableUnits which already updated)
-        const newApproved  = freshEmpaque.approved_qty  ?? totalTarros;
-        const newDefective = freshEmpaque.defective_qty ?? 0;
+        const newApproved  = approvedTarros;
+        const newDefective = defectiveTarros;
         const newPackable  = Math.max(0, newApproved - (isLiquipops350 ? 1 : 0));
         const fill = pendingBox && !pendingBoxDiscarded
             ? Math.max(0, Math.min(pendingBox.boxSize - pendingBox.currentQty, newPackable)) : 0;
@@ -251,7 +275,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
     // when empaqueData loads async or pending box fetch resolves after initial state)
     const lastAutoCorrectRef = React.useRef('');
     useEffect(() => {
-        if (packableUnits <= 0 || unitsPerBox <= 0) return;
+        if (packableUnits < 0 || unitsPerBox <= 0) return;
         const currentTotal = (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
         if (currentTotal > packableUnits) {
             const remaining = Math.max(0, packableUnits - pendingFillQty);
@@ -545,6 +569,23 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [] }) => 
                                 </div>
                             )}
                         </div>
+
+                        {/* Carrito Done Banner */}
+                        {isCarritoDone && (
+                            <div className="bg-emerald-50 rounded-2xl p-4 border-2 border-emerald-300 mb-3 animate-in fade-in">
+                                <div className="flex items-start gap-3">
+                                    <span className="text-xl">✅</span>
+                                    <div>
+                                        <div className="text-sm font-bold text-emerald-800 uppercase tracking-wider mb-1">
+                                            Carritos Completados
+                                        </div>
+                                        <div className="text-xs text-emerald-700">
+                                            Las etiquetas ya fueron impresas durante la recepción individual de cada carrito. Puedes presionar <strong>"Etiquetas Listas"</strong> para continuar al cierre del lote.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Pending Box Banner */}
                         {pendingBox && !pendingBoxDiscarded && !isWeightBased && (

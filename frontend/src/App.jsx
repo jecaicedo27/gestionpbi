@@ -32,6 +32,7 @@ import RpaHistoryPage from './pages/RpaHistoryPage';
 import MRPDashboard from './pages/MRPDashboard';
 import ProductionKpiPage from './pages/ProductionKpiPage';
 import BatchHistoryPage from './pages/BatchHistoryPage';
+import ProductionAuditPage from './pages/ProductionAuditPage';
 import ProductionZonePage from './pages/ProductionZonePage';
 import FinishedProductZonePage from './pages/FinishedProductZonePage';
 import HandoffsPage from './pages/HandoffsPage';
@@ -138,6 +139,7 @@ function App() {
                             <Route path="mrp" element={<MRPDashboard />} />
                             <Route path="production/kpis" element={<ProductionKpiPage />} />
                             <Route path="production/batch-history" element={<BatchHistoryPage />} />
+                            <Route path="production/audit" element={<ProductionAuditPage />} />
                             <Route path="production/zone" element={<ProductionZonePage />} />
                             <Route path="production/finished-zone" element={<FinishedProductZonePage />} />
                             <Route path="production/handoffs" element={<HandoffsPage />} />

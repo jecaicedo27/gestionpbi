@@ -21,10 +21,11 @@ router.post('/upload-excel', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL', 'DI
 
 // Admin/Logistics Routes
 router.get('/counts', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getOrderCounts);
+router.get('/pending-summary', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getPendingDeliverySummary);
 router.get('/', auth, roles(['ADMIN', 'LOGISTICA', 'DISTRIBUIDOR', 'COMERCIAL']), orderController.getAllOrders);
 router.get('/:id', auth, orderController.getOrderById);
 router.patch('/:id/status', auth, roles(['ADMIN', 'LOGISTICA']), orderController.updateOrderStatus);
-router.patch('/:id', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']), orderController.patchOrder);
+router.patch('/:id', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL', 'DISTRIBUIDOR']), orderController.patchOrder);
 
 // Workflow endpoints
 router.post('/:id/approve', auth, roles(['ADMIN', 'COMERCIAL']), orderController.approveOrder);

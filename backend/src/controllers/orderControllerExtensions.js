@@ -924,6 +924,20 @@ exports.getAllOrders = async (req, res) => {
             prisma.order.count({ where })
         ]);
 
+        // Calculate global true FIFO rank for active queues
+        // This ensures distributors see their absolute position in the global queue
+        if (['PENDING', 'APPROVED', 'IN_PICKING', 'READY'].includes(status)) {
+            await Promise.all(orders.map(async (order) => {
+                const rankCount = await prisma.order.count({
+                    where: {
+                        status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] },
+                        createdAt: { lte: order.createdAt }
+                    }
+                });
+                order.globalFifoRank = rankCount;
+            }));
+        }
+
         res.json({
             success: true,
             data: orders,
@@ -1230,5 +1244,61 @@ exports.getOrderById = async (req, res) => {
             success: false,
             error: 'Error al obtener pedido'
         });
+    }
+};
+
+/**
+ * Get orders pending delivery for consolidation (matrix view)
+ * GET /api/orders/pending-summary?statuses=APPROVED,IN_PICKING,READY,INVOICED,DISPATCHED&limit=2000
+ */
+exports.getPendingDeliverySummary = async (req, res) => {
+    try {
+        const rawStatuses = String(req.query.statuses || '').trim();
+        const limit = Math.min(parseInt(req.query.limit || '2000', 10) || 2000, 5000);
+
+        const defaultStatuses = ['APPROVED', 'IN_PICKING', 'READY', 'INVOICED', 'DISPATCHED'];
+        const statuses = rawStatuses
+            ? rawStatuses.split(',').map(s => s.trim()).filter(Boolean)
+            : defaultStatuses;
+
+        const where = { status: { in: statuses } };
+
+        // Distributors only see their own orders
+        if (req.user.role === 'DISTRIBUIDOR') {
+            where.distributorId = req.user.id;
+        }
+
+        const orders = await prisma.order.findMany({
+            where,
+            include: {
+                distributor: { select: { id: true, name: true } },
+                items: {
+                    orderBy: { sortOrder: 'asc' },
+                    include: {
+                        product: {
+                            select: {
+                                id: true,
+                                name: true,
+                                sku: true,
+                                flavor: true,
+                                size: true,
+                                accountGroup: true,
+                            }
+                        }
+                    }
+                }
+            },
+            orderBy: { createdAt: 'asc' },
+            take: limit,
+        });
+
+        res.json({
+            success: true,
+            data: orders,
+            meta: { total: orders.length, statuses }
+        });
+    } catch (error) {
+        logger.error('Get Pending Summary Error:', error);
+        res.status(500).json({ success: false, error: 'Error al obtener consolidado de pendientes' });
     }
 };

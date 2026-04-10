@@ -57,7 +57,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
             if (existRes.data?.length > 0) {
                 const sorted = [...existRes.data].sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
                 const activeNote = sorted.find(n => n.status === 'EXECUTING') || sorted.find(n => n.status === 'PENDING') || sorted[0];
-                window.location.href = `/assembly-execution/${activeNote.id}`;
+                window.location.href = `/geniality/assembly-execution/${activeNote.id}`;
                 return;
             }
 
@@ -93,7 +93,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
 
                 if (qsRes.data?.firstNoteId) {
                     // Link batch to the production batch created by quickStart
-                    window.location.href = `/assembly-execution/${qsRes.data.firstNoteId}`;
+                    window.location.href = `/geniality/assembly-execution/${qsRes.data.firstNoteId}`;
                 } else {
                     alert('No se generaron notas. Verifica la plantilla BATCH-LIQUIPOPS.');
                 }
@@ -125,7 +125,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
             });
 
             if (genRes.data?.notes?.length > 0) {
-                window.location.href = `/assembly-execution/${genRes.data.notes[0].id}`;
+                window.location.href = `/geniality/assembly-execution/${genRes.data.notes[0].id}`;
             } else {
                 alert('No se generaron notas. Verifica que la plantilla tiene etapas configuradas.');
             }
@@ -151,7 +151,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
             });
             if (qsRes.data?.firstNoteId) {
                 setLaunchModal(null);
-                window.location.href = `/assembly-execution/${qsRes.data.firstNoteId}`;
+                window.location.href = `/geniality/assembly-execution/${qsRes.data.firstNoteId}`;
             } else {
                 alert('No se generaron notas.');
             }

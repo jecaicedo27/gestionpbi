@@ -51,6 +51,12 @@ const OutputStep = ({
     const baseUnit = noteData.product?.formulas?.[0]?.baseUnit || noteData.unit || 'g';
     const isPesaje = noteData.processType?.code === 'PESAJE';
     const isFormacion = noteData.processType?.code === 'FORMACION';
+    const productNameUpper = (noteData.product?.name || '').toUpperCase();
+    // "Simple" output = PESAJE (BASE SIROPE, SABORIZACION, etc.) or ENSAMBLE
+    // These don't need manual "Real Producido" — auto-fill + confirmation + mandatory photo
+    const isEnsambleNote = noteData.processType?.code === 'ENSAMBLE';
+    const isPesajeSimple = isEnsambleNote || (isPesaje && !productNameUpper.startsWith('COMPUESTO') && !productNameUpper.startsWith('PROTECCION'));
+    const [pesajeConfirmed, setPesajeConfirmed] = useState(false);
     const pesajeTotalGrams = isPesaje && noteData.items?.length > 0
         ? noteData.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
         : null;
@@ -73,8 +79,13 @@ const OutputStep = ({
     // or an ADDITIVE step (small ingredients being added to an existing batch)
     const pesajeIsMajor = pesajeExpected && previousPesajeOutput && pesajeExpected > previousPesajeOutput * 0.1;
 
+    const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
+
     let targetGrams;
-    if (pesajeIsMajor || !previousPesajeOutput) {
+    if (isEnsamble) {
+        // ENSAMBLE: always use the note's target quantity (full batch output)
+        targetGrams = noteData.targetQuantity || Number(targetQuantityValue) || 1;
+    } else if (pesajeIsMajor || !previousPesajeOutput) {
         // Major step or first step: use items sum directly
         targetGrams = pesajeExpected
             || previousPesajeOutput
@@ -90,6 +101,13 @@ const OutputStep = ({
     const outputNum = parseFloat(outputQuantity) || 0;
     const deviation = outputNum > 0 && targetGrams > 0
         ? (((outputNum - targetGrams) / targetGrams) * 100).toFixed(1) : null;
+
+    // Auto-fill output for simple PESAJE (no physical scale available)
+    useEffect(() => {
+        if (isPesajeSimple && targetGrams > 0 && !outputQuantity) {
+            onOutputQtyChange(String(targetGrams));
+        }
+    }, [isPesajeSimple, targetGrams]); // eslint-disable-line
 
     // ═══ PERSISTENCE: Restore draft from processParameters ═══
     const draft = noteData.processParameters?.output_qc_draft || {};
@@ -155,9 +173,8 @@ const OutputStep = ({
         setTimeout(saveDraft, 500);
     };
     // Compute QC validity
-    const productName = (noteData.product?.name || '').toUpperCase();
-    const QC_PARAMS = getQcParams(productName);
-    const isProteccion = productName.startsWith('PROTECCION');
+    const QC_PARAMS = getQcParams(productNameUpper);
+    const isProteccion = productNameUpper.startsWith('PROTECCION');
     const qcParamResults = QC_PARAMS.map(p => {
         const val = parseFloat(qcValues[p.key]);
         const filled = !isNaN(val);
@@ -168,11 +185,13 @@ const OutputStep = ({
     const allQcInRange = qcParamResults.every(r => r.inRange);
     const allQcPhotos = QC_PARAMS.every(p => qcPhotos[p.key]);
     const allSensoryChecked = isProteccion ? true : SENSORY_CHECKS.every(s => sensoryChecks[s.key]);
-    const isCompuesto = productName.startsWith('COMPUESTO');
+    const isCompuesto = productNameUpper.startsWith('COMPUESTO');
     const showPesajeQC = isPesaje && (isCompuesto || isProteccion);
-    const qcComplete = showPesajeQC
-        ? (allQcFilled && allQcInRange && allQcPhotos && allSensoryChecked)
-        : true;
+    const qcComplete = isPesajeSimple
+        ? (pesajeConfirmed && !!verificationPhoto)  // Simple pesaje: confirm + mandatory photo
+        : showPesajeQC
+            ? (allQcFilled && allQcInRange && allQcPhotos && allSensoryChecked)
+            : true;
 
     // Notify parent of QC validity
     useEffect(() => {
@@ -184,7 +203,7 @@ const OutputStep = ({
             temperature,
             verificationPhoto,
         });
-    }, [qcComplete, qcValues, qcPhotos, sensoryChecks, temperature, verificationPhoto]);
+    }, [qcComplete, qcValues, qcPhotos, sensoryChecks, temperature, verificationPhoto, pesajeConfirmed]);
 
     const handleQcPhotoCapture = async (paramKey, e) => {
         const file = e.target.files?.[0];
@@ -250,35 +269,76 @@ const OutputStep = ({
                     </div>
 
                     {/* Metric chips */}
-                    <div className="grid grid-cols-3 gap-2">
-                        <div className="bg-slate-50 rounded-xl p-2.5 text-center border border-slate-200">
-                            <div className="text-[10px] font-bold text-slate-500 uppercase mb-0.5">Esperado</div>
-                            <div className="text-xl font-black text-slate-700">
-                                {Number(targetGrams).toLocaleString('es-CO')}
+                    {isPesajeSimple ? (
+                        /* ─── PESAJE SIMPLE: auto-value + confirmation ─── */
+                        <div className="space-y-3">
+                            <div className="bg-green-50 rounded-xl p-4 text-center border-2 border-green-300">
+                                <div className="text-[10px] font-bold text-green-600 uppercase mb-1">Cantidad Producida (según fórmula)</div>
+                                <div className="text-3xl font-black text-green-700">
+                                    {Number(targetGrams).toLocaleString('es-CO')}
+                                </div>
+                                <div className="text-[10px] text-green-500">{baseUnit}</div>
                             </div>
-                            <div className="text-[10px] text-slate-400">{baseUnit}</div>
+                            <label
+                                className={`flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all active:scale-[0.98] ${
+                                    pesajeConfirmed
+                                        ? 'bg-green-50 border-green-400'
+                                        : 'bg-amber-50 border-amber-300 hover:border-amber-400'
+                                }`}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={pesajeConfirmed}
+                                    onChange={(e) => setPesajeConfirmed(e.target.checked)}
+                                    className="w-7 h-7 rounded-lg border-2 border-slate-300 text-green-600 focus:ring-green-200 cursor-pointer flex-shrink-0"
+                                />
+                                <div className="flex-1">
+                                    <div className="font-bold text-slate-800 text-sm">
+                                        {pesajeConfirmed ? '✅ Verificado' : '⚠️ Confirmar'}
+                                    </div>
+                                    <div className="text-xs text-slate-500 mt-0.5">
+                                        Todos los materiales están correctamente pesados y la mezcla está lista
+                                    </div>
+                                </div>
+                            </label>
+                            {!pesajeConfirmed && (
+                                <div className="text-center text-xs text-amber-600 font-bold">
+                                    ⚠️ Debe confirmar que todo está correcto para habilitar FINALIZAR
+                                </div>
+                            )}
                         </div>
+                    ) : (
+                        /* ─── NORMAL: manual input ─── */
+                        <div className="grid grid-cols-3 gap-2">
+                            <div className="bg-slate-50 rounded-xl p-2.5 text-center border border-slate-200">
+                                <div className="text-[10px] font-bold text-slate-500 uppercase mb-0.5">Esperado</div>
+                                <div className="text-xl font-black text-slate-700">
+                                    {Number(targetGrams).toLocaleString('es-CO')}
+                                </div>
+                                <div className="text-[10px] text-slate-400">{baseUnit}</div>
+                            </div>
 
-                        <div className="bg-green-50 rounded-xl p-2.5 text-center border-2 border-green-300">
-                            <div className="text-[10px] font-bold text-green-600 uppercase mb-0.5">Real Producido</div>
-                            <input
-                                type="number"
-                                inputMode="decimal"
-                                value={outputQuantity}
-                                onChange={(e) => onOutputQtyChange(e.target.value)}
-                                className="w-full text-center text-xl font-black bg-transparent text-green-700 focus:outline-none"
-                                placeholder="—"
-                            />
-                            <div className="text-[10px] text-green-500">{baseUnit}</div>
-                        </div>
+                            <div className="bg-green-50 rounded-xl p-2.5 text-center border-2 border-green-300">
+                                <div className="text-[10px] font-bold text-green-600 uppercase mb-0.5">Real Producido</div>
+                                <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    value={outputQuantity}
+                                    onChange={(e) => onOutputQtyChange(e.target.value)}
+                                    className="w-full text-center text-xl font-black bg-transparent text-green-700 focus:outline-none"
+                                    placeholder="—"
+                                />
+                                <div className="text-[10px] text-green-500">{baseUnit}</div>
+                            </div>
 
-                        <div className={`rounded-xl p-2.5 text-center border ${deviation === null ? 'bg-slate-50 border-slate-200' : parseFloat(deviation) < -5 || parseFloat(deviation) > 10 ? 'bg-amber-50 border-amber-300' : 'bg-green-50 border-green-200'}`}>
-                            <div className={`text-[10px] font-bold uppercase mb-0.5 ${deviation === null ? 'text-slate-400' : 'text-slate-600'}`}>Variación</div>
-                            <div className={`text-xl font-black ${deviation === null ? 'text-slate-300' : parseFloat(deviation) < -5 || parseFloat(deviation) > 10 ? 'text-amber-600' : 'text-green-600'}`}>
-                                {deviation !== null ? (parseFloat(deviation) > 0 ? `+${deviation}%` : `${deviation}%`) : '—'}
+                            <div className={`rounded-xl p-2.5 text-center border ${deviation === null ? 'bg-slate-50 border-slate-200' : parseFloat(deviation) < -5 || parseFloat(deviation) > 10 ? 'bg-amber-50 border-amber-300' : 'bg-green-50 border-green-200'}`}>
+                                <div className={`text-[10px] font-bold uppercase mb-0.5 ${deviation === null ? 'text-slate-400' : 'text-slate-600'}`}>Variación</div>
+                                <div className={`text-xl font-black ${deviation === null ? 'text-slate-300' : parseFloat(deviation) < -5 || parseFloat(deviation) > 10 ? 'text-amber-600' : 'text-green-600'}`}>
+                                    {deviation !== null ? (parseFloat(deviation) > 0 ? `+${deviation}%` : `${deviation}%`) : '—'}
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    )}
 
                     {/* Temperature, QC params, and Sensory — ONLY for PESAJE (COMPUESTO) */}
                     {showPesajeQC && <>

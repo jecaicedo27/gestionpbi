@@ -17,6 +17,7 @@ const IntroStep = ({
     empaqueReceptionConfirmed = false,
     savedReceptionPhotos = {},
     onReceptionConfirm,
+    carriots = [],
 }) => {
     const navigate = useNavigate();
     const { user } = useAuth();
@@ -826,6 +827,68 @@ const IntroStep = ({
                                                     </div>
                                                 </div>
                                             )}
+
+                                            {/* Detail section — Multiple Carritos if any */}
+                                            {(() => {
+                                                const productCarriots = carriots?.filter?.(c => c.productId === (target2?.productId || en.productId)) || [];
+                                                if (productCarriots.length === 0) return null;
+                                                return (
+                                                    <div className="mt-1 mx-4 mb-3 bg-white border border-slate-200 rounded-xl overflow-hidden">
+                                                        <div className="bg-slate-50 flex items-center px-3 py-1.5 gap-2 border-b border-slate-200">
+                                                            <span className="text-[12px]">🚚</span>
+                                                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                                                                Entregas de Producción ({productCarriots.length} {productCarriots.length === 1 ? 'carrito' : 'carritos'})
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex divide-x divide-slate-100 overflow-x-auto hide-scrollbar">
+                                                            {productCarriots.map((c, idx) => (
+                                                                <div key={idx} className="min-w-[130px] p-2 flex flex-col items-center">
+                                                                    <div className="text-[10px] font-bold text-indigo-800 uppercase mb-0.5 whitespace-nowrap">Carrito #{c.carritoNum || idx + 1}</div>
+                                                                    <div className="text-xl font-black text-slate-600 mb-2 leading-none mt-1">
+                                                                        {c.qty} <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">uds</span>
+                                                                    </div>
+                                                                    <div className="flex gap-3">
+                                                                        <div className="flex flex-col items-center gap-1.5">
+                                                                            <span className="text-[8px] font-black text-orange-400 uppercase leading-none tracking-wider">Prod.</span>
+                                                                            {c.dispatchPhoto ? (
+                                                                                <img 
+                                                                                    src={c.dispatchPhoto} 
+                                                                                    alt="Envío" 
+                                                                                    className="w-9 h-9 rounded-lg shrink-0 object-cover border-2 border-orange-200 cursor-pointer shadow-sm hover:border-orange-400 transition-all hover:scale-105" 
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: c.dispatchPhoto, label: `📸 Carrito #${c.carritoNum} - Envío Producción` }); }} 
+                                                                                />
+                                                                            ) : (
+                                                                                <div className="w-9 h-9 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center shrink-0">
+                                                                                    <span className="text-[12px] opacity-30">📷</span>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="flex flex-col items-center gap-1.5">
+                                                                            <span className="text-[8px] font-black text-teal-500 uppercase leading-none tracking-wider">Recep.</span>
+                                                                            {c.receivedAt && savedReceptionPhotos[c.id] ? (
+                                                                                <img 
+                                                                                    src={savedReceptionPhotos[c.id]} 
+                                                                                    alt="Recepción" 
+                                                                                    className="w-9 h-9 rounded-lg shrink-0 object-cover border-2 border-teal-400 cursor-pointer shadow-sm transition-all hover:scale-105" 
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: savedReceptionPhotos[c.id], label: `✅ Carrito #${c.carritoNum} - Recepción Empaque` }); }} 
+                                                                                />
+                                                                            ) : c.receivedAt ? (
+                                                                                <div className="w-9 h-9 rounded-lg border-2 border-teal-400 bg-teal-50 flex items-center justify-center shrink-0 shadow-sm" title="Recibido sin foto">
+                                                                                    <span className="text-[14px]">✅</span>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div className="w-9 h-9 rounded-lg border-2 border-dashed border-amber-300 bg-amber-50 flex items-center justify-center shrink-0 text-amber-500 font-bold text-[9px]">
+                                                                                    Pndte
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     );
                                 });

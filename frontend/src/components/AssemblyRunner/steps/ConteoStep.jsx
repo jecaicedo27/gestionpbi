@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Camera, CheckCircle, AlertTriangle, Printer } from 'lucide-react';
+import { useZebra } from '../../../context/ZebraContext';
 
 /**
  * ConteoStep — LIQUIPOPS ONLY
@@ -21,6 +22,7 @@ const ConteoStep = ({
     const batchNumber = noteData.productionBatch?.batchNumber || '';
     const esferaFactors = noteData.processParameters?.esfera_factors || {};
     const [uploading, setUploading] = useState({});
+    const { zebraStatus, printZPL } = useZebra();
 
     // ── GATE: Packaging roles must NOT see the production counting form ──
     if (isPackagingRole) {
@@ -99,53 +101,91 @@ const ConteoStep = ({
     });
 
     // ── Print Cart Label ──
-    const printCartLabel = useCallback(() => {
+    const printCartLabel = useCallback(async () => {
         const flavor = sortedTargets.length > 0 ? getFlavorLabel(sortedTargets[0].product?.name) : 'N/A';
         const today = new Date().toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
-        const rows = sortedTargets.map(t => {
-            const size = getSizeLabel(t.product?.name);
-            const qty = conteoActuals[t.productId] ?? t.plannedUnits ?? 0;
-            return `
-                <tr>
-                    <td style="padding:4px 10px;font-size:18px;font-weight:800;border-bottom:1px dashed #ccc;">${size}</td>
-                    <td style="padding:4px 10px;font-size:22px;font-weight:900;text-align:center;border-bottom:1px dashed #ccc;">${qty}</td>
-                </tr>`;
-        }).join('');
-
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-            <title>Etiqueta Carrito</title>
-            <style>
-                @media print { @page { margin: 5mm; } body { margin: 0; } }
-                body { font-family: 'Arial', sans-serif; width: 280px; padding: 8px; }
-                .header { text-align: center; border-bottom: 3px solid #000; padding-bottom: 6px; margin-bottom: 6px; }
-                .lote { font-size: 14px; font-weight: 900; letter-spacing: 1px; background: #000; color: #fff; padding: 4px 12px; border-radius: 6px; display: inline-block; margin-bottom: 4px; }
-                .sabor { font-size: 26px; font-weight: 900; text-transform: uppercase; margin: 4px 0; }
-                .fecha { font-size: 11px; color: #666; }
-                table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-                th { font-size: 10px; text-transform: uppercase; color: #888; padding: 2px 10px; text-align: left; letter-spacing: 1px; }
-                th:last-child { text-align: center; }
-                .footer { text-align: center; font-size: 9px; color: #aaa; margin-top: 8px; border-top: 2px solid #000; padding-top: 4px; }
-            </style></head><body>
-            <div class="header">
-                <div class="lote">${batchNumber}</div>
-                <div class="sabor">🫧 ${flavor}</div>
-                <div class="fecha">Producido: ${today}</div>
-            </div>
-            <table>
-                <thead><tr><th>Tamaño</th><th>Cantidad</th></tr></thead>
-                <tbody>${rows}</tbody>
-            </table>
-            <div class="footer">POPPING BOBA INTERNATIONAL — EMPAQUE</div>
-        </body></html>`;
-
-        const w = window.open('', '_blank', 'width=320,height=500');
-        if (w) {
-            w.document.write(html);
-            w.document.close();
-            setTimeout(() => { w.print(); }, 400);
+        // ── ZPL path (Zebra connected) ──
+        if (zebraStatus !== 'connected') {
+            alert('La impresora Zebra no está conectada o está cargando. Si sigue sin conectar, configure la IP en el icono superior derecho.');
+            return;
         }
-    }, [sortedTargets, conteoActuals, batchNumber]);
+
+        try {
+            const escZpl = (s) => (s || '').replace(/\^/g, '').replace(/~/g, '').replace(/\n/g, ' ');
+            const rows = sortedTargets.map(t => {
+                const size = getSizeLabel(t.product?.name);
+                const qty = conteoActuals[t.productId] ?? t.plannedUnits ?? 0;
+                return { size, qty };
+            });
+
+            // Build dual-column ZPL (same paper as lot labels: 103mm × 40mm)
+            const buildCol = (xOff) => {
+                const x = xOff + 14;
+                let y = 10;
+                let fields = '';
+
+                // Header: batch number inverted
+                fields += `^FO${x},${y}^GB380,22,22^FS\n`;
+                fields += `^FO${x + 6},${y + 3}^A0N,15,13^FR^FD${escZpl(batchNumber)}^FS\n`;
+                y += 26;
+
+                // Flavor name — big
+                const fl = flavor.length;
+                if (fl <= 12) {
+                    fields += `^FO${x},${y}^A0N,42,40^FD${escZpl(flavor)}^FS\n`;
+                    y += 46;
+                } else if (fl <= 20) {
+                    fields += `^FO${x},${y}^A0N,32,28^FD${escZpl(flavor)}^FS\n`;
+                    y += 36;
+                } else {
+                    const mid = flavor.lastIndexOf(' ', 16);
+                    const splitAt = mid > 4 ? mid : 16;
+                    fields += `^FO${x},${y}^A0N,26,24^FD${escZpl(flavor.substring(0, splitAt))}^FS\n`;
+                    y += 28;
+                    fields += `^FO${x},${y}^A0N,26,24^FD${escZpl(flavor.substring(splitAt).trim())}^FS\n`;
+                    y += 30;
+                }
+
+                // Separator line
+                fields += `^FO${x},${y}^GB370,2,2^FS\n`;
+                y += 6;
+
+                // Table header
+                fields += `^FO${x},${y}^A0N,16,14^FDTAMANO^FS\n`;
+                fields += `^FO${x + 200},${y}^A0N,16,14^FDCANTIDAD^FS\n`;
+                y += 20;
+
+                // Rows
+                for (const row of rows) {
+                    fields += `^FO${x},${y}^A0N,24,22^FD${escZpl(row.size)}^FS\n`;
+                    fields += `^FO${x + 200},${y}^A0N,28,28^FD${escZpl(String(row.qty))}^FS\n`;
+                    y += 32;
+                }
+
+                // Footer
+                y = 296;
+                fields += `^FO${x},${y}^A0N,12,12^FD${escZpl(today)}  EMPAQUE^FS\n`;
+
+                return fields;
+            };
+
+            let zpl = '^XA\n';
+            zpl += '^MMT\n^PW824\n^LL320\n^LS0\n^MD10\n^PR3\n^XB\n';
+            zpl += buildCol(0);
+            zpl += buildCol(424);
+            zpl += '^PQ1\n^XZ\n';
+
+            const result = await printZPL(zpl);
+            if (!result.ok) {
+                alert('Error Zebra: ' + (result.error || 'No se pudo imprimir'));
+            } else {
+                alert('Impresión enviada correctamente a la Zebra.');
+            }
+        } catch (err) {
+            alert('Error enviando a Zebra: ' + err.message);
+        }
+    }, [sortedTargets, conteoActuals, batchNumber, zebraStatus, printZPL]);
     return (
         <div className="flex flex-col h-full max-w-3xl mx-auto pt-1 pb-20 px-2">
             {/* Compact header row */}

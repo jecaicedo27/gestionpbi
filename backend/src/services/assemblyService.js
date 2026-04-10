@@ -1348,21 +1348,40 @@ class AssemblyService {
                         }
                     } else if (processCode === 'EMPAQUE' && item.componentId) {
                         // ── Packaging items without MaterialLot (tarros, tapas, etc.) ──
-                        // Floor-to-zero: never let productionZoneStock go negative
+                        // Try to consume from zone first. If not enough, pull from main Bodega stock.
                         const qtyToConsume = Math.round(qty);
                         const currentProduct = await tx.product.findUnique({
                             where: { id: item.componentId },
-                            select: { productionZoneStock: true }
+                            select: { productionZoneStock: true, currentStock: true }
                         });
                         const currentZoneStock = currentProduct?.productionZoneStock || 0;
-                        const safeDecrement = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
-                        if (safeDecrement > 0) {
+                        const consumeFromZone = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
+                        const consumeFromBodega = qtyToConsume - consumeFromZone;
+
+                        if (consumeFromZone > 0) {
                             await tx.product.update({
                                 where: { id: item.componentId },
-                                data: { productionZoneStock: { decrement: safeDecrement } }
+                                data: { productionZoneStock: { decrement: consumeFromZone } }
                             });
                         }
-                        console.log(`[completeNote] 📦 EMPAQUE stock-only consumed ${safeDecrement} of ${item.component?.name} (no MaterialLot)`);
+                        if (consumeFromBodega > 0) {
+                            await tx.product.update({
+                                where: { id: item.componentId },
+                                data: { currentStock: { decrement: consumeFromBodega } }
+                            });
+                        }
+
+                        // Mark item as consumed directly so we don't trigger false alerts
+                        await tx.assemblyNoteItem.update({
+                            where: { id: item.id },
+                            data: {
+                                actualQuantity: qtyToConsume,
+                                consumed: true,
+                                consumedAt: new Date(),
+                                consumedById: operatorId
+                            }
+                        });
+                        console.log(`[completeNote] 📦 EMPAQUE stock-only consumed ${qtyToConsume} of ${item.component?.name} (Zone: ${consumeFromZone}, Bodega: ${consumeFromBodega})`);
                     }
                 }
             }
@@ -1386,6 +1405,10 @@ class AssemblyService {
                     const totalConsumed = consumptions.reduce((s, c) => s + c.quantityUsed, 0);
 
                     if (totalConsumed <= 0 && expectedQty > 0) {
+                        const updatedItem = await tx.assemblyNoteItem.findUnique({ where: { id: item.id }, select: { consumed: true, actualQuantity: true } });
+                        if (updatedItem?.consumed && updatedItem?.actualQuantity > 0) {
+                            continue; // Successfully consumed via stock decrement (no lot)
+                        }
                         consumptionAlerts.push({ component: componentName, expected: expectedQty, consumed: 0, issue: 'NO_CONSUMPTION' });
                     } else if (totalConsumed < expectedQty * 0.9 && expectedQty > 1) {
                         consumptionAlerts.push({ component: componentName, expected: expectedQty, consumed: totalConsumed, issue: 'PARTIAL_CONSUMPTION' });
@@ -1459,7 +1482,9 @@ class AssemblyService {
                     producesOutput = false;
                     console.log(`[completeNote] 📊 PRE-ENSAMBLE step — skipping stock injection (deferred to ENSAMBLE). Stage: ${note.stageName} | product: ${note.product?.name}`);
                 } else {
-                    console.log(`[completeNote] 📊 Intermediate step — no stock injection. Stage: ${note.stageName} | order: ${note.stageOrder}`);
+                    // Even if this is an intermediate step like EMPAQUE without a following ENSAMBLE,
+                    // we don't inject stock here (e.g. Geniality uses finishedLotService for carriots).
+                    console.log(`[completeNote] 📊 Intermediate/Final EMPAQUE step — no stock injection (handled by carriots). Stage: ${note.stageName} | order: ${note.stageOrder}`);
                 }
             }
 
@@ -1486,7 +1511,7 @@ class AssemblyService {
                 // in finished_lot_stock via the operator ingestion flow.
                 // Only intermediate materials (bases, compuestos, protecciones) need a materialLot
                 // so they can be consumed by downstream assembly stages.
-                const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup);
+                const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup) && note.product?.type !== 'MATERIA_PRIMA';
                 if (!isFinishedProduct) {
                     await tx.materialLot.create({
                         data: {
@@ -1613,7 +1638,42 @@ class AssemblyService {
             const batchNum = result.batchNumber || '';
             const qty = result.targetQuantity || actualQuantity; // Use targetQuantity (App-first), fallback to actualQuantity
 
-            // Create RPA execution record + enqueue
+            // ── GENIALITY DUPLICATE-RPA GUARD ──────────────────────────────────────────
+            // For Geniality products, the RPA already fires per-carrito during the
+            // MarcadoCajas/Empaque flow (observations contain "Parcial").
+            // If those per-carrito RPAs succeeded, we must NOT fire another ENSAMBLE
+            // RPA or it will double-register the assembly in Siigo accounting.
+            let skipRpa = false;
+            try {
+                // ── GLOBAL RPA DUPLICATE LOCK ────────────────────────────────────────────────
+                // Prevents multiple concurrent clicks/HTTP requests from queueing duplicate RPAs
+                const duplicateLock = await prisma.rpaExecution.findFirst({
+                    where: { assemblyNoteId: noteId, status: { in: ['PENDING', 'RUNNING', 'SUCCESS'] } }
+                });
+                if (duplicateLock) {
+                    console.log(`[completeNote] ⏭️ RPA LOCKED — Execution already exists for note ${noteId}. Preventing duplicates.`);
+                    skipRpa = true;
+                }
+
+                if (!skipRpa) {
+                    // ── GENIALITY PER-CARRITO DUPLICATE GUARD ──
+                    const existingPerCarritoRpa = await prisma.rpaExecution.findFirst({
+                        where: {
+                            status: 'SUCCESS',
+                            observations: { contains: `Lote: ${batchNum}` },
+                            productName: { contains: productName.slice(0, 20) }
+                        }
+                    });
+                    if (existingPerCarritoRpa) {
+                        console.log(`[completeNote] ⏭️ ENSAMBLE RPA SKIPPED — per-carrito RPAs already SUCCESS for ${productName} (lote ${batchNum}). Avoiding Siigo duplicate.`);
+                        skipRpa = true;
+                    }
+                }
+            } catch (guardErr) {
+                console.warn('[completeNote] ⚠️ Could not check RPA guard locks:', guardErr.message);
+            }
+
+            if (!skipRpa) {
             prisma.rpaExecution.create({
                 data: {
                     executionType: 'SIIGO_ASSEMBLY',
@@ -1673,6 +1733,7 @@ class AssemblyService {
                 });
                 console.log(`🤖 RPA enqueued for ${productName} — lot ${lotNum} (${Math.round(qty)} uds)`);
             }).catch(e => console.error('RPA enqueue error:', e.message));
+            } // end if (!skipRpa)
         }
 
         return result;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LayoutDashboard, Package, Factory, ShoppingCart, Tag, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search } from 'lucide-react';
+import { LayoutDashboard, Package, Factory, ShoppingCart, Tag, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search, FileSpreadsheet } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -33,6 +33,7 @@ const Sidebar = () => {
         { icon: LineChart, label: 'Panel MRP', path: '/mrp', roles: ['ADMIN'] },
         { icon: BarChart2, label: 'KPIs Producción', path: '/production/kpis', roles: ['ADMIN'] },
         { icon: ClipboardList, label: 'Historial Batches', path: '/production/batch-history', roles: ['ADMIN', 'QUIMICO'] },
+        { icon: FileSpreadsheet, label: 'Auditoría de Lotes', path: '/production/audit', roles: ['ADMIN', 'QUIMICO'] },
         { icon: Warehouse, label: 'Zona de Producción', path: '/production/zone', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
         { icon: Package, label: 'Zonas Prod. Terminado', path: '/production/finished-zone', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION', 'OPERARIO_PICKING'] },
         { icon: Truck, label: 'Actas de Entrega', path: '/production/handoffs', roles: ['ADMIN', 'LOGISTICA', 'PRODUCCION', 'OPERARIO_PICKING'] },
@@ -54,8 +55,8 @@ const Sidebar = () => {
         { icon: Settings, label: 'Config POES', path: '/sanitation/config', roles: ['ADMIN', 'QUIMICO'] },
 
         // ── Compras ──
-        { icon: Truck, label: 'Forecast MP', path: '/procurement/forecast', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA'], section: 'Compras' },
-        { icon: ShoppingCart, label: 'Órdenes de Compra', path: '/procurement/purchase-orders', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA', 'LOGISTICA'] },
+        { icon: Truck, label: 'Forecast MP', path: '/procurement/forecast', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA', 'QUIMICO'], section: 'Compras' },
+        { icon: ShoppingCart, label: 'Órdenes de Compra', path: '/procurement/purchase-orders', roles: ['ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CONTABILIDAD', 'CARTERA', 'LOGISTICA', 'QUIMICO'] },
         { icon: UsersIcon, label: 'Proveedores', path: '/procurement/suppliers', roles: ['ADMIN', 'CONTABILIDAD', 'CARTERA'] },
 
         // ── Distribuidores (PQR) ──
