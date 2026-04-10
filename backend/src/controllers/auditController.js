@@ -88,7 +88,33 @@ const getAuditReport = async (req, res) => {
             }
         }
 
-        res.json({ success: true, data: report });
+        // Aggregate by Batch and Component to resolve cross-note consumptions (e.g., PESAJE vs COCCION)
+        const aggregatedMap = new Map();
+        for (const row of report) {
+            const key = `${row.batchNumber}-${row.component}-${row.direction}`;
+            if (!aggregatedMap.has(key)) {
+                aggregatedMap.set(key, { ...row });
+            } else {
+                const existing = aggregatedMap.get(key);
+                existing.planned += row.planned;
+                existing.actual += row.actual;
+                existing.consumed += row.consumed;
+                
+                if (row.status !== 'COMPLETED') {
+                    existing.status = row.status;
+                }
+                
+                existing.diff = existing.status === 'COMPLETED' ? existing.consumed - existing.actual : 0;
+                
+                if (existing.process !== row.process) {
+                    existing.process = 'CONSOLIDADO';
+                }
+            }
+        }
+        
+        const finalReport = Array.from(aggregatedMap.values());
+
+        res.json({ success: true, data: finalReport });
     } catch (error) {
         console.error("Error generating audit report:", error);
         res.status(500).json({ success: false, message: 'Internal server error generating audit report' });
