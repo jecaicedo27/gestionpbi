@@ -232,6 +232,8 @@ router.use('/reconciliation', reconciliationRoutes);
 const zebraRoutes = require('./zebraRoutes');
 router.use('/zebra', zebraRoutes);
 router.use('/drivers', driverRoutes);
+const shiftRoutes = require('./shiftRoutes');
+router.use('/shifts', shiftRoutes);
 router.use('/', testRoute);
 
 module.exports = router;

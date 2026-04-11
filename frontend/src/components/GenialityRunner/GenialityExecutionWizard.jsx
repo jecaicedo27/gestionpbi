@@ -34,8 +34,7 @@ const GenialityExecutionWizard = () => {
     const { user } = useAuth();
     const location = useLocation();
     const skipIntroParam = new URLSearchParams(location.search).get('skipIntro') === '1';
-    const carritoQtyParam = parseInt(new URLSearchParams(location.search).get('carritoQty'), 10) || null;
-    const carritoIdParam = new URLSearchParams(location.search).get('carritoId') || null;
+    // carritoId now persisted in EMPAQUE note processParameters (DB), not in URL
 
     // ── Custom hooks ─────────────────────────────────────────────────────────
     const {
@@ -202,42 +201,46 @@ const GenialityExecutionWizard = () => {
             message.success(`✅ Carrito recibido y evidencia guardada`);
             
             // Navigate to the EMPAQUE note for THIS product (so they can print labels)
-            // Include carritoQty so MARCADO_CAJAS processes only this carrito's units
+            // Save activeCarritoId to the EMPAQUE note's processParameters (persistent DB state)
             if (productId && allBatchNotes) {
                 const empaqueNote = allBatchNotes.find(n => n.productId === productId && n.processType?.code === 'EMPAQUE');
-                const confirmedCarrito = updated.find(c => c.id === carritoId);
-                const cQty = confirmedCarrito?.qty || 0;
                 if (empaqueNote) {
-                    navigate(`/geniality/assembly-execution/${empaqueNote.id}?skipIntro=1&step=MARCADO_CAJAS&carritoQty=${cQty}&carritoId=${carritoId}`);
+                    // Persist activeCarritoId in the EMPAQUE note so it survives URL changes
+                    await api.patch(`/assembly-notes/${empaqueNote.id}`, {
+                        processParameters: { ...empaqueNote.processParameters, activeCarritoId: carritoId }
+                    });
+                    navigate(`/geniality/assembly-execution/${empaqueNote.id}?skipIntro=1&step=MARCADO_CAJAS`);
                 }
             }
         } catch (e) { console.warn('Error confirming carrito:', e.message); }
     }, [conteoNote, note, empaqueCarriots, allBatchNotes, navigate]);
 
     // Handler to resume labeling session for an ALREADY received carrito
-    // Receives productId and the specific carrito qty to pass through
-    const handleResumeCarrito = (productId, carritoQty, carritoId) => {
-        const buildUrl = (noteId) => {
-            let url = `/geniality/assembly-execution/${noteId}?skipIntro=1&step=MARCADO_CAJAS`;
-            if (carritoQty) url += `&carritoQty=${carritoQty}`;
-            if (carritoId) url += `&carritoId=${carritoId}`;
-            return url;
+    // Saves activeCarritoId to the EMPAQUE note's processParameters (DB) before navigating
+    const handleResumeCarrito = async (productId, carritoQty, carritoId) => {
+        const saveAndNavigate = async (empaqueNote) => {
+            // Persist activeCarritoId in the EMPAQUE note so it survives URL changes
+            await api.patch(`/assembly-notes/${empaqueNote.id}`, {
+                processParameters: { ...empaqueNote.processParameters, activeCarritoId: carritoId }
+            });
+            navigate(`/geniality/assembly-execution/${empaqueNote.id}?skipIntro=1&step=MARCADO_CAJAS`);
         };
         if (productId && allBatchNotes && allBatchNotes.length > 0) {
             const empaqueNote = allBatchNotes.find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
             if (empaqueNote) {
-                navigate(buildUrl(empaqueNote.id));
+                await saveAndNavigate(empaqueNote);
                 return;
             }
             // Fallback: re-fetch batch notes
-            api.get(`/assembly-notes?batchId=${note?.productionBatchId}`).then(res => {
+            try {
+                const res = await api.get(`/assembly-notes?batchId=${note?.productionBatchId}`);
                 const found = (res.data || []).find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
                 if (found) {
-                    navigate(buildUrl(found.id));
+                    await saveAndNavigate(found);
                 } else {
                     message.warning('No se encontró nota de empaque para este producto.');
                 }
-            }).catch(() => message.warning('Error buscando nota de empaque.'));
+            } catch { message.warning('Error buscando nota de empaque.'); }
             return;
         }
         message.warning('No se pudo localizar el submódulo de empaque para continuar.');
@@ -248,7 +251,7 @@ const GenialityExecutionWizard = () => {
         const currentStep = wizardSteps[currentStepIndex];
         const isPackaging = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role);
         // Run polling on EMPAQUE step, OR when packaging role views any step (e.g. CONTEO)
-        if (currentStep?.type !== 'EMPAQUE' && !isPackaging) return;
+        if (!['EMPAQUE', 'G_CONTEO_CARRITOS', 'MARCADO_CAJAS'].includes(currentStep?.type) && !isPackaging) return;
         if (!note?.productionBatchId) return;
 
         // Immediate preload: if we're packaging role on the CONTEO note itself,
@@ -645,10 +648,16 @@ const GenialityExecutionWizard = () => {
         }
 
         // ── PER-CARRITO flow: fire Siigo + ingest per-carrito and go back to reception ──
-        // When carritoQtyParam is present, the operator came from carrito reception.
-        // We must NOT complete the full EMPAQUE note — only process this carrito's units.
-        if (currentStep.type === 'MARCADO_CAJAS' && carritoQtyParam && note.processType?.code === 'EMPAQUE') {
-            const carritoQty = carritoQtyParam;
+        // activeCarritoId is read from the EMPAQUE note's processParameters (persisted in DB).
+        // This replaces the old URL-based carritoQtyParam approach which was fragile.
+        const activeCarritoId = note.processParameters?.activeCarritoId || null;
+        const activeCarrito = activeCarritoId
+            ? (empaqueCarriots.find(c => c.id === activeCarritoId)
+                || (conteoNote?.processParameters?.carriots || []).find(c => c.id === activeCarritoId))
+            : null;
+
+        if (currentStep.type === 'MARCADO_CAJAS' && activeCarrito && note.processType?.code === 'EMPAQUE') {
+            const carritoQty = activeCarrito.qty || 0;
             const productName = note.product?.name || 'Producto';
             const productSku = note.product?.sku || null;
             const batchNumber = note.productionBatch?.batchNumber
@@ -659,10 +668,6 @@ const GenialityExecutionWizard = () => {
             const aprobados = Math.max(0, carritoQty - defectivos);
 
             // 1. Siigo RPA with carrito qty only (fire-and-forget)
-            // ── RPA ENABLE RULE: fire if assembly_on_complete flag is set OR if this is
-            // a standard Geniality EMPAQUE note (process code EMPAQUE or G_EMPAQUE).
-            // This prevents silent-skip for notes where the DB flag was never persisted
-            // (e.g. 360 ML notes generated from templates that lack the flag).
             const isRpaEnabledCarrito = note.processParameters?.assembly_on_complete
                 || ['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code);
             if (isRpaEnabledCarrito) {
@@ -670,7 +675,7 @@ const GenialityExecutionWizard = () => {
                     try {
                         await api.post('/rpa/siigo-assembly', {
                             productName, productSku, quantity: carritoQty, assemblyType: 'proceso',
-                            observations: `Empaque carrito. Lote: ${computeLotCode(productName)}. Carrito: ${carritoQty} uds. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
+                            observations: `Empaque carrito. Lote: ${batchNumber}. Carrito: ${carritoQty} uds. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
                         });
                         message.success(`🤖 Siigo: ${carritoQty} × ${productName} (carrito)`);
                     } catch (e) {
@@ -686,6 +691,8 @@ const GenialityExecutionWizard = () => {
                     lotNumber: batchNumber,
                     quantity: carritoQty,
                     batchId: batchId || null,
+                    perCarrito: true,
+                    reason: `Ingreso per carrito ${activeCarrito?.carritoNum || activeCarritoId}`
                 }).then(() => {
                     message.success(`📥 Stock parcial: ${carritoQty} uds de ${productName} en PRODUCCIÓN`);
                 }).catch(ingErr => {
@@ -696,37 +703,45 @@ const GenialityExecutionWizard = () => {
                 });
             }
             // 2b. Consume packaging materials proportionally for this carrito
-            // (tarros, tapas, etiquetas, cajas — deducted from inventory)
-            if (carritoIdParam) {
-                api.post(`/assembly-notes/${note.id}/consume-carrito`, {
-                    carritoId: carritoIdParam,
-                    carritoQty,
-                    operatorId: user?.id
-                }).then(res => {
-                    if (res.data?.consumed?.length > 0) {
-                        const summary = res.data.consumed.map(c => `${c.component}: ${c.qty}`).join(', ');
-                        message.info(`📦 Inventario consumido: ${summary}`);
-                    }
-                }).catch(e => {
-                    console.warn('[CARRITO CONSUME]', e.response?.data?.error || e.message);
-                });
-            }
+            api.post(`/assembly-notes/${note.id}/consume-carrito`, {
+                carritoId: activeCarritoId,
+                carritoQty,
+                operatorId: user?.id
+            }).then(res => {
+                if (res.data?.consumed?.length > 0) {
+                    const summary = res.data.consumed.map(c => `${c.component}: ${c.qty}`).join(', ');
+                    message.info(`📦 Inventario consumido: ${summary}`);
+                }
+            }).catch(e => {
+                console.warn('[CARRITO CONSUME]', e.response?.data?.error || e.message);
+            });
 
-            // 3. Mark carrito as "labeled" in CONTEO note processParameters
-            if (carritoIdParam) {
-                try {
-                    const conteoNoteLocal = conteoNote || allBatchNotes?.find(n => n.processType?.code === 'CONTEO');
-                    if (conteoNoteLocal) {
-                        const currentCarriots = conteoNoteLocal.processParameters?.carriots || empaqueCarriots || [];
-                        const updatedCarriots = currentCarriots.map(c =>
-                            c.id === carritoIdParam ? { ...c, labeledAt: new Date().toISOString() } : c
-                        );
-                        await api.patch(`/assembly-notes/${conteoNoteLocal.id}`, {
-                            processParameters: { ...conteoNoteLocal.processParameters, carriots: updatedCarriots }
-                        });
+            // 3. Mark carrito as "labeled" + record in carriots_consumed + clear activeCarritoId
+            try {
+                const conteoNoteLocal = conteoNote || allBatchNotes?.find(n => n.processType?.code === 'CONTEO');
+                if (conteoNoteLocal) {
+                    const currentCarriots = conteoNoteLocal.processParameters?.carriots || empaqueCarriots || [];
+                    const updatedCarriots = currentCarriots.map(c =>
+                        c.id === activeCarritoId ? { ...c, labeledAt: new Date().toISOString() } : c
+                    );
+                    await api.patch(`/assembly-notes/${conteoNoteLocal.id}`, {
+                        processParameters: { ...conteoNoteLocal.processParameters, carriots: updatedCarriots }
+                    });
+                }
+                // Record consumption in EMPAQUE note + clear activeCarritoId
+                const prevConsumed = note.processParameters?.carriots_consumed || [];
+                await api.patch(`/assembly-notes/${note.id}`, {
+                    processParameters: {
+                        ...note.processParameters,
+                        activeCarritoId: null,
+                        carriots_consumed: [...prevConsumed, {
+                            carritoId: activeCarritoId,
+                            qty: carritoQty,
+                            processedAt: new Date().toISOString()
+                        }]
                     }
-                } catch (e) { console.warn('Error marking carrito as labeled:', e.message); }
-            }
+                });
+            } catch (e) { console.warn('Error marking carrito as labeled:', e.message); }
 
             // 4. Navigate back to the CONTEO reception screen
             message.success(`✅ Carrito etiquetado (${carritoQty} uds) — volviendo a recepción`);
@@ -911,19 +926,26 @@ const GenialityExecutionWizard = () => {
             if (currentStep?.type === 'ENSAMBLE' && note.processType?.code === 'EMPAQUE') {
                 const empData = note.empaqueData || {};
                 const emp = note.processParameters?.empaque || {};
-                const conteoQty = emp.conteo_qty
+                let conteoQty = emp.conteo_qty
                     || empData.conteo_qty
                     || note.processParameters?.empaqueRef?.conteo_qty
                     || note.targetQuantity
                     || 0;
                 const defectivos = emp.defective_qty || 0;
                 const aprobados = emp.approved_qty || Math.max(0, conteoQty - defectivos);
-                const totalEmpaque = conteoQty; // all units (buenos + malos)
+                let totalEmpaque = conteoQty; // all units (buenos + malos)
 
                 // ── GUARD: skip Siigo RPA + ingest if per-carrito RPAs already fired ──
                 // When carriots_consumed has entries, each carrito already triggered its own
                 // Siigo RPA and stock ingestion. Firing again here would create duplicates.
-                const carriotsAlreadyConsumed = (note.processParameters?.carriots_consumed || []).length > 0;
+                const carriotsConsumedList = note.processParameters?.carriots_consumed || [];
+                const carriotsAlreadyConsumed = carriotsConsumedList.length > 0;
+                // When carritos were processed individually, use their actual total
+                if (carriotsAlreadyConsumed) {
+                    const realTotal = carriotsConsumedList.reduce((s, c) => s + (c.qty || 0), 0);
+                    conteoQty = realTotal;
+                    totalEmpaque = realTotal;
+                }
 
                 // 1. Siigo RPA (fire-and-forget) — SKIP if per-carrito already handled
                 // Same enable rule as above: fire if flag set OR if this is a standard EMPAQUE note.
@@ -934,9 +956,10 @@ const GenialityExecutionWizard = () => {
                     const productSku = note.product?.sku || null;
                     (async () => {
                         try {
+                            const batchNumber = note.productionBatch?.batchNumber || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber || '';
                             await api.post('/rpa/siigo-assembly', {
                                 productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
+                                observations: `Empaque ${note.stageName}. Lote: ${batchNumber}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
                             });
                             message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);
                         } catch (e) {
@@ -1022,12 +1045,20 @@ const GenialityExecutionWizard = () => {
                                     operatorId: user?.id
                                 });
                             }
+                            // ── CRITICAL: Use the correct quantity for THIS ensamble note ──
+                            // totalEmpaque = units of finished product (e.g. 380 jars)
+                            // ensambleNote.targetQuantity = grams of intermediate material (e.g. 700,098g base)
+                            // For intermediate materials (base sirope, compuestos), use their own targetQty.
+                            // For finished products (same productId as EMPAQUE note), use totalEmpaque.
+                            const ensambleActualQty = (ensambleNote.productId === note.productId)
+                                ? totalEmpaque
+                                : (await resolveEnsambleQty(ensambleNote, ensambleNote.targetQuantity));
                             await api.post(`/assembly-notes/${ensambleNote.id}/complete`, {
                                 operatorId: user?.id,
-                                actualQuantity: totalEmpaque,
+                                actualQuantity: ensambleActualQty,
                                 observations: `Auto-completado desde empaque unificado. ${ensambleObs}`
                             });
-                            console.log(`[ENSAMBLE auto-complete] ✅ ${ensambleNote.id} completed`);
+                            console.log(`[ENSAMBLE auto-complete] ✅ ${ensambleNote.id} completed with qty=${ensambleActualQty} (targetWas=${ensambleNote.targetQuantity})`);
                             // Also trigger ingest from ENSAMBLE note for finished goods
                             // SKIP if per-carrito already ingested stock
                             if (!carriotsAlreadyConsumed) {
@@ -1596,7 +1627,7 @@ const GenialityExecutionWizard = () => {
     if (currentStep.type === 'INTRO' && note.status === 'PENDING') nextLabel = 'INICIAR PROCESO';
     if (currentStep.type === 'INPUT') nextLabel = 'CONFIRMAR PESO';
     if (currentStep.type === 'CONTEO') nextLabel = 'PRODUCCIÓN TERMINADA ✓';
-    if (currentStep.type === 'G_CONTEO_CARRITOS') nextLabel = 'FINALIZAR ENTREGA ✓';
+    if (currentStep.type === 'G_CONTEO_CARRITOS') nextLabel = 'TERMINAR EMPAQUE ✓';
     // Unified EMPAQUE wizard labels
     if (currentStep.type === 'EMPAQUE' && isEmpaque) nextLabel = 'CONFIRMAR QC ✓';
     if (currentStep.type === 'MARCADO_CAJAS' && isEmpaque) nextLabel = 'ETIQUETAS LISTAS ✓';
@@ -1665,12 +1696,13 @@ const GenialityExecutionWizard = () => {
                     }}
                     note={note}
                     allBatchNotes={allBatchNotes}
+                    activeCarritoId={note?.processParameters?.activeCarritoId || null}
                     conteoActuals={conteoActuals}
                     onConteoActualChange={setConteoActual}
                     conteoPhotos={conteoPhotos}
                     onConteoPhotoChange={setConteoPhoto}
-                    isPackagingRole={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)}
-                    carriots={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || wizardSteps[currentStepIndex]?.type === 'EMPAQUE'
+                    isPackagingRole={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || wizardSteps[currentStepIndex]?.type === 'CARRITOS_RECEPTION'}
+                    carriots={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || ['EMPAQUE', 'CARRITOS_RECEPTION', 'G_CONTEO_CARRITOS', 'MARCADO_CAJAS'].includes(wizardSteps[currentStepIndex]?.type)
                         ? empaqueCarriots
                         : carriots}
                     onAddCarrito={handleAddCarrito}

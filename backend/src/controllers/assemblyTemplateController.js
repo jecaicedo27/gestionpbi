@@ -204,6 +204,19 @@ async function createAssemblyTemplate(req, res) {
                 }
             }
 
+            // Insert audit log
+            if (createdById) {
+                await tx.auditLog.create({
+                    data: {
+                        userId: createdById,
+                        action: 'CREATE',
+                        entity: 'AssemblyTemplate',
+                        entityId: newTemplate.id,
+                        details: `Created template ${templateCode.toUpperCase()}`
+                    }
+                });
+            }
+
             // Retornar plantilla con relaciones
             return await tx.assemblyTemplate.findUnique({
                 where: { id: newTemplate.id },
@@ -319,7 +332,21 @@ async function updateAssemblyTemplate(req, res) {
                     });
                 }
 
-                // 5. Return updated template with includes
+                // 5. Insert audit log
+                const finalUserId = updates.updatedById || createdById;
+                if (finalUserId) {
+                    await tx.auditLog.create({
+                        data: {
+                            userId: finalUserId,
+                            action: 'UPDATE',
+                            entity: 'AssemblyTemplate',
+                            entityId: id,
+                            details: `Updated template with ${stages.length} stages`
+                        }
+                    });
+                }
+
+                // 6. Return updated template with includes
                 return tx.assemblyTemplate.findUnique({
                     where: { id },
                     include: {
@@ -339,21 +366,37 @@ async function updateAssemblyTemplate(req, res) {
         }
 
         // Simple update (no stages)
-        const template = await prisma.assemblyTemplate.update({
-            where: { id },
-            data: updates,
-            include: {
-                product: true,
-                stages: {
-                    include: {
-                        processType: true,
-                        inputs: {
-                            include: { product: true }
-                        }
-                    },
-                    orderBy: { stageOrder: 'asc' }
+        const template = await prisma.$transaction(async (tx) => {
+            const updated = await tx.assemblyTemplate.update({
+                where: { id },
+                data: updates,
+                include: {
+                    product: true,
+                    stages: {
+                        include: {
+                            processType: true,
+                            inputs: {
+                                include: { product: true }
+                            }
+                        },
+                        orderBy: { stageOrder: 'asc' }
+                    }
                 }
+            });
+
+            const finalUserId = updates.updatedById || createdById;
+            if (finalUserId) {
+                await tx.auditLog.create({
+                    data: {
+                        userId: finalUserId,
+                        action: 'UPDATE',
+                        entity: 'AssemblyTemplate',
+                        entityId: id,
+                        details: 'Updated template header'
+                    }
+                });
             }
+            return updated;
         });
 
         res.json(template);

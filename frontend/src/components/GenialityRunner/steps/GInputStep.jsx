@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Scale, Package, Camera, CheckCircle, ChevronDown, X, AlertTriangle } from 'lucide-react';
+import api from '../../../services/api';
 
 /**
  * GInputStep — Paso de Pesaje para Geniality (Siropes)
@@ -44,10 +45,8 @@ const GInputStep = ({
         if (!componentId) return;
         let cancelled = false;
         setLotsLoading(true);
-        fetch(`/api/inventory/lots?productId=${componentId}&status=AVAILABLE,LOW_STOCK&zone=PRODUCTION`, {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        })
-            .then(r => r.json())
+        api.get(`/inventory/lots?productId=${componentId}&status=AVAILABLE,LOW_STOCK&zone=PRODUCTION`)
+            .then(res => res.data)
             .then(data => {
                 if (!cancelled && Array.isArray(data)) {
                     const sorted = data
@@ -106,8 +105,10 @@ const GInputStep = ({
             fd.append('photo', file);
             fd.append('noteId', item.assemblyNoteId || '');
             fd.append('context', `pesaje_${item.component?.name || item.id}`);
-            const res = await fetch('/api/geniality/assembly-notes/upload-photo', { method: 'POST', body: fd });
-            const data = await res.json();
+            const res = await api.post('/assembly-notes/upload-photo', fd, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            const data = res.data;
             if (data.url) { setPhotoPreview(data.url); onWeighingPhotoChange?.(item.id, data.url); }
         } catch {
             onWeighingPhotoChange?.(item.id, localUrl);

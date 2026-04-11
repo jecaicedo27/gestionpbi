@@ -292,9 +292,9 @@ class AssemblyService {
 
                     // targetQuantity: for PESAJE stages with a sub-template product, use the formula quantity
                     const isPesaje = stage.processType?.code === 'PESAJE';
-                    const isEnsamble = stage.processType?.code === 'ENSAMBLE';
-                    const isConteo = stage.processType?.code === 'CONTEO';
-                    const isEmpaque = stage.processType?.code === 'EMPAQUE';
+                    const isEnsamble = ['ENSAMBLE', 'G_ENSAMBLE', 'E_ENSAMBLE'].includes(stage.processType?.code);
+                    const isConteo = ['CONTEO', 'G_CONTEO'].includes(stage.processType?.code);
+                    const isEmpaque = ['EMPAQUE', 'G_EMPAQUE'].includes(stage.processType?.code);
                     let targetQuantity = 1;
                     let targetUnit = 'lote';
 
@@ -431,6 +431,12 @@ class AssemblyService {
                                 noteObservations = 'Omitido — 0 unidades planificadas para esta referencia';
                                 console.log(`[generateNotes] ⏭️ Auto-skipped ${stage.stageName} (0 planned units)`);
                             }
+                        } else {
+                            // If there is NO target for this size, skip it entirely!
+                            noteStatus = 'COMPLETED';
+                            noteActualQty = 0;
+                            noteObservations = 'Omitido — Referencia no planificada en este bache';
+                            console.log(`[generateNotes] ⏭️ Auto-skipped ${stage.stageName} (Not in output targets)`);
                         }
                     }
 

@@ -1,0 +1,45 @@
+PrismaClientValidationError: 
+Invalid `prisma.productionBatch.findUnique()` invocation in
+/var/www/gestionpbi/backend/get_batch_notes.js:6:46
+
+  3 
+  4 async function main() {
+  5   const batchNumber = 'COCO-260410-0800';
+→ 6   const batch = await prisma.productionBatch.findUnique({
+        where: {
+          batchNumber: "COCO-260410-0800"
+        },
+        include: {
+          notes: {
+          ~~~~~
+            include: {
+              processType: true,
+              product: true
+            },
+            orderBy: {
+              stageOrder: "asc"
+            }
+          },
+      ?   assemblyNotes?: true,
+      ?   outputTargets?: true,
+      ?   finishedLotStocks?: true,
+      ?   product?: true,
+      ?   productionOrder?: true,
+      ?   qrCodes?: true
+        }
+      })
+
+Invalid scalar field `notes` for include statement on model ProductionBatch. Available options are marked with ?.
+Note that include statements only accept relation fields.
+    at wn (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:1363)
+    at e.throwValidationError (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:10206)
+    at rd (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:6772)
+    at td (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:6525)
+    at ed (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:6411)
+    at mr (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:6055)
+    at vn (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:29:5902)
+    at /var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:130:10186
+    at Object.runInChildSpan (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:121:1509)
+    at t._executeRequest (/var/www/gestionpbi/backend/node_modules/@prisma/client/runtime/library.js:130:10165) {
+  clientVersion: '5.22.0'
+}

@@ -264,16 +264,25 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
                     </div>
                 </div>
 
-                {/* Output Targets — what tarros were programmed */}
+                {/* Output Targets — programmed vs real */}
                 {batch.outputTargets?.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
                         {batch.outputTargets.map((t, i) => {
-                            // Shorten name: extract size (e.g. "3400 GR", "1150 GR", "350 GR")
                             const sizeMatch = t.name.match(/(\d+)\s*(GR|ML|G|L|KG)/i);
                             const sizeLabel = sizeMatch ? `${sizeMatch[1]}${sizeMatch[2].toLowerCase()}` : '';
+                            const planned = t.plannedUnits || 0;
+                            const real = t.realQty || 0;
+                            const hasReal = real > 0;
                             return (
-                                <span key={i} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-md px-1.5 py-0.5">
-                                    📦 {t.plannedUnits} × {sizeLabel || t.name.slice(0, 20)}
+                                <span key={i} className={`inline-flex items-center gap-1 text-[10px] font-semibold border rounded-md px-1.5 py-0.5 ${
+                                    hasReal ? 'bg-purple-50 text-purple-700 border-purple-200 shadow-sm' : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+                                }`}>
+                                    {hasReal ? '🏆' : '📦'}
+                                    {hasReal
+                                        ? <><span className="text-slate-400 line-through mr-0.5">{planned}</span><span className="font-extrabold">{real}</span></>
+                                        : <span>{planned}</span>
+                                    }
+                                    <span>× {sizeLabel || t.name.slice(0, 20)}</span>
                                 </span>
                             );
                         })}
@@ -446,7 +455,9 @@ const ProductionOperatorPage = () => {
                         outputTargets: (note.productionBatch?.outputTargets || []).map(t => ({
                             name: t.product?.name || '',
                             sku: t.product?.sku || '',
+                            productId: t.productId || '',
                             plannedUnits: t.plannedUnits || 0,
+                            actualUnits: t.actualUnits || 0,
                             plannedWeightKg: t.plannedWeightKg || 0
                         })),
                         allProductNames: [],
@@ -462,6 +473,43 @@ const ProductionOperatorPage = () => {
                     b.notes.sort((a, c) => (a.stageOrder || 0) - (c.stageOrder || 0));
                     b.completed = b.notes.filter(n => n.status === 'COMPLETED').length;
                     b.total = b.notes.length;
+
+                    // Resolve real-time or completed actual counts
+                    const conteoNote = b.notes.find(n => n.processType?.code === 'CONTEO');
+                    const pp = conteoNote?.processParameters || {};
+                    const parsedPP = typeof pp === 'string' ? JSON.parse(pp) : pp;
+                    const conteoDraft = typeof parsedPP.conteo_draft === 'string' ? JSON.parse(parsedPP.conteo_draft) : (parsedPP.conteo_draft || {});
+                    const conteoFinal = typeof parsedPP.conteo === 'string' ? JSON.parse(parsedPP.conteo) : (parsedPP.conteo || {});
+                    const carriotsArr = typeof parsedPP.carriots === 'string' ? JSON.parse(parsedPP.carriots) : (parsedPP.carriots || []);
+
+                    b.outputTargets = b.outputTargets.map(t => {
+                        const draftActual = conteoDraft[t.productId];
+                        const finalEntry = Object.values(conteoFinal).find(c => c.productId === t.productId || c.productName === t.name);
+                        const finalActual = finalEntry?.actual;
+
+                        // Carriots: sum quantities from carriots array matching this product
+                        const matchingCarriots = carriotsArr.filter(c => c.productId === t.productId || c.productName === t.name);
+                        const carriotsSum = matchingCarriots.reduce((sum, c) => sum + Number(c.qty || 0), 0);
+
+                        let displayQty = t.plannedUnits || 0;
+                        let isActual = false;
+
+                        if (carriotsSum > 0) {
+                            displayQty = carriotsSum;
+                            isActual = true;
+                        } else if (draftActual !== undefined && draftActual !== '' && parseInt(draftActual, 10) > 0) {
+                            displayQty = parseInt(draftActual, 10);
+                            isActual = true;
+                        } else if (finalActual != null && finalActual > 0) {
+                            displayQty = parseInt(finalActual, 10);
+                            isActual = true;
+                        } else if (t.actualUnits > 0) {
+                            displayQty = parseInt(t.actualUnits, 10);
+                            isActual = true;
+                        }
+
+                        return { ...t, displayQty, isActual, realQty: isActual ? displayQty : 0 };
+                    });
                     // allDone: todas COMPLETED o el batch está marcado COMPLETED en BD
                     b.allDone = (b.total > 0 && b.completed === b.total)
                         || b.batchStatus === 'COMPLETED';

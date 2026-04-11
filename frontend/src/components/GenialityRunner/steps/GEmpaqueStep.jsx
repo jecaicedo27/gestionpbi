@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Camera, CheckCircle, Package } from 'lucide-react';
+import api from '../../../services/api';
 
 /**
  * GEmpaqueStep — Paso de Empaque para Geniality (Siropes)
@@ -31,8 +32,10 @@ const GEmpaqueStep = ({ note, onDataChange, savedData = {} }) => {
             fd.append('photo', file);
             fd.append('noteId', note?.id || '');
             fd.append('context', 'empaque_geniality');
-            const res = await fetch('/api/geniality/assembly-notes/upload-photo', { method: 'POST', body: fd });
-            const data = await res.json();
+            const res = await api.post('/assembly-notes/upload-photo', fd, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            const data = res.data;
             if (data.url) {
                 setPhotoPreview(data.url);
                 onDataChange?.({ qty, unit, photoUrl: data.url, observations });

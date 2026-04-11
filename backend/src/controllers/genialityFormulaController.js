@@ -148,6 +148,19 @@ async function createFormula(req, res) {
                 }
             });
 
+            // Insert audit log
+            if (createdById) {
+                await tx.auditLog.create({
+                    data: {
+                        userId: createdById,
+                        action: 'CREATE',
+                        entity: 'Formula',
+                        entityId: newFormula.id,
+                        details: `Created formula ${formulaCode.toUpperCase()}`
+                    }
+                });
+            }
+
             // Calcular total para porcentajes
             let totalQuantity = 0;
             for (const item of items) {
@@ -316,6 +329,20 @@ async function updateFormula(req, res) {
                         }
                     });
                 }
+            }
+
+            // Insert audit log
+            if (updates.updatedById) {
+                const f = await tx.formula.findUnique({ where: { id }, select: { formulaCode: true } });
+                await tx.auditLog.create({
+                    data: {
+                        userId: updates.updatedById,
+                        action: 'UPDATE',
+                        entity: 'Formula',
+                        entityId: id,
+                        details: `Updated formula ${f?.formulaCode || id}`
+                    }
+                });
             }
 
             return await tx.formula.findUnique({

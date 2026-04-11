@@ -99,8 +99,8 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
             .trim()
             .slice(0, 30);
 
-    // OPERARIO_PICKING can act on CONTEO / EMPAQUE / ETIQUETADO / ENSAMBLE (Siigo post-empaque)
-    const PICKING_STAGES = ['CONTEO', 'EMPAQUE', 'ETIQUETADO', 'ENSAMBLE'];
+    // OPERARIO_PICKING can act on CONTEO / EMPAQUE / ETIQUETADO
+    const PICKING_STAGES = ['CONTEO', 'EMPAQUE', 'ETIQUETADO'];
     const isPickingRole = userRole === 'OPERARIO_PICKING';
     const nextStageCode = nextStage?.processType?.code || '';
     const canPickingAct = !isPickingRole || PICKING_STAGES.includes(nextStageCode);
@@ -235,7 +235,7 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
                             const sizeLabel = sizeMatch ? `${sizeMatch[1]}${sizeMatch[2].toLowerCase()}` : '';
                             return (
                                 <span key={i} className="inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-md px-1.5 py-0.5">
-                                    📦 {t.plannedUnits} × {sizeLabel || t.name.slice(0, 20)}
+                                    📦 {t.realUnits && t.realUnits > 0 ? <span className="text-green-700 font-bold">{t.realUnits} / </span> : ''}{t.plannedUnits} × {sizeLabel || t.name.slice(0, 20)}
                                 </span>
                             );
                         })}
@@ -397,6 +397,7 @@ const GenialityOperatorPage = () => {
                         scheduledStart: note.productionBatch?.scheduledStart,
                         status: note.productionBatch?.status,
                         outputTargets: (note.productionBatch?.outputTargets || []).map(t => ({
+                            productId: t.productId || t.product?.id,
                             name: t.product?.name || '',
                             sku: t.product?.sku || '',
                             plannedUnits: t.plannedUnits || 0,
@@ -407,6 +408,25 @@ const GenialityOperatorPage = () => {
                     };
                 }
                 if (note.product?.name) batchMap[bId].allProductNames.push(note.product.name);
+
+                // Extract planned and carritos sum from CONTEO note
+                if (note.processType?.code === 'CONTEO' && note.processParameters) {
+                    const parsedProcessParams = typeof note.processParameters === 'string' ? JSON.parse(note.processParameters) : (note.processParameters || {});
+                    const conteoData = typeof parsedProcessParams.conteo === 'string' ? JSON.parse(parsedProcessParams.conteo) : (parsedProcessParams.conteo || {});
+                    const carriotsData = typeof parsedProcessParams.carriots === 'string' ? JSON.parse(parsedProcessParams.carriots) : (parsedProcessParams.carriots || []);
+                    
+                    batchMap[bId].outputTargets = batchMap[bId].outputTargets.map(t => {
+                        const conteoEntry = Object.values(conteoData).find(c => c.productId === t.productId || c.productName === t.name);
+                        const carriots = carriotsData.filter(c => c.productId === t.productId || c.productName === t.name || c.productId === t.product?.id);
+                        const carriotsSum = carriots.reduce((sum, c) => sum + Number(c.qty), 0);
+                        return {
+                            ...t,
+                            plannedUnits: (t.plannedUnits > 0 ? t.plannedUnits : undefined) ?? conteoEntry?.planned ?? 0,
+                            realUnits: carriotsSum > 0 ? carriotsSum : (conteoEntry?.actual || 0)
+                        };
+                    });
+                }
+
                 batchMap[bId].notes.push(note);
             }
 
@@ -487,7 +507,17 @@ const GenialityOperatorPage = () => {
     const completedCount = lineBatches.filter(b => b.allDone).length;
     const pending = lineBatches.filter(b => b.completed === 0 && !b.allDone).length;
 
-    const activeBatches = lineBatches.filter(b => !b.allDone);
+    const activeBatches = lineBatches.filter(b => {
+        if (b.allDone) return false;
+        if (user?.role === 'OPERARIO_PICKING') {
+            return b.status === 'STAGE_2_PACKAGING' || b.status === 'STAGE_3_QUALITY' || b.status === 'STAGE_4_FINISHED';
+        }
+        if (user?.role === 'PRODUCCION') {
+            return b.status === 'NEW' || b.status === 'STAGE_1_BASE';
+        }
+        return true; // Admin views all active
+    });
+
     const completedBatches = lineBatches.filter(b => b.allDone);
 
     // Counts for line tabs

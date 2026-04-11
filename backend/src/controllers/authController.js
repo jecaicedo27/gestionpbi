@@ -4,6 +4,7 @@ require('dotenv').config({ path: '/var/www/gestionpbi/backend/.env' });
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
 const { getClientIp, isInternalNetwork } = require('../middleware/auth');
+const { sendPushToAll } = require('../services/webPushService');
 
 const prisma = new PrismaClient();
 
@@ -38,6 +39,15 @@ const login = async (req, res) => {
             if (!isAdmin && !isDistribuidor) {
                 logger.warn(`⛔ External login blocked: ${email} (${user.role}) from IP ${clientIp}`);
                 saveAudit({ email, role: user.role, ip: clientIp, allowed: false, reason: 'EXTERNAL_BLOCKED', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
+
+                // 🚨 Push notification alert to admin
+                sendPushToAll({
+                    title: '🚨 Intento de acceso bloqueado',
+                    body: `${email} (${user.role}) intentó ingresar desde IP ${clientIp}`,
+                    tag: 'security-alert',
+                    data: { url: '/security-map.html' }
+                }).catch(() => {});
+
                 return res.status(403).json({
                     error: '⛔ Acceso denegado. Solo se permite el ingreso desde la red interna de la empresa.'
                 });

@@ -72,6 +72,7 @@ import ReconciliationPage from './pages/ReconciliationPage';
 import PhysicalCountPage from './pages/PhysicalCountPage';
 import InventoryCountPage from './pages/InventoryCountPage';
 import SalesAnalyticsDashboard from './pages/SalesAnalyticsDashboard';
+import ShiftSchedulePage from './pages/ShiftSchedulePage';
 
 
 import { useEffect } from 'react';
@@ -188,6 +189,7 @@ function App() {
                             <Route path="procurement/purchase-orders" element={<PurchaseOrdersPage />} />
                             <Route path="procurement/suppliers" element={<SuppliersPage />} />
                             <Route path="reconciliation" element={<ReconciliationPage />} />
+                            <Route path="shift-schedule" element={<ShiftSchedulePage />} />
                         </Route>
                     </Route>
                 </Routes>

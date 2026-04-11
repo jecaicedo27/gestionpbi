@@ -160,7 +160,10 @@ const AssemblyExecutionWizard = () => {
     // ── Debounced auto-save for conteo actuals & photos (survive F5/logout) ──
     const saveConteoDraftTimeout = useRef(null);
     useEffect(() => {
-        if (!note?.id) return;
+        if (!note?.id || submitting) {
+            if (saveConteoDraftTimeout.current) clearTimeout(saveConteoDraftTimeout.current);
+            return;
+        }
         // Skip if everything is empty to avoid overwriting on initial mount
         if (Object.keys(conteoActuals).length === 0 && Object.keys(conteoPhotos).length === 0) return;
 
@@ -184,7 +187,7 @@ const AssemblyExecutionWizard = () => {
             }
         }, 1500); // 1.5s debounce
         return () => clearTimeout(saveConteoDraftTimeout.current);
-    }, [conteoActuals, conteoPhotos, note?.id]); // eslint-disable-line
+    }, [conteoActuals, conteoPhotos, note?.id, submitting]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
     const handleAddCarrito = useCallback(async (productId, productName, qty) => {
@@ -1023,27 +1026,37 @@ const AssemblyExecutionWizard = () => {
                 let esferas_total = 0;
                 const conteoTargets = note.productionBatch?.outputTargets || [];
                 conteoTargets.forEach(t => {
-                    const actual = parseInt(conteoActuals[t.productId] || t.plannedUnits, 10);
+                    const rawVal = conteoActuals[t.productId];
+                    const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
+                    const fallbackPlanned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
+                    
+                    const actualStr = rawVal !== undefined && rawVal !== '' ? rawVal : fallbackPlanned;
+                    const actual = parseInt(actualStr, 10);
                     const factor = esferaFactors[t.productId] || 0;
                     const esferas = actual * factor;
                     esferas_total += esferas;
                     counts[t.product?.name || t.productId] = {
                         productId: t.productId, productName: t.product?.name,
-                        planned: t.plannedUnits, actual, esfera_factor: factor, esferas
+                        planned: fallbackPlanned, actual, esfera_factor: factor, esferas
                     };
                 });
                 await api.patch(`/assembly-notes/${note.id}`, {
                     processParameters: { 
                         ...note.processParameters,
-                        conteo: counts, 
+                        conteo: counts,
+                        conteo_draft: conteoActuals,
                         esferas_total, 
-                        conteo_photos: conteoPhotos 
+                        conteo_photos: conteoPhotos,
+                        conteo_photos_draft: conteoPhotos
                     }
                 }).catch(() => { });
 
                 // Use the sum of all real counted units as the actualQuantity
                 const totalConteoUnits = conteoTargets.reduce((sum, t) => {
-                    return sum + parseInt(conteoActuals[t.productId] || t.plannedUnits, 10);
+                    const countRaw = conteoActuals[t.productId];
+                    const cPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
+                    const fPlanned = t.plannedUnits > 0 ? t.plannedUnits : (cPlanned ?? t.plannedUnits);
+                    return sum + parseInt(countRaw !== undefined && countRaw !== '' ? countRaw : fPlanned, 10);
                 }, 0);
 
                 await api.post(`/assembly-notes/${note.id}/complete`, {
@@ -1340,7 +1353,10 @@ const AssemblyExecutionWizard = () => {
             // Products with planned === 0 auto-count as 0 (user doesn't need to type 0).
             const allHaveCounts = targets.length > 0 && targets.every(t => {
                 const val = conteoActuals[t.productId];
-                if (t.plannedUnits === 0 && (val === undefined || val === '')) return true; // auto-0
+                const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
+                const planned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
+                
+                if (planned === 0 && (val === undefined || val === '')) return true; // auto-0
                 return val !== undefined && val !== '' && !isNaN(parseInt(val, 10));
             });
             if (!allHaveCounts) canAdvance = false;
@@ -1348,8 +1364,10 @@ const AssemblyExecutionWizard = () => {
             // Photo validation: every target with actual > 0 must have a photo
             if (allHaveCounts) {
                 const allHavePhotos = targets.every(t => {
+                    const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
+                    const planned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
                     const val = conteoActuals[t.productId];
-                    const actual = (val === undefined || val === '') ? (t.plannedUnits || 0) : parseInt(val, 10);
+                    const actual = (val === undefined || val === '') ? (planned || 0) : parseInt(val, 10);
                     if (isNaN(actual) || actual <= 0) return true; // qty 0 → no photo needed
                     return !!conteoPhotos[t.productId];
                 });

@@ -64,6 +64,8 @@ model User {
   performedSanitations   SanitationRecord[]        @relation("PerformedSanitation")
   verifiedSanitations    SanitationRecord[]        @relation("VerifiedSanitation")
   zoneTransfers          ZoneTransfer[]            @relation("ZoneTransferUser")
+  phone                  String?                   // For WhatsApp notifications
+  shiftEmployee          ShiftEmployee?             @relation("ShiftUser")
 
   @@index([email])
   @@index([role, active])
@@ -1976,4 +1978,70 @@ model LoginAudit {
   @@index([ip])
   @@index([createdAt])
   @@map("login_audits")
+}
+
+// ── Shift Scheduling Module ──────────────────────────────────
+
+model ShiftEmployee {
+  id           String   @id @default(uuid())
+  name         String
+  area         String   // PRODUCCION, SIROPES, EMPAQUE, LOGISTICA, ASEO
+  role         String   @default("OPERARIO") // LIDER, OPERARIO
+  groupNumber  Int?     // 1, 2, 3 — for rotation tracking
+  isFixed      Boolean  @default(false) // true = never rotates
+  restrictions String[] // e.g. ["MANANA","NOCHE"] = only these shifts allowed
+  whatsapp     String?  // WhatsApp number for sending schedule
+  userId       String?  @unique @map("user_id") // Link to ERP User
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user         User?    @relation("ShiftUser", fields: [userId], references: [id])
+  assignments  ShiftAssignment[]
+  absences     ShiftAbsence[]
+
+  @@map("shift_employees")
+}
+
+model ShiftWeek {
+  id          String   @id @default(uuid())
+  weekStart   DateTime @map("week_start") // Monday
+  weekEnd     DateTime @map("week_end")   // Sunday
+  status      String   @default("DRAFT")  // DRAFT, PUBLISHED
+  note        String?  // e.g. "Turno noche empieza domingo 10PM"
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  assignments ShiftAssignment[]
+
+  @@unique([weekStart])
+  @@map("shift_weeks")
+}
+
+model ShiftAssignment {
+  id         String   @id @default(uuid())
+  weekId     String   @map("week_id")
+  employeeId String   @map("employee_id")
+  area       String   // PRODUCCION, SIROPES, EMPAQUE, LOGISTICA, ASEO
+  shift      String   // MANANA, TARDE, NOCHE, DIURNO
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  week       ShiftWeek     @relation(fields: [weekId], references: [id], onDelete: Cascade)
+  employee   ShiftEmployee @relation(fields: [employeeId], references: [id])
+
+  @@unique([weekId, employeeId])
+  @@map("shift_assignments")
+}
+
+model ShiftAbsence {
+  id         String   @id @default(uuid())
+  employeeId String   @map("employee_id")
+  date       DateTime
+  reason     String   // ENFERMEDAD, PERMISO, DILIGENCIA, INCAPACIDAD
+  replacedBy String?  @map("replaced_by") // employee ID of replacement
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  employee   ShiftEmployee @relation(fields: [employeeId], references: [id])
+
+  @@map("shift_absences")
 }

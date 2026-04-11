@@ -158,10 +158,20 @@ const IntroStep = ({
         // Check if there's a CONTEO step in this batch (perlas have it, siropes don't)
         const hasConteoStep = allBatchNotes.some(n => n.processType?.code === 'CONTEO');
 
+        // ── Geniality detection: batch uses carriots-based reception ──
+        // If the CONTEO note has carriots data, this is a Geniality batch.
+        // Geniality reception is handled by GConteoCarritosStep, NOT this table.
+        const conteoNoteForCheck = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+        const hasCarriotsSystem = !!(conteoNoteForCheck?.processParameters?.carriots?.length > 0);
+
+        // ── Detect route prefix (Geniality vs Liquipops) ──
+        const isGenialityRoute = window.location.pathname.includes('/geniality/');
+
         // ── Reception screen (before selection) ──
         // Auto-skip if any EMPAQUE note has already been started or completed
+        // Also skip for Geniality batches — carriots reception is a separate wizard step
         const anyEmpaqueStarted = empaqueNotes.some(n => n.status === 'COMPLETED' || n.status === 'EXECUTING');
-        const showReception = !empaqueReceptionConfirmed && !anyEmpaqueStarted;
+        const showReception = !empaqueReceptionConfirmed && !anyEmpaqueStarted && !hasCarriotsSystem;
         if (showReception) {
             const batchNumber = noteData.productionBatch?.batchNumber || '';
             const productName = noteData.product?.name || noteData.stageName || '';
@@ -204,8 +214,10 @@ const IntroStep = ({
 
             // Get conteo photos from CONTEO note
             const conteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
-            const conteoMap = conteoNote?.processParameters?.conteo || {};
-            const conteoPhotosMap = conteoNote?.processParameters?.conteo_photos || {};
+            const parsedProcessParams = typeof conteoNote?.processParameters === 'string' ? JSON.parse(conteoNote.processParameters) : (conteoNote?.processParameters || {});
+            const conteoMap = typeof parsedProcessParams.conteo === 'string' ? JSON.parse(parsedProcessParams.conteo) : (parsedProcessParams.conteo || {});
+            const targetCarriotsData = typeof parsedProcessParams.carriots === 'string' ? JSON.parse(parsedProcessParams.carriots) : (parsedProcessParams.carriots || []);
+            const conteoPhotosMap = typeof parsedProcessParams.conteo_photos === 'string' ? JSON.parse(parsedProcessParams.conteo_photos) : (parsedProcessParams.conteo_photos || {});
 
             // receptionPhotos and uploadingReception are declared at top level (Rules of Hooks)
 
@@ -315,9 +327,15 @@ const IntroStep = ({
                                 const empRef = matchingEmpaque?.processParameters?.empaqueRef || {};
                                 const conteoEntry = Object.values(conteoMap).find(c => c.productId === target.productId);
 
+                                // Get carritos data
+                                const targetCarriots = (targetCarriotsData || []).filter(c => c.productId === target.productId || c.productId === target.product?.id);
+                                const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
+                                const carritoPhoto = targetCarriots[0]?.productionPhotoUrl || null;
+
                                 // Use outputTargets.plannedUnits as source of truth (normalized values)
-                                const planned = target.plannedUnits ?? conteoEntry?.planned ?? empData.planned_qty ?? empRef.planned_qty ?? null;
-                                const conteo = conteoEntry?.actual ?? empData.conteo_qty ?? empRef.conteo_qty ?? null;
+                                const planned = (target.plannedUnits > 0 ? target.plannedUnits : undefined) ?? conteoEntry?.planned ?? empData.planned_qty ?? empRef.planned_qty ?? null;
+                                const draftQty = conteoNote?.processParameters?.conteo_draft?.[target.productId];
+                                const conteo = carriotsSum !== null ? carriotsSum : ((conteoEntry?.actual > 0 ? conteoEntry.actual : (draftQty !== undefined ? parseInt(draftQty, 10) : null)) ?? empData.conteo_qty ?? empRef.conteo_qty ?? null);
                                 const manualKey = matchingEmpaque?.id || target.productId;
                                 const manualVal = manualConteo[manualKey];
                                 const displayReal = conteo ?? (manualVal !== undefined ? parseInt(manualVal, 10) : null);
@@ -325,7 +343,7 @@ const IntroStep = ({
 
                                 const sizeLabel = extractSizeLabel(target.product?.name);
                                 const flavor = extractFlavor(target.product?.name);
-                                const prodPhoto = conteoPhotosMap[target.productId] || null;
+                                const prodPhoto = conteoPhotosMap[target.productId] || carritoPhoto || null;
                                 const recepPhoto = receptionPhotos[target.productId] || null;
                                 const isUploadingRecep = uploadingReception[target.productId];
 
@@ -540,12 +558,18 @@ const IntroStep = ({
                                 const allMatch = sortedReceptionTargets.every(t => {
                                     const ce = Object.values(conteoMap).find(c => c.productId === t.productId);
                                     const pl = t.plannedUnits ?? ce?.planned;
-                                    return ce?.actual !== undefined && ce.actual === pl;
+                                    const targetCarriots = (conteoNote?.processParameters?.carriots || []).filter(c => c.productId === t.productId);
+                                    const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
+                                    const actual = carriotsSum !== null ? carriotsSum : ce?.actual;
+                                    return actual !== undefined && actual === pl;
                                 });
                                 // Count products needing reception photos
                                 const productsNeedingPhoto = sortedReceptionTargets.filter(t => {
                                     const ce = Object.values(conteoMap).find(c => c.productId === t.productId);
-                                    return (ce?.actual ?? 0) > 0;
+                                    const targetCarriots = (conteoNote?.processParameters?.carriots || []).filter(c => c.productId === t.productId);
+                                    const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
+                                    const actual = carriotsSum !== null ? carriotsSum : ce?.actual;
+                                    return (actual ?? 0) > 0;
                                 });
                                 const missingPhotos = productsNeedingPhoto.filter(t => !receptionPhotos[t.productId]);
                                 return (
@@ -574,7 +598,10 @@ const IntroStep = ({
                         // Check mandatory reception photos: every product with actual > 0 needs a photo
                         const productsNeedingPhoto = sortedReceptionTargets.filter(t => {
                             const ce = Object.values(conteoMap).find(c => c.productId === t.productId);
-                            return (ce?.actual ?? 0) > 0;
+                            const targetCarriots = (conteoNote?.processParameters?.carriots || []).filter(c => c.productId === t.productId);
+                            const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
+                            const actual = carriotsSum !== null ? carriotsSum : ce?.actual;
+                            return (actual ?? 0) > 0;
                         });
                         const allPhotosUploaded = productsNeedingPhoto.every(t => !!receptionPhotos[t.productId]);
                         const canConfirm = allConteoFilled && allPhotosUploaded && !savingConteo;
@@ -680,7 +707,7 @@ const IntroStep = ({
                                                 if (en.id === noteData.id) {
                                                     if (onSkipToEmpaque) onSkipToEmpaque();
                                                 } else {
-                                                    navigate(`/assembly-execution/${en.id}?skipIntro=1`);
+                                                    navigate(`${isGenialityRoute ? '/geniality' : ''}/assembly-execution/${en.id}?skipIntro=1`);
                                                     setTimeout(() => window.location.reload(), 100);
                                                 }
                                             }}

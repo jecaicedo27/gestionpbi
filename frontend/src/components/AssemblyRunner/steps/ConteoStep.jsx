@@ -243,7 +243,8 @@ const ConteoStep = ({
                 <div className="p-2 pt-0 space-y-1.5 flex-1 overflow-auto">
                     {sortedTargets.map((target) => {
                         const actual = conteoActuals[target.productId];
-                        const planned = target.plannedUnits;
+                        const conteoPlanned = noteData.processParameters?.conteo?.[target.product?.name]?.planned;
+                        const planned = target.plannedUnits > 0 ? target.plannedUnits : (conteoPlanned ?? target.plannedUnits);
                         const actualNum = parseInt(actual ?? planned ?? 0, 10);
                         const deviation = actual !== undefined && planned > 0
                             ? ((actualNum - planned) / planned * 100).toFixed(1) : null;

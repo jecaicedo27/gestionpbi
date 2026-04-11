@@ -128,7 +128,10 @@ export function useAssemblyNote(id) {
             noteData.product?.name?.toUpperCase().includes('SABORIZACION')
         );
 
-        steps.push({ type: 'INTRO', data: noteData });
+        // Skip INTRO for Geniality notes — operators go directly to G_CONTEO_CARRITOS or empaque
+        if (!isSiropeGeniality) {
+            steps.push({ type: 'INTRO', data: noteData });
+        }
 
         if (isSiropeGeniality) {
             steps.push({ type: 'G_CONTEO_CARRITOS', data: noteData });
@@ -223,8 +226,9 @@ export function useAssemblyNote(id) {
                 if (typeof savedStep === 'number' && savedStep > 0 && savedStep < steps.length) {
                     startIdx = savedStep;
                 } else {
-                    // 2. Fallback: Skip INTRO (step 0) and find first unfilled INPUT
-                    startIdx = 1;
+                    // 2. Fallback: Skip INTRO (step 0) if present, otherwise start at 0
+                    const hasIntro = steps[0]?.type === 'INTRO';
+                    startIdx = hasIntro ? 1 : 0;
                     const inputSteps = steps.map((s, i) => ({ ...s, idx: i })).filter(s => s.type === 'INPUT');
                     if (inputSteps.length > 0) {
                         const firstUnfilled = inputSteps.find(s => {

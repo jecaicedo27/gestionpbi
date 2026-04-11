@@ -74,6 +74,7 @@ const Layout = () => {
         if (path === '/admin/users') return 'Usuarios';
         if (path === '/admin/config') return 'Configuración';
         if (path === '/admin/reports') return 'Reportes';
+        if (path === '/shift-schedule') return 'Cuadro de Turnos';
         if (path.includes('analytics')) return 'Análisis';
         return 'Dashboard';
     };

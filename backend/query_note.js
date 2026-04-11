@@ -1,23 +1,15 @@
-const { PrismaClient } = require('@prisma/client')
-const prisma = new PrismaClient()
-async function run() {
-  const b = await prisma.productionBatch.findUnique({
-    where: { batchNumber: 'MANGO-BICHE-260406-1621' },
-    include: {
-      outputTargets: { include: { product: true } },
-      assemblyNotes: { 
-        where: { processType: { code: 'EMPAQUE' } }
-      }
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+async function main() {
+    const note = await prisma.assemblyNote.findUnique({
+        where: { id: 'eaa86447-0a72-4bde-861f-506687d46b40' },
+        include: { productionBatch: { include: { outputTargets: true } } }
+    });
+    console.log(`Note productId: ${note.productId}`);
+    console.log(`Note processParameters.product_id: ${note.processParameters?.product_id}`);
+    
+    for (const t of note.productionBatch.outputTargets) {
+        console.log(`Target productId: ${t.productId} - planned: ${t.plannedUnits}`);
     }
-  })
-  if (b) {
-    b.outputTargets.forEach(t => {
-       console.log(`Target ${t.product.name}: actual=${t.actualUnits}, approved=${t.approvedUnits}`)
-    })
-    b.assemblyNotes.forEach(n => {
-       console.log(`Note ${n.productId}: params=${JSON.stringify(n.processParameters?.empaque || {})}`)
-       console.log(`Note ${n.productId}: empaqueData=${JSON.stringify(n.empaqueData || {})}`)
-    })
-  }
 }
-run().catch(console.error).finally(()=>prisma.$disconnect())
+main().finally(() => prisma.$disconnect());

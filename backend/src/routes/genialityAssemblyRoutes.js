@@ -102,8 +102,10 @@ router.post('/:id/consume-carrito', auth, async (req, res) => {
                 select: { productionZoneStock: true, currentStock: true, name: true }
             });
             const zone = product?.productionZoneStock || 0;
+            const bodega = product?.currentStock || 0;
             const fromZone = Math.min(qtyForCarrito, Math.max(0, zone));
-            const fromBodega = qtyForCarrito - fromZone;
+            // Floor-to-zero: never pull more from bodega than what's actually available
+            const fromBodega = Math.min(qtyForCarrito - fromZone, Math.max(0, bodega));
 
             if (fromZone > 0) {
                 await _notePrisma.product.update({

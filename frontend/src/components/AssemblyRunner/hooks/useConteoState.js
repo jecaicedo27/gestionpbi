@@ -26,7 +26,7 @@ export function useConteoState() {
      * @param {number} qty   (1–150)
      * @returns CarritoEntry
      */
-    const addCarritoLocal = (productId, productName, qty) => {
+    const addCarritoLocal = (productId, productName, qty, productionPhotoUrl = null) => {
         const newEntry = {
             id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             productId,
@@ -35,6 +35,7 @@ export function useConteoState() {
             carritoNum: null, // will be set below
             timestamp: new Date().toISOString(),
             receivedAt: null,
+            productionPhotoUrl,
         };
 
         setCarriots(prev => {

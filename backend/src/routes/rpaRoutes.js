@@ -17,4 +17,16 @@ router.get('/queue-status', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.
 router.get('/orphan-notes', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.getOrphanNotes);
 router.post('/dispatch-orphan', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.dispatchOrphan);
 
+// Get RPA execution by ID
+router.get('/:id', auth, async (req, res) => {
+    try {
+        const { PrismaClient } = require('@prisma/client');
+        const prisma = new PrismaClient();
+        const exec = await prisma.rpaExecution.findUnique({ where: { id: req.params.id } });
+        if (!exec) return res.status(404).json({ error: 'Not found' });
+        res.json(exec);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;
+

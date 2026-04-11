@@ -112,30 +112,69 @@ const PQRManagement = () => {
 
     const [copied, setCopied] = useState(false);
 
+    const filteredPqrs = useMemo(() => {
+        if (filterDistributor === 'ALL') return pqrs;
+        return pqrs.filter((pqr) => {
+            const key = pqr.user?.username || pqr.user?.email || pqr.user?.name || 'SIN_DISTRIBUIDOR';
+            return key === filterDistributor;
+        });
+    }, [pqrs, filterDistributor]);
+
+    const isBulkAdjustmentMode = useMemo(() => {
+        if (selectedIds.size === 0) return false;
+        const selected = filteredPqrs.filter(p => selectedIds.has(p.id));
+        return selected.every(p => p.ticketNumber?.startsWith('PQR-INT-') || p.pendingAdjustment);
+    }, [selectedIds, filteredPqrs]);
+
     // ─── Bulk Upload Handler ─────────────────────────────
     const handleBulkUpload = async () => {
-        if (!bulkUpload?.creditNote || !bulkUpload?.accountStatement) {
-            alert('Debes subir la nota crédito y el estado de cuenta.');
-            return;
-        }
-        setBulkUploading(true);
-        try {
-            const formData = new FormData();
-            formData.append('pqrIds', JSON.stringify([...selectedIds]));
-            formData.append('file', bulkUpload.creditNote);
-            formData.append('accountStatement', bulkUpload.accountStatement);
+        if (isBulkAdjustmentMode) {
+            if (!bulkUpload?.adjustmentDoc) {
+                alert('Debes subir el documento de ajuste de inventario.');
+                return;
+            }
+            setBulkUploading(true);
+            try {
+                const formData = new FormData();
+                formData.append('pqrIds', JSON.stringify([...selectedIds]));
+                formData.append('adjustmentDoc', bulkUpload.adjustmentDoc);
 
-            const res = await axios.post(`${API_URL}/api/pqr/bulk-billing`, formData, {
-                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
-            });
-            setBulkResult(res.data);
-            setSelectedIds(new Set());
-            setBulkUpload(null);
-            fetchPQRs({ showLoader: false });
-        } catch (err) {
-            alert(err.response?.data?.error || 'Error al subir documentos masivos');
-        } finally {
-            setBulkUploading(false);
+                const res = await axios.post(`${API_URL}/api/pqr/bulk-adjustment`, formData, {
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+                });
+                setBulkResult(res.data);
+                setSelectedIds(new Set());
+                setBulkUpload(null);
+                fetchPQRs({ showLoader: false });
+            } catch (err) {
+                alert(err.response?.data?.error || 'Error al subir ajustes masivos');
+            } finally {
+                setBulkUploading(false);
+            }
+        } else {
+            if (!bulkUpload?.creditNote || !bulkUpload?.accountStatement) {
+                alert('Debes subir la nota crédito y el estado de cuenta.');
+                return;
+            }
+            setBulkUploading(true);
+            try {
+                const formData = new FormData();
+                formData.append('pqrIds', JSON.stringify([...selectedIds]));
+                formData.append('file', bulkUpload.creditNote);
+                formData.append('accountStatement', bulkUpload.accountStatement);
+
+                const res = await axios.post(`${API_URL}/api/pqr/bulk-billing`, formData, {
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+                });
+                setBulkResult(res.data);
+                setSelectedIds(new Set());
+                setBulkUpload(null);
+                fetchPQRs({ showLoader: false });
+            } catch (err) {
+                alert(err.response?.data?.error || 'Error al subir documentos masivos');
+            } finally {
+                setBulkUploading(false);
+            }
         }
     };
 
@@ -151,13 +190,7 @@ const PQRManagement = () => {
         if (!stillExists) setFilterDistributor('ALL');
     }, [distributorOptions, filterDistributor]);
 
-    const filteredPqrs = useMemo(() => {
-        if (filterDistributor === 'ALL') return pqrs;
-        return pqrs.filter((pqr) => {
-            const key = pqr.user?.username || pqr.user?.email || pqr.user?.name || 'SIN_DISTRIBUIDOR';
-            return key === filterDistributor;
-        });
-    }, [pqrs, filterDistributor]);
+
 
     // Credit Note Summary — product breakdown for PQRs without creditNoteId
     const creditNoteSummary = useMemo(() => {
@@ -565,14 +598,14 @@ const PQRManagement = () => {
 
             {/* ── FLOATING BULK ACTION BAR ── */}
             {selectedIds.size > 0 && (
-                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gradient-to-r from-purple-700 to-indigo-700 text-white rounded-2xl shadow-2xl px-6 py-3 flex items-center gap-4 animate-in slide-in-from-bottom">
+                <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-gradient-to-r ${isBulkAdjustmentMode ? 'from-orange-600 to-amber-600' : 'from-purple-700 to-indigo-700'} text-white rounded-2xl shadow-2xl px-6 py-3 flex items-center gap-4 animate-in slide-in-from-bottom`}>
                     <span className="font-bold text-sm">{selectedIds.size} PQR{selectedIds.size > 1 ? 's' : ''} seleccionado{selectedIds.size > 1 ? 's' : ''}</span>
                     <div className="w-px h-6 bg-white/30" />
                     <button
-                        onClick={() => setBulkUpload({ creditNote: null, accountStatement: null })}
+                        onClick={() => setBulkUpload({ creditNote: null, accountStatement: null, adjustmentDoc: null })}
                         className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 rounded-xl text-sm font-semibold transition-colors"
                     >
-                        <Upload size={16} /> Adjuntar Nota Crédito + Estado de Cuenta
+                        <Upload size={16} /> {isBulkAdjustmentMode ? 'Registrar Ajuste de Inventario (Masivo)' : 'Adjuntar Nota Crédito + Estado de Cuenta'}
                     </button>
                     <button
                         onClick={() => setSelectedIds(new Set())}
@@ -587,15 +620,19 @@ const PQRManagement = () => {
             {bulkUpload && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => { setBulkUpload(null); setBulkResult(null); }}>
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
-                        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-4">
-                            <h3 className="text-white font-bold text-lg">Adjuntar Documentos a {selectedIds.size} PQRs</h3>
-                            <p className="text-purple-200 text-sm">Los mismos archivos se aplicarán a todos los PQRs seleccionados</p>
+                        <div className={`bg-gradient-to-r ${isBulkAdjustmentMode ? 'from-orange-600 to-amber-600' : 'from-purple-600 to-indigo-600'} px-6 py-4`}>
+                            <h3 className="text-white font-bold text-lg">
+                                {isBulkAdjustmentMode ? `Registrar Ajuste a ${selectedIds.size} PQRs Internos` : `Adjuntar Documentos a ${selectedIds.size} PQRs`}
+                            </h3>
+                            <p className="text-white/80 text-sm">
+                                {isBulkAdjustmentMode ? 'El mismo documento de ajuste saldará todos los tickets seleccionados' : 'Los mismos archivos se aplicarán a todos los PQRs seleccionados'}
+                            </p>
                         </div>
                         <div className="p-6 space-y-4">
                             {bulkResult ? (
                                 <div className="text-center py-4">
                                     <div className="text-4xl mb-2">✅</div>
-                                    <p className="font-bold text-green-700 text-lg">{bulkResult.message}</p>
+                                    <p className={`font-bold text-lg ${isBulkAdjustmentMode ? 'text-orange-700' : 'text-green-700'}`}>{bulkResult.message}</p>
                                     <div className="mt-3 text-sm text-gray-600 max-h-40 overflow-auto">
                                         {bulkResult.results?.map(r => (
                                             <div key={r.id} className="flex justify-between py-1">
@@ -606,30 +643,45 @@ const PQRManagement = () => {
                                             </div>
                                         ))}
                                     </div>
-                                    <button onClick={() => { setBulkUpload(null); setBulkResult(null); }} className="mt-4 px-6 py-2 bg-purple-600 text-white rounded-xl font-semibold hover:bg-purple-700">Cerrar</button>
+                                    <button onClick={() => { setBulkUpload(null); setBulkResult(null); }} className={`mt-4 px-6 py-2 text-white rounded-xl font-semibold ${isBulkAdjustmentMode ? 'bg-orange-600 hover:bg-orange-700' : 'bg-purple-600 hover:bg-purple-700'}`}>Cerrar</button>
                                 </div>
                             ) : (
                                 <>
-                                    <div>
-                                        <label className="block text-sm font-semibold text-gray-700 mb-1">📎 Nota Crédito (PDF)</label>
-                                        <input
-                                            type="file"
-                                            accept=".pdf,image/*"
-                                            onChange={(e) => setBulkUpload(prev => ({ ...prev, creditNote: e.target.files[0] }))}
-                                            className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-purple-100 file:text-purple-700 file:font-semibold file:cursor-pointer hover:file:bg-purple-200"
-                                        />
-                                        {bulkUpload.creditNote && <p className="text-xs text-green-600 mt-1">✓ {bulkUpload.creditNote.name}</p>}
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-semibold text-gray-700 mb-1">📎 Estado de Cuenta (PDF)</label>
-                                        <input
-                                            type="file"
-                                            accept=".pdf,image/*"
-                                            onChange={(e) => setBulkUpload(prev => ({ ...prev, accountStatement: e.target.files[0] }))}
-                                            className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-indigo-100 file:text-indigo-700 file:font-semibold file:cursor-pointer hover:file:bg-indigo-200"
-                                        />
-                                        {bulkUpload.accountStatement && <p className="text-xs text-green-600 mt-1">✓ {bulkUpload.accountStatement.name}</p>}
-                                    </div>
+                                    {isBulkAdjustmentMode ? (
+                                        <div>
+                                            <label className="block text-sm font-semibold text-gray-700 mb-1">📎 Documento Soporte o Captura de Ajuste (Opcional pero Recomendado)</label>
+                                            <input
+                                                type="file"
+                                                accept=".pdf,image/*"
+                                                onChange={(e) => setBulkUpload(prev => ({ ...prev, adjustmentDoc: e.target.files[0] }))}
+                                                className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-orange-100 file:text-orange-700 file:font-semibold file:cursor-pointer hover:file:bg-orange-200"
+                                            />
+                                            {bulkUpload.adjustmentDoc && <p className="text-xs text-green-600 mt-1">✓ {bulkUpload.adjustmentDoc.name}</p>}
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div>
+                                                <label className="block text-sm font-semibold text-gray-700 mb-1">📎 Nota Crédito (PDF)</label>
+                                                <input
+                                                    type="file"
+                                                    accept=".pdf,image/*"
+                                                    onChange={(e) => setBulkUpload(prev => ({ ...prev, creditNote: e.target.files[0] }))}
+                                                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-purple-100 file:text-purple-700 file:font-semibold file:cursor-pointer hover:file:bg-purple-200"
+                                                />
+                                                {bulkUpload.creditNote && <p className="text-xs text-green-600 mt-1">✓ {bulkUpload.creditNote.name}</p>}
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-semibold text-gray-700 mb-1">📎 Estado de Cuenta (PDF)</label>
+                                                <input
+                                                    type="file"
+                                                    accept=".pdf,image/*"
+                                                    onChange={(e) => setBulkUpload(prev => ({ ...prev, accountStatement: e.target.files[0] }))}
+                                                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-indigo-100 file:text-indigo-700 file:font-semibold file:cursor-pointer hover:file:bg-indigo-200"
+                                                />
+                                                {bulkUpload.accountStatement && <p className="text-xs text-green-600 mt-1">✓ {bulkUpload.accountStatement.name}</p>}
+                                            </div>
+                                        </>
+                                    )}
                                     <div className="flex gap-3 pt-2">
                                         <button
                                             onClick={() => { setBulkUpload(null); setBulkResult(null); }}
@@ -637,8 +689,12 @@ const PQRManagement = () => {
                                         >Cancelar</button>
                                         <button
                                             onClick={handleBulkUpload}
-                                            disabled={bulkUploading || !bulkUpload.creditNote || !bulkUpload.accountStatement}
-                                            className="flex-1 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl font-bold hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                            disabled={bulkUploading || (!isBulkAdjustmentMode && (!bulkUpload.creditNote || !bulkUpload.accountStatement)) || (isBulkAdjustmentMode && !bulkUpload.adjustmentDoc)}
+                                            className={`flex-1 px-4 py-2.5 text-white rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+                                                isBulkAdjustmentMode 
+                                                    ? 'bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700' 
+                                                    : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700'
+                                            }`}
                                         >
                                             {bulkUploading ? (
                                                 <>⏳ Subiendo...</>

@@ -1,35 +1,37 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-(async () => {
-    try {
-        const batch = await prisma.productionBatch.findUnique({
-            where: { id: '6af395ae-e9b3-441e-8b67-fd0393b0e39a' },
-            include: {
-                product: {
-                    include: {
-                        templates: { where: { isActive: true } }
-                    }
-                }
-            }
-        });
-
-        if (!batch) {
-            console.log('❌ Batch not found with that ID');
-        } else {
-            console.log('Batch:', batch.batchNumber);
-            console.log('ProductId:', batch.productId);
-            console.log('Product:', batch.product?.name || 'NULL');
-            console.log('Templates:', batch.product?.templates?.length || 0);
-
-            if (batch.product?.templates?.[0]) {
-                console.log('Template ID:', batch.product.templates[0].id);
-                console.log('Template Name:', batch.product.templates[0].templateName);
+async function main() {
+    const lot = 'TAMARINDO-260410-0645';
+    
+    const batch = await prisma.productionBatch.findFirst({
+        where: { generatedLotCode: lot },
+        include: {
+            assemblyNotes: {
+                include: { product: true }
             }
         }
-    } catch (error) {
-        console.error('Error:', error.message);
-    } finally {
-        await prisma.$disconnect();
+    });
+
+    if (!batch) {
+        console.log("No batch found.");
+        return;
     }
-})();
+
+    console.log("Found batch: ", batch.id);
+
+    for (const note of batch.assemblyNotes) {
+        console.log(`\nNote ${note.id} - Stage: ${note.currentStage} - Product: ${note.product?.name}`);
+        if (note.customData) {
+            console.log("customData", note.customData);
+        }
+        if (note.customFields) {
+            console.log("customFields", note.customFields);
+        }
+        const outputs = await prisma.assemblyOutput.findMany({ where: { assemblyNoteId: note.id } });
+        console.log("outputs", outputs);
+        
+        // Carts are stored in `GenialityCarrito` if it exists, or maybe inside `customData`.
+    }
+}
+main().finally(() => prisma.$disconnect());

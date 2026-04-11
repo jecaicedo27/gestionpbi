@@ -1355,8 +1355,10 @@ class AssemblyService {
                             select: { productionZoneStock: true, currentStock: true }
                         });
                         const currentZoneStock = currentProduct?.productionZoneStock || 0;
+                        const currentBodegaStock = currentProduct?.currentStock || 0;
                         const consumeFromZone = Math.min(qtyToConsume, Math.max(0, currentZoneStock));
-                        const consumeFromBodega = qtyToConsume - consumeFromZone;
+                        // Floor-to-zero: never pull more from bodega than available
+                        const consumeFromBodega = Math.min(qtyToConsume - consumeFromZone, Math.max(0, currentBodegaStock));
 
                         if (consumeFromZone > 0) {
                             await tx.product.update({

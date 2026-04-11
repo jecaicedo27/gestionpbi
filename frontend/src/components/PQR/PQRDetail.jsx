@@ -389,10 +389,11 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                 const stage = pqr.stage || (pqr.status === 'PENDING' ? 'PENDING_REVIEW' : null);
 
                                 // Determine if this user can act on the current stage
+                                const isInternal = pqr.ticketNumber?.startsWith('PQR-INT-');
                                 const canActOnQuality = ['ADMIN', 'CALIDAD'].includes(userRole) && (stage === 'PENDING_REVIEW' || pqr.status === 'PENDING');
-                                const canActOnBilling = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_BILLING';
-                                const canActOnInvoice = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_INVOICE';
-                                const canActOnLogistics = ['ADMIN', 'LOGISTICA'].includes(userRole) && stage === 'PENDING_LOGISTICS';
+                                const canActOnBilling = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_BILLING' && !isInternal;
+                                const canActOnInvoice = ['ADMIN', 'COMERCIAL'].includes(userRole) && stage === 'PENDING_INVOICE' && !isInternal;
+                                const canActOnLogistics = ['ADMIN', 'LOGISTICA'].includes(userRole) && stage === 'PENDING_LOGISTICS' && !isInternal;
                                 const canAct = canActOnQuality || canActOnBilling || canActOnInvoice || canActOnLogistics;
 
                                 // Waiting message for stages not matching user's role
@@ -663,8 +664,8 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                             )}
 
                             {/* ADMIN: Pending Inventory Adjustment */}
-                            {pqr.pendingAdjustment && ["ADMIN","CONTABILIDAD","CARTERA"].includes(user?.role) && (
-                                <div className="bg-orange-50 border border-orange-200 rounded-xl overflow-hidden">
+                            {(pqr.pendingAdjustment || (pqr.ticketNumber?.startsWith('PQR-INT-') && !pqr.adjustmentDoneAt)) && ["ADMIN","CONTABILIDAD","CARTERA"].includes(user?.role) && (
+                                <div className="bg-orange-50 border border-orange-200 rounded-xl overflow-hidden mt-6">
                                     <div className="bg-orange-100 px-4 py-3 border-b border-orange-200 flex items-center gap-2">
                                         <span className="text-orange-600">🔧</span>
                                         <h3 className="font-bold text-orange-900 text-sm">Ajuste de Inventario Pendiente</h3>
@@ -672,7 +673,9 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                     </div>
                                     <div className="p-4 space-y-3">
                                         <p className="text-xs text-orange-700">
-                                            La NC fue emitida. Registre el <strong>ajuste por daños</strong> de las unidades devueltas para cerrar el proceso.
+                                            {pqr.ticketNumber?.startsWith('PQR-INT-') 
+                                                ? <>Al ser un reporte interno, solo se requiere registrar el <strong>ajuste de inventario por daños</strong> para cerrar el proceso.</>
+                                                : <>La NC fue emitida. Registre el <strong>ajuste por daños</strong> de las unidades devueltas para cerrar el proceso.</>}
                                         </p>
                                         <textarea
                                             className="w-full border border-orange-200 rounded-lg text-sm p-2.5 bg-white focus:ring-2 focus:ring-orange-400 resize-none"

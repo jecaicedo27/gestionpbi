@@ -46,6 +46,7 @@ router.patch('/recall-lots/:lotNumber/collection-status', protect, pqrAnalyticsC
 router.get('/valid-lots', protect, pqrAnalyticsController.getValidLots);
 router.get('/reporting-parties', protect, pqrController.getReportingParties);
 router.post('/bulk-billing', protect, authorize('ADMIN', 'CONTABILIDAD'), upload.fields([{ name: 'file', maxCount: 5 }, { name: 'accountStatement', maxCount: 5 }]), pqrController.bulkBilling);
+router.post('/bulk-adjustment', protect, authorize('ADMIN', 'CONTABILIDAD', 'CARTERA'), upload.single('adjustmentDoc'), pqrController.bulkAdjustment);
 router.get('/:id', protect, pqrController.getPQRById);
 router.patch('/:id/status', protect, authorize('ADMIN', 'CALIDAD', 'LOGISTICA', 'CONTABILIDAD'), pqrController.updatePQRStatus);
 router.post('/:id/billing', protect, authorize('ADMIN', 'CONTABILIDAD', 'COMERCIAL'), upload.fields([{ name: 'file', maxCount: 5 }, { name: 'accountStatement', maxCount: 5 }]), pqrController.uploadBillingDocument);

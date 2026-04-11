@@ -87,7 +87,9 @@ router.post('/:id/consume-carrito', auth, async (req, res) => {
             // Skip AGUA and raw materials — only consume packaging items
             if (name === 'AGUA') continue;
             // Only consume packaging: TARRO, TAPA, FOIL, ETIQUETA, SELLO, LINER, CAJA, SEAL
-            const isPackaging = /(TARRO|TAPA|FOIL|ETIQUETA|SELLO|LINER|CAJA|SEAL|SABORIZACION)/i.test(name);
+            // Only consume PACKAGING items (tarros, tapas, etc.). NEVER raw materials.
+            // SABORIZACION removed — it's raw material already consumed at PESAJE.
+            const isPackaging = /(TARRO|TAPA|FOIL|ETIQUETA|SELLO|LINER|CAJA|SEAL)/i.test(name);
             if (!isPackaging) continue;
 
             // Proportional quantity for this carrito
@@ -101,8 +103,10 @@ router.post('/:id/consume-carrito', auth, async (req, res) => {
                 select: { productionZoneStock: true, currentStock: true, name: true }
             });
             const zone = product?.productionZoneStock || 0;
+            const bodega = product?.currentStock || 0;
             const fromZone = Math.min(qtyForCarrito, Math.max(0, zone));
-            const fromBodega = qtyForCarrito - fromZone;
+            // Floor-to-zero: never pull more from bodega than what's actually available
+            const fromBodega = Math.min(qtyForCarrito - fromZone, Math.max(0, bodega));
 
             if (fromZone > 0) {
                 await _notePrisma.product.update({

@@ -362,8 +362,16 @@ exports.updatePQRStatus = async (req, res) => {
                 return res.status(403).json({ error: 'No autorizado para aprobar calidad.' });
             }
 
-            updateData.status = 'IN_REVIEW';
-            updateData.stage = 'PENDING_BILLING';
+            if (currentPQR.ticketNumber.startsWith('PQR-INT-')) {
+                // Internal PQRs bypass Billing and Logistics. They just need an inventory adjustment.
+                updateData.status = 'PROCESSED';
+                updateData.stage = 'COMPLETED';
+                updateData.pendingAdjustment = true;
+                updateData.resolvedAt = new Date();
+            } else {
+                updateData.status = 'IN_REVIEW';
+                updateData.stage = 'PENDING_BILLING';
+            }
             updateData.rejectionReason = null; // Clear if previously rejected?
         }
 
@@ -611,9 +619,14 @@ exports.markAdjustmentDone = async (req, res) => {
     }
 
     try {
-        const pqr = await prisma.pQR.findUnique({ where: { id }, select: { id: true, ticketNumber: true, pendingAdjustment: true } });
+        const pqr = await prisma.pQR.findUnique({ where: { id }, select: { id: true, ticketNumber: true, pendingAdjustment: true, status: true, stage: true } });
         if (!pqr) return res.status(404).json({ error: 'PQR no encontrado' });
-        if (!pqr.pendingAdjustment) return res.status(400).json({ error: 'Este PQR no tiene ajuste pendiente' });
+        
+        const isInternal = pqr.ticketNumber.startsWith('PQR-INT-');
+        if (!pqr.pendingAdjustment && !isInternal) {
+            return res.status(400).json({ error: 'Este PQR no tiene ajuste pendiente' });
+        }
+        
         if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el documento de ajuste para registrar' });
 
         // Build file URL if a document was uploaded
@@ -627,6 +640,14 @@ exports.markAdjustmentDone = async (req, res) => {
             adjustmentDoneAt: new Date(),
             adjustmentNotes: notes || 'Ajuste de inventario registrado'
         };
+        
+        // If it was an internal PQR stuck in an older stage, force it to completed now
+        if (isInternal && pqr.status !== 'PROCESSED') {
+            updateData.status = 'PROCESSED';
+            updateData.stage = 'COMPLETED';
+            updateData.resolvedAt = new Date();
+        }
+        
         if (adjustmentDocUrl) updateData.adjustmentDocUrl = adjustmentDocUrl;
 
         const updated = await prisma.pQR.update({ where: { id }, data: updateData });
@@ -725,5 +746,81 @@ exports.bulkBilling = async (req, res) => {
     } catch (error) {
         console.error('Error in bulk billing:', error);
         res.status(500).json({ error: 'Error al aplicar documentos masivamente.' });
+    }
+};
+
+/**
+ * Bulk adjustment — apply same adjustment document to multiple internal PQRs
+ * POST /api/pqr/bulk-adjustment
+ */
+exports.bulkAdjustment = async (req, res) => {
+    const userRole = req.user?.role;
+
+    if (!['ADMIN', 'CONTABILIDAD', 'CARTERA'].includes(userRole)) {
+        return res.status(403).json({ error: 'No autorizado.' });
+    }
+
+    let pqrIds;
+    try {
+        pqrIds = JSON.parse(req.body.pqrIds || '[]');
+    } catch {
+        return res.status(400).json({ error: 'pqrIds inválido' });
+    }
+
+    if (!Array.isArray(pqrIds) || pqrIds.length === 0) {
+        return res.status(400).json({ error: 'Debe seleccionar al menos un PQR.' });
+    }
+
+    if (!req.file) {
+        return res.status(400).json({ error: 'Debe adjuntar el documento de ajuste para registrar masivamente.' });
+    }
+
+    const adjustmentDocUrl = `/uploads/pqr/${req.file.filename}`;
+
+    try {
+        // Fetch all selected PQRs
+        const pqrs = await prisma.pQR.findMany({
+            where: { id: { in: pqrIds } },
+            select: { id: true, ticketNumber: true, pendingAdjustment: true, status: true }
+        });
+
+        if (pqrs.length === 0) {
+            return res.status(404).json({ error: 'No se encontraron PQRs con los IDs proporcionados.' });
+        }
+
+        const results = [];
+        for (const pqr of pqrs) {
+            const isInternal = pqr.ticketNumber.startsWith('PQR-INT-');
+            if (!pqr.pendingAdjustment && !isInternal) continue; // Skip non-internal without pending adjustment
+
+            const updateData = {
+                pendingAdjustment: false,
+                adjustmentDoneAt: new Date(),
+                adjustmentNotes: 'Ajuste masivo registrado',
+                adjustmentDocUrl
+            };
+            
+            if (isInternal && pqr.status !== 'PROCESSED') {
+                updateData.status = 'PROCESSED';
+                updateData.stage = 'COMPLETED';
+                updateData.resolvedAt = new Date();
+            }
+
+            await prisma.pQR.update({
+                where: { id: pqr.id },
+                data: updateData
+            });
+
+            results.push({ id: pqr.id, ticket: pqr.ticketNumber, newStage: updateData.stage || 'COMPLETED' });
+        }
+
+        res.json({
+            success: true,
+            message: `Ajuste registrado exitosamente para ${results.length} PQRs`,
+            results
+        });
+    } catch (error) {
+        logger.error('Error in bulk adjustment:', error);
+        res.status(500).json({ error: 'Error al aplicar ajustes masivamente.' });
     }
 };

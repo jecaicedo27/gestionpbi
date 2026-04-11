@@ -230,13 +230,34 @@ export const ZebraProvider = ({ children }) => {
             // 1. Direct LAN Printing (includes force-IP mode)
             const directIp = forceIp || (zebraIp === configIp || zebraIp === ZEBRA_IP ? zebraIp : null);
             if (directIp) {
-                await fetch(`http://${directIp}/pstprnt`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain' },
-                    body: zpl,
-                    mode: 'no-cors',
-                });
-                return { ok: true };
+                try {
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(), 2500);
+                    await fetch(`http://${directIp}/pstprnt`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain' },
+                        body: zpl,
+                        mode: 'no-cors',
+                        signal: ctrl.signal
+                    });
+                    clearTimeout(timer);
+                    return { ok: true };
+                } catch (lanErr) {
+                    // Si falla por CORS/Mixed-Content en tablet HTTPS, hacemos fallback a la cola silenciosamente
+                    console.warn('[ZebraContext] Direct LAN fetch failed, falling back to VPS Queue:', lanErr.message);
+                    const token = localStorage.getItem('token');
+                    const res = await fetch('/api/zebra/jobs', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                        },
+                        body: JSON.stringify({ zpl }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(data.error || 'Error al encolar al VPS-Queue tras fallo directo');
+                    return { ok: true, queued: true, jobId: data.jobId };
+                }
             } 
             
             // 2. PC Relay Printing
