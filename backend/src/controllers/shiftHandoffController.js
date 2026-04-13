@@ -34,21 +34,28 @@ const CHECKLISTS = {
     ],
 };
 
+// ── Grace period: 15 minutes after shift change for handoff completion ───────
+const GRACE_MINUTES = 15;
+
 // ── Determine outgoing shift by current hour (Colombia UTC-5) ────────────────
+// With GRACE_MINUTES: e.g. at 14:10 (within grace), outgoing is still NOCHE
+// so MANANA workers can still hand off and TARDE workers are NOT blocked yet.
 function getOutgoingShift() {
     const now = new Date();
     // Adjust to Colombia timezone (UTC-5)
     const colombiaOffset = -5 * 60;
     const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const localMinutes = utcMinutes + colombiaOffset;
-    const localHour = Math.floor(((localMinutes % 1440) + 1440) % 1440 / 60);
+    const localMinutes = ((utcMinutes + colombiaOffset) % 1440 + 1440) % 1440;
 
-    // Shift that just ended:
-    // 6:00-14:00 → if current is between 6 and 14, outgoing is NOCHE
-    // 14:00-22:00 → if current is between 14 and 22, outgoing is MANANA
-    // 22:00-6:00 → if current is between 22 and 6, outgoing is TARDE
-    if (localHour >= 6 && localHour < 14) return 'NOCHE';
-    if (localHour >= 14 && localHour < 22) return 'MANANA';
+    // Shift boundaries with grace period (shifted forward by GRACE_MINUTES):
+    // Original:  06:00, 14:00, 22:00
+    // With grace: 06:15, 14:15, 22:15
+    const morningStart = 6 * 60 + GRACE_MINUTES;   // 06:15
+    const afternoonStart = 14 * 60 + GRACE_MINUTES; // 14:15
+    const nightStart = 22 * 60 + GRACE_MINUTES;     // 22:15
+
+    if (localMinutes >= morningStart && localMinutes < afternoonStart) return 'NOCHE';
+    if (localMinutes >= afternoonStart && localMinutes < nightStart) return 'MANANA';
     return 'TARDE';
 }
 
