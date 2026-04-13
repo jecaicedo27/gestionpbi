@@ -459,11 +459,11 @@ const getBlockStatus = async (req, res) => {
 
         const productionAreas = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
 
-        // Get outgoing shift operators
+        // Get outgoing shift operators (only those with a linked user account, since they need a PIN)
         const outgoingOperators = week.assignments
-            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area))
+            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area) && a.employee?.user?.id != null)
             .map(a => ({
-                userId: a.employee?.user?.id || null,
+                userId: a.employee?.user?.id,
                 name: a.employee?.name || 'Sin nombre',
                 area: a.employee?.area,
             }));

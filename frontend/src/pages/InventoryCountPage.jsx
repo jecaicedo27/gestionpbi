@@ -190,11 +190,11 @@ export default function InventoryCountPage() {
 
     const downloadExcel = async () => {
         try {
-            const res = await api.get(`/inventory-count/export/month/${activeSession.month}`, { responseType: 'blob' });
+            const res = await api.get(`/inventory-count/sessions/${activeSession.id}/export`, { responseType: 'blob' });
             const url = window.URL.createObjectURL(new Blob([res.data]));
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `conteo-siigo-global-${activeSession.month}.xlsx`);
+            link.setAttribute('download', `conteo-siigo-${activeSession.sessionCode}.xlsx`);
             document.body.appendChild(link);
             link.click();
             link.parentNode.removeChild(link);

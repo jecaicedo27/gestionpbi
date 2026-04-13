@@ -274,8 +274,24 @@ exports.exportSessionExcel = async (req, res) => {
             }
         }
 
-        // 2. Aggregate count lines by siigoProductCode
+        // 2. Fetch all active products
+        const allProducts = await prisma.product.findMany({
+            where: { active: true },
+            select: { id: true, sku: true, name: true }
+        });
+
+        // 3. Aggregate count lines by siigoProductCode
         const agg = {};
+        for (const p of allProducts) {
+            const code = p.sku || p.id || 'SIN_CODIGO';
+            agg[code] = {
+                code: p.sku || 'N/A',
+                name: p.name,
+                productId: p.id,
+                physicalQty: 0
+            };
+        }
+
         for (const line of session.lines) {
             const code = line.siigoProductCode || line.productId || 'SIN_CODIGO';
             if (!agg[code]) {
