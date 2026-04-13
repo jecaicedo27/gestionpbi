@@ -5,6 +5,7 @@ import BottomNavBar from './BottomNavBar';
 import GlobalTimerAlert from './GlobalTimerAlert';
 import PinLockScreen from './PinLockScreen';
 import ShiftBlockScreen from '../ShiftBlockScreen';
+import ShiftEndAlert from '../ShiftEndAlert';
 import { Bell, LogOut, Printer, Wifi, LockKeyhole } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useZebra } from '../../context/ZebraContext';
@@ -212,6 +213,9 @@ const Layout = () => {
 
             {/* Shift Handoff Block Screen — blocks incoming shift if previous shift didn't deliver */}
             <ShiftBlockScreen userRole={user?.role} />
+
+            {/* Shift End Alert — reminder 10 min before shift ends */}
+            <ShiftEndAlert userRole={user?.role} />
 
             {/* PIN Lock Screen Overlay */}
             {isLocked && (

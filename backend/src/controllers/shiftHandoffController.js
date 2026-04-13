@@ -532,6 +532,33 @@ const getHandoffDetail = async (req, res) => {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  POST /handoff/verify-pin — Verify PIN and return user info for block screen
+// ═══════════════════════════════════════════════════════════════════════════════
+const verifyPin = async (req, res) => {
+    try {
+        const { pin } = req.body;
+        const user = await validatePin(pin);
+        if (!user) {
+            return res.status(401).json({ error: 'PIN incorrecto' });
+        }
+
+        const shiftEmployee = user.shiftEmployee;
+        res.json({
+            user: {
+                id: user.id,
+                name: user.name,
+                role: shiftEmployee?.role || user.role,
+                area: shiftEmployee?.area || null,
+                shiftEmployeeId: shiftEmployee?.id || null,
+            }
+        });
+    } catch (err) {
+        logger.error('verifyPin error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 module.exports = {
     getChecklists,
     createHandoff,
@@ -539,5 +566,6 @@ module.exports = {
     rejectHandoff,
     getTodayHandoffs,
     getBlockStatus,
-    getHandoffDetail
+    getHandoffDetail,
+    verifyPin
 };

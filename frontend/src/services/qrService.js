@@ -20,6 +20,20 @@ import QRCode from 'qrcode';
 import api from './api';
 
 /**
+ * Strip flavor/product prefix from a lot number.
+ * Batch numbers are generated as "FLAVOR-YYMMDD-HHMM" (e.g. "ESCARCHADOR-260409-0428").
+ * The QR should only contain the numeric date-time code: "260409-0428".
+ *
+ * @param {string} lotNumber
+ * @returns {string}
+ */
+export function stripLotPrefix(lotNumber) {
+    if (!lotNumber) return '';
+    const match = lotNumber.match(/(\d{6}-\d{3,6}(?:-\d+)?)$/);
+    return match ? match[1] : lotNumber;
+}
+
+/**
  * Build the canonical pipe-delimited QR string.
  * Single source of truth for the QR text content.
  *
@@ -33,7 +47,8 @@ import api from './api';
  * @returns {string}
  */
 export function buildQrString({ lotNumber, sku, barcode, quantity, boxNumber = 1, totalBoxes = 1 }) {
-    return `LOT:${lotNumber || ''}|SKU:${sku || ''}|BAR:${barcode || sku || ''}|QTY:${quantity || 0}|BOX:${boxNumber}/${totalBoxes}`;
+    const cleanLot = stripLotPrefix(lotNumber);
+    return `LOT:${cleanLot}|SKU:${sku || ''}|BAR:${barcode || sku || ''}|QTY:${quantity || 0}|BOX:${boxNumber}/${totalBoxes}`;
 }
 
 /**

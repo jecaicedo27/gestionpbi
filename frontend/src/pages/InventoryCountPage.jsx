@@ -86,6 +86,16 @@ export default function InventoryCountPage() {
     const [pickedSummary, setPickedSummary] = useState({});
     const scannerInputRef = useRef(null);
     const [lastScan, setLastScan] = useState(null);
+    const scanHandlerRef = useRef(null);
+
+    // ── Global Scanner Hook: intercept fast keystrokes so they don't leak into visible inputs ──
+    // Use a ref so the hook gets a stable callback that always points to the latest handler
+    useGlobalScanner({
+        onScan: useCallback((rawValue) => {
+            if (scanHandlerRef.current) scanHandlerRef.current(rawValue);
+        }, []),
+        enabled: view === 'session' && activeSession?.status === 'IN_PROGRESS',
+    });
 
     // ── Auto-focus scanner input ──────────────────────────────────────────────
     useEffect(() => {
@@ -132,7 +142,16 @@ export default function InventoryCountPage() {
             setCountLines(lines);
             const im = {};
             lines.forEach(ln => {
-                const key = ln.lotId || ln.lotNumber;
+                let key = ln.lotId;
+                if (!key) {
+                    if (ln.lotNumber === 'S/L') {
+                        key = `nolot-${ln.productId}`;
+                    } else {
+                        // For finished lots, match by finding the UUID in finLots
+                        const match = finLots.find(f => f.productId === ln.productId && f.lotNumber === ln.lotNumber);
+                        key = match ? match.id : `pseudo-${ln.id}`;
+                    }
+                }
                 im[key] = { physicalGrams: ln.physicalQty, notes: ln.notes || '', lineId: ln.id };
             });
             setInputMap(im);
@@ -147,10 +166,13 @@ export default function InventoryCountPage() {
     const createSession = async () => {
         setCreating(true);
         try {
+            const wh = WAREHOUSES.find(w => w.id === newForm.warehouseName);
+            const isFin = ['FINISHED', 'MAQUILA', 'NO_CONFORME'].includes(wh?.zone);
+
             const { data: sess } = await api.post('/inventory-count/sessions', {
                 month: newForm.month,
                 warehouseName: newForm.warehouseName,
-                type: 'MATERIA_PRIMA'
+                type: isFin ? 'TERMINADO' : 'MATERIA_PRIMA'
             });
             setShowNewForm(false);
             await fetchSessions();
@@ -223,7 +245,7 @@ export default function InventoryCountPage() {
                     productId: item.productId || null,
                     productName: item.siigoProductName || item.product?.name || 'Sin nombre',
                     siigoProductCode: item.siigoProductCode || null,
-                    lotId: item._source === 'FINISHED_LOT' ? null : item.id,
+                    lotId: (item._source === 'FINISHED_LOT' || String(item.id).startsWith('pseudo-')) ? null : item.id,
                     lotNumber: item.lotNumber,
                     physicalQty: Math.round(physicalGrams),
                     unit: item.unit || item.product?.unit || 'gramo',
@@ -509,7 +531,36 @@ export default function InventoryCountPage() {
         let targetItem = null;
 
         if (scan.lotNumber) {
+            // 1. Exact match: productId + lotNumber
             targetRow = allLotRows.find(r => r.isActive && r.lot.productId === productMatch.id && r.lot.lotNumber === scan.lotNumber);
+            
+            if (!targetRow) {
+                // 2. Scanned lot may have a flavor prefix (e.g. "ESCARCHADOR-260409-0428")
+                //    but DB stores just "260409-0428" → strip prefix and try suffix match
+                const dashIdx = scan.lotNumber.indexOf('-');
+                const lotSuffix = dashIdx > 0 ? scan.lotNumber.slice(dashIdx + 1) : null;
+                if (lotSuffix) {
+                    targetRow = allLotRows.find(r => r.isActive && r.lot.productId === productMatch.id && r.lot.lotNumber === lotSuffix);
+                }
+            }
+            
+            if (!targetRow) {
+                // 3. DB lot may have the prefix but scanned doesn't → check if DB lot ends with scanned
+                targetRow = allLotRows.find(r => r.isActive && r.lot.productId === productMatch.id && r.lot.lotNumber.endsWith(scan.lotNumber));
+            }
+            
+            if (!targetRow && scan.lotNumber) {
+                // 4. Cross-product fallback: maybe the lot exists under a different presentation of the same product
+                targetRow = allLotRows.find(r => r.isActive && r.lot.lotNumber === scan.lotNumber);
+                if (!targetRow) {
+                    const dashIdx = scan.lotNumber.indexOf('-');
+                    const lotSuffix = dashIdx > 0 ? scan.lotNumber.slice(dashIdx + 1) : null;
+                    if (lotSuffix) {
+                        targetRow = allLotRows.find(r => r.isActive && r.lot.lotNumber === lotSuffix);
+                    }
+                }
+            }
+
             if (targetRow) targetItem = targetRow.lot;
         }
 
@@ -557,16 +608,66 @@ export default function InventoryCountPage() {
         setLastScan({ status: 'success', message: `+${qtyToAdd} ${productMatch.name}` });
     }, [systemProducts, allLotRows, inputMap, saveLotCount]);
 
-    // ── Scanner Input Fallback (for text inputs) ─────────────────────────
-    const handlePhysicalInputChange = useCallback((key, val) => {
-        // Prevent generic scan pollution in inputs just in case global hook missed it
-        if (val.length > 8 && !val.includes('.')) return; 
-        if (val.includes('SKU:') || val.includes('LOT:') || val.includes('BAR:') || val.startsWith('{')) {
-            return; // Ignore completely, handled by useGlobalScanner
-        }
-        setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: val } }));
-    }, []);
+    // Keep the ref in sync so useGlobalScanner always calls the latest version
+    scanHandlerRef.current = handleScannerInput;
 
+    const isScannerDataLine = (val) => {
+        return val.includes('LOT:') || val.includes('SKU:') || val.includes('BAR:')
+            || val.startsWith('{')
+            || (val.length >= 13 && /^\d+$/.test(val.replace(/[^0-9]/g, ''))); // Only safely assume 13+ digits are barcodes without speed
+    };
+
+    const typingTimers = useRef({});
+
+    const handleInputKeyDown = useCallback((e, inputKey, val, onNormalEnter, setterFunc) => {
+        if (e.key !== 'Enter') {
+            if (!typingTimers.current[inputKey] || Date.now() - typingTimers.current[inputKey].startTime > 800) {
+                // Initiates tracking or resets if it's been a long pause (human typing)
+                typingTimers.current[inputKey] = {
+                    startTime: Date.now(),
+                    baseValue: val // the exact state BEFORE this keystroke is appended
+                };
+            }
+            return false;
+        }
+
+        // It is an Enter key
+        e.preventDefault();
+        
+        const tracker = typingTimers.current[inputKey];
+        delete typingTimers.current[inputKey];
+        
+        const baseVal = tracker ? tracker.baseValue : '';
+        const fullVal = val;
+        
+        // Extract strictly what the scanner injected
+        const injectedPart = fullVal.startsWith(baseVal) ? fullVal.substring(baseVal.length) : fullVal;
+        const trimmedInjected = injectedPart.trim() || fullVal.trim();
+        
+        // Calculate typing speed of the injected part
+        const elapsed = tracker ? Date.now() - tracker.startTime : 1000;
+        const charsAdded = trimmedInjected.length || 1;
+        const timePerChar = elapsed / charsAdded;
+        
+        // Extremely tight speed threshold for pure numbers, guaranteeing it's a machine
+        const isFastScan = charsAdded >= 4 && timePerChar < 30;
+        const isScan = isScannerDataLine(trimmedInjected) || isFastScan;
+
+        if (isScan) {
+            // Restore visual input to the user's base value (removing the barcode visually)
+            if (setterFunc) setterFunc(baseVal);
+            
+            // Pass the pure barcode to the backend
+            if (scanHandlerRef.current) scanHandlerRef.current(trimmedInjected);
+            
+            // Re-arm focus
+            if (scannerInputRef.current) scannerInputRef.current.focus({ preventScroll: true });
+            return true;
+        } else {
+            if (onNormalEnter) onNormalEnter();
+            return false;
+        }
+    }, []);
 
     // ─────────────────────────────────────────────────────────────────────────
     return (
@@ -753,7 +854,9 @@ export default function InventoryCountPage() {
                         </div>
                         {/* Filters */}
                         <div className="flex gap-3 flex-wrap items-center">
-                            <input data-scanner-ignore="true" value={search} onChange={e => setSearch(e.target.value)}
+                            <input data-scanner-ignore="true" value={search}
+                                onChange={e => setSearch(e.target.value)}
+                                onKeyDown={e => handleInputKeyDown(e, 'search-box', e.target.value, null, setSearch)}
                                 placeholder="🔍 Buscar producto o número de lote..."
                                 className="flex-1 min-w-52 max-w-sm border border-neutral-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
                             <label className="flex items-center gap-2 text-sm text-amber-700 cursor-pointer font-medium select-none">
@@ -919,8 +1022,8 @@ export default function InventoryCountPage() {
                                                                                 {canEdit ? (
                                                                                     <input type="text" inputMode="numeric" data-scanner-ignore="true"
                                                                                         value={localInput.physicalGrams}
-                                                                                        onChange={e => handlePhysicalInputChange(key, e.target.value)}
-                                                                                        onKeyDown={e => e.key === 'Enter' && saveLotCount(lot)}
+                                                                                        onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: e.target.value } }))}
+                                                                                        onKeyDown={e => handleInputKeyDown(e, key, e.target.value, () => saveLotCount(lot), (revertedValue) => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: revertedValue } })))}
                                                                                         placeholder="0"
                                                                                         className="w-28 border border-neutral-200 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-green-400 font-mono" />
                                                                                 ) : (
@@ -998,8 +1101,8 @@ export default function InventoryCountPage() {
                                                                                     placeholder="0"
                                                                                     className="w-24 px-2 py-1.5 text-sm border border-neutral-300 rounded focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition-colors bg-white font-mono text-right"
                                                                                     value={localInputSL.physicalGrams}
-                                                                                    onChange={e => handlePhysicalInputChange(keySL, e.target.value)}
-                                                                                    onKeyDown={e => e.key === 'Enter' && saveLotCount(group, true)}
+                                                                                    onChange={e => setInputMap(m => ({ ...m, [keySL]: { ...m[keySL], physicalGrams: e.target.value } }))}
+                                                                                    onKeyDown={e => handleInputKeyDown(e, keySL, e.target.value, () => saveLotCount(group, true), (revertedValue) => setInputMap(m => ({ ...m, [keySL]: { ...m[keySL], physicalGrams: revertedValue } })))}
                                                                                     disabled={!isEditable || !!savingMap[keySL]}
                                                                                 />
                                                                                 {savingMap[keySL] && <div className="ml-1 w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></div>}
@@ -1129,14 +1232,15 @@ export default function InventoryCountPage() {
                                                                             <label className="text-xs text-green-700 font-semibold mb-1 block">📦 Físico (gramos / uds)</label>
                                                                             <input type="text" inputMode="numeric" data-scanner-ignore="true"
                                                                                 value={localInput.physicalGrams}
-                                                                                onChange={e => handlePhysicalInputChange(key, e.target.value)}
+                                                                                onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: e.target.value } }))}
+                                                                                onKeyDown={e => handleInputKeyDown(e, key, e.target.value, () => saveLotCount(lot), (revertedValue) => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: revertedValue } })))}
                                                                                 placeholder="0"
                                                                                 className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-lg text-right font-semibold focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-green-400" />
                                                                         </div>
                                                                         <button onClick={() => saveLotCount(lot)}
                                                                             disabled={saving || localInput.physicalGrams === ''}
-                                                                            className={`mt-5 px-5 py-3 rounded-xl font-bold text-sm transition-colors whitespace-nowrap ${isCounted ? 'bg-neutral-200 text-neutral-700' : 'bg-green-500 text-white shadow-sm'} disabled:opacity-40`}>
-                                                                            {saving ? '...' : isCounted ? '↻' : '✓'}
+                                                                            className={`mt-5 px-5 py-3 rounded-xl font-bold text-sm transition-colors whitespace-nowrap ${isCounted ? 'bg-neutral-200 text-neutral-800' : 'bg-green-500 text-white shadow-sm'} disabled:opacity-40`}>
+                                                                            {saving ? '...' : '✓ Guardar'}
                                                                         </button>
                                                                     </div>
                                                                 ) : (
@@ -1182,7 +1286,8 @@ export default function InventoryCountPage() {
                                                                             <label className="text-xs text-amber-700 font-semibold mb-1 block">📦 Físico (S/L)</label>
                                                                             <input type="text" inputMode="numeric" data-scanner-ignore="true"
                                                                                 value={localInputSL.physicalGrams}
-                                                                                onChange={e => handlePhysicalInputChange(keySL, e.target.value)}
+                                                                                onChange={e => setInputMap(m => ({ ...m, [keySL]: { ...m[keySL], physicalGrams: e.target.value } }))}
+                                                                                onKeyDown={e => handleInputKeyDown(e, keySL, e.target.value, () => saveLotCount(group, true), (revertedValue) => setInputMap(m => ({ ...m, [keySL]: { ...m[keySL], physicalGrams: revertedValue } })))}
                                                                                 placeholder="0"
                                                                                 disabled={!!savingMap[`nolot-${group.productId}`]}
                                                                                 className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-lg text-right font-semibold focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 bg-white" />

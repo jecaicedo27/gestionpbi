@@ -27,6 +27,7 @@ router.get('/handoff/checklists',              auth, hc.getChecklists);
 router.get('/handoff/today',                   auth, hc.getTodayHandoffs);
 router.get('/handoff/block-status',            auth, hc.getBlockStatus);
 router.post('/handoff',                        auth, hc.createHandoff);
+router.post('/handoff/verify-pin',             auth, hc.verifyPin);
 router.post('/handoff/:id/approve',            auth, hc.approveHandoff);
 router.post('/handoff/:id/reject',             auth, hc.rejectHandoff);
 router.get('/handoff/:id',                     auth, hc.getHandoffDetail);

@@ -1,15 +1,24 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+
 async function main() {
-    const note = await prisma.assemblyNote.findUnique({
-        where: { id: 'eaa86447-0a72-4bde-861f-506687d46b40' },
-        include: { productionBatch: { include: { outputTargets: true } } }
+    const notes = await prisma.siigoAssemblyNote.findMany({
+        where: {
+            // OR: [{ productCode: 'PROCELIQUIPOPS13' }, { id: { contains: 'COCO' } }]
+            createdAt: { gte: new Date('2026-04-12T00:00:00Z') }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10
     });
-    console.log(`Note productId: ${note.productId}`);
-    console.log(`Note processParameters.product_id: ${note.processParameters?.product_id}`);
     
-    for (const t of note.productionBatch.outputTargets) {
-        console.log(`Target productId: ${t.productId} - planned: ${t.plannedUnits}`);
+    // Find the specific one
+    const cocoNote = notes.find(n => n.productCode === 'PROCELIQUIPOPS13' && JSON.stringify(n.payload).includes('COCO-260410-0843'));
+    if (cocoNote) {
+        console.log(JSON.stringify(cocoNote, null, 2));
+    } else {
+        console.log("No note found with exactly that lot, here are the most recent 5 notes for PROCELIQUIPOPS:");
+        console.log(notes.filter(n => n.productCode?.startsWith('PROCELIQUIPOPS')).map(n => ({ id: n.id, productCode: n.productCode, status: n.status, createdAt: n.createdAt })));
     }
 }
-main().finally(() => prisma.$disconnect());
+
+main().catch(console.error).finally(() => prisma.$disconnect());

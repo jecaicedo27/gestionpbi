@@ -392,6 +392,20 @@ const AssemblyExecutionWizard = () => {
                 if (conteoQty && conteoQty > 0) return conteoQty;
             }
 
+            // ── INTERMEDIATE SUB-TEMPLATE fallback (COMPUESTO, BASE LÍQUIDA, etc.) ──
+            // These don't have CONTEO or EMPAQUE. Their yield comes from preceding preparation steps.
+            const previousStage = allNotesRes.data
+                .sort((a, b) => b.stageOrder - a.stageOrder) // reverse to find the closest predecessor
+                .find(n => 
+                    n.stageOrder < noteData.stageOrder && 
+                    n.status === 'COMPLETED' && 
+                    n.productId === noteData.productId &&
+                    ['PESAJE', 'COCCION', 'MEZCLADO', 'PREPARACION'].includes(n.processType?.code)
+                );
+            if (previousStage?.actualQuantity && previousStage.actualQuantity > 0) {
+                return previousStage.actualQuantity;
+            }
+
             // Last resort: output targets (planned units) — WARNING: these are programmed, not actual
             const outputTargets = noteData.productionBatch?.outputTargets || [];
             const stageName = (noteData.stageName || '').toLowerCase();
