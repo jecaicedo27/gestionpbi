@@ -16,7 +16,7 @@ import { buildQrString } from './qrService';
  * Render one label's content at a given X offset.
  * Fits in ~48mm wide × 38mm tall (384 × 304 dots usable).
  */
-function renderLabel(data, xOff) {
+function renderLabel(data, xOff, { maquila = false } = {}) {
     const {
         productName = '', sku = '', lotNumber = '',
         quantity = 0, unit = 'unidad',
@@ -48,35 +48,44 @@ function renderLabel(data, xOff) {
 
     // ── Product name — extract flavor ──
     let nameLine1 = productName, nameLine2 = '', nameLine3 = '';
-    const saborMatch = productName.match(/^(.+?SABOR A\s?)(.+?)(\s+X\s+\d+.*)$/i);
-    if (saborMatch) {
-        nameLine1 = saborMatch[1].trim();
-        nameLine2 = saborMatch[2].trim();
-        nameLine3 = saborMatch[3].trim();
+    if (maquila) {
+        const saborMatch2 = productName.match(/SABOR A\s+(.+?)\s+X\s+/i);
+        const flavor = saborMatch2 ? saborMatch2[1].trim() : '';
+        const sizeMatch = productName.match(/(\d{3,4}\s*G[R]?)/i);
+        nameLine1 = 'PERLAS EXPLOSIVAS';
+        nameLine2 = flavor;
+        nameLine3 = sizeMatch ? `X ${sizeMatch[1]}` : '';
     } else {
-        // Non-SABOR products (e.g. "SIROPE GENIALITY ESCARCHADOR X 360 ML" or "PREMEZCLA GOMAS PARA PERLAS")
-        const sizeMatch = productName.match(/^(.+?)(\s+X\s+\d+.*)$/i);
-        if (sizeMatch) {
-            const base = sizeMatch[1].trim();
-            nameLine3 = sizeMatch[2].trim();
-            // Try to split known brands from product variant
-            const brandMatch = base.match(/^(SIROPE GENIALITY|LIQUIPOPS|ESSKISIMO|BLACK|WOW|BATCH GENIALITY)\s+(.+)$/i);
-            if (brandMatch) {
-                nameLine1 = brandMatch[1].trim();
-                nameLine2 = brandMatch[2].trim();
-            } else {
-                nameLine1 = base.substring(0, 24);
-            }
+        const saborMatch = productName.match(/^(.+?SABOR A\s?)(.+?)(\s+X\s+\d+.*)$/i);
+        if (saborMatch) {
+            nameLine1 = saborMatch[1].trim();
+            nameLine2 = saborMatch[2].trim();
+            nameLine3 = saborMatch[3].trim();
         } else {
-            // No size spec — split long names (e.g. premixes) into 2 lines
-            const words = productName.split(/\s+/);
-            if (words.length >= 3 && productName.length > 16) {
-                // Split roughly in half at a word boundary
-                const mid = Math.ceil(words.length / 2);
-                nameLine1 = words.slice(0, mid).join(' ');
-                nameLine2 = words.slice(mid).join(' ');
+            // Non-SABOR products (e.g. "SIROPE GENIALITY ESCARCHADOR X 360 ML" or "PREMEZCLA GOMAS PARA PERLAS")
+            const sizeMatch = productName.match(/^(.+?)(\s+X\s+\d+.*)$/i);
+            if (sizeMatch) {
+                const base = sizeMatch[1].trim();
+                nameLine3 = sizeMatch[2].trim();
+                // Try to split known brands from product variant
+                const brandMatch = base.match(/^(SIROPE GENIALITY|LIQUIPOPS|ESSKISIMO|BLACK|WOW|BATCH GENIALITY)\s+(.+)$/i);
+                if (brandMatch) {
+                    nameLine1 = brandMatch[1].trim();
+                    nameLine2 = brandMatch[2].trim();
+                } else {
+                    nameLine1 = base.substring(0, 24);
+                }
             } else {
-                nameLine1 = productName.substring(0, 24);
+                // No size spec — split long names (e.g. premixes) into 2 lines
+                const words = productName.split(/\s+/);
+                if (words.length >= 3 && productName.length > 16) {
+                    // Split roughly in half at a word boundary
+                    const mid = Math.ceil(words.length / 2);
+                    nameLine1 = words.slice(0, mid).join(' ');
+                    nameLine2 = words.slice(mid).join(' ');
+                } else {
+                    nameLine1 = productName.substring(0, 24);
+                }
             }
         }
     }
@@ -106,12 +115,14 @@ function renderLabel(data, xOff) {
         // Print inverted black box with white text for status
         fields += `^FO${x},${y - 2}^GB380,22,22^FS\n`;
         fields += `^FO${x + 10},${y + 2}^A0N,16,14^FR^FD${esc(statusText)}^FS\n`;
-    } else {
+    } else if (!maquila) {
         fields += `^FO${x},${y}^A0N,16,14^FDPOPPING BOBA INTL S.A.S.^FS\n`;
     }
-    y += 18;
-    fields += `^FO${x},${y}^GB380,1,1^FS\n`;
-    y += 3;
+    if (statusText || !maquila) {
+        y += 18;
+        fields += `^FO${x},${y}^GB380,1,1^FS\n`;
+        y += 3;
+    }
 
     // ── LEFT SIDE: Same order as SAT label ──
 
@@ -171,8 +182,10 @@ function renderLabel(data, xOff) {
     }
 
     // 5. SKU
-    fields += `^FO${x},${y}^A0N,20,18^FDSKU: ${esc(sku.substring(0, 12))}^FS\n`;
-    y += 22;
+    if (!maquila) {
+        fields += `^FO${x},${y}^A0N,20,18^FDSKU: ${esc(sku.substring(0, 12))}^FS\n`;
+        y += 22;
+    }
 
     // 6. Lote — FULL number, no truncation
     fields += `^FO${x},${y}^A0N,20,18^FDLote: ${esc(lotDisplay.substring(0, 16))}^FS\n`;
@@ -209,7 +222,7 @@ function renderLabel(data, xOff) {
  * @param {number} [copies=1] — number of PAIRS to print
  * @returns {string} ZPL command string
  */
-export function buildLotLabelZPL(data, copies = 1) {
+export function buildLotLabelZPL(data, copies = 1, { maquila = false } = {}) {
     let zpl = '^XA\n';
     zpl += '^MMT\n';          // Thermal transfer mode
     zpl += '^PW824\n';        // Full print width: 103mm = 824 dots
@@ -217,13 +230,12 @@ export function buildLotLabelZPL(data, copies = 1) {
     zpl += '^LS0\n';
     zpl += '^MD10\n';
     zpl += '^PR3\n';
-    zpl += '^XB\n';          // Suppress backfeed — prevents skipping labels between jobs
-
+    
     // Left label (column 1): starts at X=0
-    zpl += renderLabel(data, 0);
+    zpl += renderLabel(data, 0, { maquila });
 
     // Right label (column 2): starts at X=424 (50mm + 3mm gap = 53mm = 424 dots)
-    zpl += renderLabel(data, 424);
+    zpl += renderLabel(data, 424, { maquila });
 
     // Print pairs
     zpl += `^PQ${copies}\n`;
@@ -339,7 +351,6 @@ export function buildCarritoLabelZPL(data) {
     zpl += '^LS0\n';
     zpl += '^MD10\n';
     zpl += '^PR3\n';
-    zpl += '^XB\n';
 
     zpl += renderCarritoLabel(data, 0); // Only print left side
 

@@ -5,8 +5,10 @@ const cacheService = require('../services/cacheService');
 const prisma = new PrismaClient();
 
 const createOrder = async (req, res) => {
-    const { items } = req.body;
-    const distributorId = req.user.id;
+    const { items, allowLooseUnits, distributorId: bodyDistributorId, notes } = req.body;
+    
+    // Distributors self-assign; ADMIN can pass distributorId in body
+    const distributorId = (req.user.role === 'DISTRIBUIDOR' || !bodyDistributorId) ? req.user.id : bodyDistributorId;
 
     try {
         // 1. Validate Items and Check Stock
@@ -35,8 +37,11 @@ const createOrder = async (req, res) => {
                 });
             }
 
-            // Validate full box
-            if (product.packSize && product.packSize > 1 && item.quantity % product.packSize !== 0) {
+            // Validate full box (bypassed if ADMIN with allowLooseUnits flag)
+            const isAdmin = req.user.role === 'ADMIN';
+            const bypassPackSize = isAdmin && allowLooseUnits === true;
+            
+            if (!bypassPackSize && product.packSize && product.packSize > 1 && item.quantity % product.packSize !== 0) {
                 return res.status(400).json({
                     error: `${product.name}: solo se aceptan cajas completas de ${product.packSize} unidades. Pediste ${item.quantity}, debes pedir múltiplos de ${product.packSize}.`
                 });
@@ -56,7 +61,13 @@ const createOrder = async (req, res) => {
             const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             const todayCount = await tx.order.count({ where: { createdAt: { gte: startOfDay } } });
             
-            const safeName = (req.user.name || 'COMERCIAL')
+            let distributorName = req.user.name;
+            if (req.user.id !== distributorId) {
+                const distUser = await tx.user.findUnique({ where: { id: distributorId } });
+                if (distUser) distributorName = distUser.name;
+            }
+
+            const safeName = (distributorName || 'COMERCIAL')
                 .toUpperCase()
                 .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
                 .replace(/[^A-Z0-9 ]/g, '')
@@ -64,18 +75,26 @@ const createOrder = async (req, res) => {
 
             const orderNumber = `ORD-${safeName}-${dateStr}-${todayCount + 1}`;
 
+            const isAdmin = req.user?.role === 'ADMIN';
+            const isQuickOrder = isAdmin && allowLooseUnits === true;
+
             // Create Order
             const order = await tx.order.create({
                 data: {
                     orderNumber,
                     distributorId,
-                    status: 'PENDING',
+                    status: isQuickOrder ? 'READY' : 'PENDING',
+                    approvedAt: isQuickOrder ? new Date() : null,
+                    approvedBy: isQuickOrder ? req.user.id : null,
+                    completionPercent: isQuickOrder ? 100 : 0,
+                    readyAt: isQuickOrder ? new Date() : null,
+                    notes: notes || null,
                     items: {
                         create: items.map((item, idx) => ({
                             productId: item.productId,
                             requestedQty: item.quantity,
-                            pendingQty: item.quantity,
-                            allocatedQty: 0,
+                            pendingQty: isQuickOrder ? 0 : item.quantity,
+                            allocatedQty: isQuickOrder ? item.quantity : 0,
                             sortOrder: idx
                         }))
                     }
@@ -531,10 +550,10 @@ const createOrderFromExcel = async (req, res) => {
     }
 };
 
-// Import admin/logistics methods
 const {
     approveOrder,
     rejectOrder,
+    deleteOrder,
     markReady,
     invoiceOrder,
     dispatchOrder,
@@ -579,6 +598,7 @@ module.exports = {
     patchOrder,
     approveOrder,
     rejectOrder,
+    deleteOrder,
     markReady,
     invoiceOrder,
     dispatchOrder,

@@ -30,6 +30,7 @@ router.patch('/:id', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL', 'DISTRIBUID
 // Workflow endpoints
 router.post('/:id/approve', auth, roles(['ADMIN', 'COMERCIAL']), orderController.approveOrder);
 router.post('/:id/reject', auth, roles(['ADMIN', 'LOGISTICA']), orderController.rejectOrder);
+router.delete('/:id', auth, roles(['ADMIN']), orderController.deleteOrder);
 router.post('/:id/mark-ready', auth, roles(['LOGISTICA']), orderController.markReady);
 
 // Invoicing — creates invoice directly in Siigo
@@ -56,6 +57,42 @@ router.get('/:id/transport-guide', orderController.getTransportGuide);
 
 // Picking sheet (printable HTML — no auth since it opens in a new browser tab for printing)
 router.get('/:id/picking-sheet', orderController.getPickingSheet);
+
+// Upload generic photos for ready evidence (minimum 3 before invoicing)
+const READY_PHOTOS_DIR = path.join(__dirname, '../../uploads/orders/ready');
+if (!fs.existsSync(READY_PHOTOS_DIR)) fs.mkdirSync(READY_PHOTOS_DIR, { recursive: true });
+const readyUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, READY_PHOTOS_DIR),
+        filename: (req, file, cb) => {
+            const ext = path.extname(file.originalname) || '.jpg';
+            cb(null, `${req.params.id}-${Date.now()}${ext}`);
+        }
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 }
+});
+router.post('/:id/ready-photos', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']), readyUpload.single('photo'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        const { PrismaClient } = require('@prisma/client');
+        const prisma = new PrismaClient();
+        const url = `/uploads/orders/ready/${req.file.filename}`;
+        
+        const currentOrder = await prisma.order.findUnique({ where: { id: req.params.id }, select: { readyPhotosUrls: true } });
+        if (!currentOrder) return res.status(404).json({ error: 'Order not found' });
+        
+        const updatedUrls = [...(currentOrder.readyPhotosUrls || []), url];
+        const updated = await prisma.order.update({
+            where: { id: req.params.id },
+            data: { readyPhotosUrls: updatedUrls }
+        });
+        await prisma.$disconnect();
+        res.json({ ok: true, url, readyPhotosUrls: updated.readyPhotosUrls });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Siigo invoice PDF proxy — streams PDF from Siigo API
 router.get('/:id/siigo-pdf', auth, async (req, res) => {

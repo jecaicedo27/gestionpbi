@@ -4,6 +4,7 @@ import { PlusOutlined, CheckOutlined, SendOutlined, StopOutlined, EyeOutlined, S
 import dayjs from 'dayjs';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import ThermalPrintModal from '../components/Printers/ThermalPrintModal';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -82,6 +83,7 @@ const PurchaseOrdersPage = () => {
     const [loading, setLoading] = useState(true);
     const [page, setPage] = useState(1);
     const [statusFilter, setStatusFilter] = useState('');
+    const [searchText, setSearchText] = useState('');
 
     // Create Modal
     const [createVisible, setCreateVisible] = useState(false);
@@ -103,7 +105,11 @@ const PurchaseOrdersPage = () => {
     const [loadingDetail, setLoadingDetail] = useState(false);
 
     // Reception
+    const [receivingAll, setReceivingAll] = useState(false);
     const [receptionMode, setReceptionMode] = useState(false);
+
+    const [thermalPrintData, setThermalPrintData] = useState(null);
+
     const [receptionPhotos, setReceptionPhotos] = useState([]);  // Local File objects for reception/product
     const [receptionInvoicePhotos, setReceptionInvoicePhotos] = useState([]);  // Local File objects for invoice
     const [receptionItems, setReceptionItems] = useState([]);
@@ -148,7 +154,7 @@ const PurchaseOrdersPage = () => {
     const loadOrders = useCallback(async () => {
         setLoading(true);
         try {
-            const params = { page: 1, limit: 200 };
+            const params = { page: 1, limit: 500 };
             if (statusFilter) params.status = statusFilter;
             const res = await api.get('/procurement/purchase-orders', { params });
             setOrders(res.data.orders);
@@ -698,7 +704,16 @@ const PurchaseOrdersPage = () => {
         if (o.status === 'COMPLETED') return lotsRelevant ? !needsLots(o) : true;
         return false;
     });
-    const displayOrders = viewTab === 'pending' ? pendingOrders : historyOrders;
+    const allOrders = orders;
+    const tabOrders = viewTab === 'pending' ? pendingOrders : viewTab === 'history' ? historyOrders : allOrders;
+    // Apply text search filter
+    const displayOrders = searchText
+        ? tabOrders.filter(o => {
+            const q = searchText.toLowerCase();
+            return (o.supplierName || '').toLowerCase().includes(q) ||
+                   (o.orderNumber || '').toLowerCase().includes(q);
+        })
+        : tabOrders;
 
     // Visible status options for dropdown filter
     const visibleStatusOptions = viewTab === 'pending' ? pendingStatuses : historyStatuses;
@@ -749,6 +764,8 @@ const PurchaseOrdersPage = () => {
                     </Text>
                 </div>
                 <div className="po-header-actions">
+                    <Input.Search placeholder="Buscar proveedor u OC…" allowClear style={{ width: 250 }}
+                        value={searchText} onChange={e => { setSearchText(e.target.value); setPage(1); }} />
                     <Select placeholder="Filtrar estado" allowClear style={{ width: 200 }}
                         value={statusFilter || undefined} onChange={v => { setStatusFilter(v || ''); setPage(1); }}>
                         {Object.entries(statusLabels)
@@ -792,6 +809,20 @@ const PurchaseOrdersPage = () => {
                             color: viewTab === 'history' ? '#fff' : '#64748b',
                         }}>{historyOrders.length}</span>
                     )}
+                </button>
+                <button className="po-tab"
+                    onClick={() => { setViewTab('all'); setPage(1); setStatusFilter(''); }}
+                    style={{
+                        borderBottom: viewTab === 'all' ? '3px solid #6b7280' : '3px solid #e2e8f0',
+                        background: viewTab === 'all' ? '#f9fafb' : '#fff',
+                        color: viewTab === 'all' ? '#374151' : '#64748b',
+                    }}
+                >
+                    📂 Todas
+                    <span className="po-badge" style={{
+                        background: viewTab === 'all' ? '#6b7280' : '#e2e8f0',
+                        color: viewTab === 'all' ? '#fff' : '#64748b',
+                    }}>{orders.length}</span>
                 </button>
             </div>
 
@@ -1620,8 +1651,23 @@ const PurchaseOrdersPage = () => {
                                                 }},
                                                 { title: 'Estado', dataIndex: 'status', render: v => <Tag color={v === 'AVAILABLE' ? 'green' : v === 'LOW_STOCK' ? 'orange' : 'red'}>{v}</Tag> },
                                                 {
-                                                    title: '', key: 'print', width: 80, render: (_, lot) => (
-                                                        <Button size="small" icon={<PrinterOutlined />} onClick={() => printLotLabel(lot)}>Etiqueta</Button>
+                                                    title: '', key: 'print', width: 150, render: (_, lot) => (
+                                                        <Space>
+                                                            <Button size="small" icon={<PrinterOutlined />} onClick={() => printLotLabel(lot)}>PDF</Button>
+                                                            <Button size="small" type="primary" style={{ background: '#10b981', borderColor: '#10b981' }} icon={<PrinterOutlined />} onClick={() => {
+                                                                setThermalPrintData({
+                                                                    productName: item.siigoProductName,
+                                                                    sku: item.siigoProductCode,
+                                                                    lotNumber: lot.lotNumber,
+                                                                    quantity: lot.currentQuantity,
+                                                                    unit: lot.unit || 'gramo',
+                                                                    supplierName: selectedOrder.supplierName,
+                                                                    receivedAt: lot.receivedAt,
+                                                                    expiresAt: lot.expiresAt,
+                                                                    orderNumber: selectedOrder.orderNumber
+                                                                });
+                                                            }}>Térmica</Button>
+                                                        </Space>
                                                     )
                                                 }
                                             ]} />
@@ -2196,8 +2242,8 @@ const PurchaseOrdersPage = () => {
                                     </div>
                                     {lotEntries.length > 1 && <Button danger size="small" onClick={() => setLotEntries(lotEntries.filter((_, i) => i !== idx))}>×</Button>}
                                 </div>
-                                {/* Photo upload per lot */}
-                                <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                {/* Photo upload per lot + Print Button */}
+                                <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: lot.photoPreview ? '#f6ffed' : '#fff7e6', border: `1px solid ${lot.photoPreview ? '#b7eb8f' : '#ffd591'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                                         {lot.photoPreview ? '✅ Foto tomada' : '📷 Tomar foto del lote'}
                                         <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
@@ -2209,7 +2255,29 @@ const PurchaseOrdersPage = () => {
                                                 setLotEntries(newEntries);
                                             }} />
                                     </label>
-                                    {lot.photoPreview && <img src={lot.photoPreview} alt="Lote" style={{ height: 40, borderRadius: 4, border: '1px solid #d9d9d9' }} />}
+                                    {lot.photoPreview && <img src={lot.photoPreview} alt="Lote" style={{ height: 32, borderRadius: 4, border: '1px solid #d9d9d9' }} />}
+                                    
+                                    <div style={{ flex: 1 }} />
+                                    
+                                    <Button size="small" type="primary" style={{ background: '#10b981', borderColor: '#10b981', borderRadius: 6 }} icon={<PrinterOutlined />} onClick={() => {
+                                        if (!lot.lotNumber || !lot.quantity || !lot.expiresAtRaw) {
+                                            message.warning('Digita el lote, la cantidad y vencimiento primero');
+                                            return;
+                                        }
+                                        setThermalPrintData({
+                                            productName: selectedPOItem.siigoProductName,
+                                            sku: selectedPOItem.siigoProductCode,
+                                            lotNumber: lot.lotNumber,
+                                            quantity: lot.quantity,
+                                            unit: itemUnit,
+                                            supplierName: selectedOrder.supplierName,
+                                            receivedAt: new Date().toISOString(),
+                                            expiresAt: new Date(lot.expiresAtRaw).toISOString(),
+                                            orderNumber: selectedOrder.orderNumber
+                                        });
+                                    }}>
+                                        Etiquetas Térmicas (Packs)
+                                    </Button>
                                 </div>
                             </div>
                         ))}
@@ -2231,6 +2299,11 @@ const PurchaseOrdersPage = () => {
             </Modal>
                 );
             })()}
+            <ThermalPrintModal
+                visible={!!thermalPrintData}
+                onCancel={() => setThermalPrintData(null)}
+                lotData={thermalPrintData}
+            />
         </div>
         </>
     );

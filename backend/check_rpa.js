@@ -1,13 +1,11 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-async function main() {
-  const ex = await prisma.rpaExecution.findMany({
-    where: { 
-      observations: { contains: 'CEREZA-260407-0953' }
-    }
-  });
-  ex.forEach(e => {
-    console.log(`ID: ${e.id}, Qty: ${e.quantity}, NoteCode: ${e.siigoNoteCode}, AssNoteId: ${e.assemblyNoteId}, Obs: ${e.observations}, Type: ${e.executionType}`);
-  });
+async function run() {
+    const rpa = await prisma.rpaExecution.findFirst({
+        orderBy: { startedAt: 'desc' }
+    });
+    console.log(rpa.errorMessage);
+    console.log('-------');
+    console.log(rpa.logs);
 }
-main().catch(e => console.error(e)).finally(() => prisma.$disconnect());
+run().catch(console.error).finally(()=> prisma.$disconnect());

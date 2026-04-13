@@ -96,8 +96,9 @@ const RpaHistoryPage = () => {
         }
     };
 
-    const getBatch = (obs) => {
+    const getBatch = (obs, type) => {
         if (!obs) return null;
+        if (type === 'SIIGO_ADJUSTMENT' || obs.toLowerCase().includes('ajuste')) return 'AJUSTE';
         const m = obs.match(/Lote:\s*([^.]+)/i);
         return m ? m[1].trim() : null;
     };
@@ -105,7 +106,7 @@ const RpaHistoryPage = () => {
     const filteredExecutions = executions.filter(exec => {
         if (!searchTerm) return true;
         const s = searchTerm.toLowerCase();
-        const batch = getBatch(exec.observations) || '';
+        const batch = getBatch(exec.observations, exec.executionType) || '';
         return (exec.productName || '').toLowerCase().includes(s) || 
                batch.toLowerCase().includes(s) || 
                (exec.siigoNoteCode || '').toLowerCase().includes(s);
@@ -264,7 +265,7 @@ const RpaHistoryPage = () => {
                             {filteredExecutions.map((exec, idx) => {
                                 const cfg = STATUS_CFG[exec.status] || STATUS_CFG.FAILED;
                                 const Icon = cfg.icon;
-                                const batch = getBatch(exec.observations);
+                                const batch = getBatch(exec.observations, exec.executionType);
                                 const screenshotFile = exec.screenshotPath?.split('/').pop();
                                 const ssUrl = screenshotFile ? `${window.location.origin}/rpa-screenshots/${screenshotFile}` : null;
                                 const isExpanded = expanded === exec.id;
@@ -490,7 +491,7 @@ const RpaHistoryPage = () => {
                 {filteredExecutions.map(exec => {
                     const cfg = STATUS_CFG[exec.status] || STATUS_CFG.FAILED;
                     const Icon = cfg.icon;
-                    const batch = getBatch(exec.observations);
+                    const batch = getBatch(exec.observations, exec.executionType);
                     const isExpanded = expanded === exec.id;
                     const screenshotFile = exec.screenshotPath?.split('/').pop();
                     const ssUrl = screenshotFile ? `${window.location.origin}/rpa-screenshots/${screenshotFile}` : null;

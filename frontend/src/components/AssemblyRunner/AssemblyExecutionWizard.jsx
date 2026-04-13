@@ -437,6 +437,15 @@ const AssemblyExecutionWizard = () => {
         if (currentStep.type === 'INPUT') {
             const item = currentStep.data;
             const actualQty = actualQuantities[item.id];
+
+            // ── REQUIRED PHOTO VALIDATION ──
+            const savedPhoto = note.processParameters?.weighing_photos?.[item.id];
+            const localPhoto = weighingPhotos[item.id];
+            if (!savedPhoto && !localPhoto) {
+                message.error('⚠️ Debe tomar la foto de evidencia del pesaje antes de continuar');
+                return;
+            }
+
             // ── Hard lot validation (belt-and-suspenders) ──
             if (!lotNumbers[item.id]?.trim()) {
                 message.error('⚠️ Debe seleccionar un LOTE del insumo antes de continuar');
@@ -925,8 +934,12 @@ const AssemblyExecutionWizard = () => {
                 // But we must still complete the CONTEO note + auto-complete ENSAMBLE
                 // on the backend so productionZoneStock gets incremented.
                 const isPackagingRole = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role);
+                const usesCarritos = note.product?.name?.toUpperCase().includes('SIROPE') || 
+                                     note.product?.name?.toUpperCase().includes('MASA') ||
+                                     note.product?.name?.toUpperCase().includes('GENIALITY') ||
+                                     note.product?.name?.toUpperCase().includes('SABORIZACION');
 
-                if (isPackagingRole) {
+                if (isPackagingRole && usesCarritos) {
                     const batchId = note.productionBatchId;
                     const batchNumber = note.productionBatch?.batchNumber || '';
 
@@ -1028,9 +1041,11 @@ const AssemblyExecutionWizard = () => {
                 conteoTargets.forEach(t => {
                     const rawVal = conteoActuals[t.productId];
                     const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
+                    const lastActual = note.processParameters?.conteo?.[t.product?.name]?.actual;
                     const fallbackPlanned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
                     
-                    const actualStr = rawVal !== undefined && rawVal !== '' ? rawVal : fallbackPlanned;
+                    const defaultVal = (lastActual != null && lastActual !== 0) ? lastActual : fallbackPlanned;
+                    const actualStr = rawVal !== undefined && rawVal !== '' ? rawVal : defaultVal;
                     const actual = parseInt(actualStr, 10);
                     const factor = esferaFactors[t.productId] || 0;
                     const esferas = actual * factor;
@@ -1314,8 +1329,11 @@ const AssemblyExecutionWizard = () => {
         const hasWeight = actualQuantities[currentItemId] !== undefined && actualQuantities[currentItemId] !== '';
         const lotVal = lotNumbers[currentItemId];
         const hasLot = typeof lotVal === 'string' && lotVal.trim().length > 0;
-        const hasPhoto = !!weighingPhotos[currentItemId];
-        canAdvance = hasWeight && hasLot && hasPhoto;
+        const hasPhoto = !!weighingPhotos[currentItemId] || !!note?.processParameters?.weighing_photos?.[currentItemId];
+        // PESAJE notes: photo per ingredient is OPTIONAL (final verification photo is the gate)
+        // All other process types: photo remains MANDATORY per ingredient
+        const isPesajeProcess = note?.processType?.code === 'PESAJE';
+        canAdvance = hasWeight && hasLot && (hasPhoto || isPesajeProcess);
 
         // Multi-lot validation: if lots exist in inventory, block until coverage >= planned
         // Skip for EMPAQUE — lots are auto-assigned with whatever is available
@@ -1367,7 +1385,7 @@ const AssemblyExecutionWizard = () => {
                     const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
                     const planned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
                     const val = conteoActuals[t.productId];
-                    const actual = (val === undefined || val === '') ? (planned || 0) : parseInt(val, 10);
+                    const actual = (val === undefined || val === '') ? 0 : parseInt(val, 10);
                     if (isNaN(actual) || actual <= 0) return true; // qty 0 → no photo needed
                     return !!conteoPhotos[t.productId];
                 });
@@ -1392,11 +1410,16 @@ const AssemblyExecutionWizard = () => {
         const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
         const isPesajeNote = note.processType?.code === 'PESAJE';
         const isFormacionNote = note.processType?.code === 'FORMACION';
-        
-        if (!outputQuantity || realQty <= 0) {
+        const productNameUpper = (note.product?.name || '').toUpperCase();
+        const isPesajeSimple = isEnsambleNote || isFormacionNote || (isPesajeNote && !productNameUpper.startsWith('COMPUESTO') && !productNameUpper.startsWith('PROTECCION'));
+
+        if (isPesajeSimple) {
+            // For simple pesaje/ensamble, the OutputStep auto-fills and hides the field.
+            // Do not block if state is lagging or empty, as the operator cannot manually enter it.
+        } else if (!outputQuantity || realQty <= 0) {
             canAdvance = false;
         } else if (!isEnsambleNote) {
-            // For PESAJE/FORMACION: enforce 5% variation limit
+            // For complex PESAJE/FORMACION: enforce 5% variation limit
             const pesajeTotal = isPesajeNote && note.items?.length > 0
                 ? note.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
                 : null;
@@ -1529,7 +1552,7 @@ const AssemblyExecutionWizard = () => {
                     onActualQtyChange={handleActualQtyChange}
                     lotNumbers={lotNumbers}
                     onLotNumberChange={(itemId, value) => setLotNumbers(prev => ({ ...prev, [itemId]: value }))}
-                    weighingPhotoUrl={currentStep.type === 'INPUT' ? weighingPhotos[currentStep.data?.id] : undefined}
+                    weighingPhotoUrl={currentStep.type === 'INPUT' ? (weighingPhotos[currentStep.data?.id] || note?.processParameters?.weighing_photos?.[currentStep.data?.id]) : undefined}
                     onWeighingPhotoChange={(itemId, url) => setWeighingPhotos(prev => ({ ...prev, [itemId]: url }))}
                     onLotIdSelected={(itemId, lotId) => setSelectedLotIds(prev => ({ ...prev, [itemId]: lotId }))}
                     lotSelections={lotSelections}

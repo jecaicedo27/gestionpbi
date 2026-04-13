@@ -507,6 +507,19 @@ const assemblyNoteController = {
                 return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede finalizar etapas de ${stageCode}` });
             }
 
+            // ── Hard cap: actualQuantity on each item must not exceed 120% of plannedQuantity ──
+            const noteItems = await prisma.assemblyNoteItem.findMany({ where: { assemblyNoteId: id } });
+            for (const item of noteItems) {
+                const planned = item.plannedQuantity || 0;
+                const actual = item.actualQuantity || 0;
+                if (planned > 0 && actual > planned * 1.20) {
+                    console.log(`[completeNote] 🚫 HARD CAP — item ${item.id} actual=${actual} exceeds 120% of planned=${planned}`);
+                    return res.status(422).json({
+                        error: `🚫 BLOQUEADO: Cantidad registrada (${actual}) supera el 120% de lo planificado (${planned.toFixed(1)}) para el ingrediente ${item.componentName || item.id}. Corrija el pesaje antes de continuar.`
+                    });
+                }
+            }
+
             const result = await assemblyService.completeNote(id, {
                 actualQuantity: parseFloat(actualQuantity) || 0,
                 observations,

@@ -479,7 +479,7 @@ const getProductionKpis = async (req, res) => {
                 const sizeMatch = n.product?.name?.match(/(\d+)\s*(g|ml|G|ML|GR|gr|kg)/i);
                 const sizeLabel = sizeMatch ? sizeMatch[0].toLowerCase() : 'uds';
                 if (!lbatchMap[bn].breakdown[sizeLabel]) {
-                    lbatchMap[bn].breakdown[sizeLabel] = { planned: 0, actual: 0 };
+                    lbatchMap[bn].breakdown[sizeLabel] = { planned: 0, actual: 0, gpv: gpv };
                 }
                 lbatchMap[bn].breakdown[sizeLabel].planned += pUnits;
                 lbatchMap[bn].breakdown[sizeLabel].actual += aUnits;

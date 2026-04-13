@@ -135,13 +135,16 @@ export function useAssemblyNote(id) {
 
         if (isSiropeGeniality) {
             steps.push({ type: 'G_CONTEO_CARRITOS', data: noteData });
-            // If it's a CONTEO step, this is the only step needed (Production).
-            // If it's an EMPAQUE step, we must ALSO append the rest of the packaging workflow.
+            // After receiving carriots: QC → label printing → final ensamble
+            if (isEmpaque || noteData.processType?.code === 'G_EMPAQUE') {
+                steps.push({ type: 'EMPAQUE', data: noteData });
+                steps.push({ type: 'MARCADO_CAJAS', data: noteData });
+                steps.push({ type: 'ENSAMBLE', data: noteData });
+            }
         } 
         
-        if (!isSiropeGeniality || (!isConteo && isSiropeGeniality)) {
-            // Only execute these standard flows if it's NOT a sirope Geniality CONTEO.
-            // If it IS a sirope Geniality Empaque, we will execute the Empaque branch.
+        if (!isSiropeGeniality) {
+            // Only execute these standard flows if it's NOT a sirope Geniality.
             if (isConteo) {
                 steps.push({ type: 'CONTEO', data: noteData });
             } else if (isEnsamble) {
@@ -211,7 +214,17 @@ export function useAssemblyNote(id) {
         // - Jump to the first INPUT step that hasn't been filled yet
         let startIdx = 0;
         if (noteData.status === 'EXECUTING') {
-            const isEmpaque = noteData.processType?.code === 'EMPAQUE';
+            // ── Priority 1: URL param ?skipIntro=1&step=TYPE overrides everything ──
+            // Handles "Etiquetar" button navigation: G_CONTEO_CARRITOS → MARCADO_CAJAS
+            const urlParams = new URLSearchParams(window.location.search);
+            const skipIntroUrl = urlParams.get('skipIntro') === '1';
+            const urlStepType = urlParams.get('step');
+            if (skipIntroUrl && urlStepType) {
+                const urlStepIdx = steps.findIndex(s => s.type === urlStepType);
+                if (urlStepIdx >= 0) {
+                    startIdx = urlStepIdx;
+                }
+            } else {
             if (isEmpaque) {
                 // Restore to persisted wizard step (survive F5/logout/tablet lock)
                 const savedStepEmp = noteData.processParameters?.wizardStep;
@@ -246,6 +259,7 @@ export function useAssemblyNote(id) {
                     }
                 }
             }
+            } // end else (no URL step override)
         }
         setCurrentStepIndex(startIdx);
 
@@ -286,7 +300,10 @@ export function useAssemblyNote(id) {
         const batchKey = `batch_target_${noteData.productionBatchId}`;
         const savedTarget = localStorage.getItem(batchKey);
         const defaultTarget = savedTarget || (plannedTotal > 0 ? plannedTotal.toFixed(0) : (noteData.targetQuantity || 1).toString());
-        setOutputQuantity('');
+
+        // For PESAJE: auto-fill Real Producido = Planificado (no scale at output step)
+        const isPesaje = noteData.processType?.code === 'PESAJE';
+        setOutputQuantity(isPesaje ? defaultTarget : '');
         setTargetQuantity(defaultTarget);
         setOutputObservations('');
     };

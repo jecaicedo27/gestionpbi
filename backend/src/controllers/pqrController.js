@@ -459,6 +459,7 @@ exports.uploadBillingDocument = async (req, res) => {
                 updateData.stage = 'COMPLETED';
                 updateData.status = 'PROCESSED';
                 updateData.resolvedAt = new Date();
+                updateData.pendingAdjustment = true; // Admin/Contabilidad must still register damage write-off
             }
         } else if (documentType === 'invoice' && ['ADMIN', 'COMERCIAL'].includes(userRole)) {
             // Invoice uploaded -> advance to logistics
@@ -728,6 +729,7 @@ exports.bulkBilling = async (req, res) => {
                 updateData.stage = 'COMPLETED';
                 updateData.status = 'PROCESSED';
                 updateData.resolvedAt = new Date();
+                updateData.pendingAdjustment = true; // Admin/Contabilidad must still register damage write-off
             }
 
             await prisma.pQR.update({

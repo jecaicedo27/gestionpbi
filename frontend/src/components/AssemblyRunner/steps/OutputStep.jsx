@@ -56,7 +56,8 @@ const OutputStep = ({
     // These don't need manual "Real Producido" — auto-fill + confirmation + mandatory photo
     const isEnsambleNote = noteData.processType?.code === 'ENSAMBLE';
     const isPesajeSimple = isEnsambleNote || (isPesaje && !productNameUpper.startsWith('COMPUESTO') && !productNameUpper.startsWith('PROTECCION'));
-    const [pesajeConfirmed, setPesajeConfirmed] = useState(false);
+    const draft = noteData.processParameters?.output_qc_draft || {};
+    const [pesajeConfirmed, setPesajeConfirmed] = useState(!!draft.pesajeConfirmed);
     const pesajeTotalGrams = isPesaje && noteData.items?.length > 0
         ? noteData.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
         : null;
@@ -102,15 +103,14 @@ const OutputStep = ({
     const deviation = outputNum > 0 && targetGrams > 0
         ? (((outputNum - targetGrams) / targetGrams) * 100).toFixed(1) : null;
 
-    // Auto-fill output for simple PESAJE (no physical scale available)
+    // Auto-fill output for simple PESAJE (no physical scale available) and FORMACIÓN (theoretical output known)
     useEffect(() => {
-        if (isPesajeSimple && targetGrams > 0 && !outputQuantity) {
+        if ((isPesajeSimple || isFormacion) && targetGrams > 0 && !outputQuantity) {
             onOutputQtyChange(String(targetGrams));
         }
-    }, [isPesajeSimple, targetGrams]); // eslint-disable-line
+    }, [isPesajeSimple, isFormacion, targetGrams]); // eslint-disable-line
 
     // ═══ PERSISTENCE: Restore draft from processParameters ═══
-    const draft = noteData.processParameters?.output_qc_draft || {};
 
     // Temperature verification state
     const [temperature, setTemperature] = useState(draft.temperature || '');
@@ -134,7 +134,7 @@ const OutputStep = ({
 
     // ═══ PERSISTENCE: Save on blur / after photo upload ═══
     const stateRef = useRef({});
-    stateRef.current = { temperature, qcValues, qcPhotos, sensoryChecks, verificationPhoto, tempPhoto };
+    stateRef.current = { temperature, qcValues, qcPhotos, sensoryChecks, verificationPhoto, tempPhoto, pesajeConfirmed };
 
     const saveDraft = useCallback(async () => {
         if (!noteData.id) return;
@@ -146,6 +146,7 @@ const OutputStep = ({
                         temperature: s.temperature, qcValues: s.qcValues,
                         qcPhotos: s.qcPhotos, sensoryChecks: s.sensoryChecks,
                         verificationPhoto: s.verificationPhoto, tempPhoto: s.tempPhoto,
+                        pesajeConfirmed: s.pesajeConfirmed,
                     }
                 }
             });
@@ -240,6 +241,7 @@ const OutputStep = ({
         } catch (err) {
             console.warn('Upload failed:', err);
         }
+        setTimeout(saveDraft, 500);
     };
 
     return (
@@ -289,7 +291,7 @@ const OutputStep = ({
                                 <input
                                     type="checkbox"
                                     checked={pesajeConfirmed}
-                                    onChange={(e) => setPesajeConfirmed(e.target.checked)}
+                                    onChange={(e) => { setPesajeConfirmed(e.target.checked); setTimeout(saveDraft, 300); }}
                                     className="w-7 h-7 rounded-lg border-2 border-slate-300 text-green-600 focus:ring-green-200 cursor-pointer flex-shrink-0"
                                 />
                                 <div className="flex-1">

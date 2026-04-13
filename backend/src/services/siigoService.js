@@ -622,7 +622,12 @@ class SiigoService {
 
                 // Map to Siigo format: [{id: taxId}] — use product's own taxes + ReteFuente (conditional)
                 const applyRete = order.distributor?.reteFuente === true; // opt-in: solo si es Persona Jurídica
-                const itemTaxes = productTaxes.map(t => ({ id: t.id }));
+                
+                // If not applyRete, we must strip any Retefuente taxes that might be defaults on the product
+                const itemTaxes = productTaxes
+                    .filter(t => applyRete || (t.type !== 'Retefuente' && t.id !== RETE_FUENTE_2_5))
+                    .map(t => ({ id: t.id }));
+
                 if (applyRete && !itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
                     itemTaxes.push({ id: RETE_FUENTE_2_5 });
                 }
@@ -659,14 +664,17 @@ class SiigoService {
                 // Sum taxes for this line
                 const origProduct = order.items.find(i => i.product?.sku === item.code)?.product;
                 const origTaxes = Array.isArray(origProduct?.taxes) ? origProduct.taxes : [];
+                const _applyRete = order.distributor?.reteFuente === true; // opt-in: solo si es Persona Jurídica
                 let lineTaxes = 0;
                 let lineRete = 0;
                 
                 for (const tx of origTaxes) {
                     if (tx.percentage > 0) {
                         const taxAmt = r2(lineNet * (tx.percentage / 100));
-                        if (tx.type === 'Retefuente') {
-                            lineRete += taxAmt;
+                        if (tx.type === 'Retefuente' || tx.id === RETE_FUENTE_2_5) {
+                            if (_applyRete) {
+                                lineRete += taxAmt;
+                            }
                         } else {
                             lineTaxes += taxAmt;
                         }
@@ -677,8 +685,7 @@ class SiigoService {
                     }
                 }
                 // Add ReteFuente 2.5% only if distributor is Persona Jurídica
-                const _applyRete = order.distributor?.reteFuente === true; // opt-in: solo si es Persona Jurídica
-                if (_applyRete && !origTaxes.find(t => t.type === 'Retefuente')) {
+                if (_applyRete && !origTaxes.find(t => t.type === 'Retefuente' || t.id === RETE_FUENTE_2_5)) {
                     lineRete += r2(lineNet * 0.025);
                 }
                 
@@ -1133,8 +1140,12 @@ class SiigoService {
                     unitPrice = Math.round((unitPrice / taxDivisor) * 100) / 100;
                 }
 
-                const itemTaxes = productTaxes.map(t => ({ id: t.id }));
-                if (!itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
+                const applyRete = pqr.user?.reteFuente === true; // opt-in: solo si es Persona Jurídica
+                const itemTaxes = productTaxes
+                    .filter(t => applyRete || (t.type !== 'Retefuente' && t.id !== RETE_FUENTE_2_5))
+                    .map(t => ({ id: t.id }));
+                    
+                if (applyRete && !itemTaxes.find(t => t.id === RETE_FUENTE_2_5)) {
                     itemTaxes.push({ id: RETE_FUENTE_2_5 });
                 }
 
@@ -1188,17 +1199,24 @@ class SiigoService {
                 const origTaxes   = Array.isArray(origProduct?.taxes) ? origProduct.taxes : [];
 
                 let lineTaxes = 0, lineRete = 0;
+                const _applyRete = pqr.user?.reteFuente === true; // opt-in: solo si es Persona Jurídica
+                
                 for (const tx of origTaxes) {
                     if ((tx.percentage || 0) > 0) {
                         const txAmt = r2(lineNet * (tx.percentage / 100));
-                        if (tx.type === 'Retefuente') lineRete += txAmt;
-                        else lineTaxes += txAmt;
+                        if (tx.type === 'Retefuente' || tx.id === RETE_FUENTE_2_5) {
+                            if (_applyRete) {
+                                lineRete += txAmt;
+                            }
+                        } else {
+                            lineTaxes += txAmt;
+                        }
                     } else if ((tx.rate || 0) > 0 && (tx.milliliters || 0) > 0) {
                         lineTaxes += r2(tx.rate * (tx.milliliters / 100) * item.quantity);
                     }
                 }
-                if (!origTaxes.find(t => t.type === 'Retefuente')) {
-                    lineRete += r2(lineNet * 0.025); // ReteFuente 2.5% siempre
+                if (_applyRete && !origTaxes.find(t => t.type === 'Retefuente' || t.id === RETE_FUENTE_2_5)) {
+                    lineRete += r2(lineNet * 0.025); // ReteFuente 2.5%
                 }
                 totalAPagar += r2(lineNet + lineTaxes - lineRete);
             }

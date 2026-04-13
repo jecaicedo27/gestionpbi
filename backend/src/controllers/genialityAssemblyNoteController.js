@@ -109,10 +109,11 @@ const assemblyNoteController = {
                 });
 
                 if (templateInputs.length > 0) {
-                    // Build lookup: productId → current quantityPerUnit
+                    // Build lookup: productId → array of { qpu, unit, product }
                     const qpuMap = {};
                     for (const ti of templateInputs) {
-                        qpuMap[ti.productId] = { qpu: ti.quantityPerUnit, unit: ti.unit, product: ti.product };
+                        if (!qpuMap[ti.productId]) qpuMap[ti.productId] = [];
+                        qpuMap[ti.productId].push({ qpu: ti.quantityPerUnit, unit: ti.unit, product: ti.product });
                     }
 
                     // For PESAJE: SKIP recalculation — quickStart already computed correct
@@ -127,18 +128,23 @@ const assemblyNoteController = {
                         // Keep stored DB values — they are already correct
                         // Just re-sort items to match template order (below)
                     } else {
-                    note.items = note.items.map(item => {
-                        const current = qpuMap[item.componentId];
-                        if (current !== undefined) {
-                            return {
-                                ...item,
-                                plannedQuantity: current.qpu * note.targetQuantity,
-                                unit: current.unit || item.unit,
-                                _recalculated: true
-                            };
-                        }
-                        return item;
-                    });
+                        const qpuConsumed = {};
+                        note.items = note.items.map(item => {
+                            const arr = qpuMap[item.componentId];
+                            if (arr && arr.length > 0) {
+                                const consumedIdx = qpuConsumed[item.componentId] || 0;
+                                const current = arr[consumedIdx] || arr[arr.length - 1]; // fallback to last if mismatch
+                                qpuConsumed[item.componentId] = consumedIdx + 1;
+
+                                return {
+                                    ...item,
+                                    plannedQuantity: current.qpu * note.targetQuantity,
+                                    unit: current.unit || item.unit,
+                                    _recalculated: true
+                                };
+                            }
+                            return item;
+                        });
                     } // end: else (skip PESAJE recalc)
 
                     // ── Inject template items added AFTER the note was generated ─────

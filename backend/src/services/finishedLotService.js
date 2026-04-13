@@ -330,7 +330,7 @@ async function getStockByZone(zone, productId) {
     const finished = await prisma.finishedLotStock.findMany({
         where,
         include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true } },
+            product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true, currentStock: true } },
         },
         orderBy: [{ product: { name: 'asc' } }, { lotNumber: 'asc' }],
     });
@@ -353,7 +353,7 @@ async function getStockByZone(zone, productId) {
     const matLots = await prisma.materialLot.findMany({
         where: matWhere,
         include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true } }
+            product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true, currentStock: true } }
         },
         orderBy: [{ siigoProductName: 'asc' }, { lotNumber: 'asc' }]
     });

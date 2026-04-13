@@ -6,6 +6,9 @@ const { auth, roles } = require('../middleware/auth');
 // Siigo Assembly Note RPA
 router.post('/siigo-assembly', auth, roles(['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING']), rpaController.createSiigoAssemblyNote);
 
+// Siigo Inventory Adjustment RPA
+router.post('/siigo-adjustment', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.createSiigoAdjustment);
+
 // RPA History
 router.get('/history', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.getHistory);
 router.post('/:id/retry', auth, roles(['ADMIN', 'PRODUCCION']), rpaController.retryExecution);

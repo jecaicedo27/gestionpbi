@@ -33,8 +33,10 @@ import MRPDashboard from './pages/MRPDashboard';
 import ProductionKpiPage from './pages/ProductionKpiPage';
 import BatchHistoryPage from './pages/BatchHistoryPage';
 import ProductionAuditPage from './pages/ProductionAuditPage';
+import ProductionKardexPage from './pages/ProductionKardexPage';
 import ProductionZonePage from './pages/ProductionZonePage';
 import FinishedProductZonePage from './pages/FinishedProductZonePage';
+import MaterialZonePage from './pages/MaterialZonePage';
 import HandoffsPage from './pages/HandoffsPage';
 import RecallReportPage from './pages/RecallReportPage';
 import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
@@ -141,8 +143,10 @@ function App() {
                             <Route path="production/kpis" element={<ProductionKpiPage />} />
                             <Route path="production/batch-history" element={<BatchHistoryPage />} />
                             <Route path="production/audit" element={<ProductionAuditPage />} />
+                            <Route path="production/kardex" element={<ProductionKardexPage />} />
                             <Route path="production/zone" element={<ProductionZonePage />} />
                             <Route path="production/finished-zone" element={<FinishedProductZonePage />} />
+                            <Route path="inventory/material-zones" element={<MaterialZonePage />} />
                             <Route path="production/handoffs" element={<HandoffsPage />} />
                             <Route path="production/physical-count" element={<PhysicalCountPage />} />
                             <Route path="inventory/count" element={<InventoryCountPage />} />

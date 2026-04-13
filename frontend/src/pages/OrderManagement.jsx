@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
-import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer, RotateCcw } from 'lucide-react';
+import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer, RotateCcw, Camera, Trash2, ShoppingCart, Barcode } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { parseScanInput } from '../services/scannerParser';
 import { playSuccess, playError, playAlreadyDone, playItemComplete } from '../services/scannerSounds';
@@ -61,6 +61,15 @@ export default function OrderManagement() {
     const [editingNoteId, setEditingNoteId] = useState(null);
     const [editNoteContent, setEditNoteContent] = useState('');
 
+    // Admin Scanner
+    const [scannerModal, setScannerModal] = useState(false);
+    const [scannerDistributor, setScannerDistributor] = useState('');
+    const [scannerItems, setScannerItems] = useState([]);
+    const [scannerBarcodeText, setScannerBarcodeText] = useState('');
+    const [catalogProducts, setCatalogProducts] = useState([]);
+    const [scannerLoading, setScannerLoading] = useState(false);
+    const orderScannerInputRef = useRef(null);
+
     const { data: orders, isLoading } = useQuery({
         queryKey: ['admin-orders', statusFilter],
         queryFn: async () => {
@@ -113,6 +122,19 @@ export default function OrderManagement() {
             setSelectedOrder(null);
             alert('Pedido rechazado');
         }
+    });
+
+    const deleteOrderMutation = useMutation({
+        mutationFn: async (orderId) => {
+            const response = await axios.delete(`${API_URL}/orders/${orderId}`, { headers: AUTH() });
+            return response.data;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries(['admin-orders']);
+            queryClient.invalidateQueries(['order-counts']);
+            setSuccessModal({ type: 'success', title: 'Pedido Eliminado', message: 'El pedido ha sido eliminado permanentemente.' });
+        },
+        onError: (error) => setSuccessModal({ type: 'error', title: 'Error', message: error.response?.data?.error || 'Error al eliminar pedido.' })
     });
 
     const startPickingMutation = useMutation({
@@ -501,6 +523,20 @@ export default function OrderManagement() {
         return () => clearInterval(interval);
     }, [pickingOrder]);
 
+    // Auto-focus scanner input when Admin scanner modal opens
+    useEffect(() => {
+        if (!scannerModal) return;
+        const focusScanner = () => {
+            if (orderScannerInputRef.current && document.activeElement !== orderScannerInputRef.current
+                && document.activeElement?.dataset?.scannerIgnore !== 'true') {
+                orderScannerInputRef.current.focus();
+            }
+        };
+        focusScanner();
+        const interval = setInterval(focusScanner, 2000);
+        return () => clearInterval(interval);
+    }, [scannerModal]);
+
     // Handle scanner input (called on Enter in the hidden input)
     const handleScannerInput = useCallback(async (rawValue) => {
         if (!pickingOrder || !rawValue || rawValue.length < 4) return;
@@ -672,12 +708,26 @@ export default function OrderManagement() {
     const getEffectiveQty = (orderStatus, item) => {
         const allocated = item.allocatedQty ?? null;
         const requested = item.requestedQty ?? 0;
-        if (allocated === null || allocated === undefined) return requested;
-        if (allocated > 0) return allocated;
-        if (allocated === 0 && requested > 0 && ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'].includes(orderStatus)) {
-            return requested;
+        let baseQty = 0;
+
+        if (allocated === null || allocated === undefined) {
+            baseQty = requested;
+        } else if (allocated > 0) {
+            baseQty = allocated;
+        } else if (allocated === 0 && requested > 0 && ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'].includes(orderStatus)) {
+            baseQty = requested;
+        } else {
+            baseQty = allocated;
         }
-        return allocated;
+
+        // Subtract what is already picked for internal operational roles (admin, logistica).
+        // Distributors and Comercial still see the full requested/allocated amount.
+        if (!isDistributor && !isComercial && item.pickingItems) {
+            const picked = item.pickingItems.reduce((acc, p) => acc + (p.scannedQty || 0), 0);
+            return Math.max(0, baseQty - picked);
+        }
+
+        return baseQty;
     };
 
     const buildPendingMatrix = (ordersList = []) => {
@@ -688,7 +738,7 @@ export default function OrderManagement() {
                 const qty = getEffectiveQty(order.status, item);
                 return sum + qty;
             }, 0);
-            return { id: order.id, number: order.orderNumber, total, status: order.status };
+            return { id: order.id, number: order.orderNumber, total, status: order.status, distributor: order.distributor?.name || 'Venta Directa' };
         });
 
         ordersList.forEach(order => {
@@ -699,6 +749,7 @@ export default function OrderManagement() {
                 const flavor = normalizeFlavor(product.name, product.flavor);
                 const presentation = normalizePresentation(product.name, product.size);
                 const qty = getEffectiveQty(order.status, item);
+                if (qty <= 0) return;
 
                 if (!matrix[brand]) matrix[brand] = {};
                 if (!matrix[brand][presentation]) matrix[brand][presentation] = {};
@@ -711,7 +762,8 @@ export default function OrderManagement() {
                 matrixDetails[brand][presentation][flavor].push({
                     orderNumber: order.orderNumber,
                     status: order.status,
-                    qty
+                    qty,
+                    distributor: order.distributor?.name || 'Venta Directa'
                 });
             });
         });
@@ -731,9 +783,9 @@ export default function OrderManagement() {
         <>
         <div className="min-h-screen bg-gray-50 p-6">
             <div className="max-w-7xl mx-auto">
-                <div className="flex justify-between items-center mb-6">
-                    <h1 className="text-3xl font-bold text-gray-900">Gestión de Pedidos</h1>
-                    <div className="flex items-center gap-2">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+                    <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Gestión de Pedidos</h1>
+                    <div className="flex flex-wrap items-center gap-2">
                         {(canManageOrders || isDistributor) && (
                             <button
                                 onClick={async () => {
@@ -752,6 +804,28 @@ export default function OrderManagement() {
                             >
                                 <Upload className="w-4 h-4" />
                                 📋 Sube tu pedido por Excel
+                            </button>
+                        )}
+                        {isAdmin && (
+                            <button
+                                onClick={async () => {
+                                    setScannerModal(true);
+                                    setScannerItems([]);
+                                    setScannerDistributor('');
+                                    setScannerBarcodeText('');
+                                    try {
+                                        const [resDist, resCat] = await Promise.all([
+                                            axios.get(`${API_URL}/admin/users`, { headers: AUTH() }),
+                                            axios.get(`${API_URL}/products?active=true`, { headers: AUTH() })
+                                        ]);
+                                        setDistributors((resDist.data.data || resDist.data || []).filter(u => u.role === 'DISTRIBUIDOR'));
+                                        setCatalogProducts(resCat.data.data || resCat.data || []);
+                                    } catch(e) { console.error(e); }
+                                }}
+                                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-medium text-sm shadow-sm"
+                            >
+                                <ScanLine className="w-4 h-4" />
+                                📦 Pedido Rápido
                             </button>
                         )}
                         <button
@@ -1133,6 +1207,23 @@ export default function OrderManagement() {
                                         </button>
                                     )}
 
+                                    {/* Botón Eliminar para ADMIN si no hay nada pickeado */}
+                                    {isAdmin && order.items?.reduce((sum, item) => sum + (item.pickingItems?.reduce((s, p) => s + p.scannedQty, 0) || 0), 0) === 0 && (
+                                        <button
+                                            onClick={() => {
+                                                if (window.confirm(`¿Estás seguro de que quieres ELIMINAR permanentemente el pedido ${order.orderNumber}? Todo el inventario reservado será devuelto.`)) {
+                                                    deleteOrderMutation.mutate(order.id);
+                                                }
+                                            }}
+                                            disabled={deleteOrderMutation.isPending}
+                                            className="flex items-center gap-2 px-4 py-2 bg-rose-100 text-rose-700 border border-rose-300 rounded-md hover:bg-rose-200"
+                                            title="Eliminar pedido permanentemente"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                            Eliminar Pedido
+                                        </button>
+                                    )}
+
                                     {order.status === 'APPROVED' && (
                                         <button
                                             onClick={() => startPickingMutation.mutate(order.id)}
@@ -1166,14 +1257,49 @@ export default function OrderManagement() {
                                         </button>
                                     )}
 
-                                    {order.status === 'READY' && (isAdmin || isComercial) && (
-                                        <button
-                                            onClick={() => setInvoiceModal(order)}
-                                            className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700"
-                                        >
-                                            <FileText className="w-4 h-4" />
-                                            Facturar
-                                        </button>
+                                    {order.status === 'READY' && (isAdmin || isLogistica || isComercial) && (
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex flex-col items-start gap-1">
+                                                <span className={`text-[10px] uppercase font-bold ${(order.readyPhotosUrls || []).length >= 3 ? 'text-green-600' : 'text-amber-600'}`}>
+                                                    Evidencia: {(order.readyPhotosUrls || []).length}/3 fotos
+                                                </span>
+                                                <label className="flex items-center justify-center gap-2 px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-300 rounded cursor-pointer transition">
+                                                    <Camera className="w-4 h-4" />
+                                                    <span className="text-xs font-semibold">Subir Foto</span>
+                                                    <input 
+                                                        type="file" 
+                                                        accept="image/*" 
+                                                        capture="environment"
+                                                        className="hidden"
+                                                        onChange={async (e) => {
+                                                            const file = e.target.files[0];
+                                                            if (!file) return;
+                                                            try {
+                                                                const formData = new FormData();
+                                                                formData.append('photo', file);
+                                                                await axios.post(`${API_URL}/orders/${order.id}/ready-photos`, formData, { headers: AUTH() });
+                                                                queryClient.invalidateQueries(['admin-orders']);
+                                                            } catch (err) {
+                                                                alert('Error al subir foto de evidencia');
+                                                            }
+                                                            e.target.value = null;
+                                                        }}
+                                                    />
+                                                </label>
+                                            </div>
+
+                                            {(isAdmin || isComercial) && (
+                                                <button
+                                                    onClick={() => setInvoiceModal(order)}
+                                                    disabled={(order.readyPhotosUrls || []).length < 3}
+                                                    className="flex items-center gap-2 px-4 py-2 bg-teal-600 text-white rounded-md hover:bg-teal-700 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed self-end h-[34px]"
+                                                    title={(order.readyPhotosUrls || []).length < 3 ? "Se requieren mínimo 3 fotos antes de facturar" : "Facturar pedido"}
+                                                >
+                                                    <FileText className="w-4 h-4" />
+                                                    Facturar
+                                                </button>
+                                            )}
+                                        </div>
                                     )}
 
                                     {order.status === 'READY' && isAdmin && (
@@ -2647,6 +2773,204 @@ export default function OrderManagement() {
                 );
             })()}
 
+            {/* ════════════════ SCANNER ORDER MODAL ════════════════════════ */}
+            {scannerModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-lg md:max-w-4xl lg:max-w-2xl w-full flex flex-col max-h-[90vh] overflow-hidden transition-all">
+                        <div className="p-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                <ScanLine className="w-6 h-6 text-indigo-600" /> Nuevo Pedido por Escáner
+                            </h3>
+                            <button onClick={() => setScannerModal(false)} className="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
+                        </div>
+                        
+                        <div className="flex flex-col md:flex-row lg:flex-col flex-1 overflow-hidden">
+                            {/* Panel Izquierdo: Configuración y Scanner */}
+                            <div className="p-6 overflow-y-auto md:w-5/12 lg:w-full border-b md:border-b-0 md:border-r lg:border-r-0 lg:border-b border-gray-100 bg-gray-50/30 flex flex-col gap-6">
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Distribuidor</label>
+                                    <select 
+                                        data-scanner-ignore="true"
+                                        className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 font-medium shadow-sm transition-all"
+                                        value={scannerDistributor}
+                                        onChange={e => {
+                                            setScannerDistributor(e.target.value);
+                                            e.target.blur();
+                                            setTimeout(() => orderScannerInputRef.current?.focus(), 100);
+                                        }}
+                                    >
+                                        <option value="">-- Seleccionar Distribuidor --</option>
+                                        {distributors.map(d => (
+                                            <option key={d.id} value={d.id}>{d.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                
+                                {scannerDistributor && (
+                                    <div className="flex flex-col items-center text-center gap-3 p-6 bg-indigo-50 border border-indigo-100 rounded-2xl shadow-inner mt-auto md:mt-0">
+                                        <div className="relative flex h-10 w-10">
+                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-10 w-10 bg-indigo-500 flex items-center justify-center">
+                                                <ScanLine className="w-5 h-5 text-white" />
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <p className="text-lg font-extrabold text-indigo-900">ESCÁNER ACTIVO</p>
+                                            <p className="text-sm font-medium text-indigo-700 mt-2 leading-relaxed">Dispara con tu pistola láser. No necesitas hacer click. Tolera unidades sueltas directamente.</p>
+                                        </div>
+
+                                        {/* ── HIDDEN SCANNER INPUT ── */}
+                                        <input
+                                            ref={orderScannerInputRef}
+                                            type="text"
+                                            style={{ position: 'absolute', left: '-9999px', opacity: 0 }}
+                                            tabIndex={-1}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    const rawValue = e.target.value.trim();
+                                                    e.target.value = '';
+                                                    if (!rawValue) return;
+                                                    
+                                                    const scan = parseScanInput(rawValue);
+                                                    const prod = catalogProducts.find(p => 
+                                                        (scan.barcode && p.barcode === scan.barcode) || 
+                                                        (scan.sku && p.sku === scan.sku) || 
+                                                        p.barcode === rawValue || 
+                                                        p.sku === rawValue
+                                                    );
+
+                                                    if (!prod) {
+                                                        playError();
+                                                        alert(`Producto no encontrado con el código: ${rawValue}`);
+                                                        return;
+                                                    }
+                                                    
+                                                    const qtyToAdd = scan.unitsPerBox || 1;
+                                                    playSuccess();
+                                                    setScannerItems(prev => {
+                                                        const existing = prev.find(i => i.productId === prod.id);
+                                                        if (existing) {
+                                                            return prev.map(i => i.productId === prod.id ? { ...i, quantity: i.quantity + qtyToAdd } : i);
+                                                        }
+                                                        return [...prev, { productId: prod.id, name: prod.name, sku: prod.sku, packSize: prod.packSize, quantity: qtyToAdd }];
+                                                    });
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Panel Derecho: Carrito de Escaneo */}
+                            <div className="p-6 overflow-y-auto flex-1 bg-white flex flex-col">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h4 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                        <ShoppingCart className="w-5 h-5 text-gray-500" /> Carrito de Venta
+                                    </h4>
+                                    <span className="bg-indigo-100 text-indigo-800 text-xs font-bold px-3 py-1 rounded-full">
+                                        {scannerItems.reduce((acc, i) => acc + i.quantity, 0)} uds
+                                    </span>
+                                </div>
+
+                                {scannerItems.length > 0 ? (
+                                    <div className="border border-gray-100 rounded-xl overflow-hidden shadow-sm flex-1 overflow-y-auto max-h-[50vh] md:max-h-full">
+                                        <table className="w-full text-left bg-white text-sm">
+                                            <thead className="bg-gray-50 text-gray-500 sticky top-0">
+                                                <tr>
+                                                    <th className="px-4 py-3 font-semibold">Producto</th>
+                                                    <th className="px-4 py-3 font-semibold text-center w-24">Cant.</th>
+                                                    <th className="px-4 py-3 font-semibold text-right w-16">Acción</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                                {scannerItems.map((item) => (
+                                                    <tr key={item.productId} className="hover:bg-slate-50">
+                                                        <td className="px-4 py-3 font-medium text-gray-900">
+                                                            {item.name}
+                                                            <div className="text-xs text-gray-500 mt-0.5">Caja por {item.packSize || 1} uds</div>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-center">
+                                                            <div className="flex items-center justify-center gap-2">
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={() => setScannerItems(prev => prev.map(i => i.productId === item.productId ? { ...i, quantity: Math.max(1, i.quantity - 1) } : i))}
+                                                                    className="w-6 h-6 rounded-full bg-gray-100 text-gray-600 hover:bg-gray-200 flex items-center justify-center font-bold"
+                                                                >-</button>
+                                                                <span className="font-bold text-gray-800 w-6">{item.quantity}</span>
+                                                                <button 
+                                                                    type="button"
+                                                                    onClick={() => setScannerItems(prev => prev.map(i => i.productId === item.productId ? { ...i, quantity: i.quantity + 1 } : i))}
+                                                                    className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 hover:bg-indigo-200 flex items-center justify-center font-bold"
+                                                                >+</button>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right">
+                                                            <button 
+                                                                onClick={() => setScannerItems(prev => prev.filter(i => i.productId !== item.productId))}
+                                                                className="text-red-400 hover:text-red-600 focus:outline-none p-1 rounded-md hover:bg-red-50"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200 h-full min-h-[30vh]">
+                                        <div className="w-20 h-20 bg-white rounded-full shadow-sm flex items-center justify-center mb-4">
+                                            <Barcode className="w-10 h-10 text-gray-300" />
+                                        </div>
+                                        <p className="font-bold text-gray-500 text-lg">Esperando escaneo...</p>
+                                        <p className="text-gray-400 text-sm mt-1">Selecciona el distribuidor y dispara tu lector de códigos.</p>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="p-5 border-t border-gray-100 bg-gray-50 flex justify-between items-center shrink-0">
+                            <span className="text-sm text-gray-500 font-medium">Total: {scannerItems.reduce((s,i)=>s+i.quantity,0)} uds</span>
+                            <button
+                                disabled={scannerItems.length === 0 || !scannerDistributor || scannerLoading}
+                                onClick={async () => {
+                                    setScannerLoading(true);
+                                    try {
+                                        const payload = {
+                                            distributorId: scannerDistributor,
+                                            allowLooseUnits: true,
+                                            notes: '🤖 Generado vía Pedido Rápido (Scanner) por Administrador',
+                                            items: scannerItems.map((i, sortOrder) => ({
+                                                productId: i.productId,
+                                                quantity: i.quantity,
+                                                sortOrder
+                                            }))
+                                        };
+                                        const res = await axios.post(`${API_URL}/orders`, payload, { headers: AUTH() });
+                                        setScannerModal(false);
+                                        queryClient.invalidateQueries(['admin-orders']);
+                                        queryClient.invalidateQueries(['order-counts']);
+                                        alert('✅ Pedido creado exitosamente desde escáner.');
+                                    } catch (err) {
+                                        alert(err.response?.data?.error || 'Error al crear pedido');
+                                    } finally {
+                                        setScannerLoading(false);
+                                    }
+                                }}
+                                className={`px-6 py-3 rounded-xl font-bold text-white transition-all ${
+                                    scannerItems.length === 0 || !scannerDistributor || scannerLoading
+                                    ? 'bg-gray-300 cursor-not-allowed'
+                                    : 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-200'
+                                }`}
+                            >
+                                {scannerLoading ? 'Generando...' : '✅ Confirmar Pedido Rápido'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ════════════════ EXCEL UPLOAD MODAL ════════════════════════ */}
             {excelModal && (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -3015,7 +3339,7 @@ export default function OrderManagement() {
 
             return (
                 <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(4px)' }}>
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-7xl max-h-[90vh] overflow-hidden">
                         <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
                             <div>
                                 <div className="text-lg font-bold">Consolidado de Pedidos por Entregar</div>
@@ -3052,6 +3376,7 @@ export default function OrderManagement() {
                                             <thead>
                                                 <tr>
                                                     <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Distribuidor</th>
                                                     <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
                                                     <th className="p-2 border-b text-right font-bold text-gray-500">Unidades</th>
                                                 </tr>
@@ -3060,6 +3385,7 @@ export default function OrderManagement() {
                                                 {orderTotals.map(o => (
                                                     <tr key={o.id} className="border-b last:border-b-0">
                                                         <td className="p-2 text-gray-700 font-semibold">{o.number}</td>
+                                                        <td className="p-2 text-gray-600 font-medium truncate max-w-[150px]" title={o.distributor}>{o.distributor}</td>
                                                         <td className="p-2 text-gray-500">{statusLabels[o.status] || o.status}</td>
                                                         <td className="p-2 text-right font-bold text-gray-900">{o.total}</td>
                                                     </tr>
@@ -3086,6 +3412,7 @@ export default function OrderManagement() {
                                                 <thead>
                                                     <tr>
                                                         <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Distribuidor</th>
                                                         <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
                                                         <th className="p-2 border-b text-right font-bold text-gray-500">Cantidad</th>
                                                     </tr>
@@ -3094,6 +3421,7 @@ export default function OrderManagement() {
                                                     {detailList.map((row, idx) => (
                                                         <tr key={`${row.orderNumber}-${idx}`} className="border-b last:border-b-0">
                                                             <td className="p-2 text-gray-700 font-semibold">{row.orderNumber}</td>
+                                                            <td className="p-2 text-gray-600 font-medium truncate max-w-[150px]" title={row.distributor}>{row.distributor}</td>
                                                             <td className="p-2 text-gray-500">{statusLabels[row.status] || row.status}</td>
                                                             <td className="p-2 text-right font-bold text-gray-900">{row.qty}</td>
                                                         </tr>

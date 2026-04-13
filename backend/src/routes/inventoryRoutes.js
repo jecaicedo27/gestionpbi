@@ -5,6 +5,7 @@ const lotController = require('../controllers/lotController');
 const { auth } = require('../middleware/auth');
 
 router.get('/dashboard', auth, inventoryController.getDashboard);
+router.get('/picked-summary', auth, inventoryController.getPickedSummary);
 router.get('/list', auth, inventoryController.getAllProducts);
 router.get('/products', auth, inventoryController.getProductsSimple);
 router.post('/sync', auth, inventoryController.syncFromSiigo);

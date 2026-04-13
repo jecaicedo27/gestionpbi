@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList } from 'lucide-react';
+import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList, Microscope } from 'lucide-react';
 
 const tabsByRole = {
     PRODUCCION: [
@@ -44,6 +44,16 @@ const tabsByRole = {
         { icon: Layers, label: 'Lotes', path: '/lots/traceability' },
         { icon: Tag, label: 'Lotes PT', path: '/production/finished-zone' },
         { icon: Truck, label: 'Entregas', path: '/production/handoffs' },
+    ],
+    QUIMICO: [
+        { icon: LayoutDashboard, label: 'Inicio', path: '/' },
+        { icon: Calendar, label: 'Producción', path: '/production/view' },
+        { icon: PlayCircle, label: 'Operador', path: '/production/operator' },
+        { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel' },
+        { icon: Layers, label: 'Lotes', path: '/lots/traceability' },
+        { icon: Activity, label: 'PQR', path: '/pqr/manage' },
+        { icon: Microscope, label: 'Micro', path: '/micro/dashboard' },
+        { icon: ClipboardList, label: 'POES', path: '/sanitation/dashboard' },
     ],
 };
 

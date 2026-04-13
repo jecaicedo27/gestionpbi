@@ -647,26 +647,49 @@ exports.deleteBatch = async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Cascade: delete related records first
-        // 1. Find assembly note IDs for this batch
-        const noteIds = (await prisma.assemblyNote.findMany({
-            where: { productionBatchId: id },
-            select: { id: true }
-        })).map(n => n.id);
+        await prisma.$transaction(async (tx) => {
+            // 1. Find assembly note IDs for this batch
+            const noteIds = (await tx.assemblyNote.findMany({
+                where: { productionBatchId: id },
+                select: { id: true }
+            })).map(n => n.id);
 
-        // 2. Delete lot consumptions linked to these notes
-        if (noteIds.length > 0) {
-            await prisma.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
-        }
+            if (noteIds.length > 0) {
+                // 2. Get lot consumptions to REVERT
+                const consumptions = await tx.lotConsumption.findMany({
+                    where: { assemblyNoteId: { in: noteIds } },
+                    select: { materialLotId: true, quantityUsed: true,
+                        materialLot: { select: { productId: true } }
+                    }
+                });
 
-        // 3. Delete assembly notes (NoteItems, ProcessVariables, QualityChecks cascade via FK)
-        await prisma.assemblyNote.deleteMany({ where: { productionBatchId: id } });
+                // 3. Restore each materialLot and product stock
+                for (const c of consumptions) {
+                    if (c.materialLotId && c.quantityUsed > 0) {
+                        await tx.materialLot.update({
+                            where: { id: c.materialLotId },
+                            data: { currentQuantity: { increment: c.quantityUsed } }
+                        });
+                    }
+                    const productId = c.materialLot?.productId;
+                    if (productId && c.quantityUsed > 0) {
+                        await tx.product.update({
+                            where: { id: productId },
+                            data: { currentStock: { increment: c.quantityUsed } }
+                        });
+                    }
+                }
+                console.log(`[deleteBatch] Reverted ${consumptions.length} consumptions for batch ${id}`);
 
-        // 4. Delete output targets
-        await prisma.batchOutputTarget.deleteMany({ where: { batchId: id } });
+                // 4. Delete consumptions and notes
+                await tx.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
+                await tx.assemblyNote.deleteMany({ where: { productionBatchId: id } });
+            }
 
-        // 5. Delete the batch
-        await prisma.productionBatch.delete({ where: { id } });
+            // 5. Delete output targets and the batch
+            await tx.batchOutputTarget.deleteMany({ where: { batchId: id } });
+            await tx.productionBatch.delete({ where: { id } });
+        });
 
         res.json({ success: true });
     } catch (error) {
@@ -683,28 +706,51 @@ exports.deleteAllBatches = async (req, res) => {
         }
         const batchIds = ids;
 
-        // Step 1: Find assembly note IDs for all batches
-        const noteIds = (await prisma.assemblyNote.findMany({
-            where: { productionBatchId: { in: batchIds } },
-            select: { id: true }
-        })).map(n => n.id);
+        await prisma.$transaction(async (tx) => {
+            // 1. Find all assembly note IDs for the batches
+            const noteIds = (await tx.assemblyNote.findMany({
+                where: { productionBatchId: { in: batchIds } },
+                select: { id: true }
+            })).map(n => n.id);
 
-        // Step 2: Delete lot consumptions linked to these notes BEFORE deleting notes
-        // Without this, onDelete:SetNull orphans the consumption records
-        if (noteIds.length > 0) {
-            await prisma.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
-        }
+            if (noteIds.length > 0) {
+                // 2. Get lot consumptions to REVERT
+                const consumptions = await tx.lotConsumption.findMany({
+                    where: { assemblyNoteId: { in: noteIds } },
+                    select: { materialLotId: true, quantityUsed: true,
+                        materialLot: { select: { productId: true } }
+                    }
+                });
 
-        // Step 3: Delete assembly notes (NoteItems, ProcessVariables, QualityChecks cascade via FK)
-        await prisma.assemblyNote.deleteMany({ where: { productionBatchId: { in: batchIds } } });
+                // 3. Restore each materialLot and product stock
+                for (const c of consumptions) {
+                    if (c.materialLotId && c.quantityUsed > 0) {
+                        await tx.materialLot.update({
+                            where: { id: c.materialLotId },
+                            data: { currentQuantity: { increment: c.quantityUsed } }
+                        });
+                    }
+                    const productId = c.materialLot?.productId;
+                    if (productId && c.quantityUsed > 0) {
+                        await tx.product.update({
+                            where: { id: productId },
+                            data: { currentStock: { increment: c.quantityUsed } }
+                        });
+                    }
+                }
+                console.log(`[deleteAllBatches] Reverted ${consumptions.length} consumptions for ${batchIds.length} batches`);
 
-        // Step 4: Delete output targets
-        await prisma.batchOutputTarget.deleteMany({ where: { batchId: { in: batchIds } } });
+                // 4. Delete consumptions and notes
+                await tx.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
+                await tx.assemblyNote.deleteMany({ where: { productionBatchId: { in: batchIds } } });
+            }
 
-        // Step 5: Delete the batches
-        const deleted = await prisma.productionBatch.deleteMany({ where: { id: { in: batchIds } } });
+            // 5. Delete output targets and batches
+            await tx.batchOutputTarget.deleteMany({ where: { batchId: { in: batchIds } } });
+            await tx.productionBatch.deleteMany({ where: { id: { in: batchIds } } });
+        });
 
-        res.json({ success: true, deleted: deleted.count });
+        res.json({ success: true, deleted: batchIds.length });
     } catch (error) {
         console.error("Error deleting all batches:", error);
         res.status(500).json({ error: 'Error deleting batches: ' + error.message });

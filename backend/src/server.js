@@ -102,9 +102,9 @@ pool.query('SELECT NOW()', (err, res) => {
 
         // Ejecutar 60s después de arrancar
         setTimeout(syncInventory, 60000);
-        // Repetir cada 2 min (120000ms)
-        setInterval(syncInventory, 120000);
-        logger.info('⏰ CRON: Sync inventario programado cada 2 minutos');
+        // Repetir cada 30 min (1800000ms)
+        setInterval(syncInventory, 1800000);
+        logger.info('⏰ CRON: Sync inventario programado cada 30 minutos');
 
         // ═══ CRON: Cart reservation cleanup every 5 min ═══
         const { cleanupExpired } = require('./controllers/cartController');

@@ -121,6 +121,94 @@ const createSiigoAssemblyNote = async (req, res) => {
 };
 
 /**
+ * POST /api/rpa/siigo-adjustment
+ * Trigger Siigo inventory adjustment creation via RPA
+ */
+const createSiigoAdjustment = async (req, res) => {
+    try {
+        const { productName, productSku, quantity, accountCode, triggerSourceId } = req.body;
+
+        if (!productName || !quantity) {
+            return res.status(400).json({
+                success: false,
+                error: 'productName y quantity son requeridos'
+            });
+        }
+
+        // Create execution record in DB
+        const execution = await prisma.rpaExecution.create({
+            data: {
+                executionType: 'SIIGO_ADJUSTMENT',
+                status: 'RUNNING',
+                productName,
+                quantity: Number(quantity),
+                observations: `Ajuste contable: ${accountCode}`,
+                triggeredById: req.user?.id || null
+            }
+        });
+
+        // Respond immediately
+        res.json({
+            success: true,
+            status: 'ENCOLADO',
+            executionId: execution.id,
+            queueLength: browserManager.queue.length + 1,
+            message: `Bot Ajuste RPA encolado para ${productName} (${quantity} uds).`
+        });
+
+        // Enqueue task
+        const startTime = Date.now();
+        const params = {
+            productName: productSku || productName,
+            quantity: Number(quantity),
+            accountCode: accountCode || '71050504'
+        };
+
+        browserManager.enqueue({
+            type: 'adjustment',
+            params,
+            executionId: execution.id,
+            resolve: async (result) => {
+                const durationMs = Date.now() - startTime;
+                await prisma.rpaExecution.update({
+                    where: { id: execution.id },
+                    data: {
+                        status: result.success ? 'SUCCESS' : 'FAILED',
+                        siigoNoteCode: result.siigoNoteCode || null,
+                        siigoUrl: result.url || null,
+                        screenshotPath: result.screenshotPath || null,
+                        errorMessage: result.error || null,
+                        logs: result.logs || [],
+                        completedAt: new Date(),
+                        durationMs
+                    }
+                });
+                console.log(`🤖 RPA Ajuste [${execution.id}] ${result.success ? '✅' : '❌'} ${result.siigoNoteCode || 'sin doc'} (${(durationMs / 1000).toFixed(1)}s)`);
+            },
+            reject: async (err) => {
+                const durationMs = Date.now() - startTime;
+                await prisma.rpaExecution.update({
+                    where: { id: execution.id },
+                    data: {
+                        status: 'FAILED',
+                        errorMessage: err.message,
+                        screenshotPath: err.screenshotPath || null,
+                        logs: err.logs || [],
+                        completedAt: new Date(),
+                        durationMs
+                    }
+                });
+                console.error(`🤖 RPA Ajuste [${execution.id}] ❌ ERROR: ${err.message}`);
+            }
+        });
+
+    } catch (error) {
+        console.error('Error in createSiigoAdjustment:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+/**
  * GET /api/rpa/history
  * Get history of all RPA executions
  */
@@ -192,13 +280,33 @@ const retryExecution = async (req, res) => {
         const startTime = Date.now();
         const prod = await prisma.product.findFirst({ where: { name: original.productName }, select: { sku: true } });
         const retrySku = prod?.sku || null;
-        browserManager.enqueue({
+
+        const isAdjustment = original.executionType === 'SIIGO_ADJUSTMENT';
+        let accountCode = '71050504';
+        if (isAdjustment && original.observations) {
+            const match = original.observations.match(/Ajuste contable:?\\s*(\\d+)/i);
+            if (match) accountCode = match[1];
+        }
+
+        const taskPayload = isAdjustment ? {
+            type: 'adjustment',
+            params: {
+                productName: retrySku || original.productName,
+                quantity: original.quantity,
+                accountCode
+            }
+        } : {
+            type: 'assembly',
             params: {
                 productName: retrySku || original.productName,
                 quantity: original.quantity,
                 assemblyType: original.assemblyType || 'proceso',
                 observations: original.observations || ''
-            },
+            }
+        };
+
+        browserManager.enqueue({
+            ...taskPayload,
             executionId: id,
             resolve: async (result) => {
                 const durationMs = Date.now() - startTime;
@@ -362,6 +470,7 @@ const dispatchOrphan = async (req, res) => {
 
         const startTime = Date.now();
         browserManager.enqueue({
+            type: 'assembly',
             params: {
                 productName: productSku || productName,
                 quantity: Number(qty),
@@ -403,5 +512,5 @@ const dispatchOrphan = async (req, res) => {
     }
 };
 
-module.exports = { createSiigoAssemblyNote, getHistory, retryExecution, getQueueStatus, getOrphanNotes, dispatchOrphan };
+module.exports = { createSiigoAssemblyNote, createSiigoAdjustment, getHistory, retryExecution, getQueueStatus, getOrphanNotes, dispatchOrphan };
 

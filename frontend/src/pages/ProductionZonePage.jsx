@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Input, Button, message, Modal, InputNumber, Select, Tag, Empty, Spin, Typography, Card } from 'antd';
-import { Search, ArrowRightCircle, ArrowLeftCircle, Package, Warehouse, RefreshCw, Clock, Camera, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, ArrowRightCircle, ArrowLeftCircle, Package, Warehouse, RefreshCw, Clock, Camera, X, ChevronDown, ChevronUp, QrCode } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import './ProductionZonePage.css';
@@ -28,10 +28,14 @@ const ProductionZonePage = () => {
     const [zoneStock, setZoneStock] = useState([]);
     const [zoneLoading, setZoneLoading] = useState(false);
     const [zoneSearch, setZoneSearch] = useState('');
+    const [zonePage, setZonePage] = useState(1);
+    const ITEMS_PER_PAGE = 20;
 
     const [history, setHistory] = useState([]);
     const [historyLoading, setHistoryLoading] = useState(false);
     const [previewPhoto, setPreviewPhoto] = useState(null);
+
+    const [scannerInput, setScannerInput] = useState('');
 
     // ── Load zone stock + history on mount ──
     useEffect(() => {
@@ -41,6 +45,7 @@ const ProductionZonePage = () => {
 
     // Auto-filter zone stock when search changes (debounced)
     useEffect(() => {
+        setZonePage(1); // Reset page on new search
         const timer = setTimeout(() => { loadZoneStock(); }, 300);
         return () => clearTimeout(timer);
     }, [zoneSearch]);
@@ -67,6 +72,52 @@ const ProductionZonePage = () => {
             console.error(e);
         } finally {
             setHistoryLoading(false);
+        }
+    };
+
+    // ── Scanner Input Handling ──
+    const handleScannerInput = async (value) => {
+        setScannerInput(value);
+        if (value.includes('{') && value.includes('}')) {
+            try {
+                // Ensure we extract only the JSON part in case scanner has weird prefix/suffix
+                const startIndex = value.indexOf('{');
+                const endIndex = value.lastIndexOf('}') + 1;
+                const jsonStr = value.slice(startIndex, endIndex);
+                
+                const qrData = JSON.parse(jsonStr);
+                if (qrData.sku && qrData.lot && qrData.qty) {
+                    message.success(`Rótulo Detectado: ${qrData.sku} Lote ${qrData.lot}`);
+                    setSearching(true);
+                    
+                    const res = await api.get('/zone-transfers/search-products', { params: { q: qrData.sku } });
+                    const foundProduct = res.data?.find(p => p.sku === qrData.sku);
+                    
+                    if (foundProduct) {
+                        setSelectedProduct(foundProduct);
+                        setTransferQty(qrData.qty);
+                        setSearchQuery('');
+                        
+                        setLotsLoading(true);
+                        const lotsRes = await api.get(`/zone-transfers/available-lots/${foundProduct.id}`);
+                        setAvailableLots(lotsRes.data || []);
+                        
+                        const matchedLot = lotsRes.data?.find(l => l.lotNumber === qrData.lot);
+                        if (matchedLot) {
+                            setSelectedLot(matchedLot.id);
+                        } else {
+                            message.warning(`El lote ${qrData.lot} no se encontró con saldo en Bodega Ppal.`);
+                        }
+                    } else {
+                        message.error('Producto no encontrado para el SKU: ' + qrData.sku);
+                    }
+                }
+            } catch (e) {
+                console.error('Invalid QR JSON parsed', e);
+            }
+            setScannerInput(''); // clear after parse attempt
+            setSearching(false);
+            setLotsLoading(false);
         }
     };
 
@@ -189,6 +240,27 @@ const ProductionZonePage = () => {
             {/* ── Transfer Form — Horizontal Collapsible ── */}
             {showTransferForm && (
                 <div className="pz-transfer-bar">
+                    {/* Scanner Injector */}
+                    {!selectedProduct && (
+                        <div className="bg-slate-800 rounded-lg p-3 mb-4 flex items-center justify-between shadow-inner focus-within:ring-2 focus-within:ring-blue-500 transition-all">
+                            <div className="flex items-center gap-3">
+                                <QrCode className="text-blue-400" size={24}/>
+                                <div className="text-white">
+                                    <div className="font-bold text-sm">Escáner de Rótulo G-PBI</div>
+                                    <div className="text-[10px] text-slate-400">Haz clic aquí y dispara el láser al bulto para auto-rellenar</div>
+                                </div>
+                            </div>
+                            <input 
+                                autoFocus
+                                type="text"
+                                className="bg-slate-900 border border-slate-700 text-green-400 font-mono text-sm rounded px-3 py-2 w-64 outline-none focus:border-blue-500"
+                                placeholder="..."
+                                value={scannerInput}
+                                onChange={e => handleScannerInput(e.target.value)}
+                            />
+                        </div>
+                    )}
+
                     <div className="pz-transfer-row">
                         {/* Step 1: Product search */}
                         <div className="pz-transfer-col pz-transfer-col-product">
@@ -246,18 +318,26 @@ const ProductionZonePage = () => {
                         <div className="pz-transfer-col">
                             <label className="pz-label">Lote</label>
                             {lotsLoading ? <Spin size="small" /> : (
-                                <Select
-                                    style={{ width: '100%' }}
-                                    placeholder={!selectedProduct ? 'Seleccione producto primero' : availableLots.length === 0 ? 'Sin lotes en bodega' : 'Seleccionar...'}
-                                    value={selectedLot}
-                                    onChange={setSelectedLot}
-                                    allowClear
-                                    disabled={!selectedProduct}
-                                    options={availableLots.map(l => ({
-                                        value: l.id,
-                                        label: `${l.lotNumber} — ${fmtQty(l.currentQuantity, l.unit)}`
-                                    }))}
-                                />
+                                <>
+                                    <Select
+                                        style={{ width: '100%' }}
+                                        placeholder={!selectedProduct ? 'Seleccione producto primero' : availableLots.length === 0 ? 'Sin lotes en bodega' : 'Seleccionar...'}
+                                        value={selectedLot}
+                                        onChange={setSelectedLot}
+                                        allowClear
+                                        disabled={!selectedProduct}
+                                        options={availableLots.map(l => ({
+                                            value: l.id,
+                                            label: `${l.lotNumber} — ${fmtQty(l.currentQuantity, l.unit)}`
+                                        }))}
+                                    />
+                                    {selectedProduct && availableLots.length === 0 && (selectedProduct.productionZoneStock || 0) > 0 && (
+                                        <div style={{ marginTop: 6, padding: '6px 10px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 6, fontSize: '0.78rem', color: '#ad6800' }}>
+                                            ⚠️ Todo el stock ya está en zona de producción ({fmtQty(selectedProduct.productionZoneStock, selectedProduct.unit)}).
+                                            No hay lotes pendientes en bodega.
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </div>
 
@@ -390,51 +470,72 @@ const ProductionZonePage = () => {
                 ) : zoneStock.length === 0 ? (
                     <Empty description="Sin materiales en zona de producción" />
                 ) : (
-                    <div className="pz-stock-table-wrap">
-                        <table className="pz-stock-table">
-                            <thead>
-                                <tr>
-                                    <th>Producto</th>
-                                    <th>Stock Zona</th>
-                                    <th>Lotes en Zona</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {zoneStock.map(p => (
-                                    <tr key={p.id}>
-                                        <td>
-                                            <div className="pz-stock-product-name">{p.name}</div>
-                                            <div className="pz-stock-product-sku">{p.sku}</div>
-                                        </td>
-                                        <td className="pz-stock-qty">
-                                            <span className="pz-stock-value">{fmtQty(p.productionZoneStock, p.unit)}</span>
-                                            <div className="pz-stock-equiv">
-                                                {(p.unit === 'gramo' || p.unit === 'g') && p.productionZoneStock > 0 && (
-                                                    <Tag color="blue" className="pz-lot-tag">≈ {(p.productionZoneStock / 1000).toFixed(1)} kg</Tag>
-                                                )}
-                                                {p.packSize > 1 && p.productionZoneStock > 0 && (
-                                                    <Tag color="purple" className="pz-lot-tag">≈ {(p.productionZoneStock / p.packSize).toFixed(1)} packs</Tag>
-                                                )}
-                                            </div>
-                                        </td>
-                                        <td>
-                                            {p.materialLots?.length > 0 ? (
-                                                <div className="pz-lot-tags">
-                                                    {p.materialLots.map(l => (
-                                                        <Tag key={l.id} color="cyan" className="pz-lot-tag">
-                                                            {l.lotNumber}: {fmtQty(l.currentQuantity, l.unit)}
-                                                        </Tag>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <Text type="secondary" className="pz-no-lots">Sin lotes</Text>
-                                            )}
-                                        </td>
+                    <>
+                        <div className="pz-stock-table-wrap">
+                            <table className="pz-stock-table">
+                                <thead>
+                                    <tr>
+                                        <th>Producto</th>
+                                        <th>Stock Zona</th>
+                                        <th>Lotes en Zona</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                                </thead>
+                                <tbody>
+                                    {zoneStock.slice((zonePage - 1) * ITEMS_PER_PAGE, zonePage * ITEMS_PER_PAGE).map(p => (
+                                        <tr key={p.id}>
+                                            <td>
+                                                <div className="pz-stock-product-name">{p.name}</div>
+                                                <div className="pz-stock-product-sku">{p.sku}</div>
+                                            </td>
+                                            <td className="pz-stock-qty">
+                                                <span className="pz-stock-value">{fmtQty(p.productionZoneStock, p.unit)}</span>
+                                                <div className="pz-stock-equiv">
+                                                    {(p.unit === 'gramo' || p.unit === 'g') && p.productionZoneStock > 0 && (
+                                                        <Tag color="blue" className="pz-lot-tag">≈ {(p.productionZoneStock / 1000).toFixed(1)} kg</Tag>
+                                                    )}
+                                                    {p.packSize > 1 && p.productionZoneStock > 0 && (
+                                                        <Tag color="purple" className="pz-lot-tag">≈ {(p.productionZoneStock / p.packSize).toFixed(1)} packs</Tag>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td>
+                                                {p.materialLots?.length > 0 ? (
+                                                    <div className="pz-lot-tags">
+                                                        {p.materialLots.map(l => (
+                                                            <Tag key={l.id} color="cyan" className="pz-lot-tag">
+                                                                {l.lotNumber}: {fmtQty(l.currentQuantity, l.unit)}
+                                                            </Tag>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <Text type="secondary" className="pz-no-lots">Sin lotes</Text>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        {/* Pagination */}
+                        {Math.ceil(zoneStock.length / ITEMS_PER_PAGE) > 1 && (
+                            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', marginTop: '16px', paddingBottom: '16px' }}>
+                                <Button 
+                                    disabled={zonePage <= 1} 
+                                    onClick={() => setZonePage(zonePage - 1)}
+                                    icon={<ArrowLeftCircle size={16} />}
+                                />
+                                <span style={{ fontSize: '13px', color: '#64748b' }}>
+                                    Página <strong style={{color: '#334155'}}>{zonePage}</strong> de {Math.ceil(zoneStock.length / ITEMS_PER_PAGE)}
+                                </span>
+                                <Button 
+                                    disabled={zonePage >= Math.ceil(zoneStock.length / ITEMS_PER_PAGE)} 
+                                    onClick={() => setZonePage(zonePage + 1)}
+                                    icon={<ArrowRightCircle size={16} />}
+                                />
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
 
@@ -484,18 +585,27 @@ const ProductionZonePage = () => {
                                         <td>{t.transferredBy?.name || '-'}</td>
                                         <td className="pz-obs">{t.observations || '-'}</td>
                                         <td>
-                                            {(t.photos && t.photos.length > 0) ? (
-                                                <div className="pz-history-photos">
-                                                    {t.photos.map((url, i) => (
-                                                        <img key={i} src={url} alt={`Foto ${i+1}`}
-                                                            className="pz-history-thumb"
-                                                            onClick={() => setPreviewPhoto(url)}
-                                                        />
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <Text type="secondary" style={{ fontSize: '0.75rem' }}>—</Text>
-                                            )}
+                                            {(() => {
+                                                let safePhotos = [];
+                                                if (Array.isArray(t.photos)) safePhotos = t.photos;
+                                                else if (typeof t.photos === 'string' && t.photos.length > 0) {
+                                                    try { safePhotos = JSON.parse(t.photos); } catch(e) {}
+                                                }
+                                                if (!Array.isArray(safePhotos)) safePhotos = [];
+                                                
+                                                return safePhotos.length > 0 ? (
+                                                    <div className="pz-history-photos">
+                                                        {safePhotos.map((url, i) => (
+                                                            <img key={i} src={url} alt={`Foto ${i+1}`}
+                                                                className="pz-history-thumb"
+                                                                onClick={() => setPreviewPhoto(url)}
+                                                            />
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <Text type="secondary" style={{ fontSize: '0.75rem' }}>—</Text>
+                                                );
+                                            })()}
                                         </td>
                                     </tr>
                                 ))}

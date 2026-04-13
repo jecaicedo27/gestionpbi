@@ -114,7 +114,7 @@ exports.getRoleDashboardKpis = async (req, res) => {
 
             const totalScrapItems = await prisma.assemblyNote.findMany({
                  where: { completedAt: { gte: today }, status: 'COMPLETED' },
-                 select: { empaqueData: true, processParameters: true }
+                 select: { processParameters: true }
             });
 
             let mermaGlobal = 0;

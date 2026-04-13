@@ -37,9 +37,14 @@ export function parseScanInput(rawValue) {
         return { type: 'unknown', sku: null, barcode: null, lotNumber: null, name: null, unitsPerBox: null, expirationDate: null, raw: '' };
     }
 
-    const buffer = rawValue.trim();
+    let buffer = rawValue.trim();
     if (buffer.length < 4) {
         return { type: 'unknown', sku: null, barcode: null, lotNumber: null, name: null, unitsPerBox: null, expirationDate: null, raw: buffer };
+    }
+
+    // ── 0. Fix Reversed Inputs (from BT scanners on specific tablets) ──
+    if (buffer.includes(':TOL') || buffer.includes(':UKS')) {
+        buffer = buffer.split('').reverse().join('');
     }
 
     // ── 1. Try JSON (MarcadoCajas / empaque QR) ──

@@ -4,6 +4,7 @@ import Sidebar from './Sidebar';
 import BottomNavBar from './BottomNavBar';
 import GlobalTimerAlert from './GlobalTimerAlert';
 import PinLockScreen from './PinLockScreen';
+import ShiftBlockScreen from '../ShiftBlockScreen';
 import { Bell, LogOut, Printer, Wifi, LockKeyhole } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useZebra } from '../../context/ZebraContext';
@@ -50,7 +51,7 @@ const Layout = () => {
 
     // PRODUCCION always tablet mode (dedicated tablets). Others only on small screens.
     const alwaysTablet = user?.role === 'PRODUCCION';
-    const responsiveTabletRoles = ['LOGISTICA', 'CARTERA', 'CONTABILIDAD', 'OPERARIO_PICKING'];
+    const responsiveTabletRoles = ['LOGISTICA', 'CARTERA', 'CONTABILIDAD', 'OPERARIO_PICKING', 'QUIMICO'];
     const isTabletMode = alwaysTablet || (isSmallScreen && responsiveTabletRoles.includes(user?.role));
     
     // Check if we are in the distributor welcome screen to hide the sidebar and allow a full-width hero
@@ -208,6 +209,9 @@ const Layout = () => {
             </main>
 
             {isTabletMode && <BottomNavBar userRole={user?.role} />}
+
+            {/* Shift Handoff Block Screen — blocks incoming shift if previous shift didn't deliver */}
+            <ShiftBlockScreen userRole={user?.role} />
 
             {/* PIN Lock Screen Overlay */}
             {isLocked && (

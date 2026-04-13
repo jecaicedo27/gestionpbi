@@ -218,6 +218,42 @@ const PQRManagement = () => {
         return { products: sorted, totalUnits, totalPqrs: pending.length };
     }, [filteredPqrs]);
 
+    // Adjustment Summary — product breakdown for PQRs with pendingAdjustment=true (for CONTABILIDAD)
+    const adjustmentSummary = useMemo(() => {
+        const pending = filteredPqrs.filter(p => p.pendingAdjustment);
+        if (pending.length === 0) return null;
+        const products = {};
+        let totalUnits = 0;
+        const byDistributor = {};
+        for (const pqr of pending) {
+            const distName = pqr.user?.name || 'Sin nombre';
+            if (!byDistributor[distName]) byDistributor[distName] = { count: 0, units: 0, tickets: [] };
+            byDistributor[distName].count++;
+            for (const item of (pqr.items || [])) {
+                const sku = item.product?.sku || '-';
+                const name = item.product?.name || item.description || 'N/A';
+                const key = sku;
+                if (!products[key]) products[key] = { sku, name, qty: 0, motivos: {}, tickets: new Set(), ncRefs: new Set() };
+                products[key].qty += item.quantity;
+                const tipo = item.type || 'N/A';
+                products[key].motivos[tipo] = (products[key].motivos[tipo] || 0) + item.quantity;
+                products[key].tickets.add(pqr.ticketNumber);
+                if (pqr.creditNoteUrl) {
+                    const isFilePath = pqr.creditNoteUrl.startsWith('/') || pqr.creditNoteUrl.startsWith('[') || pqr.creditNoteUrl.startsWith('"');
+                    products[key].ncRefs.add(isFilePath ? 'Adjunto' : pqr.creditNoteUrl);
+                }
+                totalUnits += item.quantity;
+                byDistributor[distName].units += item.quantity;
+            }
+            byDistributor[distName].tickets.push(pqr.ticketNumber);
+        }
+        const sorted = Object.values(products).sort((a, b) => b.qty - a.qty);
+        const distributors = Object.entries(byDistributor)
+            .map(([name, data]) => ({ name, ...data }))
+            .sort((a, b) => b.units - a.units);
+        return { products: sorted, totalUnits, totalPqrs: pending.length, distributors };
+    }, [filteredPqrs]);
+
     const getStageBadge = (stage) => {
         return (
             <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${stageStyles[stage] || 'bg-gray-100 text-gray-800'}`}>
@@ -356,7 +392,7 @@ const PQRManagement = () => {
             )}
 
             {/* Tab Navigation — only for ADMIN / CONTABILIDAD */}
-            {(isAdmin || isAccounting) && creditNoteSummary && (
+            {(isAdmin || isAccounting) && (creditNoteSummary || adjustmentSummary) && (
                 <div className="flex gap-1 mb-4 bg-gray-100 p-1 rounded-xl w-fit">
                     <button
                         onClick={() => setActiveTab('pqrs')}
@@ -368,6 +404,7 @@ const PQRManagement = () => {
                     >
                         📋 PQRs
                     </button>
+                    {creditNoteSummary && (
                     <button
                         onClick={() => setActiveTab('credit')}
                         className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all flex items-center gap-2 ${
@@ -384,6 +421,24 @@ const PQRManagement = () => {
                             {creditNoteSummary.totalPqrs}
                         </span>
                     </button>
+                    )}
+                    {adjustmentSummary && (
+                    <button
+                        onClick={() => setActiveTab('adjustment')}
+                        className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all flex items-center gap-2 ${
+                            activeTab === 'adjustment'
+                                ? 'bg-orange-500 text-white shadow-sm'
+                                : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        🔧 Ajuste Inventario
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
+                            activeTab === 'adjustment' ? 'bg-orange-600 text-white' : 'bg-orange-100 text-orange-700'
+                        }`}>
+                            {adjustmentSummary.totalPqrs}
+                        </span>
+                    </button>
+                    )}
                 </div>
             )}
 
@@ -479,6 +534,113 @@ const PQRManagement = () => {
                 </div>
             )}
 
+            {/* Adjustment Summary Tab */}
+            {activeTab === 'adjustment' && (isAdmin || isAccounting) && adjustmentSummary && (
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm flex-1 overflow-hidden flex flex-col">
+                    <div className="px-4 py-3 bg-gradient-to-r from-orange-50 to-amber-50 border-b border-orange-100 flex items-center justify-between">
+                        <div>
+                            <h2 className="text-base font-bold text-orange-900">Resumen de Ajustes de Inventario Pendientes</h2>
+                            <p className="text-xs text-orange-700 mt-0.5">
+                                {adjustmentSummary.totalPqrs} PQRs • {adjustmentSummary.totalUnits.toLocaleString('es-CO')} unidades • {adjustmentSummary.products.length} productos
+                                {filterDistributor !== 'ALL' && <span className="font-semibold"> • {selectedDistributorName}</span>}
+                            </p>
+                        </div>
+                        <button
+                            onClick={() => {
+                                const lines = ['Ajuste de Inventario por daño — Reportes de Calidad (PQR)', ''];
+                                if (filterDistributor !== 'ALL') lines.push(`Distribuidor: ${selectedDistributorName}`, '');
+                                lines.push(`Ajuste de inventario correspondiente a ${adjustmentSummary.totalPqrs} reportes de calidad (PQR). Detalle:`, '');
+                                for (const p of adjustmentSummary.products) {
+                                    const tickets = [...p.tickets].join(', ');
+                                    lines.push(`- ${p.sku} — ${p.name} — ${p.qty} uds (${tickets})`);
+                                }
+                                lines.push('', `Total: ${adjustmentSummary.totalUnits.toLocaleString('es-CO')} unidades`);
+                                lines.push('', '--- Por Distribuidor ---');
+                                for (const d of adjustmentSummary.distributors) {
+                                    lines.push(`- ${d.name}: ${d.units} uds (${d.count} PQRs) → ${d.tickets.join(', ')}`);
+                                }
+                                navigator.clipboard.writeText(lines.join('\n'));
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2500);
+                            }}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+                                copied
+                                    ? 'bg-green-100 text-green-700 border border-green-300'
+                                    : 'bg-white text-orange-800 border border-orange-200 hover:bg-orange-100 hover:border-orange-300 shadow-sm'
+                            }`}
+                        >
+                            {copied ? <><ClipboardCheck size={15} /> ¡Copiado!</> : <><Copy size={15} /> Copiar Resumen</>}
+                        </button>
+                    </div>
+
+                    {/* Distributor breakdown */}
+                    {adjustmentSummary.distributors.length > 1 && (
+                        <div className="px-4 py-3 bg-orange-50/50 border-b border-orange-100">
+                            <h3 className="text-xs font-bold text-orange-800 uppercase mb-2">Desglose por Distribuidor</h3>
+                            <div className="flex flex-wrap gap-2">
+                                {adjustmentSummary.distributors.map(d => (
+                                    <span key={d.name} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-orange-200 text-sm">
+                                        <span className="font-semibold text-orange-900">{d.name}</span>
+                                        <span className="text-orange-600 font-bold">{d.units} uds</span>
+                                        <span className="text-gray-400">({d.count} PQRs)</span>
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="overflow-auto flex-1">
+                        <table className="min-w-full divide-y divide-gray-200 text-sm">
+                            <thead className="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase">Código</th>
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase">Producto</th>
+                                    <th className="px-4 py-3 text-right text-xs font-bold text-gray-600 uppercase">Cantidad</th>
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase">Motivo</th>
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase">NC Ref</th>
+                                    <th className="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase"># PQR</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {adjustmentSummary.products.map((p, i) => (
+                                    <tr key={p.sku} className={`hover:bg-orange-50/30 transition-colors ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/40'}`}>
+                                        <td className="px-4 py-2.5 font-mono font-bold text-xs text-gray-700">{p.sku}</td>
+                                        <td className="px-4 py-2.5 text-gray-900 font-medium">{p.name}</td>
+                                        <td className="px-4 py-2.5 text-right font-extrabold text-gray-900 text-base tabular-nums">{p.qty}</td>
+                                        <td className="px-4 py-2.5">
+                                            {Object.entries(p.motivos).map(([tipo, qty]) => (
+                                                <span key={tipo} className="inline-block text-xs px-2 py-0.5 rounded-full bg-orange-50 text-orange-700 font-semibold mr-1">
+                                                    {tipo}: {qty}
+                                                </span>
+                                            ))}
+                                        </td>
+                                        <td className="px-4 py-2.5">
+                                            {[...p.ncRefs].map((ref, j) => (
+                                                <span key={j} className="inline-block text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-semibold mr-1">
+                                                    ✅ {ref}
+                                                </span>
+                                            ))}
+                                        </td>
+                                        <td className="px-4 py-2.5 text-xs text-gray-500 max-w-[300px]">
+                                            <div className="truncate" title={[...p.tickets].join(', ')}>
+                                                {[...p.tickets].join(', ')}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                                <tr className="bg-orange-50 font-bold border-t-2 border-orange-200">
+                                    <td className="px-4 py-3" colSpan="2">TOTAL</td>
+                                    <td className="px-4 py-3 text-right text-lg tabular-nums">{adjustmentSummary.totalUnits.toLocaleString('es-CO')}</td>
+                                    <td className="px-4 py-3"></td>
+                                    <td className="px-4 py-3"></td>
+                                    <td className="px-4 py-3 text-xs">{adjustmentSummary.totalPqrs} PQRs</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
             {/* PQR List Tab */}
             {activeTab === 'pqrs' && (
             <div className="bg-white rounded-lg shadow flex-1 overflow-hidden flex flex-col">
@@ -490,10 +652,10 @@ const PQRManagement = () => {
                                     <input
                                         type="checkbox"
                                         className="w-4 h-4 accent-purple-600 cursor-pointer"
-                                        checked={filteredPqrs.filter(p => p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED').length > 0 && selectedIds.size === filteredPqrs.filter(p => p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED').length}
+                                        checked={filteredPqrs.filter(p => p.pendingAdjustment || (p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED')).length > 0 && selectedIds.size === filteredPqrs.filter(p => p.pendingAdjustment || (p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED')).length}
                                         onChange={(e) => {
                                             if (e.target.checked) {
-                                                setSelectedIds(new Set(filteredPqrs.filter(p => p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED').map(p => p.id)));
+                                                setSelectedIds(new Set(filteredPqrs.filter(p => p.pendingAdjustment || (p.status !== 'PROCESSED' && p.stage !== 'COMPLETED' && p.stage !== 'REJECTED')).map(p => p.id)));
                                             } else {
                                                 setSelectedIds(new Set());
                                             }
@@ -524,7 +686,7 @@ const PQRManagement = () => {
                                             <input
                                                 type="checkbox"
                                                 className="w-4 h-4 accent-purple-600 cursor-pointer"
-                                                disabled={pqr.status === 'PROCESSED' || pqr.stage === 'COMPLETED' || pqr.stage === 'REJECTED'}
+                                                disabled={(!pqr.pendingAdjustment && (pqr.status === 'PROCESSED' || pqr.stage === 'COMPLETED')) || pqr.stage === 'REJECTED'}
                                                 checked={selectedIds.has(pqr.id)}
                                                 onChange={(e) => {
                                                     setSelectedIds(prev => {

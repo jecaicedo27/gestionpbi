@@ -28,6 +28,9 @@ const InputStep = ({
     const actualQty = actualQuantities[item.id] ?? '';
     const planned = item.plannedQuantity || 0;
     const actual = parseFloat(actualQty) || 0;
+    // Hard cap: cannot register more than 120% of planned quantity
+    const MAX_ALLOWED = planned > 0 ? planned * 1.20 : Infinity;
+    const isExceedingCap = planned > 0 && actual > MAX_ALLOWED;
     const deviation = planned > 0 && actual > 0 ? (((actual - planned) / planned) * 100).toFixed(1) : null;
     const isOverOrUnder = deviation !== null ? (Math.abs(parseFloat(deviation)) > 5) : false;
     const isWeight = ['kg', 'KG', 'gramo', 'gramos', 'g', 'G'].includes(item.unit);
@@ -344,15 +347,34 @@ const InputStep = ({
                             inputMode="decimal"
                             value={actualQty}
                             onChange={(e) => onActualQtyChange(item.id, e.target.value)}
+                            onBlur={(e) => {
+                                // Clamp to max on blur — never block while typing
+                                const val = parseFloat(e.target.value);
+                                if (planned > 0 && !isNaN(val) && val > MAX_ALLOWED) {
+                                    onActualQtyChange(item.id, String(parseFloat(MAX_ALLOWED.toFixed(2))));
+                                }
+                            }}
                             placeholder={parseFloat(planned.toFixed(1)).toString()}
                             className={`w-full text-center text-2xl font-black py-3 px-4 rounded-xl border-2 
                                 focus:outline-none focus:ring-2 transition-all
-                                ${isOverOrUnder
-                                    ? 'border-amber-400 bg-amber-50 focus:ring-amber-200 text-amber-700'
-                                    : 'border-violet-300 bg-violet-50 focus:ring-violet-200 text-violet-700'
+                                ${isExceedingCap
+                                    ? 'border-red-500 bg-red-50 focus:ring-red-200 text-red-700'
+                                    : isOverOrUnder
+                                        ? 'border-amber-400 bg-amber-50 focus:ring-amber-200 text-amber-700'
+                                        : 'border-violet-300 bg-violet-50 focus:ring-violet-200 text-violet-700'
                                 }`}
                         />
-                        {deviation !== null && (
+                        {planned > 0 && (
+                            <div className="mt-1 text-[10px] text-slate-400 text-center">
+                                Máx. permitido: <span className="font-bold text-slate-500">{Number(MAX_ALLOWED).toLocaleString('es-CO', { maximumFractionDigits: 1 })} {item.unit}</span>
+                            </div>
+                        )}
+                        {isExceedingCap && (
+                            <div className="mt-2 bg-red-100 border-2 border-red-400 rounded-xl px-3 py-2 text-center text-sm font-black text-red-700">
+                                🚫 Valor fuera del rango — se corregirá al salir del campo (máx: {Number(MAX_ALLOWED).toFixed(1)} {item.unit})
+                            </div>
+                        )}
+                        {!isExceedingCap && deviation !== null && (
                             <div className={`mt-2 text-sm font-bold text-center ${isOverOrUnder ? 'text-amber-600' : 'text-green-600'}`}>
                                 {parseFloat(deviation) > 0 ? `+${deviation}%` : `${deviation}%`} vs planificado
                                 {isOverOrUnder && ' ⚠️ Fuera del rango (>5%)'}
@@ -386,13 +408,19 @@ const InputStep = ({
                         </div>
                     )}
 
-                    {/* Photo evidence — MANDATORY for all ingredients */}
+                    {/* Photo evidence — MANDATORY for most, OPTIONAL for PESAJE */}
                     <div className="w-full max-w-lg">
-                        <label className={`text-xs font-bold uppercase mb-1.5 flex items-center gap-1.5 ${photoPreview ? 'text-emerald-600' : 'text-red-500'}`}>
-                            📷 Foto del Pesaje
-                            {!photoPreview && <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black animate-pulse">OBLIGATORIO</span>}
-                            {photoPreview && <span className="text-emerald-500 text-[9px]">✅</span>}
-                        </label>
+                        {(() => {
+                            const isPesaje = note?.processType?.code === 'PESAJE';
+                            return (
+                                <label className={`text-xs font-bold uppercase mb-1.5 flex items-center gap-1.5 ${photoPreview ? 'text-emerald-600' : isPesaje ? 'text-slate-500' : 'text-red-500'}`}>
+                                    📷 Foto del Pesaje
+                                    {!photoPreview && isPesaje && <span className="bg-slate-400 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black">OPCIONAL</span>}
+                                    {!photoPreview && !isPesaje && <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black animate-pulse">OBLIGATORIO</span>}
+                                    {photoPreview && <span className="text-emerald-500 text-[9px]">✅</span>}
+                                </label>
+                            );
+                        })()}
                         {photoPreview && (
                             <img src={photoPreview} alt="Pesaje"
                                 className="w-full max-h-32 object-cover rounded-xl border-2 border-emerald-300 mb-2 shadow-sm" />
@@ -400,10 +428,12 @@ const InputStep = ({
                         <label className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95
                             ${photoPreview
                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
-                                : 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 animate-pulse'}`}>
+                                : note?.processType?.code === 'PESAJE'
+                                    ? 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                    : 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 animate-pulse'}`}>
                             {photoPreview
                                 ? <><CheckCircle size={18} /> <span className="font-bold text-xs">Foto tomada — Cambiar</span></>
-                                : <><Camera size={18} /> <span className="font-bold text-xs">⚠️ TOMAR FOTO DEL PESAJE</span></>
+                                : <><Camera size={18} /> <span className="font-bold text-xs">{note?.processType?.code === 'PESAJE' ? '📷 Tomar foto del pesaje (opcional)' : '⚠️ TOMAR FOTO DEL PESAJE'}</span></>
                             }
                             <input
                                 type="file"

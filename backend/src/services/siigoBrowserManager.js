@@ -14,6 +14,7 @@ const path = require('path');
 const SIIGO_EMAIL = 'Gerencia@poppingbobainternational.com';
 const SIIGO_PASSWORD = 'Naranjita2025*';
 const ASSEMBLY_NOTE_URL = 'https://siigonube.siigo.com/#/assembly-note/1664';
+const INVENTORY_ADJUSTMENT_URL = 'https://siigonube.siigo.com/#/inventories/1107';
 const LOGIN_URL = 'https://siigonube.siigo.com/';
 
 class SiigoBrowserManager {
@@ -39,7 +40,7 @@ class SiigoBrowserManager {
     /**
      * Initialize the browser and navigate to the assembly note form
      */
-    async initialize() {
+    async initialize(taskType = 'assembly') {
         try {
             this.log('Inicializando browser...');
 
@@ -66,10 +67,14 @@ class SiigoBrowserManager {
             this.page.setDefaultTimeout(60000);
 
             await this.login();
-            await this.navigateToForm();
+            if (taskType === 'assembly') {
+                await this.navigateToForm();
+                this.log('✅ Browser listo y en formulario de ensamble');
+            } else {
+                this.log('✅ Browser listo para tarea: ' + taskType);
+            }
 
             this.isReady = true;
-            this.log('✅ Browser listo y en formulario de ensamble');
         } catch (error) {
             this.log(`❌ Error inicializando: ${error.message}`);
             await this.cleanup();
@@ -233,11 +238,17 @@ class SiigoBrowserManager {
 
             try {
                 // Launch a fresh browser for EACH task to prevent OOM
-                this.log('🚀 Lanzando browser efímero...');
-                await this.initialize();
+                this.log(`🚀 Lanzando browser efímero (tipo: ${task.type || 'assembly'})...`);
+                await this.initialize(task.type || 'assembly');
 
-                // Execute the assembly note creation
-                const result = await this.executeAssemblyNote(task.params);
+                // Execute based on task type
+                let result;
+                if (task.type === 'adjustment') {
+                    result = await this.executeInventoryAdjustment(task.params);
+                } else {
+                    result = await this.executeAssemblyNote(task.params);
+                }
+                
                 task.resolve(result);
             } catch (error) {
                 this.log(`❌ Error en tarea: ${error.message || error}`);
@@ -248,8 +259,15 @@ class SiigoBrowserManager {
                     task._retried = true;
                     try {
                         await this.cleanup();
-                        await this.initialize();
-                        const result = await this.executeAssemblyNote(task.params);
+                        await this.initialize(task.type || 'assembly');
+                        
+                        let result;
+                        if (task.type === 'adjustment') {
+                            result = await this.executeInventoryAdjustment(task.params);
+                        } else {
+                            result = await this.executeAssemblyNote(task.params);
+                        }
+                        
                         task.resolve(result);
                         this.log('✅ Reintento exitoso');
                     } catch (retryError) {
@@ -621,6 +639,52 @@ class SiigoBrowserManager {
                 }
             } catch (e) {
                 log(`⚠️ Bodega producto falló: ${e.message}`);
+            }
+
+            // === LOTE DE PRODUCTO (OBLIGATORIO EN ALGUNOS PRODUCTOS) ===
+            log('=== LOTE ===');
+            try {
+                // Buscamos cualquier input que sea de lote y lo forzamos a "AJUSTE" si no hay lote indicado, 
+                // o usamos el batchNumber si viniera (en este script no lo recibimos explícitamente, pero podemos extraerlo de obs)
+                const loteToSet = (observations && observations.match(/Lote:\s*([^.]+)/i)) ? observations.match(/Lote:\s*([^.]+)/i)[1].trim() : 'AJUSTE';
+                
+                const foundLote = await page.evaluate((lval) => {
+                    const inputs = document.querySelectorAll('input');
+                    for (const inp of inputs) {
+                        const name = (inp.name || '').toLowerCase();
+                        const id = (inp.id || '').toLowerCase();
+                        const placeholder = (inp.placeholder || '').toLowerCase();
+                        if ((name.includes('lote') || id.includes('lote') || placeholder.includes('lote') || placeholder.includes('lot')) && inp.offsetHeight > 0) {
+                            inp.scrollIntoView();
+                            inp.focus();
+                            inp.value = lval || 'AJUSTE';
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                    return false;
+                }, loteToSet || 'AJUSTE');
+
+                if (foundLote) {
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Tab');
+                    log(`✅ Campo Lote detectado y llenado con: ${loteToSet || 'AJUSTE'}`);
+                } else {
+                    log('ℹ️ No se detectó campo Lote obligatorio en la tabla principal');
+                    // Fallback: tratar de buscar por locator
+                    try {
+                        const loteInput = page.locator('input[placeholder*="Lote" i], input[id*="lote" i]').first();
+                        if (await loteInput.isVisible({ timeout: 1000 })) {
+                            await loteInput.fill(loteToSet || 'AJUSTE');
+                            await page.waitForTimeout(300);
+                            await page.keyboard.press('Tab');
+                            log(`✅ Campo Lote llenado por fallback con: ${loteToSet || 'AJUSTE'}`);
+                        }
+                    } catch(e2) {}
+                }
+            } catch(e) {
+                log(`⚠️ Intento de llenar Lote falló: ${e.message}`);
             }
 
             // Ingredient bodegas are handled by the Siigo template — NOT touched by RPA.
@@ -1065,6 +1129,190 @@ class SiigoBrowserManager {
                 screenshotPath: errPath,
                 logs: taskLogs
             };
+        }
+    }
+
+    /**
+     * Execute inventory adjustment creation on the current page
+     */
+    async executeInventoryAdjustment({ productName, quantity, accountCode }) {
+        const page = this.page;
+        const screenshotDir = path.join(__dirname, '..', 'rpa-screenshots');
+        const timestamp = Date.now();
+        const taskLogs = [];
+        const log = (msg) => { this.log(msg); taskLogs.push(msg); };
+
+        log(`🚀 Creando Ajuste Inventario: ${productName} x${quantity} (Cuenta: ${accountCode})`);
+
+        try {
+            log('Navegando a Comprobante de Inventario...');
+            await page.goto(INVENTORY_ADJUSTMENT_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(5000); // Wait for SPA to render
+
+            // === Llenado genérico (para asegurar que atrapamos el form) ===
+            await page.evaluate(() => {
+                document.querySelectorAll('.MuiDialog-root, .MuiModal-root, .MuiBackdrop-root').forEach(el => el.remove());
+            });
+
+            // 1. PRODUCTO
+            log('=== PRODUCTO ===');
+            const autocompletes = page.locator('#autocomplete_autocompleteInput');
+            const count = await autocompletes.count();
+            let productFilled = false;
+            
+            for (let i = 0; i < count; i++) {
+                const ac = autocompletes.nth(i);
+                try {
+                    const isVisible = await ac.isVisible();
+                    if (!isVisible) continue;
+                    
+                    const val = await ac.inputValue();
+                    if (!val || val === '') {
+                        await ac.click({ timeout: 2000 });
+                        await ac.pressSequentially(productName, { delay: 100 });
+                        await page.waitForTimeout(3000);
+                        await page.keyboard.press('ArrowDown');
+                        await page.waitForTimeout(500);
+                        await page.keyboard.press('Enter');
+                        await page.waitForTimeout(1000);
+                        
+                        const newVal = await ac.inputValue();
+                        if (newVal && newVal.length > 3) {
+                            log(`✅ Producto llenado en autocomplete #${i}: ${newVal}`);
+                            productFilled = true;
+                            // Asumimos que el primer autocomplete vacío que acepta el producto es el correcto.
+                            break;
+                        }
+                    }
+                } catch(e) {}
+            }
+
+            if (!productFilled) {
+                log('⚠️ No se pudo llenar el producto, intentando vía fallback tabla...');
+            }
+
+            // 2. BODEGA
+            log('=== BODEGA Y CUENTA ===');
+            for (let i = 0; i < count; i++) {
+                const ac = autocompletes.nth(i);
+                try {
+                    if (await ac.isVisible() && (await ac.inputValue()) === '') {
+                        await ac.click();
+                        await ac.pressSequentially('Sin asig', { delay: 100 });
+                        await page.waitForTimeout(2000);
+                        await page.keyboard.press('ArrowDown');
+                        await page.waitForTimeout(500);
+                        await page.keyboard.press('Enter');
+                        await page.waitForTimeout(1000);
+                        log(`✅ Intentado Bodega en autocomplete #${i}`);
+                    }
+                } catch(e) {}
+            }
+
+            // 3. CANTIDAD
+            log('=== CANTIDAD ===');
+            const qtyInput = page.locator('#inputDecimal_siigoInputDecimal').first();
+            try {
+                await qtyInput.scrollIntoViewIfNeeded({ timeout: 2000 });
+                await qtyInput.click({ clickCount: 3, force: true });
+                await page.waitForTimeout(300);
+                await page.keyboard.press('Backspace');
+                await qtyInput.pressSequentially(String(quantity), { delay: 100 });
+                await page.keyboard.press('Tab');
+                log('✅ Cantidad forzada a ' + quantity);
+            } catch(e) {
+                log('⚠️ Fallo el qty locator, intentando fallback JS');
+                await page.evaluate((qty) => {
+                    const inputs = document.querySelectorAll('#inputDecimal_siigoInputDecimal, input[type="number"], .ui-grid-cell input');
+                    for (const inp of inputs) {
+                        if (inp.closest('.ui-grid') || inp.offsetHeight > 0) {
+                            inp.focus();
+                            inp.value = qty;
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }
+                }, String(quantity));
+            }
+
+            // === LOTE DE PRODUCTO ===
+            log('=== LOTE ===');
+            try {
+                const foundLote = await page.evaluate(() => {
+                    const inputs = document.querySelectorAll('input');
+                    for (const inp of inputs) {
+                        const name = (inp.name || '').toLowerCase();
+                        const id = (inp.id || '').toLowerCase();
+                        const placeholder = (inp.placeholder || '').toLowerCase();
+                        if ((name.includes('lote') || id.includes('lote') || placeholder.includes('lote') || placeholder.includes('lot')) && inp.offsetHeight > 0) {
+                            inp.scrollIntoView();
+                            inp.focus();
+                            inp.value = 'AJUSTE';
+                            inp.dispatchEvent(new Event('input', { bubbles: true }));
+                            inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                if (foundLote) {
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Tab');
+                    log(`✅ Campo Lote detectado y llenado con: AJUSTE`);
+                } else {
+                    const loteInput = page.locator('input[placeholder*="Lote" i], input[id*="lote" i]').first();
+                    if (await loteInput.isVisible({ timeout: 1000 })) {
+                        await loteInput.fill('AJUSTE');
+                        await page.waitForTimeout(300);
+                        await page.keyboard.press('Tab');
+                        log(`✅ Campo Lote llenado por fallback con: AJUSTE`);
+                    }
+                }
+            } catch(e) {
+                log(`⚠️ No se detectó o llenó campo Lote: ${e.message}`);
+            }
+
+            // 4. OBSERVACIONES Y CUENTA
+            const obsText = `Ajuste automático RPA. Producto: ${productName} | Cuenta: ${accountCode} - ${new Date().toLocaleString()}`;
+            try { await page.locator('textarea[placeholder*="bservacion"]').fill(obsText); } catch (e) {
+                try { await page.locator('textarea').first().fill(obsText); } catch(e2) {}
+            }
+
+            // GUARDAR
+            log('=== GUARDAR ===');
+            const urlBeforeSave = page.url();
+            await page.locator('button:has-text("Guardar")').first().click({ force: true }).catch(() => {});
+            
+            // Wait for redirect
+            await page.waitForTimeout(6000);
+            const urlChanged = page.url() !== urlBeforeSave;
+            let finalNote = null;
+
+            if (urlChanged) {
+                finalNote = await page.evaluate(() => {
+                    const match = document.body.innerText.match(/(AJ-\d+-\d+|Ajuste-\d+-\d+|IE-\d+-\d+|CE-\d+-\d+|NE-\d+-\d+)/i);
+                    return match ? match[1] : 'Guardado Exitoso';
+                });
+            }
+
+            const screenshotPath = path.join(screenshotDir, `siigo-adjustment-${timestamp}.png`);
+            try { await page.screenshot({ path: screenshotPath, fullPage: true }); } catch (e) {}
+
+            return {
+                success: urlChanged,
+                siigoNoteCode: finalNote,
+                url: page.url(),
+                screenshotPath,
+                logs: taskLogs,
+                error: urlChanged ? null : 'No se pudo verificar el guardado (URL no cambió)'
+            };
+
+        } catch (error) {
+            log(`❌ Error: ${error.message}`);
+            const errPath = path.join(screenshotDir, `siigo-adj-error-${timestamp}.png`);
+            try { await page.screenshot({ path: errPath, fullPage: true }); } catch(e) {}
+            throw { message: error.message, screenshotPath: errPath, logs: taskLogs };
         }
     }
 

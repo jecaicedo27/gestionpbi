@@ -5,6 +5,7 @@ const router = require('./routes');
 const { generalLimiter } = require('./middleware/rateLimiter');
 
 const app = express();
+app.set('trust proxy', 1);
 const path = require('path');
 
 // Middleware

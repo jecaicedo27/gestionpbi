@@ -425,12 +425,12 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 }
                 // ── MAQUILA labels ──
                 for (let i = 0; i < maquilaFullBoxes; i++) {
-                    const label = buildLotLabel({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, 1);
+                    const label = buildLotLabel({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, 1, { maquila: true });
                     await printer.sendTSPL(label);
                     if (i < maquilaFullBoxes - 1 || maquilaPartialUnits > 0) await new Promise(r => setTimeout(r, delay));
                 }
                 if (maquilaPartialUnits > 0) {
-                    const label = buildLotLabel({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1);
+                    const label = buildLotLabel({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1, { maquila: true });
                     await printer.sendTSPL(label);
                 }
             } else {
@@ -472,12 +472,12 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 }
                 // ── MAQUILA labels: batch full boxes ──
                 if (maquilaFullBoxes > 0) {
-                    const label = buildLotLabelZPL({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, maquilaFullBoxes);
+                    const label = buildLotLabelZPL({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, maquilaFullBoxes, { maquila: true });
                     await sendToZebra(label);
                     if (maquilaPartialUnits > 0) await new Promise(r => setTimeout(r, delay));
                 }
                 if (maquilaPartialUnits > 0) {
-                    const label = buildLotLabelZPL({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1);
+                    const label = buildLotLabelZPL({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1, { maquila: true });
                     await sendToZebra(label);
                 }
             }

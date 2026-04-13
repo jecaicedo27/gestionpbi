@@ -266,17 +266,26 @@ exports.updateProductConfig = async (req, res) => {
  */
 exports.getProductsSimple = async (req, res) => {
     try {
+        const { search } = req.query;
+        let whereClause = { active: true };
+        if (search) {
+            whereClause.name = { contains: search, mode: 'insensitive' };
+        }
         const products = await prisma.product.findMany({
-            where: { active: true },
+            where: whereClause,
             select: {
                 id: true,
                 sku: true,
+                barcode: true,
                 name: true,
                 unit: true,
                 currentStock: true,
+                packSize: true,
+                productionZoneStock: true,
                 classification: true,
                 type: true,
                 flavor: true,
+                accountGroup: true,
                 group: {
                     select: { name: true }
                 }
@@ -287,5 +296,66 @@ exports.getProductsSimple = async (req, res) => {
     } catch (error) {
         logger.error('Error in getProductsSimple:', error);
         res.status(500).json({ error: 'Error al obtener productos' });
+    }
+};
+
+exports.getPickedSummary = async (req, res) => {
+    try {
+        const statusesToExclude = ['DELIVERED', 'CANCELLED', 'REJECTED']; // Or just include APPROVED, IN_PICKING, READY, INVOICED, DISPATCHED
+        
+        // Sum scannedQty per productId for active orders that are not yet invoiced or delivered
+        const activeOrders = await prisma.order.findMany({
+            where: { status: { in: ['APPROVED', 'IN_PICKING', 'READY'] } },
+            include: {
+                distributor: { select: { id: true, name: true } },
+                items: {
+                    include: {
+                        pickingItems: true
+                    }
+                }
+            }
+        });
+
+        const pickedMap = {};
+        for (const order of activeOrders) {
+            const distributorName = order.distributor?.name || 'Distribuidor';
+            for (const item of order.items) {
+                if (item.pickingItems && item.pickingItems.length > 0) {
+                    for (const pItem of item.pickingItems) {
+                        const qty = pItem.scannedQty || 0;
+                        if (qty > 0) {
+                            if (!pickedMap[item.productId]) {
+                                pickedMap[item.productId] = { total: 0, orders: [], lots: {} };
+                            }
+                            pickedMap[item.productId].total += qty;
+                            
+                            // Overall product order summary
+                            let existingOrder = pickedMap[item.productId].orders.find(o => o.orderId === order.id);
+                            if (existingOrder) { existingOrder.quantity += qty; } 
+                            else {
+                                pickedMap[item.productId].orders.push({ orderId: order.id, orderNumber: order.orderNumber, distributorName, quantity: qty });
+                            }
+
+                            // Lot-specific summary
+                            const lotNo = pItem.lotNumber || 'S/L';
+                            if (!pickedMap[item.productId].lots[lotNo]) {
+                                pickedMap[item.productId].lots[lotNo] = { total: 0, orders: [] };
+                            }
+                            pickedMap[item.productId].lots[lotNo].total += qty;
+                            let existingLotOrder = pickedMap[item.productId].lots[lotNo].orders.find(o => o.orderId === order.id);
+                            if (existingLotOrder) { existingLotOrder.quantity += qty; } 
+                            else {
+                                pickedMap[item.productId].lots[lotNo].orders.push({ orderId: order.id, orderNumber: order.orderNumber, distributorName, quantity: qty });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        res.json({ success: true, data: pickedMap });
+    } catch (error) {
+        console.error('Error fetching picked summary:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch picked summary' });
     }
 };

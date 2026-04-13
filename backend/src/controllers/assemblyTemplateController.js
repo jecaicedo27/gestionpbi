@@ -283,20 +283,42 @@ async function updateAssemblyTemplate(req, res) {
 
             const result = await prisma.$transaction(async (tx) => {
                 // 1. Delete old stage inputs first (foreign key constraint)
+                // 1. Get current stages to detect deletions
                 const oldStages = await tx.assemblyTemplateStage.findMany({
                     where: { templateId: id },
-                    select: { id: true }
+                    select: { id: true, stageName: true }
                 });
+
                 if (oldStages.length > 0) {
                     await tx.assemblyTemplateStageInput.deleteMany({
                         where: { stageId: { in: oldStages.map(s => s.id) } }
                     });
                 }
 
-                // 2. Delete old stages
+                // 2. Delete old stages natively and pass user context into Postgres session
+                const actingUserForSQL = updates.updatedById || createdById;
+                if (actingUserForSQL) {
+                    await tx.$executeRawUnsafe(`SET LOCAL app.current_user_id = '${actingUserForSQL}'`);
+                }
                 await tx.assemblyTemplateStage.deleteMany({
                     where: { templateId: id }
                 });
+
+                // 2.5 Log explicit auditing if stages were definitively removed
+                const actingUser = updates.updatedById || createdById;
+                if (actingUser && oldStages.length > stages.length) {
+                    const oldNames = oldStages.map(s => s.stageName).join(', ');
+                    const newNames = stages.map(s => s.stageName || 'Nueva').join(', ');
+                    await tx.auditLog.create({
+                        data: {
+                            userId: actingUser,
+                            action: 'DELETE',
+                            entity: 'AssemblyTemplateStage',
+                            entityId: id,
+                            details: `ALERTA DE BORRADO DE ETAPAS: Plantilla reducida de ${oldStages.length} a ${stages.length} etapas. Antes: [${oldNames}], Ahora: [${newNames}]`
+                        }
+                    });
+                }
 
                 // 3. Update template header
                 await tx.assemblyTemplate.update({

@@ -203,6 +203,95 @@ exports.rejectOrder = async (req, res) => {
 };
 
 /**
+ * Admin: Delete an order completely
+ * Only if it has 0 picked units. Reverts inventoryAlternate reservations.
+ */
+exports.deleteOrder = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ success: false, error: 'Solo los administradores pueden eliminar pedidos.' });
+        }
+
+        const order = await prisma.order.findUnique({
+            where: { id },
+            include: {
+                items: {
+                    include: { pickingItems: true }
+                }
+            }
+        });
+
+        if (!order) {
+            return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+        }
+
+        // Validate 0 picked units
+        let totalPicked = 0;
+        for (const item of order.items) {
+            const scannedQty = (item.pickingItems || []).reduce((s, p) => s + p.scannedQty, 0);
+            totalPicked += scannedQty;
+        }
+
+        if (totalPicked > 0) {
+            return res.status(400).json({
+                success: false,
+                error: `No se puede eliminar porque este pedido ya tiene ${totalPicked} unidades separadas/alistadas.`
+            });
+        }
+
+        // Delete order and revert reservations in a transaction
+        await prisma.$transaction(async (tx) => {
+            // Un-reserve stock only if the order isn't DISPATCHED or DELIVERED (if it was, physical stock was ALREADY deducted and alternate was decremented back then, so doing it again here or not might be tricky; but if 0 units picked, it's impossible to be DISPATCHED). In PENDING, APPROVED, IN_PICKING, READY, reservations exist.
+            for (const item of order.items) {
+                // If the stock was allocated/reserved, we revert it based on requestedQty 
+                // because in PENDING the reservedQty is requestedQty.
+                try {
+                    await tx.inventoryAlternate.update({
+                        where: { productId: item.productId },
+                        data: {
+                            reservedQty: { decrement: item.requestedQty },
+                            availableQty: { increment: item.requestedQty }
+                        }
+                    });
+                } catch (e) {
+                    // Ignore if alternate inventory record doesn't exist
+                }
+            }
+
+            // Prisma cascading will handle OrderItem and PickingItem deletions if schema allows, 
+            // but just to be safe:
+            await tx.orderPickingItem.deleteMany({
+                where: { orderItemId: { in: order.items.map(i => i.id) } }
+            });
+            await tx.orderItem.deleteMany({
+                where: { orderId: id }
+            });
+            await tx.order.delete({
+                where: { id }
+            });
+        });
+
+        // Invalidate cache
+        await cacheService.invalidatePattern('inventory:*');
+
+        const io = req.app.get('io');
+        if (io) {
+            io.emit('order:deleted', { orderId: id });
+        }
+
+        logger.info(`Order ${order.orderNumber} DELETED by ${req.user.email}`);
+
+        res.json({ success: true, message: 'Pedido eliminado correctamente' });
+
+    } catch (error) {
+        logger.error('Delete Order Error:', error);
+        res.status(500).json({ success: false, error: 'Error al eliminar pedido' });
+    }
+};
+
+/**
  * Logistics: Mark order as ready for dispatch
  */
 exports.markReady = async (req, res) => {
@@ -299,6 +388,14 @@ exports.invoiceOrder = async (req, res) => {
             return res.status(400).json({ success: false, error: 'El pedido debe estar listo para facturar' });
         }
 
+        // ── Validation: Minimum 3 photos evidence required before invoicing ──
+        if (!order.readyPhotosUrls || order.readyPhotosUrls.length < 3) {
+            return res.status(400).json({ 
+                success: false, 
+                error: `Falta evidencia fotográfica. Se requieren como mínimo 3 fotos del pedido embalado antes de facturar. (Actuales: ${order.readyPhotosUrls?.length || 0}/3)`
+            });
+        }
+
         // ── Create invoice in Siigo ──
         let siigoResult = null;
         let siigoError = null;
@@ -340,9 +437,29 @@ exports.invoiceOrder = async (req, res) => {
             // Creates a FinishedLotTransfer record per lot consumed so the
             // reconciliation dashboard can show "Salida factura FV-2-xxxx".
             for (const item of order.items) {
-                const scannedQty = (item.pickingItems || []).reduce((s, p) => s + p.scannedQty, 0);
-                if (scannedQty <= 0 || !item.productId) continue;
+                const pickedQty = (item.pickingItems || []).reduce((s, p) => s + p.scannedQty, 0);
+                
+                // ── PREVENT DOUBLE DISCOUNT ──
+                // If the item went through physical picking, its lot stock was ALREADY deducted 
+                // in completePicking(). We just update the transfer log to include the invoice number.
+                if (pickedQty > 0) {
+                    await tx.finishedLotTransfer.updateMany({
+                        where: { orderId: order.id, reason: 'Despacho por picking', productId: item.productId },
+                        data: {
+                            reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`
+                        }
+                    });
+                    continue;
+                }
 
+                // ── FIFO FALLBACK FOR QUICK ORDERS ──
+                // Quick Orders bypass picking, so they have 0 pickedQty. 
+                // We deduct them here using FIFO.
+                const qtyToDeduct = item.allocatedQty || 0;
+
+                if (qtyToDeduct <= 0 || !item.productId) continue;
+
+                let remaining = qtyToDeduct;
                 const lots = await tx.finishedLotStock.findMany({
                     where: {
                         productId: item.productId,
@@ -353,7 +470,6 @@ exports.invoiceOrder = async (req, res) => {
                     orderBy: { createdAt: 'asc' }  // FIFO
                 });
 
-                let remaining = scannedQty;
                 for (const lot of lots) {
                     if (remaining <= 0) break;
                     const consume = Math.min(remaining, lot.currentQuantity);
@@ -1283,6 +1399,11 @@ exports.getPendingDeliverySummary = async (req, res) => {
                                 flavor: true,
                                 size: true,
                                 accountGroup: true,
+                            }
+                        },
+                        pickingItems: {
+                            select: {
+                                scannedQty: true
                             }
                         }
                     }

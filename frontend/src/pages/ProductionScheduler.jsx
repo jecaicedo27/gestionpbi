@@ -351,21 +351,58 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
             const targetWeight = defaultLots * BATCH_SIZE;
             const scaleFactor = totalSyrupKg > 0 ? (targetWeight / totalSyrupKg) : 1;
-            const scaledMix = (res.data.mix || []).map(m => {
+            const SYRUP_RATIO = activeLine === 'geniality' ? 1.0 : (config.syrupRatio || 0.70);
+
+            // First pass: scaled units (no box rounding, targeting exact capacity)
+            let currentSyrupAssigned = 0;
+            let scaledMix = (res.data.mix || []).map(m => {
                 let units = Math.round((m.plannedUnits || 0) * scaleFactor);
-                const ps = m.packSize || 1;
-                // Only re-round to complete boxes when ACTUAL scaling happened (scaleFactor != 1)
-                // Backend already provides correctly rounded values
-                if (ps > 1 && units > 0 && Math.abs(scaleFactor - 1) > 0.01) {
-                    const is350 = activeLine !== 'geniality' && ((m.name || '').includes('350') || (m.name || '').includes('360'));
-                    units = Math.ceil(units / ps) * ps;
-                    if (is350 && m.contramuestra) units += m.contramuestra;
+                // For Liquipops, include contramuestra if applicable
+                const is350 = activeLine !== 'geniality' && ((m.name || '').includes('350') || (m.name || '').includes('360'));
+                if (is350 && m.contramuestra && units > 0) units += m.contramuestra;
+                
+                currentSyrupAssigned += (units * (m.kgFactor || 0) * SYRUP_RATIO);
+                return { ...m, plannedUnits: units, is350 };
+            });
+
+            // Second pass: perfectly adjust exact difference in Syrup bounds
+            if (scaledMix.length > 0 && Math.abs(scaleFactor - 1) > 0.01 && Math.abs(currentSyrupAssigned - targetWeight) > 0.05) {
+                scaledMix.sort((a, b) => (a.kgFactor || 0) - (b.kgFactor || 0));
+                let diff = targetWeight - currentSyrupAssigned;
+                let iterations = 0;
+                while (Math.abs(diff) > 0.05 && iterations < 500) {
+                    iterations++;
+                    if (diff > 0) {
+                        const tgt = scaledMix.find(m => ((m.kgFactor || 0) * SYRUP_RATIO) <= diff + 0.05);
+                        if (tgt) {
+                            tgt.plannedUnits += 1;
+                            diff -= ((tgt.kgFactor || 0) * SYRUP_RATIO);
+                        } else break;
+                    } else {
+                        const sortedDesc = [...scaledMix].sort((a,b) => (b.kgFactor || 0) - (a.kgFactor || 0));
+                        const tgt = sortedDesc.find(m => m.plannedUnits > 1 && ((m.kgFactor || 0) * SYRUP_RATIO) <= Math.abs(diff) + 0.05);
+                        if (tgt) {
+                            tgt.plannedUnits -= 1;
+                            diff += ((tgt.kgFactor || 0) * SYRUP_RATIO);
+                        } else {
+                            const fallback = scaledMix.find(m => m.plannedUnits > 1);
+                            if (fallback) {
+                                fallback.plannedUnits -= 1;
+                                diff += ((fallback.kgFactor || 0) * SYRUP_RATIO);
+                            } else break;
+                        }
+                    }
                 }
+            }
+
+            // Clean up and restore properties
+            scaledMix = scaledMix.map(m => {
+                const ps = m.packSize || 1;
                 return {
                     ...m,
-                    plannedUnits: units,
-                    plannedWeightKg: units * (m.kgFactor || 0),
-                    boxes: ps > 1 ? Math.floor(units / ps) : m.boxes
+                    plannedUnits: m.plannedUnits,
+                    plannedWeightKg: m.plannedUnits * (m.kgFactor || 0),
+                    boxes: ps > 1 ? Math.floor(m.plannedUnits / ps) : m.boxes
                 };
             });
 

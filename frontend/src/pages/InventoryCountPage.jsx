@@ -1,5 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import api from '../services/api';
+import { Calendar, Save, Trash2, Search, ArrowRight, Eye, Play, Plus, X, PackageSearch, PenTool } from 'lucide-react';
+import { parseScanInput } from '../services/scannerParser';
+import { playSuccess, playError } from '../services/scannerSounds';
+import { useGlobalScanner } from '../hooks/useGlobalScanner';
 
 // ─── 5 bodegas fijas ─────────────────────────────────────────────────────────
 const WAREHOUSES = [
@@ -23,11 +27,16 @@ const MONTH_OPTIONS = (() => {
 })();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const fmtKg = (grams) => {
-    if (grams == null || grams === '') return '—';
-    const n = Number(grams);
+const fmtGrams = (qty, unitName = 'g') => {
+    if (qty == null || qty === '') return '—';
+    const n = Number(qty);
     if (isNaN(n)) return '—';
-    return n >= 1000 ? `${(n / 1000).toFixed(2)} kg` : `${n.toFixed(0)} g`;
+    const strVal = new Intl.NumberFormat('es-CO').format(Math.round(n));
+    let u = (unitName || 'g').toLowerCase();
+    if (u === 'unidad' || u === 'unidades') u = 'uds';
+    else if (u === 'gramo' || u === 'gramos') u = 'g';
+    else if (u === 'mililitro' || u === 'mililitros') u = 'ml';
+    return `${strVal} ${u}`;
 };
 
 const extractSiigoTotal = (lot) => {
@@ -44,12 +53,14 @@ const extractSiigoTotal = (lot) => {
     } catch { return null; }
 };
 
-const diffBadge = (diff) => {
+const diffBadge = (diff, unitName) => {
     if (diff == null) return null;
     const abs = Math.abs(diff);
-    if (abs < 100) return { bg: '#f0fdf4', color: '#15803d', text: '≈ OK' };
-    if (diff < 0) return { bg: '#fef2f2', color: '#dc2626', text: `−${fmtKg(abs)}` };
-    return { bg: '#fffbeb', color: '#d97706', text: `+${fmtKg(abs)}` };
+    let u = (unitName || 'g').toLowerCase();
+    let isOk = (u === 'unidad' || u === 'unidades' || u === 'uds') ? (abs === 0) : (abs < 100);
+    if (isOk) return { bg: '#f0fdf4', color: '#15803d', text: '≈ OK' };
+    if (diff < 0) return { bg: '#fef2f2', color: '#dc2626', text: `−${fmtGrams(abs, unitName)}` };
+    return { bg: '#fffbeb', color: '#d97706', text: `+${fmtGrams(abs, unitName)}` };
 };
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -67,10 +78,27 @@ export default function InventoryCountPage() {
     const [newForm, setNewForm] = useState({ month: MONTH_OPTIONS[0].val, warehouseName: WAREHOUSES[0].id });
     const [creating, setCreating] = useState(false);
 
+    const [systemProducts, setSystemProducts] = useState([]);
     const [search, setSearch] = useState('');
     const [filterUncounted, setFilterUncounted] = useState(false);
     const [savingMap, setSavingMap] = useState({});
     const [inputMap, setInputMap] = useState({});
+    const [pickedSummary, setPickedSummary] = useState({});
+    const scannerInputRef = useRef(null);
+    const [lastScan, setLastScan] = useState(null);
+
+    // ── Auto-focus scanner input ──────────────────────────────────────────────
+    useEffect(() => {
+        if (view !== 'session' || activeSession?.status !== 'IN_PROGRESS') return;
+        const focusScanner = () => {
+            if (scannerInputRef.current && document.activeElement !== scannerInputRef.current && document.activeElement?.dataset?.scannerIgnore !== 'true') {
+                scannerInputRef.current.focus({ preventScroll: true });
+            }
+        };
+        focusScanner();
+        const interval = setInterval(focusScanner, 2000);
+        return () => clearInterval(interval);
+    }, [view, activeSession]);
 
     // ── Load sessions ─────────────────────────────────────────────────────────
     const fetchSessions = useCallback(async () => {
@@ -86,12 +114,16 @@ export default function InventoryCountPage() {
         setLoadingLots(true);
         try {
             // Cargamos TODOS los lotes de todas las zonas en paralelo
-            const [{ data: sess }, matRes, finRes] = await Promise.all([
+            const [{ data: sess }, matRes, finRes, pickRes, prodRes] = await Promise.all([
                 api.get(`/inventory-count/sessions/${session.id}`),
                 api.get('/inventory/lots?status=AVAILABLE,LOW_STOCK'),
-                api.get('/finished-lots/all-active')
+                api.get('/finished-lots/all-active'),
+                api.get('/inventory/picked-summary').catch(() => ({ data: { data: {} } })),
+                api.get('/inventory/products').catch(() => ({ data: [] }))
             ]);
             setActiveSession(sess);
+            if (pickRes?.data?.data) setPickedSummary(pickRes.data.data);
+            if (prodRes?.data) setSystemProducts(Array.isArray(prodRes.data) ? prodRes.data : []);
             const matLots = Array.isArray(matRes.data) ? matRes.data : [];
             const finLots = Array.isArray(finRes.data) ? finRes.data : [];
             // Merge: mat lots already have zone WAREHOUSE/PRODUCTION; finished have zone from FinishedLotStock
@@ -101,7 +133,7 @@ export default function InventoryCountPage() {
             const im = {};
             lines.forEach(ln => {
                 const key = ln.lotId || ln.lotNumber;
-                im[key] = { physicalKg: (ln.physicalQty / 1000).toFixed(3), notes: ln.notes || '', lineId: ln.id };
+                im[key] = { physicalGrams: ln.physicalQty, notes: ln.notes || '', lineId: ln.id };
             });
             setInputMap(im);
             setSearch('');
@@ -134,35 +166,93 @@ export default function InventoryCountPage() {
         catch (e) { alert(e.message); }
     };
 
+    const downloadExcel = async () => {
+        try {
+            const res = await api.get(`/inventory-count/export/month/${activeSession.month}`, { responseType: 'blob' });
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `conteo-siigo-global-${activeSession.month}.xlsx`);
+            document.body.appendChild(link);
+            link.click();
+            link.parentNode.removeChild(link);
+        } catch (err) {
+            alert('Error al descargar el Excel consolidado. ' + (err.response?.data?.error || err.message));
+        }
+    };
+
+    const downloadMonthExcel = async (m) => {
+        try {
+            const res = await api.get(`/inventory-count/export/month/${m}`, { responseType: 'blob' });
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `conteo-siigo-global-${m}.xlsx`);
+            document.body.appendChild(link);
+            link.click();
+            link.parentNode.removeChild(link);
+        } catch (err) {
+            alert('Error al descargar el Excel. ' + (err.response?.data?.error || err.message));
+        }
+    };
+
     // ── Save a single lot count ───────────────────────────────────────────────
-    const saveLotCount = useCallback(async (lot) => {
-        const key = lot.id;
+    const saveLotCount = useCallback(async (item, isProductOnly = false, overrideQty = null) => {
+        const key = isProductOnly ? `nolot-${item.productId}` : item.id;
         const inp = inputMap[key] || {};
-        const physicalKg = parseFloat(inp.physicalKg);
-        if (isNaN(physicalKg) || inp.physicalKg === '') return;
+        const physicalGrams = overrideQty !== null ? overrideQty : parseFloat(inp.physicalGrams);
+        if (isNaN(physicalGrams) || physicalGrams === '' || physicalGrams == null) return;
         setSavingMap(m => ({ ...m, [key]: true }));
         try {
-            const payload = {
-                lineId: inp.lineId || null,
-                productId: lot.productId || null,
-                productName: lot.siigoProductName || lot.product?.name || 'Sin nombre',
-                siigoProductCode: lot.siigoProductCode || null,
-                lotId: lot.id,
-                lotNumber: lot.lotNumber,
-                physicalQty: Math.round(physicalKg * 1000),
-                unit: 'gramo',
-                notes: inp.notes || null
-            };
+            let payload;
+            if (isProductOnly) {
+                payload = {
+                    lineId: inp.lineId || null,
+                    productId: item.productId || null,
+                    productName: item.productName || 'Sin nombre',
+                    siigoProductCode: item.productCode || null,
+                    lotId: null,
+                    lotNumber: 'S/L',
+                    physicalQty: Math.round(physicalGrams),
+                    unit: item.unit || 'gramo',
+                    notes: inp.notes || null
+                };
+            } else {
+                payload = {
+                    lineId: inp.lineId || null,
+                    productId: item.productId || null,
+                    productName: item.siigoProductName || item.product?.name || 'Sin nombre',
+                    siigoProductCode: item.siigoProductCode || null,
+                    lotId: item._source === 'FINISHED_LOT' ? null : item.id,
+                    lotNumber: item.lotNumber,
+                    physicalQty: Math.round(physicalGrams),
+                    unit: item.unit || item.product?.unit || 'gramo',
+                    notes: inp.notes || null
+                };
+            }
             const { data: savedLine } = await api.post(`/inventory-count/sessions/${activeSession.id}/lines`, payload);
             setInputMap(m => ({ ...m, [key]: { ...m[key], lineId: savedLine.id } }));
             setCountLines(prev => {
-                const idx = prev.findIndex(l => l.lotId === lot.id);
+                const searchKey = isProductOnly 
+                    ? (l => l.productId === item.productId && !l.lotId && l.lotNumber === 'S/L') 
+                    : (l => {
+                        // Match by lineId first (most reliable)
+                        if (inp.lineId && l.id === inp.lineId) return true;
+                        // Match by lotId for raw materials
+                        if (l.lotId && l.lotId === item.id) return true;
+                        // Match by productId + lotNumber for finished lots (lotId is null)
+                        if (item._source === 'FINISHED_LOT' && l.productId === item.productId && l.lotNumber === item.lotNumber) return true;
+                        return false;
+                    });
+                const idx = prev.findIndex(searchKey);
                 if (idx >= 0) { const c = [...prev]; c[idx] = savedLine; return c; }
                 return [...prev, savedLine];
             });
         } catch (e) { alert('Error al guardar: ' + (e.response?.data?.error || e.message)); }
         setSavingMap(m => ({ ...m, [key]: false }));
     }, [inputMap, activeSession]);
+
+
 
     // Zona activa de la sesión: determina qué lotes son editables vs referencia
     const activeZone = useMemo(() => {
@@ -176,19 +266,19 @@ export default function InventoryCountPage() {
 
     // Nombres legibles para los grupos de cuenta Siigo
     const ACCOUNT_GROUP_NAMES = {
-        1400: '🧪 Materia Prima Base',
-        1401: '🧪 Materia Prima General',
-        1402: '🍫 Endulzantes y Azúcares',
-        1403: '🍫 Azúcares',
-        1404: '🍑 Compuestos y Esferas',
-        1405: '🧯 Conservantes y Aditivos',
-        1406: '🍬 Sabores Líquidos',
-        1407: '🎨 Colorantes',
-        1408: '📦 Empaque y Envases',
-        1409: '📦 Insumos de Empaque',
-        477:  '💻 Producto Terminado',
-        478:  '💻 Producto Terminado (Especial)',
-        11615: '⚙️ Insumos de Producción',
+        1400: '🧪 MATERIA PRIMA FABRICACION 19%',
+        1401: '💻 GRUPO LIQUIPOPS',
+        1402: '💻 GRUPO GENIALITY',
+        1403: '🧪 MATERIA PRIMA FABRICACION 5%',
+        1404: '🔄 PRODUCTOS EN PROCESO LIQUIPOPS',
+        1405: '🔄 PRODUCTOS EN PROCESO GENIALITY',
+        1406: '🍬 MATERIA PRIMA SABORES',
+        1407: '🎨 MATERIA PRIMA COLORES',
+        1408: '📦 MATERIAL DE EMPAQUE',
+        1409: '🏷️ MATERIA PRIMA ETIQUETAS Y SELLOS',
+        11615: '⚙️ MATERIA PRIMA TRANSITORIA',
+        477: '📦 PRODUCTOS',
+        478: '📦 SERVICIOS'
     };
 
     // ── Flat lot rows: activos ───────────────────────────────────────────────
@@ -197,14 +287,35 @@ export default function InventoryCountPage() {
     const isFinishedSession = FINISHED_ZONES.includes(activeZone);
 
     const allLotRows = useMemo(() => {
-        if (!systemLots.length) return [];
+        if (!systemLots.length && !countLines.length) return [];
         let activeLots = systemLots.filter(l => ['AVAILABLE', 'LOW_STOCK', 'LOW'].includes(l.status) && (l.currentQuantity || 0) > 0);
         // En sesiones de PT/Maquila/NC: solo lotes de FinishedLotStock (no MP)
         if (isFinishedSession) {
-            activeLots = activeLots.filter(l => l._source === 'FINISHED_LOT');
+            activeLots = activeLots.filter(l => {
+                if (l._source !== 'FINISHED_LOT') return false;
+                const p = l.product || {};
+                if (![1401, 1402].includes(p.accountGroup)) return false;
+                if (p.classification === 'PRODUCTO_EN_PROCESO' || p.type === 'SEMI_PROCESADO') return false;
+                if ((p.group?.name || '').toUpperCase().includes('ETIQUETA')) return false;
+                if ((p.name || '').toUpperCase().includes('ETIQUETA') || (p.name || '').toUpperCase().includes('SELLO')) return false;
+                return true;
+            });
+        } else {
+            // En sesiones de Bodega/Producción: excluir lotes de Producto Terminado por accountGroup
+            const FINISHED_ACCOUNT_GROUPS = [1401, 1402]; // LIQUIPOPS, GENIALITY
+            activeLots = activeLots.filter(l => {
+                const ag = l.product?.accountGroup;
+                return !FINISHED_ACCOUNT_GROUPS.includes(ag);
+            });
         }
         const lineByLotId = {};
-        countLines.forEach(ln => { if (ln.lotId) lineByLotId[ln.lotId] = ln; });
+        countLines.forEach(ln => { 
+            if (ln.lotId) {
+                lineByLotId[ln.lotId] = ln; 
+            } else if (ln.lotNumber && ln.lotNumber !== 'S/L') {
+                lineByLotId[`${ln.productId}-${ln.lotNumber}`] = ln;
+            }
+        });
         const ZONE_MAP = {
             WAREHOUSE: ['WAREHOUSE'],
             PRODUCTION: ['PRODUCTION', 'PRODUCCION'],
@@ -213,23 +324,98 @@ export default function InventoryCountPage() {
             NO_CONFORME: ['NO_CONFORME'],
         };
         const activeZones = ZONE_MAP[activeZone] || [activeZone];
-        return activeLots.map(lot => {
+        const mappedReal = activeLots.map(lot => {
             const rawZone = lot.zone || 'WAREHOUSE';
             const isActive = activeZones.includes(rawZone);
-            const savedLine = isActive ? lineByLotId[lot.id] : null;
+            const savedLine = isActive ? (lineByLotId[lot.id] || (lot._source === 'FINISHED_LOT' ? lineByLotId[`${lot.productId}-${lot.lotNumber}`] : null)) : null;
             const isCounted = !!savedLine;
             const physicalGrams = savedLine ? savedLine.physicalQty : null;
             const systemGrams = lot.currentQuantity || 0;
             const diff = physicalGrams != null ? physicalGrams - systemGrams : null;
             return { lot, isActive, isCounted, physicalGrams, systemGrams, diff, zone: rawZone };
         });
-    }, [systemLots, countLines, activeZone, isFinishedSession]);
+
+        // Pseudo-lots: only countLines that have NO lotId AND are truly "S/L" (not finished lots
+        // that were saved with lotId=null but have a real lotNumber matching an activeLot)
+        const activeLotKeys = new Set(
+            activeLots.map(l => `${l.productId}-${l.lotNumber}`)
+        );
+        const mappedPseudo = countLines
+            .filter(ln => {
+                if (ln.lotId) return false; // Has lotId → already in mappedReal
+                // If the line has a real lotNumber (not S/L) AND there's a matching active lot,
+                // it's already represented in mappedReal via lineByLotId — skip it to avoid duplication
+                if (ln.lotNumber && ln.lotNumber !== 'S/L' && activeLotKeys.has(`${ln.productId}-${ln.lotNumber}`)) {
+                    return false;
+                }
+                return true;
+            })
+            .map(ln => {
+                const prod = systemProducts.find(p => p.id === ln.productId) || {};
+                return {
+                    lot: {
+                        id: `pseudo-${ln.id}`,
+                        productId: ln.productId,
+                        lotNumber: ln.lotNumber || 'S/L',
+                        siigoProductName: ln.productName,
+                        siigoProductCode: ln.siigoProductCode,
+                        unit: ln.unit || prod.unit || 'gramo',
+                        currentQuantity: 0,
+                        zone: activeZone, // Se marca en esta zona para que sea editable
+                        product: {
+                            name: ln.productName,
+                            accountGroup: prod.accountGroup || prod.group?.name || 'N/A'
+                        }
+                    },
+                    isActive: true, // Pseudo-lotes introducidos en esta sesión siempre son editables
+                    isCounted: true,
+                    physicalGrams: ln.physicalQty,
+                    systemGrams: 0,
+                    diff: ln.physicalQty,
+                    zone: activeZone
+                };
+            });
+
+        return [...mappedReal, ...mappedPseudo];
+    }, [systemLots, countLines, activeZone, isFinishedSession, systemProducts]);
 
     // ── Grouped by AccountGroup → Producto → Lotes ──────────────────────────────
     const accountGroups = useMemo(() => {
         const agMap = {};
+        
+        // 1. Pre-fill all expected products for this zone so we can see them even if 0 lots are available
+        for (const p of systemProducts) {
+            // Filter products based on session type constraints
+            if (isFinishedSession) {
+                // EXCLUSION AGRESIVA ESTRICTA: Solo permitir Liquidpops (1401) y Geniality (1402)
+                if (![1401, 1402].includes(p.accountGroup)) continue;
+                // Excluir productos en proceso que puedan haberse colado (aunque no deberian si el accountGroup esta bloqueado, pero por seguridad)
+                if (p.classification === 'PRODUCTO_EN_PROCESO' || p.type === 'SEMI_PROCESADO') continue;
+                if ((p.group?.name || '').toUpperCase().includes('ETIQUETA')) continue;
+                if (p.name.toUpperCase().includes('ETIQUETA') || p.name.toUpperCase().includes('SELLO')) continue;
+            } else if (activeZone === 'WAREHOUSE') {
+                if (p.type !== 'MATERIA_PRIMA' && p.type !== 'EMPAQUE') continue;
+            } else if (activeZone === 'PRODUCTION') {
+                if (p.type !== 'MATERIA_PRIMA' && p.type !== 'EMPAQUE' && p.type !== 'SEMI_PROCESADO') continue;
+            }
+
+            const ag = p.accountGroup ?? p.group?.name ?? 'N/A';
+            const agName = ACCOUNT_GROUP_NAMES[ag] || `📄 Grupo ${ag}`;
+            if (!agMap[ag]) agMap[ag] = { agId: ag, agName, products: {} };
+            
+            agMap[ag].products[p.id] = {
+                productId: p.id,
+                productName: p.name,
+                productCode: p.sku || '',
+                siigoTotal: p.currentStock || 0,
+                unit: p.unit || 'gramo',
+                lots: []
+            };
+        }
+
+        // 2. Map existing active lots
         for (const row of allLotRows) {
-            const ag = row.lot.product?.accountGroup ?? 'N/A';
+            const ag = row.lot.product?.accountGroup ?? row.lot.product?.group?.name ?? 'N/A';
             const agName = ACCOUNT_GROUP_NAMES[ag] || `📄 Grupo ${ag}`;
             if (!agMap[ag]) agMap[ag] = { agId: ag, agName, products: {} };
             const pid = row.lot.productId || row.lot.siigoProductCode || row.lot.siigoProductName || 'unknown';
@@ -239,6 +425,7 @@ export default function InventoryCountPage() {
                     productName: row.lot.siigoProductName || row.lot.product?.name || '—',
                     productCode: row.lot.siigoProductCode || '',
                     siigoTotal: extractSiigoTotal(row.lot),
+                    unit: row.lot.unit || row.lot.product?.unit || 'gramo',
                     lots: []
                 };
             }
@@ -250,7 +437,7 @@ export default function InventoryCountPage() {
                 ...ag,
                 products: Object.values(ag.products).sort((a, b) => a.productName.localeCompare(b.productName))
             }));
-    }, [allLotRows]);
+    }, [allLotRows, systemProducts, activeZone, isFinishedSession]);
 
     // ── Filtered accountGroups ────────────────────────────────────────────────
     const filteredAccountGroups = useMemo(() => {
@@ -260,17 +447,32 @@ export default function InventoryCountPage() {
                 products: ag.products
                     .map(g => {
                         let lots = g.lots;
+                        let productMatchesSearch = true;
+
                         if (search.trim()) {
-                            const q = search.toLowerCase();
-                            lots = lots.filter(r =>
-                                r.lot.lotNumber?.toLowerCase().includes(q) ||
-                                g.productName.toLowerCase().includes(q) ||
-                                g.productCode?.toLowerCase().includes(q) ||
-                                ag.agName.toLowerCase().includes(q)
-                            );
+                            const pText = `${g.productName || ''} ${g.productCode || ''}`.toLowerCase();
+                            productMatchesSearch = search.toLowerCase().split(/\\s+/).every(word => {
+                                const pattern = word.split('%').map(w => w.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')).join('.*');
+                                return new RegExp(pattern).test(pText);
+                            });
+
+                            lots = lots.filter(r => {
+                                if (productMatchesSearch) return true;
+                                const lText = `${r.lot.lotNumber || ''}`.toLowerCase();
+                                return search.toLowerCase().split(/\\s+/).every(word => {
+                                    const pattern = word.split('%').map(w => w.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')).join('.*');
+                                    return new RegExp(pattern).test(lText);
+                                });
+                            });
                         }
-                        if (filterUncounted && !lots.some(r => r.isActive && !r.isCounted)) return null;
-                        return lots.length > 0 ? { ...g, lots } : null;
+
+                        if (filterUncounted && lots.length > 0 && !lots.some(r => r.isActive && !r.isCounted)) return null;
+
+                        const initiallyEmpty = g.lots.length === 0;
+                        if (lots.length > 0 || (initiallyEmpty && productMatchesSearch)) {
+                            return { ...g, lots };
+                        }
+                        return null;
                     })
                     .filter(Boolean)
             }))
@@ -285,6 +487,85 @@ export default function InventoryCountPage() {
         const withDiff = activeRows.filter(r => r.diff != null && Math.abs(r.diff) >= 100).length;
         return { total, counted, withDiff };
     }, [allLotRows]);
+
+    // ── Handle Scanner Input ──────────────────────────────────────────────────
+    const handleScannerInput = useCallback(async (rawValue) => {
+        if (!rawValue || rawValue.length < 4) return;
+        const scan = parseScanInput(rawValue);
+        
+        let productMatch = systemProducts.find(p => p.sku === scan.sku || p.barcode === scan.barcode || p.sku === scan.barcode);
+        if (!productMatch && scan.barcode) {
+             productMatch = systemProducts.find(p => p.sku === scan.barcode);
+        }
+
+        if (!productMatch) {
+            playError();
+            setLastScan({ status: 'error', message: `Producto no encontrado (${scan.barcode || scan.sku})` });
+            return;
+        }
+
+        let targetRow = null;
+        let isProductOnly = false;
+        let targetItem = null;
+
+        if (scan.lotNumber) {
+            targetRow = allLotRows.find(r => r.isActive && r.lot.productId === productMatch.id && r.lot.lotNumber === scan.lotNumber);
+            if (targetRow) targetItem = targetRow.lot;
+        }
+
+        if (!targetItem) {
+            const activeLots = allLotRows.filter(r => r.isActive && r.lot.productId === productMatch.id);
+            if (activeLots.length === 1 && activeLots[0].lot.lotNumber !== 'S/L') {
+                 targetItem = activeLots[0].lot;
+            } else {
+                 isProductOnly = true;
+                 targetItem = {
+                     productId: productMatch.id,
+                     productName: productMatch.name,
+                     productCode: productMatch.sku,
+                     unit: productMatch.unit || 'gramo'
+                 };
+            }
+        }
+
+        const key = isProductOnly ? `nolot-${targetItem.productId}` : targetItem.id;
+        const qtyToAdd = scan.unitsPerBox || 1;
+
+        setInputMap(m => {
+             const startVal = parseFloat(m[key]?.physicalGrams);
+             const safeCurrent = isNaN(startVal) ? 0 : startVal;
+             const nextQty = safeCurrent + qtyToAdd;
+             
+             // Queue the save async so it uses the calculated nextQty
+             setTimeout(() => saveLotCount(targetItem, isProductOnly, nextQty), 50);
+
+             return { ...m, [key]: { ...m[key], physicalGrams: nextQty } };
+        });
+        
+        // Desplazar la pantalla (scroll) hacia el producto encontrado para que el usuario no tenga que buscarlo
+        setTimeout(() => {
+            const elements = document.querySelectorAll(`[id="row-${key}"]`);
+            for (const el of elements) {
+                if (el.offsetParent !== null) { // true if visible
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    break;
+                }
+            }
+        }, 100);
+
+        playSuccess();
+        setLastScan({ status: 'success', message: `+${qtyToAdd} ${productMatch.name}` });
+    }, [systemProducts, allLotRows, inputMap, saveLotCount]);
+
+    // ── Scanner Input Fallback (for text inputs) ─────────────────────────
+    const handlePhysicalInputChange = useCallback((key, val) => {
+        // Prevent generic scan pollution in inputs just in case global hook missed it
+        if (val.length > 8 && !val.includes('.')) return; 
+        if (val.includes('SKU:') || val.includes('LOT:') || val.includes('BAR:') || val.startsWith('{')) {
+            return; // Ignore completely, handled by useGlobalScanner
+        }
+        setInputMap(m => ({ ...m, [key]: { ...m[key], physicalGrams: val } }));
+    }, []);
 
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -314,10 +595,18 @@ export default function InventoryCountPage() {
                 </div>
                 <div className="flex gap-2">
                     {view === 'list' && (
-                        <button onClick={() => setShowNewForm(true)}
-                            className="bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
-                            + Nueva sesión
-                        </button>
+                        <>
+                            {sessions.length > 0 && (
+                                <button onClick={() => downloadMonthExcel(sessions[0].month)}
+                                    className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                                    ⬇️ Exportar Total Mes ({sessions[0].month})
+                                </button>
+                            )}
+                            <button onClick={() => setShowNewForm(true)}
+                                className="bg-primary-600 hover:bg-primary-700 text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+                                + Nueva sesión
+                            </button>
+                        </>
                     )}
                     {view === 'session' && activeSession?.status === 'IN_PROGRESS' && (
                         <button onClick={closeSessionFn}
@@ -413,10 +702,38 @@ export default function InventoryCountPage() {
                     ))}
                 </div>
             )}
-
             {/* ── VIEW: Sesión activa ─────────────────────────────────────────── */}
             {view === 'session' && activeSession && (
                 <div className="space-y-4">
+                    {activeSession.status === 'IN_PROGRESS' && (
+                        <input
+                            ref={scannerInputRef}
+                            type="text"
+                            className="fixed -top-full -left-full opacity-0 outline-none w-0 h-0"
+                            tabIndex={-1}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const rawValue = e.target.value.trim();
+                                    e.target.value = '';
+                                    if (rawValue) {
+                                        handleScannerInput(rawValue);
+                                    }
+                                }
+                            }}
+                        />
+                    )}
+
+                    {lastScan && (
+                        <div className={`p-4 rounded-xl border flex items-center gap-4 shadow-sm transition-all ${
+                            lastScan.status === 'error' ? 'bg-red-50 border-red-200 text-red-700' :
+                            'bg-green-50 border-green-200 text-green-700'
+                        }`}>
+                            <span className="text-3xl">{lastScan.status === 'error' ? '❌' : '✅'}</span>
+                            <div className="font-bold text-lg">{lastScan.message}</div>
+                        </div>
+                    )}
+
                     {/* Progress card */}
                     <div className="bg-white border border-neutral-200 rounded-xl p-4 shadow-sm">
                         <div className="flex gap-8 flex-wrap items-center mb-3">
@@ -436,7 +753,7 @@ export default function InventoryCountPage() {
                         </div>
                         {/* Filters */}
                         <div className="flex gap-3 flex-wrap items-center">
-                            <input value={search} onChange={e => setSearch(e.target.value)}
+                            <input data-scanner-ignore="true" value={search} onChange={e => setSearch(e.target.value)}
                                 placeholder="🔍 Buscar producto o número de lote..."
                                 className="flex-1 min-w-52 max-w-sm border border-neutral-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-200" />
                             <label className="flex items-center gap-2 text-sm text-amber-700 cursor-pointer font-medium select-none">
@@ -449,6 +766,9 @@ export default function InventoryCountPage() {
                                     🔒 Sesión cerrada — solo lectura
                                 </span>
                             )}
+                            <button onClick={downloadExcel} className="ml-auto flex items-center gap-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-3 py-2 rounded-lg border border-emerald-200 font-bold text-sm transition-colors whitespace-nowrap shadow-sm">
+                                ⬇️ Descargar Excel Siigo
+                            </button>
                         </div>
                     </div>
 
@@ -472,9 +792,9 @@ export default function InventoryCountPage() {
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wide w-8"></th>
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Producto / Lote</th>
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-blue-600 uppercase tracking-wide">💻 ERP (este lote)</th>
-                                                <th className="text-left px-4 py-3 text-xs font-semibold text-green-600 uppercase tracking-wide">📦 Físico (kg)</th>
+                                                <th className="text-left px-4 py-3 text-xs font-semibold text-rose-600 uppercase tracking-wide">📦 Separados</th>
+                                                <th className="text-left px-4 py-3 text-xs font-semibold text-green-600 uppercase tracking-wide">📝 Físico (estante)</th>
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Δ vs ERP</th>
-                                                <th className="text-left px-4 py-3 text-xs font-semibold text-neutral-400 uppercase tracking-wide">Obs.</th>
                                                 {activeSession.status === 'IN_PROGRESS' && <th className="px-4 py-3"></th>}
                                             </tr>
                                         </thead>
@@ -511,18 +831,39 @@ export default function InventoryCountPage() {
                                                                             <span className="text-xs text-neutral-500">{group.lots.length} lote{group.lots.length !== 1 ? 's' : ''}</span>
                                                                             {group.siigoTotal != null && (
                                                                                 <span className="ml-2 inline-flex items-center gap-1.5 bg-indigo-100 text-indigo-700 text-xs font-semibold px-2.5 py-1 rounded-full border border-indigo-200">
-                                                                                    🔵 Total en Siigo: {fmtKg(group.siigoTotal)}
+                                                                                    🔵 Total en Siigo: {fmtGrams(group.siigoTotal, group.unit)}
+                                                                                </span>
+                                                                            )}
+                                                                            {pickedSummary[group.productId] && (
+                                                                                <span className="ml-2 inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 text-xs font-semibold px-2.5 py-1 rounded-full border border-rose-200 cursor-help"
+                                                                                    title={
+                                                                                        typeof pickedSummary[group.productId] === 'object' && pickedSummary[group.productId].orders?.length > 0
+                                                                                            ? `Separados para:\n${pickedSummary[group.productId].orders.map(o => `• ${o.distributorName} (P-${o.orderNumber}): ${o.quantity} uds`).join('\n')}`
+                                                                                            : "Unidades físicamente separadas en piso pero que aún no han sido descontadas por Siigo"
+                                                                                    }>
+                                                                                    📦 Separados (Sin facturar): {fmtGrams(typeof pickedSummary[group.productId] === 'object' ? pickedSummary[group.productId].total : pickedSummary[group.productId], group.unit)}
                                                                                 </span>
                                                                             )}
                                                                         </div>
                                                                     </td>
                                                                     <td colSpan={colCount - 2}></td>
                                                                 </tr>
-                                                                {group.lots.map(({ lot, isActive, isCounted, systemGrams, diff, zone }) => {
+                                                                {group.lots.map(({ lot, isActive, isCounted, physicalGrams, systemGrams, diff, zone }) => {
                                                                     const key = lot.id;
-                                                                    const localInput = inputMap[key] || { physicalKg: '', notes: '' };
+                                                                    const localInput = inputMap[key] || { physicalGrams: '', notes: '' };
                                                                     const saving = !!savingMap[key];
-                                                                    const badge = diffBadge(diff);
+                                                                    const lotUnit = lot.unit || lot.product?.unit || group.unit || 'g';
+                                                                    const pickedInLot = pickedSummary[group.productId]?.lots?.[lot.lotNumber]?.total || 0;
+                                                                    
+                                                                    // Update dynamic diff to include separated physical stock if counted
+                                                                    let dynamicDiff = null;
+                                                                    if (localInput.physicalGrams !== '' && localInput.physicalGrams != null && !isNaN(parseFloat(localInput.physicalGrams))) {
+                                                                        dynamicDiff = (parseFloat(localInput.physicalGrams) + pickedInLot) - systemGrams;
+                                                                    } else if (isCounted && physicalGrams != null) {
+                                                                        dynamicDiff = (physicalGrams + pickedInLot) - systemGrams;
+                                                                    }
+                                                                    const badge = diffBadge(dynamicDiff, lotUnit);
+                                                                    
                                                                     const canEdit = isEditable && isActive;
                                                                     const zoneLabel = ZONE_LABELS[zone] || zone;
                                                                     const zoneColor = ZONE_COLORS[zone] || 'bg-neutral-100 text-neutral-500 border-neutral-200';
@@ -535,62 +876,151 @@ export default function InventoryCountPage() {
                                                                                     <span className="text-neutral-300 text-xs">└</span>
                                                                                     <code className="text-xs bg-neutral-100 text-neutral-500 px-2 py-0.5 rounded font-mono">{lot.lotNumber}</code>
                                                                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${zoneColor}`}>{zoneLabel}</span>
-                                                                                    <span className="text-xs text-neutral-400 italic">solo referencia</span>
+                                                                                    <span className="text-xs text-neutral-400 italic">referencia</span>
                                                                                 </div>
                                                                             </td>
-                                                                            <td className="px-4 py-2 text-neutral-500 text-sm">{fmtKg(systemGrams)}</td>
-                                                                            <td className="px-4 py-2 text-neutral-400 text-xs italic" colSpan={colCount - 2}>No editable en esta sesión</td>
+                                                                            <td className="px-4 py-2 text-neutral-500 text-sm">{fmtGrams(systemGrams, lotUnit)}</td>
+                                                                            <td className="px-4 py-2 text-neutral-400 text-xs" colSpan={colCount - 3}>No editable en esta sesión</td>
                                                                         </tr>
                                                                     );
 
                                                                     return (
-                                                                        <tr key={lot.id} className={`border-t border-neutral-100 transition-colors ${isCounted ? 'bg-green-50/30' : 'bg-white hover:bg-neutral-50'}`}>
+                                                                        <tr id={`row-${key}`} key={lot.id} className={`border-t border-neutral-100 transition-colors ${isCounted ? 'bg-green-50/30' : 'bg-white hover:bg-neutral-50'}`}>
                                                                             <td className="px-4 py-2.5 pl-8">
                                                                                 {isCounted ? <span className="text-green-500">✓</span> : <span className="inline-block w-4 h-4 rounded-full border-2 border-neutral-300"></span>}
                                                                             </td>
                                                                             <td className="px-4 py-2.5">
-                                                                                <div className="flex items-center gap-2">
-                                                                                    <span className="text-neutral-400 text-xs">└</span>
-                                                                                    <code className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">{lot.lotNumber}</code>
-                                                                                    <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${zoneColor}`}>{zoneLabel}</span>
-                                                                                </div>
+                                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                                        <span className="text-neutral-400 text-xs">└</span>
+                                                                                        <code className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono">{lot.lotNumber}</code>
+                                                                                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${zoneColor}`}>{zoneLabel}</span>
+                                                                                    </div>
                                                                             </td>
-                                                                            <td className="px-4 py-2.5 text-blue-700 font-semibold text-sm">{fmtKg(systemGrams)}</td>
+                                                                            <td className="px-4 py-2.5 text-blue-700 font-semibold text-sm">{fmtGrams(systemGrams, lotUnit)}</td>
+                                                                            <td className="px-4 py-2.5">
+                                                                                {pickedInLot > 0 ? (
+                                                                                    <div className="group relative w-fit">
+                                                                                        <span className="font-bold text-rose-600 text-sm cursor-help underline decoration-dotted decoration-rose-300">
+                                                                                            {fmtGrams(pickedInLot, lotUnit)}
+                                                                                        </span>
+                                                                                        <div className="absolute z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all bg-neutral-900 text-white text-xs rounded-lg p-2.5 shadow-xl w-64 mt-1 border border-neutral-700">
+                                                                                            <div className="font-bold text-rose-300 mb-1">Pedidos asignados este lote:</div>
+                                                                                            {pickedSummary[group.productId].lots[lot.lotNumber].orders.map((o, idx) => (
+                                                                                                <div key={idx} className="mb-0.5">
+                                                                                                    <span className="text-neutral-400">P-{o.orderNumber}</span> <strong>{o.distributorName}</strong>
+                                                                                                    <div className="text-white text-right font-mono text-[10px] opacity-80">{o.quantity} uds</div>
+                                                                                                </div>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                ) : <span className="text-neutral-300 text-sm">—</span>}
+                                                                            </td>
                                                                             <td className="px-4 py-2.5">
                                                                                 {canEdit ? (
-                                                                                    <input type="number" step="0.001" min="0"
-                                                                                        value={localInput.physicalKg}
-                                                                                        onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalKg: e.target.value } }))}
+                                                                                    <input type="text" inputMode="numeric" data-scanner-ignore="true"
+                                                                                        value={localInput.physicalGrams}
+                                                                                        onChange={e => handlePhysicalInputChange(key, e.target.value)}
                                                                                         onKeyDown={e => e.key === 'Enter' && saveLotCount(lot)}
-                                                                                        placeholder="0.000"
-                                                                                        className="w-24 border border-neutral-200 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-green-400" />
+                                                                                        placeholder="0"
+                                                                                        className="w-28 border border-neutral-200 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-green-400 font-mono" />
                                                                                 ) : (
-                                                                                    <span className="text-green-700 font-semibold text-sm">{isCounted ? fmtKg((parseFloat(localInput.physicalKg) || 0) * 1000) : '—'}</span>
+                                                                                    <span className="text-green-700 font-semibold text-sm">{isCounted ? fmtGrams(parseFloat(localInput.physicalGrams) || 0, lotUnit) : '—'}</span>
                                                                                 )}
                                                                             </td>
                                                                             <td className="px-4 py-2.5">
-                                                                                {badge && <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: badge.bg, color: badge.color }}>{badge.text}</span>}
+                                                                                {badge && <span className="text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap" style={{ background: badge.bg, color: badge.color }}>{badge.text}</span>}
                                                                             </td>
                                                                             <td className="px-4 py-2.5">
                                                                                 {canEdit ? (
-                                                                                    <input type="text" value={localInput.notes}
+                                                                                    <input type="text" data-scanner-ignore="true" value={localInput.notes}
                                                                                         onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], notes: e.target.value } }))}
                                                                                         placeholder="Opcional"
-                                                                                        className="w-28 border border-neutral-100 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-300" />
+                                                                                        className="w-full min-w-[70px] border border-neutral-100 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-300" />
                                                                                 ) : <span className="text-neutral-400 text-xs">{localInput.notes || ''}</span>}
                                                                             </td>
                                                                             {isEditable && (
                                                                                 <td className="px-4 py-2.5">
                                                                                     <button onClick={() => saveLotCount(lot)}
-                                                                                        disabled={saving || localInput.physicalKg === ''}
+                                                                                        disabled={saving || localInput.physicalGrams === ''}
                                                                                         className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap ${isCounted ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600' : 'bg-green-50 hover:bg-green-100 text-green-700 border border-green-200'} disabled:opacity-40`}>
-                                                                                        {saving ? '...' : isCounted ? '↻ Actualizar' : '✓ Guardar'}
+                                                                {saving ? '...' : isCounted ? '↻ Guardar' : '✓ Guardar'}
                                                                                     </button>
                                                                                 </td>
                                                                             )}
                                                                         </tr>
                                                                     );
                                                                 })}
+                                                                {(group.lots.filter(r => r.isActive).length === 0 || pickedSummary[group.productId]?.lots?.['S/L']?.total > 0 || inputMap[`nolot-${group.productId}`]?.lineId) && (() => {
+                                                                    const keySL = `nolot-${group.productId}`;
+                                                                    const unassignedPicked = pickedSummary[group.productId]?.lots?.['S/L']?.total || 0;
+                                                                    const localInputSL = inputMap[keySL] || { physicalGrams: '' };
+                                                                    let slDiff = null;
+                                                                    if (localInputSL.physicalGrams !== '' && localInputSL.physicalGrams != null) {
+                                                                        slDiff = (parseFloat(localInputSL.physicalGrams) + unassignedPicked) - 0;
+                                                                    }
+                                                                    const slBadge = diffBadge(slDiff, group.unit || 'g');
+                                                                    return (
+                                                                    <tr id={`row-${keySL}`} className="border-t border-amber-100 bg-amber-50/20">
+                                                                        <td className="px-4 py-2 pl-8">
+                                                                            <span className="text-amber-500 text-xs font-bold">↳</span>
+                                                                        </td>
+                                                                        <td className="px-4 py-2">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <code className="text-xs bg-neutral-100 text-neutral-600 border border-neutral-200 px-2 py-0.5 rounded font-mono border-dashed">S/L</code>
+                                                                                <span className="text-xs text-neutral-500 font-medium italic">Sin Lote Asignado</span>
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="px-4 py-2 font-mono text-neutral-400 text-sm">0</td>
+                                                                        <td className="px-4 py-2">
+                                                                            {unassignedPicked > 0 ? (
+                                                                                <div className="group relative w-fit">
+                                                                                    <span className="font-bold text-rose-600 text-sm cursor-help underline decoration-dotted decoration-rose-300">
+                                                                                        {fmtGrams(unassignedPicked, group.unit)}
+                                                                                    </span>
+                                                                                    <div className="absolute z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all bg-neutral-900 text-white text-xs rounded-lg p-2.5 shadow-xl w-64 mt-1 border border-neutral-700">
+                                                                                        <div className="font-bold text-rose-300 mb-1">Pedidos separados (S/L):</div>
+                                                                                        {pickedSummary[group.productId].lots['S/L'].orders.map((o, idx) => (
+                                                                                            <div key={idx} className="mb-0.5">
+                                                                                                <span className="text-neutral-400">P-{o.orderNumber}</span> <strong>{o.distributorName}</strong>
+                                                                                                <div className="text-white text-right font-mono text-[10px] opacity-80">{o.quantity} uds</div>
+                                                                                            </div>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                </div>
+                                                                            ) : <span className="text-neutral-300 text-sm">—</span>}
+                                                                        </td>
+                                                                        <td className="px-4 py-2">
+                                                                            <div className="flex items-center gap-1">
+                                                                                <input
+                                                                                    type="text"
+                                                                                    inputMode="numeric"
+                                                                                    data-scanner-ignore="true"
+                                                                                    placeholder="0"
+                                                                                    className="w-24 px-2 py-1.5 text-sm border border-neutral-300 rounded focus:border-amber-400 focus:ring-1 focus:ring-amber-400 transition-colors bg-white font-mono text-right"
+                                                                                    value={localInputSL.physicalGrams}
+                                                                                    onChange={e => handlePhysicalInputChange(keySL, e.target.value)}
+                                                                                    onKeyDown={e => e.key === 'Enter' && saveLotCount(group, true)}
+                                                                                    disabled={!isEditable || !!savingMap[keySL]}
+                                                                                />
+                                                                                {savingMap[keySL] && <div className="ml-1 w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin"></div>}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="px-4 py-2">
+                                                                             {slBadge && <span className="text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap" style={{ background: slBadge.bg, color: slBadge.color }}>{slBadge.text}</span>}
+                                                                        </td>
+                                                                        <td className="px-4 py-2"></td>
+                                                                        {isEditable && (
+                                                                            <td className="px-4 py-2">
+                                                                                <button
+                                                                                    onClick={() => saveLotCount(group, true)}
+                                                                                    disabled={savingMap[keySL]}
+                                                                                    className="text-xs bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-bold px-3 py-1.5 rounded-lg transition-colors shadow-sm disabled:opacity-50">
+                                                                                    Guardar
+                                                                                </button>
+                                                                            </td>
+                                                                        )}
+                                                                    </tr>
+                                                                )})()}
                                                             </>
                                                         );
                                                     })}
@@ -631,7 +1061,13 @@ export default function InventoryCountPage() {
                                                             <span className="text-xs text-neutral-500">{group.lots.length} lote{group.lots.length !== 1 ? 's' : ''}</span>
                                                             {group.siigoTotal != null && (
                                                                 <span className="inline-flex items-center gap-1 bg-indigo-100 text-indigo-700 text-xs font-semibold px-2 py-0.5 rounded-full border border-indigo-200">
-                                                                    🔵 Siigo: {fmtKg(group.siigoTotal)}
+                                                                    🔵 Siigo: {fmtGrams(group.siigoTotal, group.unit)}
+                                                                </span>
+                                                            )}
+                                                            {pickedSummary[group.productId] && (
+                                                                <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 text-[10px] font-semibold px-2 py-0.5 rounded-full border border-rose-200"
+                                                                    onClick={() => alert(`Separados para:\n${(pickedSummary[group.productId].orders || []).map(o => `• ${o.distributorName} (P-${o.orderNumber}): ${o.quantity} uds`).join('\n')}`)}>
+                                                                    📦 Sep: {fmtGrams(typeof pickedSummary[group.productId] === 'object' ? pickedSummary[group.productId].total : pickedSummary[group.productId], group.unit)}
                                                                 </span>
                                                             )}
                                                         </div>
@@ -639,9 +1075,18 @@ export default function InventoryCountPage() {
                                                     {/* Lot Cards */}
                                                     {group.lots.map(({ lot, isActive, isCounted, systemGrams, diff, zone }) => {
                                                         const key = lot.id;
-                                                        const localInput = inputMap[key] || { physicalKg: '', notes: '' };
+                                                        const localInput = inputMap[key] || { physicalGrams: '', notes: '' };
                                                         const saving = !!savingMap[key];
-                                                        const badge = diffBadge(diff);
+                                                        const lotUnit = lot.unit || lot.product?.unit || group.unit || 'g';
+                                                        const pickedInLot = pickedSummary[group.productId]?.lots?.[lot.lotNumber]?.total || 0;
+                                                        
+                                                        let dynamicDiff = null;
+                                                        if (localInput.physicalGrams !== '' && localInput.physicalGrams != null && !isNaN(parseFloat(localInput.physicalGrams))) {
+                                                            dynamicDiff = (parseFloat(localInput.physicalGrams) + pickedInLot) - systemGrams;
+                                                        } else if (isCounted && lot.physicalGrams != null) {
+                                                            dynamicDiff = (lot.physicalGrams + pickedInLot) - systemGrams;
+                                                        }
+                                                        const badge = diffBadge(dynamicDiff, lotUnit);
                                                         const canEdit = isEditable && isActive;
                                                         const zoneLabel = ZONE_LABELS[zone] || zone;
                                                         const zoneColor = ZONE_COLORS[zone] || 'bg-neutral-100 text-neutral-500 border-neutral-200';
@@ -651,59 +1096,111 @@ export default function InventoryCountPage() {
                                                                 <div className="flex items-center gap-2 flex-wrap">
                                                                     <code className="text-xs bg-neutral-100 text-neutral-500 px-2 py-0.5 rounded font-mono">{lot.lotNumber}</code>
                                                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${zoneColor}`}>{zoneLabel}</span>
-                                                                    <span className="text-xs text-neutral-400">— {fmtKg(systemGrams)}</span>
+                                                                    <span className="text-xs text-neutral-400">— {fmtGrams(systemGrams, lotUnit)}</span>
                                                                     <span className="text-xs text-neutral-400 italic">referencia</span>
                                                                 </div>
                                                             </div>
                                                         );
 
                                                         return (
-                                                            <div key={lot.id} className={`ml-4 border-l-3 pl-3 py-3 rounded-r-lg mb-1 ${isCounted ? 'border-green-400 bg-green-50/40' : 'border-blue-300 bg-white'}`}>
+                                                            <div id={`row-${key}`} key={lot.id} className={`ml-4 border-l-3 pl-3 py-3 rounded-r-lg mb-1 ${isCounted ? 'border-green-400 bg-green-50/40' : 'border-blue-300 bg-white'}`}>
                                                                 {/* Lot info row */}
                                                                 <div className="flex items-center gap-2 mb-2 flex-wrap">
                                                                     {isCounted ? <span className="text-green-500 text-lg">✓</span> : <span className="inline-block w-5 h-5 rounded-full border-2 border-neutral-300 flex-shrink-0"></span>}
                                                                     <code className="text-sm bg-blue-50 text-blue-700 px-2 py-1 rounded font-mono font-semibold">{lot.lotNumber}</code>
                                                                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${zoneColor}`}>{zoneLabel}</span>
                                                                     {badge && <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: badge.bg, color: badge.color }}>{badge.text}</span>}
+                                                                    {pickedSummary[group.productId]?.lots?.[lot.lotNumber] && (
+                                                                        <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-rose-200 cursor-help"
+                                                                            title={`Separados en este lote para:\n${pickedSummary[group.productId].lots[lot.lotNumber].orders.map(o => `• ${o.distributorName} (P-${o.orderNumber}): ${o.quantity} uds`).join('\n')}`}>
+                                                                            📦 {pickedSummary[group.productId].lots[lot.lotNumber].total} uds sep.
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                                 {/* ERP value */}
                                                                 <div className="flex items-center gap-4 mb-2 text-sm">
                                                                     <span className="text-neutral-500">💻 ERP:</span>
-                                                                    <span className="text-blue-700 font-bold">{fmtKg(systemGrams)}</span>
+                                                                    <span className="text-blue-700 font-bold">{fmtGrams(systemGrams, lotUnit)}</span>
                                                                 </div>
                                                                 {/* Input row */}
                                                                 {canEdit ? (
                                                                     <div className="flex items-center gap-2 flex-wrap">
                                                                         <div className="flex-1 min-w-0">
-                                                                            <label className="text-xs text-green-700 font-semibold mb-1 block">📦 Físico (kg)</label>
-                                                                            <input type="number" step="0.001" min="0" inputMode="decimal"
-                                                                                value={localInput.physicalKg}
-                                                                                onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], physicalKg: e.target.value } }))}
-                                                                                placeholder="0.000"
+                                                                            <label className="text-xs text-green-700 font-semibold mb-1 block">📦 Físico (gramos / uds)</label>
+                                                                            <input type="text" inputMode="numeric" data-scanner-ignore="true"
+                                                                                value={localInput.physicalGrams}
+                                                                                onChange={e => handlePhysicalInputChange(key, e.target.value)}
+                                                                                placeholder="0"
                                                                                 className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-lg text-right font-semibold focus:outline-none focus:ring-2 focus:ring-green-300 focus:border-green-400" />
                                                                         </div>
-                                                                        <div className="flex-1 min-w-0">
-                                                                            <label className="text-xs text-neutral-500 mb-1 block">Obs.</label>
-                                                                            <input type="text" value={localInput.notes}
-                                                                                onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], notes: e.target.value } }))}
-                                                                                placeholder="Opcional"
-                                                                                className="w-full border border-neutral-100 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-300" />
-                                                                        </div>
                                                                         <button onClick={() => saveLotCount(lot)}
-                                                                            disabled={saving || localInput.physicalKg === ''}
+                                                                            disabled={saving || localInput.physicalGrams === ''}
                                                                             className={`mt-5 px-5 py-3 rounded-xl font-bold text-sm transition-colors whitespace-nowrap ${isCounted ? 'bg-neutral-200 text-neutral-700' : 'bg-green-500 text-white shadow-sm'} disabled:opacity-40`}>
                                                                             {saving ? '...' : isCounted ? '↻' : '✓'}
                                                                         </button>
                                                                     </div>
                                                                 ) : (
                                                                     <div className="text-sm text-green-700 font-semibold">
-                                                                        📦 Físico: {isCounted ? fmtKg((parseFloat(localInput.physicalKg) || 0) * 1000) : '—'}
-                                                                        {localInput.notes && <span className="ml-3 text-neutral-400 text-xs font-normal">({localInput.notes})</span>}
+                                                                        📦 Físico: {isCounted ? fmtGrams(parseFloat(localInput.physicalGrams) || 0, lotUnit) : '—'}
                                                                     </div>
                                                                 )}
                                                             </div>
                                                         );
                                                     })}
+                                                    
+                                                    {/* Unassigned S/L Lot Card (Mobile) */}
+                                                    {(group.lots.filter(r => r.isActive).length === 0 || pickedSummary[group.productId]?.lots?.['S/L']?.total > 0 || inputMap[`nolot-${group.productId}`]?.lineId) && (() => {
+                                                        const keySL = `nolot-${group.productId}`;
+                                                        const unassignedPicked = pickedSummary[group.productId]?.lots?.['S/L']?.total || 0;
+                                                        const localInputSL = inputMap[keySL] || { physicalGrams: '' };
+                                                        let slDiff = null;
+                                                        if (localInputSL.physicalGrams !== '' && localInputSL.physicalGrams != null) {
+                                                            slDiff = (parseFloat(localInputSL.physicalGrams) + unassignedPicked) - 0;
+                                                        }
+                                                        const slBadge = diffBadge(slDiff, group.unit || 'g');
+                                                        return (
+                                                            <div id={`row-${keySL}`} className="ml-4 border-l-3 border-amber-300 bg-amber-50/30 pl-3 py-3 rounded-r-lg mt-1 mb-1 shadow-sm">
+                                                                <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                                                    <span className="text-amber-500 font-bold">↳</span>
+                                                                    <code className="text-sm bg-neutral-100 text-neutral-600 border border-neutral-200 px-2 py-1 rounded font-mono border-dashed font-semibold">S/L</code>
+                                                                    <span className="text-xs text-neutral-500 italic">Sin Lote</span>
+                                                                    {slBadge && <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: slBadge.bg, color: slBadge.color }}>{slBadge.text}</span>}
+                                                                    {unassignedPicked > 0 && (
+                                                                        <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-rose-200"
+                                                                            onClick={() => alert(`Separados (S/L) para:\n${pickedSummary[group.productId].lots['S/L'].orders.map(o => `• ${o.distributorName} (P-${o.orderNumber}): ${o.quantity} uds`).join('\n')}`)}>
+                                                                            📦 {unassignedPicked} uds sep.
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex items-center gap-4 mb-2 text-sm">
+                                                                    <span className="text-neutral-500">💻 ERP:</span>
+                                                                    <span className="text-neutral-400 font-mono">0</span>
+                                                                </div>
+                                                                {isEditable ? (
+                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <label className="text-xs text-amber-700 font-semibold mb-1 block">📦 Físico (S/L)</label>
+                                                                            <input type="text" inputMode="numeric" data-scanner-ignore="true"
+                                                                                value={localInputSL.physicalGrams}
+                                                                                onChange={e => handlePhysicalInputChange(keySL, e.target.value)}
+                                                                                placeholder="0"
+                                                                                disabled={!!savingMap[`nolot-${group.productId}`]}
+                                                                                className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-lg text-right font-semibold focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 bg-white" />
+                                                                        </div>
+                                                                        <button onClick={() => saveLotCount(group, true)}
+                                                                            disabled={!!savingMap[`nolot-${group.productId}`]}
+                                                                            className="mt-5 px-5 py-3 rounded-xl font-bold text-sm transition-colors whitespace-nowrap bg-neutral-200 hover:bg-neutral-300 text-neutral-700 disabled:opacity-50">
+                                                                            {savingMap[`nolot-${group.productId}`] ? '...' : 'Guardar S/L'}
+                                                                        </button>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="text-sm text-amber-700 font-semibold">
+                                                                        📦 Físico: {localInputSL.physicalGrams || '—'}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })()}
                                                 </div>
                                             );
                                         })}

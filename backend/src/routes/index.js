@@ -223,6 +223,8 @@ router.use('/zone-transfers', zoneTransferRoutes);
 router.use('/cart', cartRoutes);
 const finishedLotRoutes = require('./finishedLotRoutes');
 router.use('/finished-lots', finishedLotRoutes);
+const materialLotRoutes = require('./materialLotRoutes');
+router.use('/material-lots', materialLotRoutes);
 const handoffRoutes = require('./handoffRoutes');
 router.use('/handoffs', handoffRoutes);
 const physicalCountRoutes = require('./physicalCountRoutes');

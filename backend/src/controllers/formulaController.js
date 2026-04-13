@@ -199,19 +199,26 @@ async function createFormula(req, res) {
 
                 const ingredientMap = {};
                 for (let i = 0; i < items.length; i++) {
-                    ingredientMap[items[i].ingredientId] = {
+                    const id = items[i].ingredientId;
+                    if (!ingredientMap[id]) ingredientMap[id] = [];
+                    ingredientMap[id].push({
                         quantity: Number(items[i].quantity) || 0,
                         displayOrder: i + 1
-                    };
+                    });
                 }
 
                 // SKIP ENSAMBLE and CONTEO stages — ENSAMBLE uses per-gram ratios, CONTEO has no inputs
                 for (const tmpl of templates) {
                     for (const stage of tmpl.stages) {
                         if (stage.processType?.code === 'ENSAMBLE' || stage.processType?.code === 'CONTEO') continue;
+                        const syncConsumed = {};
                         for (const inp of stage.inputs) {
-                            const match = ingredientMap[inp.productId];
-                            if (match) {
+                            const arr = ingredientMap[inp.productId];
+                            if (arr && arr.length > 0) {
+                                const consumedIdx = syncConsumed[inp.productId] || 0;
+                                const match = arr[consumedIdx] || arr[arr.length - 1];
+                                syncConsumed[inp.productId] = consumedIdx + 1;
+
                                 await prisma.assemblyTemplateStageInput.update({
                                     where: { id: inp.id },
                                     data: {
@@ -350,13 +357,15 @@ async function updateFormula(req, res) {
                     }
                 }) : [];
 
-                // Build a map: ingredientId -> { quantity, displayOrder }
+                // Build a map: ingredientId -> array of { quantity, displayOrder }
                 const ingredientMap = {};
                 for (let i = 0; i < items.length; i++) {
-                    ingredientMap[items[i].ingredientId] = {
+                    const id = items[i].ingredientId;
+                    if (!ingredientMap[id]) ingredientMap[id] = [];
+                    ingredientMap[id].push({
                         quantity: Number(items[i].quantity) || 0,
                         displayOrder: i + 1
-                    };
+                    });
                 }
 
                 // Update each template stage input that matches a formula ingredient
@@ -364,9 +373,14 @@ async function updateFormula(req, res) {
                 for (const tmpl of templates) {
                     for (const stage of tmpl.stages) {
                         if (stage.processType?.code === 'ENSAMBLE' || stage.processType?.code === 'CONTEO') continue;
+                        const syncConsumed = {};
                         for (const inp of stage.inputs) {
-                            const match = ingredientMap[inp.productId];
-                            if (match) {
+                            const arr = ingredientMap[inp.productId];
+                            if (arr && arr.length > 0) {
+                                const consumedIdx = syncConsumed[inp.productId] || 0;
+                                const match = arr[consumedIdx] || arr[arr.length - 1];
+                                syncConsumed[inp.productId] = consumedIdx + 1;
+
                                 await prisma.assemblyTemplateStageInput.update({
                                     where: { id: inp.id },
                                     data: {

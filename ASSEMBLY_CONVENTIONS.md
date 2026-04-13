@@ -95,4 +95,56 @@ Esto permite que cambios en una plantilla se propaguen automáticamente a baches
 | `assemblyService.js` línea ~85 | Define `targetQuantity = 1` | 🔴 Alto — no cambiar a gramos de batch |
 | `assemblyNoteController.js` `quickStart` | Misma lógica | 🔴 Alto |
 | `assemblyTemplateStageInput.quantityPerUnit` | Gramos absolutos por lote | 🟡 Medio — no convertir a ratios |
-| `assemblyNoteController.js` `getNoteById` | Recalculo en vivo PENDING | 🟢 Bajo |
+| `assemblyNoteController.js` `getNoteById` | Recálculo en vivo PENDING | 🟢 Bajo |
+
+---
+
+## ⚠️ Ingredientes Duplicados y Patrón de Multi-Paso (Sequential Order Consumption Pattern)
+
+Es común en las fórmulas (especialmente siropes) que un ingrediente se agregue en dos momentos distintos durante el pesaje o producción.
+Ejemplo: `AZUCAR` en el Orden 2 (`5000 g`) y `AZUCAR` en el Orden 6 (`45632 g`).
+
+### Error Histórico: Sobrescribir Mapas por ID
+
+En el pasado (`getNoteById`, `formulaController`, `quickStart`), el código agrupaba u obtenía ingredientes usando un simple objeto hash mapeado por `productId`:
+```javascript
+// ❌ INCORRECTO — El segundo azúcar (ORDEN 6) sobrescribirá el del ORDEN 2
+const qpuMap = {};
+for (const ti of templateInputs) {
+    qpuMap[ti.productId] = ti; // ← BUG: Machaca duplicados
+}
+```
+
+### Solución: Indexación Basada en Arreglos (Cola FIFO)
+
+Cualquier lógica que sincronice fórmulas, regenere PENDING notes, o calcule consumo DEBE usar el patrón de "Sequential Order Consumption" (arreglos indexados):
+
+```javascript
+// ✅ CORRECTO — Mantener un arreglo ordenado por cada productId
+const qpuMap = {};
+for (const ti of templateInputs) {
+    if (!qpuMap[ti.productId]) qpuMap[ti.productId] = [];
+    qpuMap[ti.productId].push({ qpu: ti.quantityPerUnit, displayOrder: ti.displayOrder });
+}
+
+// 2. Al iterar sobre los items a procesar/actualizar, sacar secuencialmente usando un índice
+const qpuConsumed = {};
+note.items = note.items.map(item => {
+    const arr = qpuMap[item.componentId];
+    if (arr && arr.length > 0) {
+        // Obtenemos el índice actual consumido (o 0 inicial)
+        const consumedIdx = qpuConsumed[item.componentId] || 0;
+        // Tomamos el elemento correspondiente, con fallback al último si se desfasó
+        const match = arr[consumedIdx] || arr[arr.length - 1]; 
+        
+        qpuConsumed[item.componentId] = consumedIdx + 1; // Incrementamos para la próxima vez
+
+        return { ...item, plannedQuantity: match.qpu * targetQuantity };
+    }
+});
+```
+
+**LUGARES CORREGIDOS CON ESTE PATRÓN (2026-04-11):**
+* `formulaController.js`: Sincronización `Formula` → `AssemblyTemplateStageInput`.
+* `genialityAssemblyNoteController.js (getNoteById)`: Live recalculation para notas PENDING.
+* `genialityAssemblyNoteController.js (quickStart)`: Creación de notas `itemsToCreate`.

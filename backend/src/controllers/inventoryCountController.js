@@ -67,7 +67,7 @@ exports.getSession = async (req, res) => {
                 createdBy: { select: { name: true } },
                 lines: {
                     include: {
-                        product: { select: { name: true, sku: true, currentStock: true, warehouses: true } },
+                        product: { select: { name: true, sku: true, currentStock: true, warehouses: true, group: { select: { name: true } } } },
                         materialLot: { select: { lotNumber: true, currentQuantity: true, initialQuantity: true, status: true } }
                     },
                     orderBy: [{ productName: 'asc' }, { createdAt: 'asc' }]
@@ -196,7 +196,7 @@ exports.getReport = async (req, res) => {
             include: {
                 lines: {
                     include: {
-                        product: { select: { name: true, sku: true, currentStock: true, warehouses: true } },
+                        product: { select: { name: true, sku: true, currentStock: true, warehouses: true, group: { select: { name: true } } } },
                         materialLot: { select: { lotNumber: true, currentQuantity: true } }
                     },
                     orderBy: { productName: 'asc' }
@@ -240,3 +240,167 @@ function extractSiigoStock(warehousesJson) {
         return warehouses.reduce((sum, w) => sum + (w.quantity || 0), 0);
     } catch { return null; }
 }
+
+const xlsx = require('xlsx');
+
+exports.exportSessionExcel = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const session = await prisma.inventoryCountSession.findUnique({
+            where: { id },
+            include: {
+                lines: true
+            }
+        });
+        if (!session) return res.status(404).json({ error: 'Sesión no encontrada' });
+
+        // 1. Get Picked amounts
+        const activeOrders = await prisma.order.findMany({
+            where: { status: { in: ['APPROVED', 'IN_PICKING', 'READY'] } },
+            include: {
+                items: { include: { pickingItems: true } }
+            }
+        });
+        
+        const pickedMap = {}; // by productId
+        for (const order of activeOrders) {
+            for (const item of order.items) {
+                if (item.pickingItems && item.pickingItems.length > 0) {
+                    const pickedAmount = item.pickingItems.reduce((acc, p) => acc + (p.scannedQty || 0), 0);
+                    if (pickedAmount > 0) {
+                        pickedMap[item.productId] = (pickedMap[item.productId] || 0) + pickedAmount;
+                    }
+                }
+            }
+        }
+
+        // 2. Aggregate count lines by siigoProductCode
+        const agg = {};
+        for (const line of session.lines) {
+            const code = line.siigoProductCode || line.productId || 'SIN_CODIGO';
+            if (!agg[code]) {
+                agg[code] = {
+                    code: line.siigoProductCode || 'N/A',
+                    name: line.productName,
+                    productId: line.productId,
+                    physicalQty: 0
+                };
+            }
+            agg[code].physicalQty += (line.physicalQty || 0);
+        }
+
+        // 3. Prepare Excel Rows
+        const rowsProduct = [];
+        for (const key in agg) {
+            const item = agg[key];
+            const pickingQty = item.productId ? (pickedMap[item.productId] || 0) : 0;
+            const totalSiigo = item.physicalQty + pickingQty;
+
+            rowsProduct.push({
+                'Código Producto': item.code,
+                'Nombre del Producto': item.name,
+                'Físico (Bodega)': item.physicalQty,
+                'Separados en Picking': pickingQty,
+                'Total a Cargar Siigo': totalSiigo
+            });
+        }
+
+        // Generate Excel buffer
+        const worksheet = xlsx.utils.json_to_sheet(rowsProduct);
+        const workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Resumen Siigo');
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="conteo-siigo-${session.sessionCode}.xlsx"`);
+        res.send(buffer);
+    } catch (err) {
+        console.error('Error exportando Excel:', err);
+        res.status(500).json({ error: 'Error exportando Excel' });
+    }
+};
+
+exports.exportMonthExcel = async (req, res) => {
+    try {
+        const { month } = req.params;
+        const sessions = await prisma.inventoryCountSession.findMany({
+            where: { month },
+            include: { lines: true }
+        });
+        if (!sessions || sessions.length === 0) return res.status(404).json({ error: 'No se encontraron sesiones para este mes' });
+
+        // Identify all unique warehouse names
+        const warehousesPresent = [...new Set(sessions.map(s => s.warehouseName))];
+        warehousesPresent.sort();
+
+        // Get pickings
+        const activeOrders = await prisma.order.findMany({
+            where: { status: { in: ['APPROVED', 'IN_PICKING', 'READY'] } },
+            include: { items: { include: { pickingItems: true } } }
+        });
+        const pickedMap = {}; 
+        for (const order of activeOrders) {
+            for (const item of order.items) {
+                if (item.pickingItems && item.pickingItems.length > 0) {
+                    const pickedAmount = item.pickingItems.reduce((acc, p) => acc + (p.scannedQty || 0), 0);
+                    if (pickedAmount > 0) pickedMap[item.productId] = (pickedMap[item.productId] || 0) + pickedAmount;
+                }
+            }
+        }
+
+        // Aggregate by product (code/id)
+        const agg = {};
+        for (const session of sessions) {
+            for (const line of session.lines) {
+                const code = line.siigoProductCode || line.productId || 'SIN_CODIGO';
+                if (!agg[code]) {
+                    agg[code] = {
+                        code: line.siigoProductCode || 'N/A',
+                        name: line.productName,
+                        productId: line.productId,
+                        warehouses: {}
+                    };
+                    for (const wh of warehousesPresent) agg[code].warehouses[wh] = 0;
+                }
+                // Ensure the warehouse object has the right key initialized in case of dynamic matching
+                if (agg[code].warehouses[session.warehouseName] === undefined) {
+                    agg[code].warehouses[session.warehouseName] = 0;
+                }
+                agg[code].warehouses[session.warehouseName] += (line.physicalQty || 0);
+            }
+        }
+
+        // Prepare Excel Rows
+        const rowsProduct = [];
+        for (const key in agg) {
+            const item = agg[key];
+            const pickingQty = item.productId ? (pickedMap[item.productId] || 0) : 0;
+            let totalFisico = 0;
+            const row = {
+                'Código Producto': item.code,
+                'Nombre del Producto': item.name,
+            };
+            for (const wh of warehousesPresent) {
+                const qty = item.warehouses[wh] || 0;
+                row[wh] = qty;
+                totalFisico += qty;
+            }
+            row['Separados en Picking'] = pickingQty;
+            row['Total a Cargar Siigo'] = totalFisico + pickingQty;
+
+            rowsProduct.push(row);
+        }
+
+        const worksheet = xlsx.utils.json_to_sheet(rowsProduct);
+        const workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Consolidado Mensual Siigo');
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="conteo-siigo-global-${month}.xlsx"`);
+        res.send(buffer);
+    } catch (err) {
+        console.error('Error exportando Excel consolidado:', err);
+        res.status(500).json({ error: 'Error exportando Excel' });
+    }
+};

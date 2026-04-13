@@ -71,7 +71,10 @@ const BatchHistoryPage = () => {
             if (statusFilter) params.set('status', statusFilter);
             if (dateFrom) params.set('dateFrom', dateFrom);
             if (dateTo) params.set('dateTo', dateTo);
-            const res = await fetch(`${API}/batch-history?${params}`);
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API}/batch-history?${params}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
             const json = await res.json();
             setBatches(json.data || []);
             setPagination(json.pagination || { page: 1, total: 0, totalPages: 0, limit: 20 });
@@ -89,7 +92,10 @@ const BatchHistoryPage = () => {
         setSelectedBatch(batchId);
         setDetailLoading(true);
         try {
-            const res = await fetch(`${API}/batch-history/${batchId}`);
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API}/batch-history/${batchId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
             const json = await res.json();
             setDetail(json);
         } catch (err) {

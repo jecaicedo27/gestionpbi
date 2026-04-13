@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo } from 'react';
 import api from '../services/api';
 import { 
     Search, AlertCircle, RefreshCw, CheckCircle2, 
-    XCircle, Clock, ChevronDown, ChevronUp, FileSpreadsheet
+    XCircle, Clock, ChevronDown, ChevronUp, FileSpreadsheet, ArrowRight
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const ProductionAuditPage = () => {
     const [data, setData] = useState([]);
@@ -56,6 +57,9 @@ const ProductionAuditPage = () => {
                     <p className="text-neutral-500 mt-1">
                         Monitoreo en tiempo real de consumos proyectados vs. reales.
                     </p>
+                    <Link to="/production/kardex" className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100 transition-all">
+                        Ir al Kardex de Bodega (Ledger) <ArrowRight size={14} />
+                    </Link>
                 </div>
                 <div className="flex items-center gap-3">
                     <select

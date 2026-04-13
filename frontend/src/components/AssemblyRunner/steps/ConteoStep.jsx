@@ -58,8 +58,11 @@ const ConteoStep = ({
     const totalEsferas = outputTargets.reduce((sum, t) => {
         const factor = getEsferaFactor(t);
         if (!factor) return sum;
-        const actual = parseInt(conteoActuals[t.productId] ?? t.plannedUnits ?? 0, 10);
-        return sum + (actual * factor);
+        const rawActual = conteoActuals[t.productId];
+        // Only count if operator actually entered a value — never use plannedUnits as fallback
+        if (rawActual === undefined || rawActual === '') return sum;
+        const actual = parseInt(rawActual, 10);
+        return isNaN(actual) ? sum : sum + (actual * factor);
     }, 0);
 
     const getSizeLabel = (name) => {
@@ -94,6 +97,12 @@ const ConteoStep = ({
         }
     };
 
+    // ── Missing actuals check (blocks FINALIZAR if any field empty) ──
+    const missingActuals = sortedTargets.filter(t => {
+        const actual = conteoActuals[t.productId];
+        return actual === undefined || actual === '' || isNaN(parseInt(actual, 10));
+    });
+
     // ── Missing photos check ──
     const missingPhotos = sortedTargets.filter(t => {
         const actual = parseInt(conteoActuals[t.productId] ?? '', 10);
@@ -125,10 +134,10 @@ const ConteoStep = ({
                 let y = 10;
                 let fields = '';
 
-                // Header: batch number inverted
-                fields += `^FO${x},${y}^GB380,22,22^FS\n`;
-                fields += `^FO${x + 6},${y + 3}^A0N,15,13^FR^FD${escZpl(batchNumber)}^FS\n`;
-                y += 26;
+                // Header: batch number inverted (larger font requested by user)
+                fields += `^FO${x},${y}^GB380,34,34^FS\n`;
+                fields += `^FO${x + 8},${y + 5}^A0N,26,24^FR^FD${escZpl(batchNumber)}^FS\n`;
+                y += 40;
 
                 // Flavor name — big
                 const fl = flavor.length;
@@ -245,8 +254,9 @@ const ConteoStep = ({
                         const actual = conteoActuals[target.productId];
                         const conteoPlanned = noteData.processParameters?.conteo?.[target.product?.name]?.planned;
                         const planned = target.plannedUnits > 0 ? target.plannedUnits : (conteoPlanned ?? target.plannedUnits);
-                        const actualNum = parseInt(actual ?? planned ?? 0, 10);
-                        const deviation = actual !== undefined && planned > 0
+                        // Only use actual if explicitly entered — never fall back to planned
+        const actualNum = actual !== undefined && actual !== '' ? parseInt(actual, 10) : null;
+                        const deviation = actualNum !== null && planned > 0
                             ? ((actualNum - planned) / planned * 100).toFixed(1) : null;
                         const isOk = deviation === null || Math.abs(parseFloat(deviation)) <= 5;
                         const sizeLabel = getSizeLabel(target.product?.name);
@@ -288,7 +298,7 @@ const ConteoStep = ({
                                             value={actual ?? ''}
                                             onChange={(e) => onConteoActualChange && onConteoActualChange(target.productId, e.target.value)}
                                             className="w-full text-base font-black text-center text-purple-700 py-1.5 px-2 rounded-lg border-2 border-purple-300 focus:border-purple-500 focus:ring-1 focus:ring-purple-200 focus:outline-none bg-white transition-all"
-                                            placeholder={planned?.toString()}
+                                            placeholder="0"
                                         />
                                     </div>
 

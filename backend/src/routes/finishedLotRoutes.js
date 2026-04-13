@@ -360,7 +360,7 @@ router.get('/all-active', auth, async (req, res) => {
         const lots = await prisma.finishedLotStock.findMany({
             where: { currentQuantity: { gt: 0 }, status: { in: ['AVAILABLE', 'LOW'] } },
             include: {
-                product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true, accountGroup: true } }
+                product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true, accountGroup: true, group: { select: { name: true } } } }
             },
             orderBy: [{ product: { name: 'asc' } }, { lotNumber: 'asc' }]
         });

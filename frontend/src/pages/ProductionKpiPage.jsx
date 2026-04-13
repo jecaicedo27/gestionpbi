@@ -442,6 +442,7 @@ const ProductionKpiPage = () => {
                                                 <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Dañados</th>
                                                 <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Producidas (g)</th>
                                                 <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Empacadas (g)</th>
+                                                <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Formuladas (g/tarro)</th>
                                                 <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma (g)</th>
                                                 <th className="text-center px-4 py-3 text-xs font-bold text-slate-500 uppercase">Merma%</th>
                                             </tr>
@@ -487,6 +488,13 @@ const ProductionKpiPage = () => {
                                                     </td>
                                                     <td className="px-4 py-3 text-center text-slate-500">{fmtKg(row.productionG)}</td>
                                                     <td className="px-4 py-3 text-center text-emerald-600 font-medium">{fmtKg(row.expectedG)}</td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        {row.breakdown && Object.entries(row.breakdown).map(([size, dt]) => (
+                                                            <div key={size} className="text-[10px] text-slate-600 font-medium whitespace-nowrap">
+                                                                <span className="capitalize">{size}</span>: <span className="font-bold text-slate-800">{dt.gpv || 0}g</span>
+                                                            </div>
+                                                        ))}
+                                                    </td>
                                                     <td className="px-4 py-3 text-center text-amber-600 font-medium">{fmtKg(row.mermaG)}</td>
                                                     <td className="px-4 py-3 text-center">
                                                         <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { message, Modal, Empty, Spin, Tag } from 'antd';
-import { Package, ArrowRightLeft, RefreshCw, Clock, ChevronDown, ChevronUp, ChevronRight, Search, Warehouse, Plus, Printer, Bluetooth, BluetoothOff, Wifi, WifiOff, Settings } from 'lucide-react';
+import { Package, ArrowRightLeft, RefreshCw, Clock, ChevronDown, ChevronUp, ChevronRight, Search, Warehouse, Plus, Printer, Bluetooth, BluetoothOff, Wifi, WifiOff, Settings, TrendingDown } from 'lucide-react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import QRCode from 'qrcode';
@@ -89,6 +89,11 @@ const FinishedProductZonePage = () => {
     const [lotZones, setLotZones] = useState([]);
     const [pendingBox, setPendingBox] = useState(null); // from DB
     const [successModal, setSuccessModal] = useState(null); // { qty, productName, zoneName }
+
+    // Siigo Adjustment RPA
+    const [showSiigoAdjustment, setShowSiigoAdjustment] = useState(false);
+    const [adjustmentData, setAdjustmentData] = useState({ lot: null, product: null, accountCode: '71050504', quantity: '' });
+    const [siigoAdjusting, setSiigoAdjusting] = useState(false);
 
     // ── Fetch lot stock summary by zone ──
     const loadLotSummary = async (lotNumber) => {
@@ -218,7 +223,41 @@ const FinishedProductZonePage = () => {
         }
     };
 
-    // ── Load data ──
+    // ── Siigo Adjustment RPA Helper ──
+    const handleSiigoAdjustment = async () => {
+        if (!adjustmentData.quantity || isNaN(adjustmentData.quantity) || parseFloat(adjustmentData.quantity) <= 0) {
+            message.warning('Ingrese una cantidad válida mayor a 0');
+            return;
+        }
+        if (!adjustmentData.accountCode || !adjustmentData.accountCode.trim()) {
+            message.warning('El código contable es obligatorio');
+            return;
+        }
+        
+        try {
+            setSiigoAdjusting(true);
+            const payload = {
+                productName: adjustmentData.product?.name || '',
+                productSku: adjustmentData.product?.sku || '',
+                quantity: parseFloat(adjustmentData.quantity),
+                accountCode: adjustmentData.accountCode.trim()
+            };
+            
+            const res = await api.post('/rpa/siigo-adjustment', payload);
+            
+            message.success(res.data.message || 'Bot RPA de ajuste encolado correctamente');
+            setShowSiigoAdjustment(false);
+            setAdjustmentData({ lot: null, product: null, accountCode: '71050504', quantity: '' });
+            
+        } catch (error) {
+            console.error('Error triggering Siigo adjustment:', error);
+            message.error(error.response?.data?.error || 'No se pudo encolar el ajuste en Siigo');
+        } finally {
+            setSiigoAdjusting(false);
+        }
+    };
+
+    // ── Fetch summary periodically ──
     const loadStock = useCallback(async () => {
         setLoading(true);
         try {
@@ -426,7 +465,7 @@ const FinishedProductZonePage = () => {
                         receivedAt: new Date().toISOString(),
                         expiresAt: currentExpiry ? new Date(currentExpiry).toISOString() : null,
                         boxNumber: i, totalBoxes: totalLabels,
-                    }, 1);
+                    }, 1, { maquila: isMaquilaLabel });
                     await sendToZebra(zpl);
                 }
 
@@ -1192,8 +1231,16 @@ const FinishedProductZonePage = () => {
                                         </div>
                                         {/* Stock summary - right side */}
                                         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexShrink: 0 }}>
+                                            {g.product?.currentStock !== undefined && (
+                                                <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'center', paddingRight: 10, borderRight: '1px solid #e2e8f0' }}>
+                                                    <div style={{ fontSize: '0.55rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em' }}>STOCK SIIGO</div>
+                                                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#64748b' }}>
+                                                        {Number(g.product.currentStock || 0).toLocaleString('es-CO')}<span style={{fontSize:'0.65rem', color:'#94a3b8', marginLeft:2}}>uds</span>
+                                                    </div>
+                                                </div>
+                                            )}
                                             <div style={{ textAlign: 'right' }}>
-                                                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>Restante</div>
+                                                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>Restante {g.product?.currentStock !== undefined ? 'App' : ''}</div>
                                                 <div style={{ fontSize: '1.2rem', fontWeight: 900, color: g.totalCurrent > 20 ? '#10b981' : g.totalCurrent > 5 ? '#f59e0b' : '#ef4444' }}>
                                                     {g.totalCurrent.toLocaleString('es-CO')} uds
                                                 </div>
@@ -1230,7 +1277,10 @@ const FinishedProductZonePage = () => {
                                                     let balance = Number(s.currentQuantity);
                                                     lotMovs.forEach(m => {
                                                         const isIn = m.toZone === activeZone && m.fromZone !== activeZone;
-                                                        const isSelfIngress = m.fromZone === activeZone && m.toZone === activeZone;
+                                                        // "Despachos" y "Salidas" facturadas (ej: Siigo) no son ingresos, aunque su fromZone y toZone sean idénticos en la bitácora
+                                                        const isSelfIngress = m.fromZone === activeZone && m.toZone === activeZone && 
+                                                                              !m.reason?.toLowerCase().includes('despacho') && 
+                                                                              !m.reason?.toLowerCase().includes('salida');
                                                         const isIngress = isIn || isSelfIngress;
                                                         m._balance = balance;
                                                         m._isIngress = isIngress;
@@ -1306,6 +1356,19 @@ const FinishedProductZonePage = () => {
                                                                         }}>
                                                                             <ArrowRightLeft size={12} /> Transferir
                                                                         </button>
+                                                                        {activeZone === 'NO_CONFORME' && (
+                                                                            <button onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                setAdjustmentData({ lot: s, product: g.product, accountCode: '71050504', quantity: s.currentQuantity });
+                                                                                setShowSiigoAdjustment(true);
+                                                                            }} style={{
+                                                                                padding: '4px 10px', border: '1.5px solid #f97316', borderRadius: 6,
+                                                                                background: '#fff7ed', color: '#ea580c', fontWeight: 700, fontSize: '0.72rem',
+                                                                                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3, marginLeft: '4px'
+                                                                            }}>
+                                                                                <TrendingDown size={12} /> Baja Siigo
+                                                                            </button>
+                                                                        )}
                                                                     </>
                                                                 )}
                                                             </div>
@@ -1507,7 +1570,7 @@ const FinishedProductZonePage = () => {
                                     receivedAt: lot?.createdAt || new Date().toISOString(),
                                     boxNumber: i, totalBoxes: totalLabels,
                                     statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
-                                }, 1);
+                                }, 1, { maquila: printMaquila });
                                 await sendToZebra(zpl);
                                 printed++;
                             }
@@ -1807,6 +1870,61 @@ const FinishedProductZonePage = () => {
                     </div>
                 </div>
             )}
+
+            {/* Siigo Adjustment RPA Modal */}
+            <Modal
+                open={showSiigoAdjustment}
+                title={<span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#ea580c', display: 'flex', alignItems: 'center', gap: 6 }}><TrendingDown size={18} /> Ajuste de Inventario (Baja Siigo)</span>}
+                onCancel={() => setShowSiigoAdjustment(false)}
+                footer={null}
+                width={450}
+                centered
+            >
+                {adjustmentData.product && (
+                    <div style={{ padding: '10px 0' }}>
+                        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+                            <div style={{ fontWeight: 700, color: '#9a3412', fontSize: '0.9rem' }}>{adjustmentData.product.name}</div>
+                            <div style={{ fontSize: '0.8rem', color: '#c2410c', marginTop: 4 }}>Lote: {adjustmentData.lot?.lotNumber} • Stock ERP Local: {adjustmentData.lot?.currentQuantity}</div>
+                        </div>
+                        
+                        <div style={{ marginBottom: 16 }}>
+                            <label style={lblStyle}>Cantidad a reducir en Siigo</label>
+                            <input 
+                                type="number" 
+                                min="1"
+                                value={adjustmentData.quantity} 
+                                onChange={e => setAdjustmentData(d => ({ ...d, quantity: e.target.value }))}
+                                style={{ ...inputStyle, borderColor: '#fdba74' }} 
+                                placeholder="Ej: 5"
+                            />
+                        </div>
+
+                        <div style={{ marginBottom: 20 }}>
+                            <label style={lblStyle}>Código Contable</label>
+                            <input 
+                                type="text" 
+                                value={adjustmentData.accountCode} 
+                                onChange={e => setAdjustmentData(d => ({ ...d, accountCode: e.target.value }))}
+                                style={inputStyle} 
+                                placeholder="Ej: 71050504"
+                            />
+                            <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: 4 }}>
+                                Se usará para el comprobante contable automático.
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                            <button onClick={() => setShowSiigoAdjustment(false)} style={{ padding: '8px 16px', background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: 8, fontWeight: 600, color: '#475569', cursor: 'pointer' }}>
+                                Cancelar
+                            </button>
+                            <button onClick={handleSiigoAdjustment} disabled={siigoAdjusting} style={{ padding: '8px 16px', background: '#f97316', border: 'none', borderRadius: 8, fontWeight: 700, color: '#fff', cursor: siigoAdjusting ? 'not-allowed' : 'pointer', opacity: siigoAdjusting ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                {siigoAdjusting ? <Spin size="small" /> : 'Ejecutar Bot Siigo'}
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </Modal>
+
             <style>{`
                 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
                 @keyframes scaleIn { from { transform: scale(0.85); opacity: 0 } to { transform: scale(1); opacity: 1 } }
