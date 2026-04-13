@@ -35,7 +35,7 @@ const CHECKLISTS = {
 };
 
 // ── Grace period: 15 minutes after shift change for handoff completion ───────
-const GRACE_MINUTES = 15;
+const GRACE_MINUTES = 30;
 
 // ── Determine outgoing shift by current hour (Colombia UTC-5) ────────────────
 // With GRACE_MINUTES: e.g. at 14:10 (within grace), outgoing is still NOCHE

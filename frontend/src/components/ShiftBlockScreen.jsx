@@ -453,6 +453,20 @@ export default function ShiftBlockScreen({ userRole }) {
                         🔑 Soy del turno anterior — Entregar
                     </button>
 
+                    {/* Leader CTA: Go to shift schedule to verify */}
+                    <button
+                        onClick={() => { window.location.href = '/shift-schedule'; }}
+                        style={{
+                            padding: '12px 24px', borderRadius: 12, border: 'none',
+                            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
+                            color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer',
+                            boxShadow: '0 4px 16px rgba(124,58,237,0.3)',
+                            width: '100%'
+                        }}
+                    >
+                        📋 Ver Cuadro de Turnos
+                    </button>
+
                     {/* Secondary: refresh */}
                     <button
                         onClick={() => window.location.reload()}
