@@ -146,20 +146,35 @@ export default function ShiftEndAlert({ userRole }) {
                     </div>
                 </div>
 
-                {/* Dismiss button */}
-                <button
-                    onClick={() => setDismissed(true)}
-                    style={{
-                        width: 32, height: 32, borderRadius: 10,
-                        background: 'rgba(255,255,255,0.15)',
-                        border: 'none', color: '#fff', cursor: 'pointer',
-                        fontSize: 16, display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', flexShrink: 0,
-                    }}
-                    title="Cerrar alerta"
-                >
-                    ✕
-                </button>
+                {/* Action buttons */}
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                    <button
+                        onClick={() => { window.location.href = '/shift-schedule'; }}
+                        style={{
+                            padding: '8px 14px', borderRadius: 10,
+                            background: 'rgba(255,255,255,0.25)',
+                            border: '1px solid rgba(255,255,255,0.3)',
+                            color: '#fff', cursor: 'pointer',
+                            fontWeight: 700, fontSize: 12,
+                            whiteSpace: 'nowrap',
+                        }}
+                    >
+                        📋 Ir a Entrega
+                    </button>
+                    <button
+                        onClick={() => setDismissed(true)}
+                        style={{
+                            width: 28, height: 28, borderRadius: 8,
+                            background: 'rgba(255,255,255,0.15)',
+                            border: 'none', color: '#fff', cursor: 'pointer',
+                            fontSize: 14, display: 'flex', alignItems: 'center',
+                            justifyContent: 'center',
+                        }}
+                        title="Cerrar alerta"
+                    >
+                        ✕
+                    </button>
+                </div>
             </div>
 
             <style>{`

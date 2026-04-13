@@ -329,9 +329,20 @@ exports.exportMonthExcel = async (req, res) => {
         });
         if (!sessions || sessions.length === 0) return res.status(404).json({ error: 'No se encontraron sesiones para este mes' });
 
-        // Identify all unique warehouse names
-        const warehousesPresent = [...new Set(sessions.map(s => s.warehouseName))];
-        warehousesPresent.sort();
+        // Identify all unique warehouse names (dynamic + standard to ensure column consistency even if uncounted)
+        const activeWarehouses = sessions.map(s => s.warehouseName);
+        const standardWarehouses = ['Bodega Principal', 'Zona Producción', 'Producto Terminado', 'Maquilas', 'No Conformes'];
+        const warehousesPresent = [...new Set([...activeWarehouses, ...standardWarehouses])];
+        
+        // Custom sort to keep standard order
+        warehousesPresent.sort((a, b) => {
+            const idxA = standardWarehouses.indexOf(a);
+            const idxB = standardWarehouses.indexOf(b);
+            if (idxA === -1 && idxB === -1) return a.localeCompare(b);
+            if (idxA === -1) return 1;
+            if (idxB === -1) return -1;
+            return idxA - idxB;
+        });
 
         // Get pickings
         const activeOrders = await prisma.order.findMany({
@@ -348,12 +359,32 @@ exports.exportMonthExcel = async (req, res) => {
             }
         }
 
+        // Fetch all active products to ensure they appear in the export even if they have 0 physical counts
+        const allProducts = await prisma.product.findMany({
+            where: { active: true },
+            select: { id: true, sku: true, name: true }
+        });
+
         // Aggregate by product (code/id)
         const agg = {};
+        
+        // Pre-populate agg with all active products
+        for (const p of allProducts) {
+            const code = p.sku || p.id || 'SIN_CODIGO';
+            agg[code] = {
+                code: p.sku || 'N/A',
+                name: p.name,
+                productId: p.id,
+                warehouses: {}
+            };
+            for (const wh of warehousesPresent) agg[code].warehouses[wh] = 0;
+        }
+
         for (const session of sessions) {
             for (const line of session.lines) {
                 const code = line.siigoProductCode || line.productId || 'SIN_CODIGO';
                 if (!agg[code]) {
+                    // Fallback for any inactive products or products deleted that still have logs
                     agg[code] = {
                         code: line.siigoProductCode || 'N/A',
                         name: line.productName,
