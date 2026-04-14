@@ -1,14 +1,10 @@
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const p = new PrismaClient();
 
-async function main() {
-    const noteId = '61df6a02-e77f-4493-a5a2-503e3f0fe767';
-    
-    const note = await prisma.assemblyNote.findUnique({
-        where: { id: noteId },
-        include: { processType: true }
-    });
-
-    console.log("Batch Note processType:", note.processType.code);
-}
-main().finally(() => prisma.$disconnect());
+(async () => {
+  const cn = await p.assemblyNote.findUnique({ 
+    where: { id: 'a1f583ea-fd02-4ac3-bf9e-86533028d53a' } 
+  });
+  console.log(cn.processParameters);
+  process.exit(0);
+})();

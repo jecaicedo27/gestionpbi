@@ -106,6 +106,7 @@ export default function ShiftSchedulePage() {
     const [employees, setEmployees] = useState([]);
     const [absences, setAbsences] = useState([]);
     const [absentMap, setAbsentMap] = useState({});
+    const [partialAbsentMap, setPartialAbsentMap] = useState({});
     const [absentEmployeeIds, setAbsentEmployeeIds] = useState([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -130,6 +131,7 @@ export default function ShiftSchedulePage() {
             const res = await api.get('/shifts/weeks', { params: { weekStart } });
             setWeek(res.data.week);
             setAbsentMap(res.data.absentMap || {});
+            setPartialAbsentMap(res.data.partialAbsentMap || {});
             setAbsentEmployeeIds(res.data.absentEmployeeIds || []);
         } catch (e) { console.error(e); }
         setLoading(false);
@@ -696,6 +698,7 @@ export default function ShiftSchedulePage() {
                                                                             onShiftChange={(val) => changeShift(m.idx, val)}
                                                                             lastLogin={ago}
                                                                             exporting={exporting}
+                                                                            partialAbsence={partialAbsentMap[m.employee?.id || m.employeeId]}
                                                                         />
                                                                     );
                                                                 }) : (
@@ -1074,7 +1077,7 @@ export default function ShiftSchedulePage() {
 //  COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function EmployeeCard({ name, isLeader, shift, shiftKey, showShifts, onShiftChange, lastLogin, exporting }) {
+function EmployeeCard({ name, isLeader, shift, shiftKey, showShifts, onShiftChange, lastLogin, exporting, partialAbsence }) {
     const shiftInfo = SHIFTS[shiftKey];
     return (
         <div style={{
@@ -1116,6 +1119,37 @@ function EmployeeCard({ name, isLeader, shift, shiftKey, showShifts, onShiftChan
                     </select>
                 )}
             </div>
+            {partialAbsence && (() => {
+                const ri = ABSENCE_REASONS.find(r => r.value === partialAbsence.reason) || {};
+                const dList = [];
+                // Add T12 to force it to parse correctly regardless of timezone
+                const sdStr = typeof partialAbsence.startDate === 'string' ? partialAbsence.startDate.split('T')[0] : '';
+                const edStr = typeof partialAbsence.endDate === 'string' ? partialAbsence.endDate.split('T')[0] : '';
+                
+                const sd = new Date((sdStr || partialAbsence.startDate) + 'T12:00:00');
+                const ed = new Date((edStr || partialAbsence.endDate) + 'T12:00:00');
+                
+                if (sdStr === edStr) {
+                    dList.push(sd.toLocaleDateString('es-CO', { weekday: 'short' }).toUpperCase());
+                } else {
+                    dList.push(sd.toLocaleDateString('es-CO', { weekday: 'short' }).toUpperCase() + '-' + ed.toLocaleDateString('es-CO', { weekday: 'short' }).toUpperCase());
+                }
+                
+                return (
+                    <div style={{
+                        marginTop: 6, padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700,
+                        background: ri.bg || '#fef2f2', color: ri.color || '#dc2626',
+                        display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${ri.border || '#fecaca'}`,
+                        lineHeight: 1.2
+                    }}>
+                        <span style={{fontSize: 14}}>{ri.icon || '🤒'}</span>
+                        <div>
+                            <div style={{ opacity: 0.9 }}>Mantiene turno ({dList.join('')})</div>
+                            <div style={{ fontSize: 10, textTransform: 'uppercase', marginTop: 1 }}>{ri.label || partialAbsence.reason}</div>
+                        </div>
+                    </div>
+                );
+            })()}
             {lastLogin && (
                 <div style={{
                     fontSize: 12, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4,

@@ -483,37 +483,37 @@ const AssemblyExecutionWizard = () => {
                         lotNumber: lotNumbers[item.id] || null,
                         operatorId: user?.id
                     });
+                    // Build consolidated process parameters payload to prevent racing/overwriting
+                    const updatedParams = { ...(note.processParameters || {}) };
+                    let needsPatch = false;
+
                     // Save weighing photo if present
                     const photoUrl = weighingPhotos[item.id];
                     if (photoUrl) {
-                        await api.patch(`/assembly-notes/${note.id}`, {
-                            processParameters: {
-                                ...note.processParameters,
-                                weighing_photos: {
-                                    ...(note.processParameters?.weighing_photos || {}),
-                                    [item.id]: photoUrl
-                                }
-                            }
-                        }).catch(() => { });
+                        updatedParams.weighing_photos = {
+                            ...(updatedParams.weighing_photos || {}),
+                            [item.id]: photoUrl
+                        };
+                        needsPatch = true;
                     }
+
                     // ── Persist lot selections to processParameters (survive page refresh) ──
                     const currentLotSel = lotSelections[item.id];
                     const currentLotId = selectedLotIds[item.id];
                     if (currentLotSel?.length > 0 || currentLotId) {
-                        const mergedLotSelections = {
-                            ...(note.processParameters?.lot_selections || {}),
+                        updatedParams.lot_selections = {
+                            ...(updatedParams.lot_selections || {}),
                             [item.id]: currentLotId || currentLotSel?.[0]?.lotId || null
                         };
+                        needsPatch = true;
+                    }
+
+                    if (needsPatch) {
                         await api.patch(`/assembly-notes/${note.id}`, {
-                            processParameters: {
-                                ...note.processParameters,
-                                lot_selections: mergedLotSelections
-                            }
+                            processParameters: updatedParams
                         }).catch(() => { });
                         // Keep local note in sync
-                        if (note.processParameters) {
-                            note.processParameters.lot_selections = mergedLotSelections;
-                        }
+                        note.processParameters = updatedParams;
                     }
                     // Lot consumption is deferred to handleComplete (batch consume on finalize)
                 } catch (e) {
@@ -827,7 +827,8 @@ const AssemblyExecutionWizard = () => {
                         try {
                             await api.post('/rpa/siigo-assembly', {
                                 productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
+                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
+                                assemblyNoteId: note.id
                             });
                             message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);
                         } catch (e) {

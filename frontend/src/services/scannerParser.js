@@ -69,10 +69,10 @@ export function parseScanInput(rawValue) {
     }
 
     // ── 2. Try LOT:xxx|SKU:xxx|BAR:xxx|QTY:xxx|BOX:x/x (tsplLabelBuilder / thermal labels) ──
-    if (buffer.includes('LOT:') || buffer.includes('SKU:')) {
+    if (buffer.includes('LOT:') || buffer.includes('SKU:') || buffer.includes('R:')) {
         const parts = buffer.split('|');
         const lotPart  = parts.find(p => p.startsWith('LOT:'));
-        const skuPart  = parts.find(p => p.startsWith('SKU:'));
+        const skuPart  = parts.find(p => p.startsWith('SKU:') || p.startsWith('R:'));
         const barPart  = parts.find(p => p.startsWith('BAR:'));
         const qtyPart  = parts.find(p => p.startsWith('QTY:'));
         const boxPart  = parts.find(p => p.startsWith('BOX:'));
@@ -91,7 +91,7 @@ export function parseScanInput(rawValue) {
             }
             return {
                 type: 'qr_lot_sku',
-                sku: skuPart ? skuPart.replace('SKU:', '').trim() : null,
+                sku: skuPart ? skuPart.replace('SKU:', '').replace('R:', '').trim() : null,
                 barcode: barPart ? barPart.replace('BAR:', '').trim() : null,
                 lotNumber: lotPart ? lotPart.replace('LOT:', '').trim() : null,
                 name: null,

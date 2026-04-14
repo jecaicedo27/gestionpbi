@@ -70,6 +70,80 @@ export function useAssemblyNote(id) {
 
             if (!data) throw new Error('No se encontró información de ejecución.');
 
+            // Auto-complete redundant G_ENSAMBLE notes for Geniality
+            // The operator already weighed the ingredients and took the verification photo in the G_PESAJE / G_EMPAQUE step.
+            if ((data.status === 'PENDING' || data.status === 'EXECUTING') && data.processType?.code === 'G_ENSAMBLE') {
+                try {
+                    const isEnsambleSiigo = (data.stageName || '').toLowerCase().includes('ensamble siigo');
+                    let actualQty = data.targetQuantity;
+                    
+                    if (isEnsambleSiigo && data.productionBatchId) {
+                        // ── "Ensamble Siigo" = finished product assembly ──
+                        // Per-carrito RPAs already handled Siigo accounting during MARCADO_CAJAS.
+                        // We must: (1) use real carrito qty, (2) skip RPA to avoid duplicates.
+                        try {
+                            const batchNotesRes = await api.get(`/assembly-notes?batchId=${data.productionBatchId}`);
+                            const conteoNote = batchNotesRes.data?.find(n => n.processType?.code === 'CONTEO');
+                            
+                            if (conteoNote?.status !== 'COMPLETED') {
+                                // CONTEO not finished — can't auto-complete Ensamble Siigo yet
+                                console.log(`[Auto-Skip] ⏸️ Deferring Ensamble Siigo ${data.id} — CONTEO not completed`);
+                                const nextNote = batchNotesRes.data
+                                    ?.filter(n => n.id !== data.id && n.status !== 'COMPLETED')
+                                    .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
+                                if (nextNote) {
+                                    window.history.replaceState(null, '', `/geniality/assembly-execution/${nextNote.id}`);
+                                    window.location.reload();
+                                } else {
+                                    window.location.href = '/production/operator';
+                                }
+                                return;
+                            }
+                            
+                            // Calculate real qty from carriots for THIS product
+                            const carriots = conteoNote.processParameters?.carriots || [];
+                            const productCarriots = carriots.filter(c => c.productId === data.productId && c.receivedAt);
+                            const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+                            if (realQty > 0) actualQty = realQty;
+                            
+                            // Set skipRpa flag — per-carrito RPAs already registered in Siigo
+                            await api.patch(`/assembly-notes/${data.id}`, {
+                                processParameters: { ...(data.processParameters || {}), skipRpa: true }
+                            });
+                        } catch (e) {
+                            console.warn('[Auto-Skip] Could not fetch CONTEO data for Ensamble Siigo:', e.message);
+                        }
+                    }
+                    
+                    console.log(`[Auto-Skip] Completing G_ENSAMBLE ${data.id} (${isEnsambleSiigo ? 'Ensamble Siigo' : 'intermediate'}, qty: ${actualQty})`);
+                    if (data.status === 'PENDING') {
+                        await api.post(`/assembly-notes/${data.id}/start`, { operatorId: null }).catch(() => { });
+                    }
+                    await api.post(`/assembly-notes/${data.id}/complete`, {
+                        actualQuantity: actualQty,
+                        observations: isEnsambleSiigo 
+                            ? `Auto-completado: Ensamble Siigo post-empaque (qty real: ${actualQty}, RPA per-carrito)`
+                            : 'Auto-completado: ensamble implícito tras G_PESAJE / G_EMPAQUE'
+                    });
+                    
+                    const allNotesRes = await api.get(`/assembly-notes?batchId=${data.productionBatchId}`);
+                    const nextNote = allNotesRes.data
+                        .filter(n => n.id !== data.id && n.status !== 'COMPLETED')
+                        .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
+                        
+                    if (nextNote) {
+                        window.history.replaceState(null, '', `/assembly-execution/${nextNote.id}`);
+                        window.location.reload();
+                        return;
+                    } else {
+                        window.location.reload();
+                        return;
+                    }
+                } catch (skipErr) {
+                    console.warn('Auto-skip G_ENSAMBLE failed:', skipErr.message);
+                }
+            }
+
             // Auto-skip orphaned notes (notes whose template stage was deleted)
             // BUT: sub-template expanded stages have stageId=null by design — they are NOT orphaned
             const isFromSubTemplate = data.processParameters?.fromSubTemplate;
@@ -110,7 +184,7 @@ export function useAssemblyNote(id) {
 
     const buildWizardSteps = (noteData) => {
         const steps = [];
-        const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
+        const isEnsamble = noteData.processType?.code === 'ENSAMBLE' || noteData.processType?.code === 'G_ENSAMBLE';
         const isConteo = noteData.processType?.code === 'CONTEO';
         const isEmpaque = noteData.processType?.code === 'EMPAQUE';
         const isCoccion = noteData.processType?.code === 'COCCION';
@@ -135,11 +209,10 @@ export function useAssemblyNote(id) {
 
         if (isSiropeGeniality) {
             steps.push({ type: 'G_CONTEO_CARRITOS', data: noteData });
-            // After receiving carriots: QC → label printing → final ensamble
+            // Only inject MARCADO_CAJAS for label printing deep-links.
+            // DO NOT inject generic EMPAQUE or ENSAMBLE steps for Geniality.
             if (isEmpaque || noteData.processType?.code === 'G_EMPAQUE') {
-                steps.push({ type: 'EMPAQUE', data: noteData });
                 steps.push({ type: 'MARCADO_CAJAS', data: noteData });
-                steps.push({ type: 'ENSAMBLE', data: noteData });
             }
         } 
         
@@ -232,6 +305,20 @@ export function useAssemblyNote(id) {
                     startIdx = savedStepEmp;
                 } else {
                     startIdx = 0; // Default: start at selector
+                }
+            } else if (isSiropeGeniality) {
+                // Geniality notes: only restore MARCADO_CAJAS step if there's an active carrito
+                const savedStep = noteData.processParameters?.wizardStep;
+                const hasActiveCarrito = !!noteData.processParameters?.activeCarritoId;
+                if (typeof savedStep === 'number' && savedStep > 0 && savedStep < steps.length) {
+                    const savedStepType = steps[savedStep]?.type;
+                    if (savedStepType === 'MARCADO_CAJAS' && !hasActiveCarrito) {
+                        startIdx = 0; // No active carrito — show carrito list
+                    } else {
+                        startIdx = savedStep;
+                    }
+                } else {
+                    startIdx = 0; // Default: carrito list
                 }
             } else {
                 // 1. Check for server-saved wizard step position (persisted when user navigates away)

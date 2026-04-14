@@ -21,8 +21,25 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     const noteData = stepData;
 
     // ── Derive data from note ────────────────────────────────────────────────
-    const product = noteData.product || {};
+    let product = noteData.product || {};
     const batchNumber = noteData.productionBatch?.batchNumber || noteData.noteNumber || '';
+
+    // Geniality: Override display name using the flavor from the Cart!
+    if (activeCarritoId) {
+        const activeCart = carriots.find(c => c.id === activeCarritoId);
+        if (activeCart) {
+            const anyConteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+            const conteoData = anyConteoNote?.processParameters?.conteo || {};
+            const conteoEntry = Object.values(conteoData).find(entry => entry.productId === activeCart.productId);
+            if (conteoEntry) {
+                product = {
+                    ...product,
+                    id: conteoEntry.productId,
+                    name: conteoEntry.productName || product.name,
+                };
+            }
+        }
+    }
 
     // Units-per-box: use product's packSize/packPerBox, then fallback to CAJA item, then 1
     const cajaItem = (noteData.items || []).find(i =>
@@ -41,7 +58,8 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     ) || (outputTargets.length === 1 ? outputTargets[0] : null);
 
     // Detect if this is a weight-based intermediate product (BASE, COMPUESTO, etc.)
-    const isWeightBased = !matchedTarget?.plannedUnits;
+    const isWeightBasedOverride = activeCarritoId ? false : !matchedTarget?.plannedUnits;
+    const isWeightBased = isWeightBasedOverride;
     const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
     const totalTarros = (() => {
         if (isEnsamble && matchedTarget?.plannedUnits) return matchedTarget.plannedUnits;
@@ -202,7 +220,9 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     const { zebraStatus, zebraIp, printZPL } = useZebra();
 
 
-    const totalIngested = (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
+    const totalIngested = isWeightBased 
+        ? packableUnits 
+        : (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
     // Valid if: regular packing is correct, OR there's nothing to pack but special labels exist
     const hasSpecialLabels = Number(contramuestraQty) > 0 || Number(defectiveBoxes) > 0 || maquilaLabelCount > 0;
     const isCarritoDone = hasCarriots && receivedQtyFromCarriots === 0 && packableUnits === 0;

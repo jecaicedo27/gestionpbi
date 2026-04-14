@@ -54,7 +54,7 @@ const OutputStep = ({
     const productNameUpper = (noteData.product?.name || '').toUpperCase();
     // "Simple" output = PESAJE (BASE SIROPE, SABORIZACION, etc.) or ENSAMBLE
     // These don't need manual "Real Producido" — auto-fill + confirmation + mandatory photo
-    const isEnsambleNote = noteData.processType?.code === 'ENSAMBLE';
+    const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(noteData.processType?.code);
     const isPesajeSimple = isEnsambleNote || (isPesaje && !productNameUpper.startsWith('COMPUESTO') && !productNameUpper.startsWith('PROTECCION'));
     const draft = noteData.processParameters?.output_qc_draft || {};
     const [pesajeConfirmed, setPesajeConfirmed] = useState(!!draft.pesajeConfirmed);
@@ -80,7 +80,7 @@ const OutputStep = ({
     // or an ADDITIVE step (small ingredients being added to an existing batch)
     const pesajeIsMajor = pesajeExpected && previousPesajeOutput && pesajeExpected > previousPesajeOutput * 0.1;
 
-    const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
+    const isEnsamble = ['ENSAMBLE', 'G_ENSAMBLE'].includes(noteData.processType?.code);
 
     let targetGrams;
     if (isEnsamble) {

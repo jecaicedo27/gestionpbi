@@ -1,3 +1,16 @@
+/*
+=============================================================================
+⚠️ IMPORTANTE: COMPONENTE CORE DE LIQUIPOPS ⚠️
+=============================================================================
+Este archivo (ProductionScheduler.jsx) maneja el Programador de Producción.
+Aunque tiene botones/pestañas para "Geniality", su estructura matemática 
+y lógica aritmética interna está ESTRICTAMENTE optimizada para LIQUIPOPS 
+(Ej: Cálculos de múltiplos de 120kg, coeficientes predeterminados en 0.70, etc).
+
+CUIDADO AL MODIFICAR: Cualquier cambio de escalado o de fracciones hecho aquí 
+afectará drásticamente la capacidad matemática del modelo productivo de Liquipops. 
+=============================================================================
+*/
 import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import { format, parse, startOfWeek, getDay } from 'date-fns';
@@ -57,7 +70,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
         try {
             // 1. Check if notes already exist for this batch
             const notesBase = activeLine === 'geniality' ? '/geniality/assembly-notes' : '/assembly-notes';
-            const execBase = '/assembly-execution'; // Same wizard handles both lines
+            const execBase = activeLine === 'geniality' ? '/geniality/assembly-execution' : '/assembly-execution';
             const existRes = await api.get(`${notesBase}?batchId=${batchId}`);
             if (existRes.data?.length > 0) {
                 const sorted = [...existRes.data].sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
@@ -162,7 +175,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
         setIsLaunching(true);
         try {
             const notesBase = activeLine === 'geniality' ? '/geniality/assembly-notes' : '/assembly-notes';
-            const execBase = '/assembly-execution'; // Same wizard handles both lines
+            const execBase = activeLine === 'geniality' ? '/geniality/assembly-execution' : '/assembly-execution';
             const userId = localStorage.getItem('userId');
             const qsRes = await api.post(`${notesBase}/quick-start`, {
                 templateId: selectedTemplateId,
@@ -543,8 +556,9 @@ const ProductionScheduler = ({ readOnly = false }) => {
             // GENIALITY: Single batch with N lots (large kettle)
             // ═══════════════════════════════════════════════════════
             if (activeLine === 'geniality') {
-                const totalWeight = numBatches * BATCH_SIZE; // e.g. 3 lots × 100kg = 300kg
-                const batchDuration = DURATION + (numBatches - 1) * 40;
+                const totalWeight = Math.round((modalData.totalSyrupKg || modalData.totalPlannedKg || 0) * 100) / 100;
+                const exactLots = totalWeight / BATCH_SIZE;
+                const batchDuration = DURATION + (exactLots - 1) * 40;
                 let currentStartDate = new Date(modalData.scheduledStart);
                 let currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
 
@@ -574,7 +588,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
                 setEvents(prev => [...prev, {
                     id: res.data.id,
-                    title: `${modalData.flavor} (${totalWeight}kg · ${numBatches} ${numBatches === 1 ? 'lote' : 'lotes'})`,
+                    title: `${modalData.flavor} (${totalWeight}kg · ${Number.isInteger(exactLots) ? exactLots : exactLots.toFixed(1)} ${exactLots === 1 ? 'lote' : 'lotes'})`,
                     start: new Date(currentStartDate),
                     end: new Date(currentEndDate),
                     flavor: modalData.flavor,
@@ -1564,48 +1578,62 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                 min="1"
                                                                 max={activeLine === 'geniality' ? 7 : 5}
                                                                 className="w-16 p-1 text-center text-sm border border-blue-300 rounded text-blue-700 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                                value={modalData.targetBatchCount || getProjectedBatches()}
+                                                                value={activeLine === 'geniality'
+                                                                    ? (() => { const v = (modalData.totalSyrupKg || 0) / 100; return Number.isInteger(v) ? v : parseFloat(v.toFixed(2)); })()
+                                                                    : (modalData.targetBatchCount || getProjectedBatches())}
                                                                 onChange={(e) => {
                                                                     const maxVal = activeLine === 'geniality' ? 7 : 5;
-                                                                    const newVal = Math.min(maxVal, Math.max(1, parseInt(e.target.value) || 1));
+                                                                    const newVal = activeLine === 'geniality'
+                                                                        ? Math.min(maxVal, Math.max(0.1, parseFloat(e.target.value) || 0.1))
+                                                                        : Math.min(maxVal, Math.max(1, parseInt(e.target.value) || 1));
 
                                                                     setModalData(prev => {
-                                                                        const currentVal = prev.targetBatchCount || getProjectedBatches() || 1;
-                                                                        if (currentVal === 0) return { ...prev, targetBatchCount: newVal };
-
-                                                                        const ratio = newVal / currentVal;
-
-                                                                        const updatedMix = prev.mix.map(m => {
-                                                                            const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
-                                                                            const newUnits = Math.round((m.plannedUnits || 0) * ratio);
-                                                                            return {
-                                                                                ...m,
-                                                                                plannedUnits: newUnits,
-                                                                                plannedWeightKg: newUnits * factor
-                                                                            };
-                                                                        });
-
-                                                                        const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                        const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-                                                                        const newTotalSyrupKg = newVal * BATCH_SIZE;
-
-                                                                        // For Geniality: update duration based on lots
-                                                                        let newEnd = prev.scheduledEnd;
                                                                         if (activeLine === 'geniality') {
+                                                                            const newTotalSyrupKg = Math.round(newVal * 100);
+                                                                            const ratio = newTotalSyrupKg / (prev.totalSyrupKg || 1);
+                                                                            const updatedMix = prev.mix.map(m => {
+                                                                                const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
+                                                                                const newUnits = Math.round((m.plannedUnits || 0) * ratio);
+                                                                                return { ...m, plannedUnits: newUnits, plannedWeightKg: newUnits * factor };
+                                                                            });
+                                                                            const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
                                                                             const baseDuration = 160;
                                                                             const totalDuration = baseDuration + (newVal - 1) * 40;
-                                                                            newEnd = new Date(new Date(prev.scheduledStart).getTime() + totalDuration * 60000);
-                                                                        }
+                                                                            const newEnd = new Date(new Date(prev.scheduledStart).getTime() + totalDuration * 60000);
 
-                                                                        return {
-                                                                            ...prev,
-                                                                            targetBatchCount: newVal,
-                                                                            mix: updatedMix,
-                                                                            totalPlannedKg: newTotalPlannedKg,
-                                                                            totalSyrupKg: newTotalSyrupKg,
-                                                                            baseWeight: newTotalSyrupKg,
-                                                                            scheduledEnd: newEnd
-                                                                        };
+                                                                            return { ...prev, targetBatchCount: newVal, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: newTotalSyrupKg, baseWeight: newTotalSyrupKg, scheduledEnd: newEnd };
+                                                                        } else {
+                                                                            const currentVal = prev.targetBatchCount || getProjectedBatches() || 1;
+                                                                            if (currentVal === 0) return { ...prev, targetBatchCount: newVal };
+
+                                                                            const ratio = newVal / currentVal;
+
+                                                                            const updatedMix = prev.mix.map(m => {
+                                                                                const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
+                                                                                const newUnits = Math.round((m.plannedUnits || 0) * ratio);
+                                                                                return {
+                                                                                    ...m,
+                                                                                    plannedUnits: newUnits,
+                                                                                    plannedWeightKg: newUnits * factor
+                                                                                };
+                                                                            });
+
+                                                                            const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
+                                                                            const BATCH_SIZE = 120;
+                                                                            const newTotalSyrupKg = newVal * BATCH_SIZE;
+
+                                                                            let newEnd = prev.scheduledEnd;
+
+                                                                            return {
+                                                                                ...prev,
+                                                                                targetBatchCount: newVal,
+                                                                                mix: updatedMix,
+                                                                                totalPlannedKg: newTotalPlannedKg,
+                                                                                totalSyrupKg: newTotalSyrupKg,
+                                                                                baseWeight: newTotalSyrupKg,
+                                                                                scheduledEnd: newEnd
+                                                                            };
+                                                                        }
                                                                     });
                                                                 }}
                                                             />
@@ -1654,9 +1682,11 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                             const total = modalData.totalSyrupKg || modalData.totalPlannedKg || 0;
 
                                                             if (activeLine === 'geniality') {
-                                                                const lots = modalData.targetBatchCount || 1;
+                                                                const BATCH_SIZE_G = 100;
+                                                                const realLots = total / BATCH_SIZE_G;
+                                                                const lotsDisplay = Number.isInteger(realLots) ? realLots : realLots.toFixed(2);
                                                                 return total <= 700
-                                                                    ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">{lots} {lots === 1 ? 'lote' : 'lotes'} · {Math.round(total)}kg</span></>
+                                                                    ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">{lotsDisplay} {realLots === 1 ? 'lote' : 'lotes'} · {Math.round(total)}kg</span></>
                                                                     : <><AlertTriangle className="w-5 h-5 text-red-600" /><span className="text-red-700 font-bold">Excede 700kg</span></>;
                                                             }
 
@@ -1743,7 +1773,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                                 });
 
                                                                                 const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                                const ratio = config.syrupRatio || 0.70;
+                                                                                const ratio = activeLine === 'geniality' ? 1.0 : (config.syrupRatio || 0.70);
                                                                                 const newTotalSyrupKg = newTotalPlannedKg * ratio;
 
                                                                                 return {
@@ -1952,7 +1982,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             </button>
                             <button
                                 onClick={() => {
-                                    window.location.href = `/assembly-execution/${alreadyStartedModal.noteId}`;
+                                    window.location.href = `${activeLine === 'geniality' ? '/geniality/assembly-execution' : '/assembly-execution'}/${alreadyStartedModal.noteId}`;
                                 }}
                                 className="flex-1 px-4 py-2.5 text-sm font-bold text-white rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2"
                                 style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}

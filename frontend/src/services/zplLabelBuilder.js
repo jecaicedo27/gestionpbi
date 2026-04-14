@@ -311,9 +311,10 @@ function renderCarritoLabel(data, xOff) {
     fields += `^FO${x + 10},${y + 2}^A0N,16,14^FR^FDIDENTIFICADOR DE CARRITO^FS\n`;
     y += 24;
     
-    // 2. Carrito ID (HUGE)
-    fields += `^FO${x},${y}^A0N,44,40^FD${esc(String(carritoId).substring(0, 8).toUpperCase())}^FS\n`;
-    y += 50;
+    // 2. Carrito Number (HUGE) — display as "# 2", "# 3", etc.
+    const carritoDisplay = `# ${esc(String(carritoId))}`;
+    fields += `^FO${x},${y}^A0N,50,46^FD${carritoDisplay}^FS\n`;
+    y += 56;
 
     // 3. Product Destino
     let shortName = productName.replace(/.*SABOR A\s?/i, '').replace(/X\s*\d+.*$/i, '').trim() || productName.substring(0, 18);

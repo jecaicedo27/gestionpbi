@@ -13,4 +13,7 @@ router.delete('/all', auth, productionSchedulerController.deleteAllBatches);
 router.put('/:id', auth, productionSchedulerController.updateBatch);
 router.delete('/:id', auth, productionSchedulerController.deleteBatch);
 
+const monitorController = require('../controllers/genialityMonitorController');
+router.get('/monitor/batches', auth, monitorController.getBatchMonitorData);
+
 module.exports = router;

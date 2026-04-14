@@ -614,7 +614,7 @@ const FinishedProductZonePage = () => {
                                     <button 
                                         onClick={() => {
                                             recheckNow();
-                                            window.open(`http://${configIp || '192.168.68.113'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
+                                            window.open(`http://${configIp || '192.168.0.126'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
                                         }} 
                                         disabled={isRechecking}
                                         style={{
@@ -642,7 +642,7 @@ const FinishedProductZonePage = () => {
                                             style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.75rem', marginBottom: 8 }} />
                                         
                                         <label style={{ fontSize: '0.65rem', color: '#64748b', display: 'block', marginBottom: 2 }}>IP Relay (PC Puente)</label>
-                                        <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.68.100"
+                                        <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.0.100"
                                             style={{ width: '100%', padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.75rem', marginBottom: 12 }} />
                                         
                                         <button onClick={() => { updateConfig(editIp, editRelay); setShowZebraSettings(false); recheckNow(); }}

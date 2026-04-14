@@ -1298,15 +1298,19 @@ const assemblyNoteController = {
             // Only PESAJE stages repeat N times (one per batch).
             // Non-PESAJE stages (ENSAMBLE, etc.) get a single note with quantity = total.
             const notes = [];
-            // Safeguard: if quantity wasn't sent but batch has baseWeight, auto-calc lot count
-            let resolvedQty = quantity || 1;
-            if (resolvedQty <= 1 && batch.baseWeight && batch.baseWeight > 100) {
-                const GENIALITY_LOT_SIZE = 100; // kg per lot
-                resolvedQty = Math.max(1, Math.round(batch.baseWeight / GENIALITY_LOT_SIZE));
-                console.log(`[quickStart] ⚠️ quantity was ${quantity}, auto-calculated from baseWeight=${batch.baseWeight}kg → ${resolvedQty} lots`);
+            let baseQty = 1;
+
+            // Log if we ignored a multi-lot request from the frontend
+            if (quantity > 1) {
+                console.log(`[quickStart] ⚠️ Ignored frontend quantity=${quantity} for Geniality, forcing 1 massive bundle.`);
             }
-            const baseQty = resolvedQty;
-            console.log(`[quickStart] ⚡ baseQty=${baseQty} (raw quantity=${quantity}, baseWeight=${batch.baseWeight}), flatStages=${flatStages.length}`);
+
+            const isGenialityTemplate = template.templateCode === 'BATCH-GENIALITY';
+            const scaleFactor = (isGenialityTemplate && batch.baseWeight && batch.baseWeight > 0) 
+                 ? (batch.baseWeight / 100.0) // Simply total kg divided by 100kg formula baseline
+                 : 1.0;
+
+            console.log(`[quickStart] ⚡ baseQty=${baseQty} (raw quantity=${quantity}, baseWeight=${batch.baseWeight}, scaleFactor=${scaleFactor}), flatStages=${flatStages.length}`);
             let globalStageOrder = 0;
 
             for (const stage of flatStages) {
@@ -1342,12 +1346,12 @@ const assemblyNoteController = {
                         if (maxInputQty > 0 && maxInputQty < 2) {
                             // Per-gram ratios → scale by formula.baseQuantity
                             pesajeBaseQuantity = stageFormula.baseQuantity;
-                            noteQty = stageFormula.baseQuantity || 1;
+                            noteQty = (stageFormula.baseQuantity || 1) * scaleFactor;
                             console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are per-gram ratios (max=${maxInputQty.toFixed(4)}), scaling by ${stageFormula.baseQuantity}`);
                         } else {
                             // Absolute quantities → use as-is
-                            noteQty = stageFormula.baseQuantity || 1;
-                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are absolute (max=${maxInputQty}), no scaling`);
+                            noteQty = (stageFormula.baseQuantity || 1) * scaleFactor;
+                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are absolute (max=${maxInputQty}), noteQty=${noteQty} (scaleFactor: ${scaleFactor})`);
                         }
                     }
                 }
@@ -1401,7 +1405,7 @@ const assemblyNoteController = {
                                 select: { baseQuantity: true, baseUnit: true },
                                 orderBy: { version: 'desc' }
                             });
-                            noteQty = (formula?.baseQuantity || 1) * baseQty;
+                            noteQty = (formula?.baseQuantity || 1) * baseQty * scaleFactor;
                             noteUnit = formula?.baseUnit || 'gramo';
                         }
                     } else {
@@ -1412,7 +1416,7 @@ const assemblyNoteController = {
                             select: { baseQuantity: true, baseUnit: true },
                             orderBy: { version: 'desc' }
                         });
-                        noteQty = (formula?.baseQuantity || 1) * baseQty;
+                        noteQty = (formula?.baseQuantity || 1) * baseQty * scaleFactor;
                         noteUnit = formula?.baseUnit || 'gramo';
                     }
                 }
@@ -1461,14 +1465,14 @@ const assemblyNoteController = {
                         orderBy: { version: 'desc' }
                     });
                     if (formula) {
-                        noteQty = (formula.baseQuantity || 1) * baseQty;
+                        noteQty = (formula.baseQuantity || 1) * baseQty * scaleFactor;
                         noteUnit = formula.baseUnit || 'gramo';
                         // If template stage has no inputs defined, use formula items
                         if (!stage.inputs || stage.inputs.length === 0) {
                             formulaInputs = formula.items.map(fi => ({
                                 productId: fi.ingredientId,
                                 inputType: 'SEMI_FINISHED',
-                                quantityPerUnit: fi.quantity * baseQty,
+                                quantityPerUnit: fi.quantity * baseQty * scaleFactor,
                                 unit: fi.unit || 'gramo'
                             }));
                         }
@@ -1514,8 +1518,8 @@ const assemblyNoteController = {
                             componentId: input.productId,
                             componentType: input.inputType || 'RAW_MATERIAL',
                             plannedQuantity: pesajeBaseQuantity
-                                ? input.quantityPerUnit * pesajeBaseQuantity * baseQty
-                                : input.quantityPerUnit * baseQty,
+                                ? input.quantityPerUnit * pesajeBaseQuantity * baseQty * scaleFactor
+                                : input.quantityPerUnit * baseQty * scaleFactor,
                             unit: input.unit || 'gramo',
                             notes: null
                         }));
@@ -1560,8 +1564,8 @@ const assemblyNoteController = {
                                 componentId: input.productId,
                                 componentType: input.inputType || 'RAW_MATERIAL',
                                 plannedQuantity: pesajeBaseQuantity
-                                    ? input.quantityPerUnit * pesajeBaseQuantity
-                                    : input.quantityPerUnit,
+                                    ? input.quantityPerUnit * pesajeBaseQuantity * scaleFactor
+                                    : input.quantityPerUnit * scaleFactor,
                                 unit: input.unit || 'gramo',
                                 notes: null
                             }));
@@ -1630,15 +1634,15 @@ const assemblyNoteController = {
                             // PESAJE ratios: quantityPerUnit = per-gram ratio → × formula.baseQuantity × baseQty
                             // PESAJE absolute: quantityPerUnit = absolute qty → × baseQty only
                             // ENSAMBLE ratios: quantityPerUnit = per-gram ratio → × noteQty (formula.baseQuantity × baseQty)
-                            // ENSAMBLE absolute: quantityPerUnit = absolute qty → × baseQty
-                            // FORMACION from formula: already scaled by baseQty.
+                            // ENSAMBLE absolute: quantityPerUnit = absolute qty → × baseQty × scaleFactor
+                            // FORMACION from formula: already scaled by baseQty × scaleFactor.
                             // Other: quantityPerUnit × noteQty for scaling.
                             plannedQuantity: input._fromFormula ? input.quantityPerUnit * noteQty
                                 : formulaInputs ? input.quantityPerUnit
-                                : isPesaje && pesajeBaseQuantity ? input.quantityPerUnit * pesajeBaseQuantity * baseQty
-                                : isPesaje ? input.quantityPerUnit * baseQty
+                                : isPesaje && pesajeBaseQuantity ? input.quantityPerUnit * pesajeBaseQuantity * baseQty * scaleFactor
+                                : isPesaje ? input.quantityPerUnit * baseQty * scaleFactor
                                 : isEnsamble && ensambleInputsAreRatios ? input.quantityPerUnit * noteQty
-                                : isEnsamble ? input.quantityPerUnit * baseQty
+                                : isEnsamble ? input.quantityPerUnit * baseQty * scaleFactor
                                 : input.quantityPerUnit * noteQty,
                             unit: input.unit || 'gramo',
                             notes: null

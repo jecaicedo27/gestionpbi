@@ -88,7 +88,7 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
     const nextStage = currentStage || batch.notes.find(n => n.status === 'PENDING');
     const displayStage = currentStage || nextStage;
     const isEmpaqueWaiting = !currentStage && displayStage?.processType?.code === 'EMPAQUE';
-    const currentStageName = isEmpaqueWaiting
+    let currentStageName = isEmpaqueWaiting
         ? '📋 Recepción de Carrito'
         : displayStage?.stageName
             ?.replace(/Ensamble Siigo\s*/i, 'Ens. ')
@@ -99,6 +99,15 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
             .trim()
             .slice(0, 30);
 
+    // Clean up technical name ESCARCHADOR in stage status labels for Geniality
+    if (batch.batchNumber && currentStageName && currentStageName.includes('ESCAR')) {
+        const flavorMatch = batch.batchNumber.match(/^([A-ZÑ]+(?:[\s-][A-ZÑ]+)*)-(\d{6})/);
+        const flavorName = flavorMatch ? flavorMatch[1].replace(/-/g, ' ') : '';
+        if (flavorName) {
+            currentStageName = currentStageName.replace(/ESCARCHADOR|ESCAR/g, flavorName);
+        }
+    }
+
     const isSiropeBatch = (batch.batchNumber || '').toUpperCase().includes('SIROPE')
         || (batch.batchNumber || '').toUpperCase().includes('GENIALITY')
         || (batch.allProductNames || []).some(p => {
@@ -108,24 +117,24 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
 
     // OPERARIO_PICKING can act on EMPAQUE / ETIQUETADO / ENSAMBLE (Siigo post-empaque)
     // CONTEO is production-only for Liquipops (direct input counting), but SHARED for Siropes (Carrito delivery)
-    const PICKING_STAGES = ['EMPAQUE', 'ETIQUETADO', 'ENSAMBLE'];
+    const PICKING_STAGES = ['EMPAQUE', 'G_EMPAQUE', 'ETIQUETADO', 'ENSAMBLE', 'G_ENSAMBLE'];
     if (isSiropeBatch) PICKING_STAGES.push('CONTEO');
     
-    const isPickingRole = userRole === 'OPERARIO_PICKING';
+    const isPickingRole = ['OPERARIO_PICKING', 'EMPAQUE'].includes(userRole);
     const nextStageCode = nextStage?.processType?.code || '';
     const canPickingAct = !isPickingRole || PICKING_STAGES.includes(nextStageCode);
 
     // PRODUCCION stops after CONTEO — EMPAQUE/ETIQUETADO/final ENSAMBLE belong to empaque team
     // "Post-empaque ENSAMBLE" = Ensamble Siigo that comes AFTER empaque stages (stageOrder > empaque stageOrder)
-    const EMPAQUE_ONLY_STAGES = ['EMPAQUE', 'ETIQUETADO'];
+    const EMPAQUE_ONLY_STAGES = ['EMPAQUE', 'G_EMPAQUE', 'ETIQUETADO'];
     const isProduccionRole = userRole === 'PRODUCCION';
-    const empaqueNotes = batch.notes.filter(n => n.processType?.code === 'EMPAQUE');
+    const empaqueNotes = batch.notes.filter(n => ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code));
     const firstEmpaqueOrder = empaqueNotes.length > 0
         ? Math.min(...empaqueNotes.map(n => n.stageOrder || 999))
         : 999;
     const nextStageOrder = nextStage?.stageOrder || 0;
     // Only block ENSAMBLE if it comes AFTER empaque stages (post-empaque Ensamble Siigo)
-    const isPostEmpaqueEnsamble = nextStageCode === 'ENSAMBLE' && nextStageOrder > firstEmpaqueOrder;
+    const isPostEmpaqueEnsamble = ['ENSAMBLE', 'G_ENSAMBLE'].includes(nextStageCode) && nextStageOrder > firstEmpaqueOrder;
     const canProduccionAct = !isProduccionRole || (!EMPAQUE_ONLY_STAGES.includes(nextStageCode) && !isPostEmpaqueEnsamble);
 
     // Combined: both restrictions must pass
@@ -539,7 +548,17 @@ const ProductionOperatorPage = () => {
                     }
 
                     if (a.inProgress !== c.inProgress) return a.inProgress ? -1 : 1;
-                    return new Date(c.scheduledStart || 0) - new Date(a.scheduledStart || 0);
+
+                    // Among in-progress batches: the one running the LONGEST goes first
+                    // (earliest startedAt = most hours elapsed = highest priority)
+                    const aStarted = a.notes.filter(n => n.startedAt).map(n => new Date(n.startedAt)).sort((x, y) => x - y)[0] || null;
+                    const cStarted = c.notes.filter(n => n.startedAt).map(n => new Date(n.startedAt)).sort((x, y) => x - y)[0] || null;
+                    if (aStarted && cStarted) return aStarted - cStarted; // earlier start = higher priority
+                    if (aStarted) return -1;
+                    if (cStarted) return 1;
+
+                    // Fallback: earlier scheduled start first
+                    return new Date(a.scheduledStart || 0) - new Date(c.scheduledStart || 0);
                 });
 
             setBatches(batchList);

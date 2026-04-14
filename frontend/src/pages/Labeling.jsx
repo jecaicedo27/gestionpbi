@@ -250,7 +250,7 @@ const Labeling = () => {
                 }}>
                     <Wifi size={14} color="#059669" />
                     <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#065f46' }}>
-                        🌐 Impresión directa vía WiFi — sin PC intermediaria ({zebraIp || '192.168.68.113'})
+                        🌐 Impresión directa vía WiFi — sin PC intermediaria ({zebraIp || '192.168.0.126'})
                     </span>
                 </div>
             )}
@@ -352,7 +352,7 @@ const Labeling = () => {
                                 </div>
                                 <div>
                                     <label style={{ fontSize: '0.7rem', color: '#6b7280', display: 'block', marginBottom: 4 }}>IP del Relay (Opcional)</label>
-                                    <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.68.100"
+                                    <input value={editRelay} onChange={e => setEditRelay(e.target.value)} placeholder="Ej: 192.168.0.100"
                                         style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: '0.8rem' }} />
                                 </div>
                             </div>
@@ -376,7 +376,7 @@ const Labeling = () => {
                                         onClick={() => {
                                             recheckNow();
                                             // PNA Wakeup: Opening the printer page in a new tab often 'trusts' the IP for the session.
-                                            window.open(`http://${configIp || '192.168.68.113'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
+                                            window.open(`http://${configIp || '192.168.0.126'}/index.html`, 'zebra_pna_wake', 'width=300,height=300');
                                         }}
                                         disabled={isRechecking}
                                         style={{ width: '100%', padding: '12px', background: isRechecking ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 800, fontSize: '0.9rem', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}

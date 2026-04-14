@@ -146,6 +146,15 @@ exports.create = async (req, res) => {
             include: { items: true }
         });
 
+        const io = req.app.get('io');
+        if (io) {
+            io.emit('purchase_order:new', {
+                orderNumber: order.orderNumber,
+                supplierName: order.supplierName,
+                createdAt: order.createdAt
+            });
+        }
+
         logger.info(`📋 OC creada: ${orderNumber} (${resolvedPaymentMethod}) por ${req.user.name}`);
         res.status(201).json(order);
     } catch (error) {

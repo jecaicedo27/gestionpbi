@@ -365,6 +365,10 @@ export default function InventoryCountPage() {
         const mappedPseudo = countLines
             .filter(ln => {
                 if (ln.lotId) return false; // Has lotId → already in mappedReal
+                
+                // Do NOT map S/L lines as pseudo-lots because they are handled strictly by the generic S/L cards
+                if (!ln.lotNumber || ln.lotNumber === 'S/L') return false;
+
                 // If the line has a real lotNumber (not S/L) AND there's a matching active lot,
                 // it's already represented in mappedReal via lineByLotId — skip it to avoid duplication
                 if (ln.lotNumber && ln.lotNumber !== 'S/L' && activeLotKeys.has(`${ln.productId}-${ln.lotNumber}`)) {

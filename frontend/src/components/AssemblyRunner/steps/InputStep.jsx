@@ -408,19 +408,13 @@ const InputStep = ({
                         </div>
                     )}
 
-                    {/* Photo evidence — MANDATORY for most, OPTIONAL for PESAJE */}
+                    {/* Photo evidence — MANDATORY */}
                     <div className="w-full max-w-lg">
-                        {(() => {
-                            const isPesaje = note?.processType?.code === 'PESAJE';
-                            return (
-                                <label className={`text-xs font-bold uppercase mb-1.5 flex items-center gap-1.5 ${photoPreview ? 'text-emerald-600' : isPesaje ? 'text-slate-500' : 'text-red-500'}`}>
-                                    📷 Foto del Pesaje
-                                    {!photoPreview && isPesaje && <span className="bg-slate-400 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black">OPCIONAL</span>}
-                                    {!photoPreview && !isPesaje && <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black animate-pulse">OBLIGATORIO</span>}
-                                    {photoPreview && <span className="text-emerald-500 text-[9px]">✅</span>}
-                                </label>
-                            );
-                        })()}
+                        <label className={`text-xs font-bold uppercase mb-1.5 flex items-center gap-1.5 ${photoPreview ? 'text-emerald-600' : 'text-red-500'}`}>
+                            📷 Foto del Pesaje
+                            {!photoPreview && <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full font-black animate-pulse">OBLIGATORIO</span>}
+                            {photoPreview && <span className="text-emerald-500 text-[9px]">✅</span>}
+                        </label>
                         {photoPreview && (
                             <img src={photoPreview} alt="Pesaje"
                                 className="w-full max-h-32 object-cover rounded-xl border-2 border-emerald-300 mb-2 shadow-sm" />
@@ -428,12 +422,10 @@ const InputStep = ({
                         <label className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95
                             ${photoPreview
                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
-                                : note?.processType?.code === 'PESAJE'
-                                    ? 'border-slate-300 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                                    : 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 animate-pulse'}`}>
+                                : 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 animate-pulse'}`}>
                             {photoPreview
                                 ? <><CheckCircle size={18} /> <span className="font-bold text-xs">Foto tomada — Cambiar</span></>
-                                : <><Camera size={18} /> <span className="font-bold text-xs">{note?.processType?.code === 'PESAJE' ? '📷 Tomar foto del pesaje (opcional)' : '⚠️ TOMAR FOTO DEL PESAJE'}</span></>
+                                : <><Camera size={18} /> <span className="font-bold text-xs">⚠️ TOMAR FOTO DEL PESAJE</span></>
                             }
                             <input
                                 type="file"

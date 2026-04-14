@@ -1,46 +1,44 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-async function main() {
-    const batchNumber = 'MANGO-BICHE-CON-SAL-260409-0705';
-    
-    const batch = await prisma.productionBatch.findUnique({
-        where: { batchNumber }
-    });
-
-    if (!batch) {
-        console.log(`Batch ${batchNumber} not found.`);
-        return;
-    }
-
-    const empaqueNotes = await prisma.assemblyNote.findMany({
-        where: { productionBatchId: batch.id, processType: { code: 'EMPAQUE' } },
-        include: { items: { include: { component: true } } }
-    });
-
-    console.log(`\nValidating EMPAQUE requirements for batch ${batchNumber}:`);
-    
-    let isBlocked = false;
-
-    for (const empNote of empaqueNotes) {
-        for (const item of empNote.items) {
-           if (!item.componentId || item.materialLotId) continue;
-           
-           const qty = item.plannedQuantity || 0;
-           const zoneStock = item.component?.productionZoneStock || 0;
-           
-           console.log(`- ${item.component?.name} (ID: ${item.componentId}): Planned = ${qty}, Needed (95%) = ${(qty * 0.95).toFixed(2)}, Zone Stock = ${zoneStock}`);
-           
-           if (zoneStock < qty * 0.95) {
-               console.log(`  ❌ BLOCKED: Shortage of ${(qty*0.95) - zoneStock} units`);
-               isBlocked = true;
-           } else {
-               console.log(`  ✅ OK`);
-           }
-        }
-    }
-    
-    if(!isBlocked) console.log("System should ALLOW start.");
+function getMonday(dStr) {
+    let d = new Date(dStr);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    d.setDate(diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
 }
 
-main().catch(console.error).finally(() => prisma.$disconnect());
+async function main() {
+    const today = new Date();
+    const colombiaMs = today.getTime() + (-5 * 60 * 60 * 1000) - (now.getTimezoneOffset() * 60 * 1000);
+    const splitDate = new Date(colombiaMs).toISOString().split('T')[0] + 'T00:00:00.000Z';
+    const cleanDate = new Date(splitDate);
+    const monday = getMonday(cleanDate.toISOString());
+
+    const week = await prisma.shiftWeek.findUnique({
+        where: { weekStart: monday },
+        include: { assignments: { include: { employee: { include: { user: true }  } } } }
+    });
+
+    const productionAreas = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
+    const outgoingOperators = week.assignments
+            .filter(a => a.shift === 'MANANA' && productionAreas.includes(a.employee?.area) && a.employee?.user?.id != null)
+            .map(a => ({
+                userId: a.employee?.user?.id || null,
+                userIdDirect: a.employee?.userId,
+                name: a.employee?.name || 'Sin nombre',
+                area: a.employee?.area,
+            }));
+            
+    const handoffs = await prisma.shiftHandoff.findMany({
+        where: { weekId: week.id, date: cleanDate, outgoingShift: 'MANANA' },
+        orderBy: { deliveredAt: 'desc' } // we should get the latest!
+    });
+
+    console.log("Outgoing Operators:", outgoingOperators);
+    console.log("Handoffs matching week date shift:", handoffs.map(h => ({id: h.id, deliveredById: h.deliveredById, status: h.status, at: h.deliveredAt})));
+
+}
+main().finally(() => prisma.$disconnect());

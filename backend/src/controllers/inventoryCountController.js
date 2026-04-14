@@ -148,6 +148,29 @@ exports.upsertLine = async (req, res) => {
             return res.json({ ...line, systemQty: line.materialLot?.currentQuantity ?? null });
         }
 
+        // Check if a line already exists for this exact product and lot in this session to prevent duplicates
+        const existingLine = await prisma.inventoryCountLine.findFirst({
+            where: {
+                sessionId,
+                productId: productId || null,
+                lotNumber: lotNumber || 'Sin lote'
+            }
+        });
+
+        if (existingLine) {
+            // Force update instead of creating a duplicate
+            const line = await prisma.inventoryCountLine.update({
+                where: { id: existingLine.id },
+                data: {
+                    physicalQty: Number(physicalQty),
+                    siigoQty: siigoQty != null ? Number(siigoQty) : undefined,
+                    notes: notes || null
+                },
+                include: { materialLot: { select: { currentQuantity: true } } }
+            });
+            return res.json({ ...line, systemQty: line.materialLot?.currentQuantity ?? null });
+        }
+
         // Create new line
         const line = await prisma.inventoryCountLine.create({
             data: {

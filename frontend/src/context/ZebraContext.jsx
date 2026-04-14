@@ -18,7 +18,7 @@ import { useAuth } from './AuthContext';
 const ZebraContext = createContext(null);
 
 const POLL_INTERVAL_MS = 10_000;
-const ZEBRA_IP = '192.168.68.115';
+const ZEBRA_IP = '192.168.0.126';
 
 // ¿La app está sirviendo por HTTP? (sin TLS)
 const isHttp = () => window.location.protocol === 'http:';

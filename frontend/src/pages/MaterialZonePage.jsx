@@ -365,6 +365,9 @@ export default function MaterialZonePage() {
                                                         {!lot.labelPrinted && (
                                                             <Tag color="error" className="m-0 text-[10px]">NO ROTULADO</Tag>
                                                         )}
+                                                        {lot.status === 'DEPLETED' && (
+                                                            <Tag color="default" className="m-0 text-[10px] font-bold">AGOTADO</Tag>
+                                                        )}
                                                     </div>
                                                     <div className="text-xs text-gray-500 flex items-center gap-1">
                                                         <Clock size={12}/> Recibido: {new Date(lot.receivedAt).toLocaleString()}
@@ -372,9 +375,17 @@ export default function MaterialZonePage() {
                                                 </div>
 
                                                 <div className="flex items-center gap-3 w-full md:w-auto">
-                                                    <div className="text-right bg-blue-50 px-3 py-1 rounded w-24">
-                                                        <div className="font-bold text-blue-900">{lot.currentQuantity.toLocaleString()}</div>
-                                                        <div className="text-[10px] text-blue-600 uppercase font-bold">{lot.unit}</div>
+                                                    <div className={`text-right px-3 py-1 rounded w-24 ${
+                                                        lot.status === 'DEPLETED'
+                                                        ? 'bg-gray-100 border border-gray-200'
+                                                        : 'bg-blue-50'
+                                                    }`}>
+                                                        <div className={`font-bold ${
+                                                            lot.status === 'DEPLETED' ? 'text-gray-400' : 'text-blue-900'
+                                                        }`}>{lot.currentQuantity.toLocaleString()}</div>
+                                                        <div className={`text-[10px] uppercase font-bold ${
+                                                            lot.status === 'DEPLETED' ? 'text-gray-400' : 'text-blue-600'
+                                                        }`}>{lot.unit}</div>
                                                     </div>
                                                     
                                                     <div className="flex gap-2">
@@ -401,6 +412,12 @@ export default function MaterialZonePage() {
                                                 </div>
                                             </div>
                                         ))}
+                                        {/* DEPLETED lots footer summary */}
+                                        {pg.lots.some(l => l.status === 'DEPLETED') && (
+                                            <div className="mt-2 pt-2 border-t border-dashed border-gray-200 text-xs text-gray-400 italic text-center">
+                                                Los lotes <span className="font-bold text-gray-500">AGOTADO</span> se ocultarán automáticamente en la próxima carga si el stock es 0
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>

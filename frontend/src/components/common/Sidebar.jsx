@@ -29,6 +29,7 @@ const Sidebar = () => {
         { icon: Activity, label: 'Historial RPA', path: '/rpa-history', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
         { icon: FileText, label: 'Fórmulas Liquipops', path: '/formulas', roles: ['ADMIN', 'QUIMICO'] },
         { icon: FileText, label: 'Fórmulas Geniality', path: '/geniality/formulas', roles: ['ADMIN', 'QUIMICO'] },
+        { icon: LayoutDashboard, label: 'Monitor Geniality', path: '/geniality/monitor', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
         { icon: FlaskConical, label: 'Premezclas', path: '/premix-panel', roles: ['ADMIN', 'QUIMICO'] },
         { icon: LineChart, label: 'Panel MRP', path: '/mrp', roles: ['ADMIN'] },
         { icon: BarChart2, label: 'KPIs Producción', path: '/production/kpis', roles: ['ADMIN'] },

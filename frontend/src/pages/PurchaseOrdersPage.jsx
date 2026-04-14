@@ -5,6 +5,25 @@ import dayjs from 'dayjs';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import ThermalPrintModal from '../components/Printers/ThermalPrintModal';
+import { compressImage } from '../utils/imageCompression';
+
+// Compress all image files in an array before upload (PDFs/non-images pass through unchanged)
+const compressFiles = async (files, maxSizeMB = 1.5) => {
+    const results = [];
+    for (const file of files) {
+        if (file.type && file.type.startsWith('image/')) {
+            try {
+                const compressed = await compressImage(file, { maxSizeMB, maxWidthOrHeight: 1920 });
+                results.push(compressed);
+            } catch {
+                results.push(file); // fallback to original if compression fails
+            }
+        } else {
+            results.push(file); // PDF or other non-image: no compression
+        }
+    }
+    return results;
+};
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -369,14 +388,16 @@ const PurchaseOrdersPage = () => {
                 }))
             });
             const receptionId = res.data.id;
-            // Upload reception/product photos
+            // Upload reception/product photos (compressed)
             if (receptionPhotos.length > 0) {
-                const fd = new FormData(); receptionPhotos.forEach(f => fd.append('files', f));
+                const compressed = await compressFiles(receptionPhotos);
+                const fd = new FormData(); compressed.forEach(f => fd.append('files', f));
                 await api.post(`/procurement/receptions/${receptionId}/reception-photos`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             }
-            // Upload invoice photos
+            // Upload invoice photos (compressed)
             if (receptionInvoicePhotos.length > 0) {
-                const fd = new FormData(); receptionInvoicePhotos.forEach(f => fd.append('files', f));
+                const compressed = await compressFiles(receptionInvoicePhotos);
+                const fd = new FormData(); compressed.forEach(f => fd.append('files', f));
                 await api.post(`/procurement/receptions/${receptionId}/invoice-photo`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             }
             message.success('📦 Recepción registrada con fotos');
@@ -392,8 +413,9 @@ const PurchaseOrdersPage = () => {
         if (!files?.length) return;
         setUploadingInvoicePhoto(true);
         try {
+            const compressed = await compressFiles(Array.from(files));
             const formData = new FormData();
-            Array.from(files).forEach(f => formData.append('files', f));
+            compressed.forEach(f => formData.append('files', f));
             const res = await api.post(`/procurement/receptions/${receptionId}/invoice-photo`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
             setReceptionInvoiceUrls(res.data.invoiceImageUrls || []);
             message.success('📸 Foto de factura subida');
@@ -522,8 +544,9 @@ const PurchaseOrdersPage = () => {
         if (!selectedOrder || files.length === 0) return;
         setUploadingQuotation(true);
         try {
+            const compressed = await compressFiles(Array.from(files));
             const fd = new FormData();
-            Array.from(files).forEach(f => fd.append('files', f));
+            compressed.forEach(f => fd.append('files', f));
             const res = await api.post(`/procurement/purchase-orders/${selectedOrder.id}/quotation`, fd, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
@@ -568,7 +591,7 @@ const PurchaseOrdersPage = () => {
             title: 'N° Orden', dataIndex: 'orderNumber', key: 'orderNumber', width: 140,
             render: (v, r) => <Button type="link" onClick={() => viewDetail(r.id)}>{v}</Button>
         },
-        { title: 'Proveedor', dataIndex: 'supplierName', key: 'supplier', ellipsis: true },
+        { title: 'Proveedor', dataIndex: 'supplierName', key: 'supplier', width: 220, ellipsis: true },
         {
             title: 'Estado', dataIndex: 'status', key: 'status', width: 170,
             render: (v, r) => {
@@ -669,6 +692,12 @@ const PurchaseOrdersPage = () => {
         }
     ];
     // ── Role-based Pending vs History split ──
+    const incomingStatuses = isContabilidad 
+        ? ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SENT', 'PAYMENT_PENDING']
+        : isCartera
+            ? ['DRAFT', 'PENDING_APPROVAL', 'APPROVED']
+            : [];
+
     const pendingStatuses = isCartera
         ? ['PAYMENT_PENDING', 'SENT', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
         : isContabilidad
@@ -704,8 +733,9 @@ const PurchaseOrdersPage = () => {
         if (o.status === 'COMPLETED') return lotsRelevant ? !needsLots(o) : true;
         return false;
     });
+    const incomingOrders = orders.filter(o => incomingStatuses.includes(o.status));
     const allOrders = orders;
-    const tabOrders = viewTab === 'pending' ? pendingOrders : viewTab === 'history' ? historyOrders : allOrders;
+    const tabOrders = viewTab === 'pending' ? pendingOrders : viewTab === 'history' ? historyOrders : viewTab === 'incoming' ? incomingOrders : allOrders;
     // Apply text search filter
     const displayOrders = searchText
         ? tabOrders.filter(o => {
@@ -716,7 +746,7 @@ const PurchaseOrdersPage = () => {
         : tabOrders;
 
     // Visible status options for dropdown filter
-    const visibleStatusOptions = viewTab === 'pending' ? pendingStatuses : historyStatuses;
+    const visibleStatusOptions = viewTab === 'pending' ? pendingStatuses : viewTab === 'incoming' ? incomingStatuses : historyStatuses;
 
     // ── Table Columns (responsive) ──
     const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
@@ -753,6 +783,11 @@ const PurchaseOrdersPage = () => {
                 .po-page { padding: 8px; }
                 .po-header h2 { font-size: 1rem !important; }
                 .po-tab { font-size: 0.78rem; padding: 10px 6px; }
+                .po-item-header { display: none !important; }
+                .po-item-row { flex-direction: column !important; position: relative; }
+                .po-item-row-top { width: 100% !important; padding-right: 32px; }
+                .po-item-row-bottom { width: 100% !important; display: flex !important; flex-direction: row !important; gap: 8px; }
+                .po-item-del-btn { position: absolute; top: 12px; right: 8px; }
             }
         `}</style>
         <div className="po-page">
@@ -794,6 +829,24 @@ const PurchaseOrdersPage = () => {
                         }}>{pendingOrders.length}</span>
                     )}
                 </button>
+                {(isCartera || isContabilidad) && (
+                    <button className="po-tab"
+                        onClick={() => { setViewTab('incoming'); setPage(1); setStatusFilter(''); }}
+                        style={{
+                            borderBottom: viewTab === 'incoming' ? '3px solid #0891b2' : '3px solid #e2e8f0',
+                            background: viewTab === 'incoming' ? '#cffafe' : '#fff',
+                            color: viewTab === 'incoming' ? '#0891b2' : '#64748b',
+                        }}
+                    >
+                        🚚 Entrantes
+                        {incomingOrders.length > 0 && (
+                            <span className="po-badge" style={{
+                                background: viewTab === 'incoming' ? '#0891b2' : '#e2e8f0',
+                                color: viewTab === 'incoming' ? '#fff' : '#64748b',
+                            }}>{incomingOrders.length}</span>
+                        )}
+                    </button>
+                )}
                 <button className="po-tab"
                     onClick={() => { setViewTab('history'); setPage(1); setStatusFilter(''); }}
                     style={{
@@ -828,7 +881,7 @@ const PurchaseOrdersPage = () => {
 
             <Card bordered={false} bodyStyle={{ padding: isMobile ? 8 : 24 }}>
                 <Table columns={responsiveColumns} dataSource={displayOrders} rowKey="id" loading={loading} size="small"
-                    scroll={isRestrictedRole ? undefined : { x: 600 }}
+                    scroll={{ x: 'max-content' }}
                     pagination={{ current: page, total: displayOrders.length, pageSize: 20, onChange: (p) => setPage(p), showTotal: (t) => `${t} órdenes` }} />
             </Card>
 
@@ -883,7 +936,7 @@ const PurchaseOrdersPage = () => {
                     </div>
                     <Divider style={{ margin: '8px 0' }}>Productos</Divider>
                     {/* Column headers */}
-                    <div style={{ display: 'flex', gap: 8, padding: '0 8px', marginBottom: 4 }}>
+                    <div className="po-item-header" style={{ display: 'flex', gap: 8, padding: '0 8px', marginBottom: 4 }}>
                         <Text strong style={{ flex: 3, fontSize: 12 }}>Producto</Text>
                         <Text strong style={{ flex: 1, fontSize: 12 }}>Cantidad</Text>
                         <Text strong style={{ flex: 0.7, fontSize: 12 }}>Packs</Text>
@@ -893,37 +946,41 @@ const PurchaseOrdersPage = () => {
                         const unit = item.siigoProductCode ? getProductUnit(item.siigoProductCode) : 'unidad';
                         const unitLabel = unit === 'gramo' ? 'g' : 'und';
                         return (
-                            <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: '#fafafa', padding: 8, borderRadius: 6, marginBottom: 4 }}>
-                                <Select showSearch placeholder="Buscar MP..." style={{ flex: 3 }}
-                                    value={item.siigoProductCode || undefined} onChange={v => updateItem(idx, 'siigoProductCode', v)}
-                                    filterOption={fuzzyFilter}
-                                    options={[
-                                        { label: 'Siigo (Materia Prima)', options: rawMaterials.map(p => ({ value: p.sku, label: `${p.name} (${p.sku})` })) },
-                                        { label: 'Insumos Libres', options: customItems.map(p => ({ value: p.code, label: `${p.name} (${p.code})` })) }
-                                    ]} />
-                                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                    <InputNumber placeholder="Cantidad" style={{ width: '100%' }} min={1}
-                                        value={item.quantityOrdered || undefined} onChange={v => updateItem(idx, 'quantityOrdered', v)}
-                                        formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                                        addonAfter={unitLabel} />
-                                    {unit === 'gramo' && item.quantityOrdered > 0 && (
-                                        <Text type="secondary" style={{ fontSize: 11, textAlign: 'center' }}>
-                                            = <strong>{(item.quantityOrdered / 1000).toLocaleString('es-CO', { maximumFractionDigits: 2 })} kg</strong>
-                                        </Text>
-                                    )}
+                            <div className="po-item-row" key={idx} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: '#fafafa', padding: 8, borderRadius: 6, marginBottom: 8 }}>
+                                <div className="po-item-row-top" style={{ flex: 3 }}>
+                                    <Select showSearch placeholder="Buscar MP..." style={{ width: '100%' }}
+                                        value={item.siigoProductCode || undefined} onChange={v => updateItem(idx, 'siigoProductCode', v)}
+                                        filterOption={fuzzyFilter}
+                                        options={[
+                                            { label: 'Siigo (Materia Prima)', options: rawMaterials.map(p => ({ value: p.sku, label: `${p.name} (${p.sku})` })) },
+                                            { label: 'Insumos Libres', options: customItems.map(p => ({ value: p.code, label: `${p.name} (${p.code})` })) }
+                                        ]} />
                                 </div>
-                                <div style={{ flex: 0.7, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                    <InputNumber placeholder="Packs" style={{ width: '100%' }} min={0} step={0.5}
-                                        value={item.packQty ?? undefined}
-                                        onChange={v => updateItem(idx, 'packQty', v)}
-                                        disabled={!item.unitsPerPack} />
-                                    {item.unitsPerPack > 0 && (
-                                        <Text type="secondary" style={{ fontSize: 10, textAlign: 'center', color: '#8c8c8c' }}>
-                                            ×{item.unitsPerPack} {unitLabel}/pack
-                                        </Text>
-                                    )}
+                                <div className="po-item-row-bottom" style={{ display: 'flex', gap: 8, flex: 1.7 }}>
+                                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        <InputNumber placeholder="Cantidad" style={{ width: '100%' }} min={1}
+                                            value={item.quantityOrdered || undefined} onChange={v => updateItem(idx, 'quantityOrdered', v)}
+                                            formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                                            addonAfter={unitLabel} />
+                                        {unit === 'gramo' && item.quantityOrdered > 0 && (
+                                            <Text type="secondary" style={{ fontSize: 11, textAlign: 'center' }}>
+                                                = <strong>{(item.quantityOrdered / 1000).toLocaleString('es-CO', { maximumFractionDigits: 2 })} kg</strong>
+                                            </Text>
+                                        )}
+                                    </div>
+                                    <div style={{ flex: 0.7, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        <InputNumber placeholder="Packs" style={{ width: '100%' }} min={0} step={0.5}
+                                            value={item.packQty ?? undefined}
+                                            onChange={v => updateItem(idx, 'packQty', v)}
+                                            disabled={!item.unitsPerPack} />
+                                        {item.unitsPerPack > 0 && (
+                                            <Text type="secondary" style={{ fontSize: 10, textAlign: 'center', color: '#8c8c8c' }}>
+                                                ×{item.unitsPerPack} {unitLabel}/pack
+                                            </Text>
+                                        )}
+                                    </div>
                                 </div>
-                                <Button danger size="small" onClick={() => removeItem(idx)} style={{ marginTop: 4 }}>×</Button>
+                                <Button className="po-item-del-btn" danger size="small" onClick={() => removeItem(idx)} style={{ marginTop: 4 }}>×</Button>
                             </div>
                         );
                     })}
@@ -948,9 +1005,8 @@ const PurchaseOrdersPage = () => {
                     <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
                 ) : selectedOrder ? (<>
                     <Tabs activeKey={detailActiveTab} onChange={setDetailActiveTab}>
-                        {/* ── TAB: Info General ── */}
                         <Tabs.TabPane tab="📋 Info" key="info">
-                            <Descriptions bordered size="small" column={2}>
+                            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 2 }}>
                                 <Descriptions.Item label="N° Orden">{selectedOrder.orderNumber}</Descriptions.Item>
                                 <Descriptions.Item label="Estado"><Tag color={statusColors[selectedOrder.status]}>{statusLabels[selectedOrder.status]}</Tag></Descriptions.Item>
                                 <Descriptions.Item label="Proveedor">{selectedOrder.supplierName}</Descriptions.Item>
@@ -996,14 +1052,19 @@ const PurchaseOrdersPage = () => {
                                     },
                                     {
                                         title: 'Lotes', key: 'lots', width: 80, align: 'center',
-                                        render: (_, r) => (
-                                            <Tooltip title="Crear lotes">
-                                                <Button size="small" icon={<TagsOutlined />} onClick={() => openLotModal(r)}
-                                                    disabled={r.quantityReceived === 0}>
-                                                    {r.lots?.length || 0}
-                                                </Button>
-                                            </Tooltip>
-                                        )
+                                        render: (_, r) => {
+                                            const isAccounted = selectedOrder?.receptions?.length > 0 && selectedOrder.receptions.every(rec => !!rec.siigoRef);
+                                            const disabled = r.quantityReceived === 0 || !isAccounted;
+                                            const tip = disabled ? (r.quantityReceived === 0 ? "Sin recibir" : "Aún falta validación de contabilidad (Siigo)") : "Crear lotes";
+                                            return (
+                                                <Tooltip title={tip}>
+                                                    <Button size="small" icon={<TagsOutlined />} onClick={() => openLotModal(r)}
+                                                        disabled={disabled}>
+                                                        {r.lots?.length || 0}
+                                                    </Button>
+                                                </Tooltip>
+                                            );
+                                        }
                                     }
                                 ]} />
 

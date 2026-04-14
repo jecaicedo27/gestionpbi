@@ -95,7 +95,7 @@ const GenialityExecutionWizard = () => {
     const {
         conteoActuals, setConteoActual,
         conteoPhotos, setConteoPhoto,
-        carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
+        carriots, addCarritoLocal, removeCarritoLocal, updateCarritoLocal, preloadCarriots,
     } = useConteoState();
 
     // ── Empaque-side carriots (read from the CONTEO note) ─────────────────────
@@ -152,10 +152,10 @@ const GenialityExecutionWizard = () => {
     }, [note?.id]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
-    const handleAddCarrito = useCallback(async (productId, productName, qty) => {
+    const handleAddCarrito = useCallback(async (productId, productName, qty, productionPhotoUrl) => {
         // Capture current carriots BEFORE async state update
         const carriotosBefore = carriots;
-        const newEntry = addCarritoLocal(productId, productName, qty);
+        const newEntry = addCarritoLocal(productId, productName, qty, productionPhotoUrl);
         // Use captured local state + new entry — avoids stale note.processParameters
         try {
             const allCarriots = [...carriotosBefore, newEntry];
@@ -201,6 +201,7 @@ const GenialityExecutionWizard = () => {
     const conteoNote = allBatchNotes?.find(n => n.processType?.code === 'CONTEO' || n.stageName?.toLowerCase().includes('conteo'));
 
     const handleConfirmCarrito = useCallback(async (carritoId, productId, photoUrl) => {
+
         const targetNote = conteoNote || note;
         if (!targetNote) return;
 
@@ -209,10 +210,14 @@ const GenialityExecutionWizard = () => {
         if (!activeCarrito) return;
         const carritoQty = activeCarrito.qty || 0;
 
-        const empaqueNote = allBatchNotes?.find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
+        const targetOutput = targetNote.productionBatch?.outputTargets?.find(t => t.productId === productId);
+        const targetProduct = targetOutput?.product;
+
+        const empaqueNoteIdMatched = allBatchNotes?.find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
+        const empaqueNote = empaqueNoteIdMatched || note; // fallback to master G_EMPAQUE note
 
         const updated = currentCarriots.map(c =>
-            c.id === carritoId ? { ...c, receivedAt: new Date().toISOString(), labeledAt: new Date().toISOString(), photoUrl: photoUrl || null } : c
+            c.id === carritoId ? { ...c, receivedAt: new Date().toISOString(), photoUrl: photoUrl || null } : c
         );
         setEmpaqueCarriots(updated);
         try {
@@ -221,74 +226,11 @@ const GenialityExecutionWizard = () => {
             });
             message.success(`✅ Carrito recibido y evidencia guardada`);
 
-            if (empaqueNote) {
-                const productName = empaqueNote.product?.name || 'Producto';
-                const productSku = empaqueNote.product?.sku || null;
-                const batchNumber = empaqueNote.productionBatch?.batchNumber || '';
-                const formatLabel = productName.match(/X\s*\d+\s*ML/i) ? productName.match(/X\s*\d+\s*ML/i)[0] : 'Uds';
+            // DO NOT Ingest stock here!
+            // DO NOT Consume packaging here!
+            // DO NOT Fire Siigo RPA here!
+            // THOSE ACTIONS MUST ONLY HAPPEN WHEN COMPLETING MARCADO_CAJAS!
 
-                // 2. Ingest
-                if (carritoQty > 0 && empaqueNote.productId && batchNumber) {
-                    api.post('/finished-lots/ingest', {
-                        productId: empaqueNote.productId,
-                        lotNumber: batchNumber,
-                        quantity: carritoQty,
-                        batchId: empaqueNote.productionBatchId || null,
-                        perCarrito: true,
-                        reason: `Ingreso per carrito ${activeCarrito?.carritoNum || carritoId}`
-                    }).then(() => message.success(`📥 Stock actualizado en PRODUCCIÓN`))
-                    .catch(e => {
-                        if (!e.response?.data?.error?.includes('DUPLICATE')) console.warn('[CARRITO INGEST]', e.response?.data?.error || e.message);
-                    });
-                }
-
-                // 3. Consume Packaging
-                api.post(`/assembly-notes/${empaqueNote.id}/consume-carrito`, {
-                    carritoId, carritoQty, operatorId: user?.id
-                }).catch(e => console.warn('[CARRITO CONSUME]', e.message));
-                
-                // Record consumption in EMPAQUE note
-                const prevConsumed = empaqueNote.processParameters?.carriots_consumed || [];
-                await api.patch(`/assembly-notes/${empaqueNote.id}`, {
-                    processParameters: {
-                        ...empaqueNote.processParameters,
-                        activeCarritoId: null,
-                        carriots_consumed: [...prevConsumed, { carritoId, qty: carritoQty, processedAt: new Date().toISOString() }]
-                    }
-                });
-
-                // 1. RPA
-                const isRpaEnabledCarrito = empaqueNote.processParameters?.assembly_on_complete || ['EMPAQUE', 'G_EMPAQUE'].includes(empaqueNote.processType?.code);
-                if (isRpaEnabledCarrito) {
-                    (async () => {
-                        try {
-                            const rpaRes = await api.post('/rpa/siigo-assembly', {
-                                assemblyNoteId: empaqueNote.id,
-                                productName, productSku, quantity: carritoQty, assemblyType: 'proceso',
-                                observations: `Empaque carrito. Lote: ${batchNumber}. Carrito: ${carritoQty} uds. Aprobados: ${carritoQty}. Defectuosos: 0.`
-                            });
-                            message.success(`🤖 Siigo: Encolado para carrito ${carritoQty} × ${formatLabel}`);
-                            
-                            if (rpaRes.data?.executionId) {
-                                // Add rpaExecutionId to the carrito state
-                                setEmpaqueCarriots(prev => {
-                                    const nextUpdated = prev.map(c => c.id === carritoId ? { ...c, rpaExecutionId: rpaRes.data.executionId } : c);
-                                    
-                                    // Save it to DB in background
-                                    api.patch(`/assembly-notes/${targetNote.id}`, {
-                                        processParameters: { ...targetNote.processParameters, carriots: nextUpdated }
-                                    }).catch(console.error);
-
-                                    return nextUpdated;
-                                });
-                            }
-
-                        } catch (e) {
-                            message.warning('⚠️ Siigo no disponible para carrito — proceso continúa');
-                        }
-                    })();
-                }
-            }
         } catch (e) { 
             console.warn('Error confirming carrito:', e.message); 
             message.error('Ocurrió un error al confirmar el carrito.');
@@ -299,14 +241,75 @@ const GenialityExecutionWizard = () => {
     // Saves activeCarritoId to the EMPAQUE note's processParameters (DB) before navigating
     const handleResumeCarrito = async (productId, carritoQty, carritoId) => {
         const saveAndNavigate = async (empaqueNote) => {
-            // Persist activeCarritoId in the EMPAQUE note so it survives URL changes
-            await api.patch(`/assembly-notes/${empaqueNote.id}`, {
-                processParameters: { ...empaqueNote.processParameters, activeCarritoId: carritoId }
-            });
-            navigate(`/geniality/assembly-execution/${empaqueNote.id}?skipIntro=1&step=MARCADO_CAJAS`);
+            try {
+                // Persist activeCarritoId in the EMPAQUE note so it survives URL changes
+                const updatedParams = { ...empaqueNote.processParameters, activeCarritoId: carritoId };
+                await api.patch(`/assembly-notes/${empaqueNote.id}`, {
+                    processParameters: updatedParams
+                });
+
+                if (empaqueNote.id === id) {
+                // Auto-start if note is PENDING (same as skipIntro logic)
+                if (note?.status === 'PENDING') {
+                    try {
+                        await api.post(`/assembly-notes/${empaqueNote.id}/start`, { operatorId: user?.id });
+                        const refreshed = await api.get(`/assembly-notes/${empaqueNote.id}`);
+                        setNote({ ...refreshed.data, processParameters: { ...refreshed.data.processParameters, activeCarritoId: carritoId } });
+                    } catch (e) {
+                        const errMsg = e.response?.data?.error || e.message;
+                        if (errMsg.includes('BLOQUEADO')) {
+                            showZoneBlockedModal(errMsg);
+                        } else {
+                            message.error(`Error al iniciar: ${errMsg}`);
+                        }
+                        return;
+                    }
+                } else {
+                    setNote(prev => ({
+                        ...prev,
+                        processParameters: updatedParams
+                    }));
+                }
+                const marcadoIdx = wizardSteps.findIndex(s => s.type === 'MARCADO_CAJAS');
+                if (marcadoIdx >= 0) {
+                    setCurrentStepIndex(marcadoIdx);
+                }
+                return;
+            }
+
+            // If navigating to a DIFFERENT note, force a hard reload to avoid React state leakage
+                // (e.g. currentStepIndex staying intact for the new note resulting in wrong view rendered)
+                window.location.href = `/geniality/assembly-execution/${empaqueNote.id}?skipIntro=1&step=MARCADO_CAJAS`;
+            } catch (e) {
+                const errMsg = e.response?.data?.error || e.message;
+                message.error(`No se puede etiquetar: ${errMsg}`);
+            }
         };
+        const findEmpaqueNote = (notesArray) => {
+            console.log("findEmpaqueNote called with productId:", productId);
+            let n = notesArray.find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
+            console.log("Initial direct match:", !!n);
+            if (!n && conteoNote?.processParameters?.conteo) {
+                const conteoParams = Object.values(conteoNote.processParameters.conteo);
+                const conteoMatch = conteoParams.find(p => p.productId === productId);
+                console.log("conteoMatch found:", !!conteoMatch, conteoMatch?.productName);
+                if (conteoMatch?.productName) {
+                    const sizeMatch = conteoMatch.productName.match(/X\s+\d+\s+(ML|LTS|GRS|KG)/i);
+                    console.log("sizeMatch:", sizeMatch ? sizeMatch[0] : null);
+                    if (sizeMatch) {
+                        const sizeStr = sizeMatch[0].toUpperCase();
+                        console.log("Searching notesArray for G_EMPAQUE and includes:", sizeStr);
+                        console.log("Available notes in array:", notesArray.map(x => ({code: x.processType?.code, name: x.product?.name})));
+                        n = notesArray.find(n => n.processType?.code === 'G_EMPAQUE' && n.product?.name?.toUpperCase().includes(sizeStr));
+                        console.log("Regex match result:", !!n);
+                    }
+                }
+            }
+            return n;
+        };
+
         if (productId && allBatchNotes && allBatchNotes.length > 0) {
-            const empaqueNote = allBatchNotes.find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
+            const empaqueNote = findEmpaqueNote(allBatchNotes);
             if (empaqueNote) {
                 await saveAndNavigate(empaqueNote);
                 return;
@@ -314,7 +317,7 @@ const GenialityExecutionWizard = () => {
             // Fallback: re-fetch batch notes
             try {
                 const res = await api.get(`/assembly-notes?batchId=${note?.productionBatchId}`);
-                const found = (res.data || []).find(n => n.productId === productId && (n.processType?.code === 'EMPAQUE' || n.processType?.code === 'G_EMPAQUE'));
+                const found = findEmpaqueNote(res.data || []);
                 if (found) {
                     await saveAndNavigate(found);
                 } else {
@@ -504,6 +507,28 @@ const GenialityExecutionWizard = () => {
                 if (conteoQty && conteoQty > 0) return conteoQty;
             }
 
+            // ── MARCADO_CAJAS fallback (ALGINATO, granel processes) ──
+            // When the note itself has marcado_cajas data, cajas_llenas holds the REAL output qty.
+            // This MUST be checked before previous-stage fallback because those stages may have
+            // actualQuantity=1 (e.g., "1 tanque") which is NOT the gram-level quantity.
+            const marcadoCajasData = noteData.processParameters?.marcado_cajas;
+            if (marcadoCajasData) {
+                const realFromMarcado = marcadoCajasData.ingest_total || marcadoCajasData.cajas_llenas;
+                if (realFromMarcado && realFromMarcado > 0) return realFromMarcado;
+            }
+            // Also check sibling notes in the batch for marcado_cajas data
+            const siblingWithMarcado = allNotesRes.data.find(n =>
+                n.status === 'COMPLETED' &&
+                n.productId === noteData.productId &&
+                n.id !== noteData.id &&
+                n.processParameters?.marcado_cajas
+            );
+            if (siblingWithMarcado?.processParameters?.marcado_cajas) {
+                const mc = siblingWithMarcado.processParameters.marcado_cajas;
+                const mcQty = mc.ingest_total || mc.cajas_llenas;
+                if (mcQty && mcQty > 0) return mcQty;
+            }
+
             // ── INTERMEDIATE SUB-TEMPLATE fallback (COMPUESTO, BASE LÍQUIDA, etc.) ──
             // These don't have CONTEO or EMPAQUE. Their yield comes from preceding preparation steps.
             const previousStage = allNotesRes.data
@@ -595,37 +620,37 @@ const GenialityExecutionWizard = () => {
                         lotNumber: lotNumbers[item.id] || null,
                         operatorId: user?.id
                     });
+                    // Build consolidated process parameters payload to prevent racing/overwriting
+                    const updatedParams = { ...(note.processParameters || {}) };
+                    let needsPatch = false;
+
                     // Save weighing photo if present
                     const photoUrl = weighingPhotos[item.id];
                     if (photoUrl) {
-                        await api.patch(`/assembly-notes/${note.id}`, {
-                            processParameters: {
-                                ...note.processParameters,
-                                weighing_photos: {
-                                    ...(note.processParameters?.weighing_photos || {}),
-                                    [item.id]: photoUrl
-                                }
-                            }
-                        }).catch(() => { });
+                        updatedParams.weighing_photos = {
+                            ...(updatedParams.weighing_photos || {}),
+                            [item.id]: photoUrl
+                        };
+                        needsPatch = true;
                     }
+
                     // ── Persist lot selections to processParameters (survive page refresh) ──
                     const currentLotSel = lotSelections[item.id];
                     const currentLotId = selectedLotIds[item.id];
                     if (currentLotSel?.length > 0 || currentLotId) {
-                        const mergedLotSelections = {
-                            ...(note.processParameters?.lot_selections || {}),
+                        updatedParams.lot_selections = {
+                            ...(updatedParams.lot_selections || {}),
                             [item.id]: currentLotId || currentLotSel?.[0]?.lotId || null
                         };
+                        needsPatch = true;
+                    }
+
+                    if (needsPatch) {
                         await api.patch(`/assembly-notes/${note.id}`, {
-                            processParameters: {
-                                ...note.processParameters,
-                                lot_selections: mergedLotSelections
-                            }
+                            processParameters: updatedParams
                         }).catch(() => { });
                         // Keep local note in sync
-                        if (note.processParameters) {
-                            note.processParameters.lot_selections = mergedLotSelections;
-                        }
+                        note.processParameters = updatedParams;
                     }
                     // Lot consumption is deferred to handleComplete (batch consume on finalize)
                 } catch (e) {
@@ -759,7 +784,7 @@ const GenialityExecutionWizard = () => {
                 || (conteoNote?.processParameters?.carriots || []).find(c => c.id === activeCarritoId))
             : null;
 
-        if (currentStep.type === 'MARCADO_CAJAS' && activeCarrito && note.processType?.code === 'EMPAQUE') {
+        if (currentStep.type === 'MARCADO_CAJAS' && activeCarrito && ['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code)) {
             const carritoQty = activeCarrito.qty || 0;
             const productName = note.product?.name || 'Producto';
             const productSku = note.product?.sku || null;
@@ -770,21 +795,23 @@ const GenialityExecutionWizard = () => {
             const defectivos = parseInt(empaqueDefective || 0, 10);
             const aprobados = Math.max(0, carritoQty - defectivos);
 
-            // 1. Siigo RPA with carrito qty only (fire-and-forget)
+            // 1. Siigo RPA with carrito qty only (fire-and-forget but capture ID)
             const isRpaEnabledCarrito = note.processParameters?.assembly_on_complete
                 || ['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code);
+            let rpaExecId = null;
             if (isRpaEnabledCarrito) {
-                (async () => {
-                    try {
-                        await api.post('/rpa/siigo-assembly', {
-                            productName, productSku, quantity: carritoQty, assemblyType: 'proceso',
-                            observations: `Empaque carrito. Lote: ${batchNumber}. Carrito: ${carritoQty} uds. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
-                        });
-                        message.success(`🤖 Siigo: ${carritoQty} × ${productName} (carrito)`);
-                    } catch (e) {
-                        message.warning('⚠️ Siigo no disponible — proceso continúa');
-                    }
-                })();
+                try {
+                    const rpaRes = await api.post('/rpa/siigo-assembly', {
+                        productName, productSku, quantity: carritoQty, assemblyType: 'proceso',
+                        observations: `Empaque carrito. Lote: ${batchNumber}. Carrito: ${carritoQty} uds. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
+                        assemblyNoteId: note.id,
+                        allowMultiple: true
+                    });
+                    rpaExecId = rpaRes.data?.executionId;
+                    message.success(`🤖 Siigo: ${carritoQty} × ${productName} (carrito encolado)`);
+                } catch (e) {
+                    message.warning('⚠️ Siigo no disponible — proceso continúa');
+                }
             }
 
             // 2. Ingest partial stock for this carrito
@@ -825,18 +852,19 @@ const GenialityExecutionWizard = () => {
                 if (conteoNoteLocal) {
                     const currentCarriots = conteoNoteLocal.processParameters?.carriots || empaqueCarriots || [];
                     const updatedCarriots = currentCarriots.map(c =>
-                        c.id === activeCarritoId ? { ...c, labeledAt: new Date().toISOString() } : c
+                        c.id === activeCarritoId ? { ...c, labeledAt: new Date().toISOString(), ...(rpaExecId ? { rpaExecutionId: rpaExecId } : {}) } : c
                     );
                     await api.patch(`/assembly-notes/${conteoNoteLocal.id}`, {
                         processParameters: { ...conteoNoteLocal.processParameters, carriots: updatedCarriots }
                     });
                 }
-                // Record consumption in EMPAQUE note + clear activeCarritoId
+                // Record consumption in EMPAQUE note + clear activeCarritoId + reset wizardStep
                 const prevConsumed = note.processParameters?.carriots_consumed || [];
                 await api.patch(`/assembly-notes/${note.id}`, {
                     processParameters: {
                         ...note.processParameters,
                         activeCarritoId: null,
+                        wizardStep: 0, // Reset to carrito list so next visit doesn't auto-jump to MARCADO_CAJAS
                         carriots_consumed: [...prevConsumed, {
                             carritoId: activeCarritoId,
                             qty: carritoQty,
@@ -846,13 +874,13 @@ const GenialityExecutionWizard = () => {
                 });
             } catch (e) { console.warn('Error marking carrito as labeled:', e.message); }
 
-            // 4. Navigate back to the CONTEO reception screen
+            // 4. Navigate back to the CONTEO reception screen (force hard reload to clear React state leakage)
             message.success(`✅ Carrito etiquetado (${carritoQty} uds) — volviendo a recepción`);
             const conteoId = conteoNote?.id || allBatchNotes?.find(n => n.processType?.code === 'CONTEO')?.id;
             if (conteoId) {
-                setTimeout(() => navigate(`/geniality/assembly-execution/${conteoId}`), 800);
+                setTimeout(() => window.location.href = `/geniality/assembly-execution/${conteoId}`, 800);
             } else {
-                setTimeout(() => navigate('/production/operator'), 800);
+                setTimeout(() => window.location.href = '/production/operator', 800);
             }
             return; // Do NOT advance to ENSAMBLE
         }
@@ -1058,43 +1086,45 @@ const GenialityExecutionWizard = () => {
                     observations: `Empaque Siropes — carriots recibidos: ${receivedCarriots.length}. Lote: ${batchNumber}.`
                 });
 
-                // Complete all related EMPAQUE and ENSAMBLE notes
-                const allNotesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
-                const batchNotes = allNotesRes.data || [];
-                
-                const dependentNotes = batchNotes.filter(n =>
-                    n.stageOrder > note.stageOrder &&
-                    n.status !== 'COMPLETED' &&
-                    ['EMPAQUE', 'G_EMPAQUE', 'ENSAMBLE', 'G_ENSAMBLE'].includes(n.processType?.code)
-                );
-
-                for (const dNote of dependentNotes) {
-                    const dProductId = dNote.productId;
-                    const dQty = dProductId
-                        ? receivedCarriots.filter(c => c.productId === dProductId).reduce((s, c) => s + c.qty, 0)
-                        : totalRealQty;
-                    
-                    const qty = dQty > 0 ? dQty : (dNote.targetQuantity || totalRealQty);
-                    if (qty <= 0) {
-                        // Just complete with 0
-                        await api.post(`/assembly-notes/${dNote.id}/complete`, {
-                            operatorId: user?.id,
-                            actualQuantity: 0,
-                            observations: `Sin producción registrada en conteo.`
-                        });
-                        continue;
+                // ── Auto-complete remaining "Ensamble Siigo" G_ENSAMBLE notes ──
+                // Per-carrito RPAs already handled Siigo accounting. Complete these
+                // with real per-product carrito quantities and skip RPA.
+                try {
+                    const allNotesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
+                    const ensambleSiigoNotes = (allNotesRes.data || []).filter(n =>
+                        n.processType?.code === 'G_ENSAMBLE' &&
+                        n.status !== 'COMPLETED' &&
+                        (n.stageName || '').toLowerCase().includes('ensamble siigo')
+                    );
+                    for (const esNote of ensambleSiigoNotes) {
+                        try {
+                            // Calculate real qty for THIS product from carriots
+                            const productCarriots = receivedCarriots.filter(c => c.productId === esNote.productId);
+                            const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+                            const qty = realQty > 0 ? realQty : esNote.targetQuantity;
+                            
+                            // Set skipRpa flag
+                            await api.patch(`/assembly-notes/${esNote.id}`, {
+                                processParameters: { ...(esNote.processParameters || {}), skipRpa: true }
+                            });
+                            if (esNote.status === 'PENDING') {
+                                await api.post(`/assembly-notes/${esNote.id}/start`, { operatorId: user?.id }).catch(() => {});
+                            }
+                            await api.post(`/assembly-notes/${esNote.id}/complete`, {
+                                operatorId: user?.id,
+                                actualQuantity: qty,
+                                observations: `Auto-completado post-CONTEO: ${qty} uds (RPA per-carrito). Lote: ${batchNumber}.`
+                            });
+                            console.log(`[G_CONTEO handleComplete] ✅ Ensamble Siigo ${esNote.stageName} completed (qty: ${qty})`);
+                        } catch (esErr) {
+                            console.warn(`[G_CONTEO handleComplete] ⚠️ Could not auto-complete ${esNote.stageName}:`, esErr.message);
+                        }
                     }
-
-                    try {
-                        await api.post(`/assembly-notes/${dNote.id}/complete`, {
-                            operatorId: user?.id,
-                            actualQuantity: qty,
-                            observations: `Auto-completado — empaque geniality. Carriots: ${receivedCarriots.length}. Lote: ${batchNumber}.`
-                        });
-                    } catch (e) { console.warn('Auto-complete err:', e.message); }
+                } catch (scanErr) {
+                    console.warn('[G_CONTEO handleComplete] ⚠️ Could not scan for Ensamble Siigo notes:', scanErr.message);
                 }
 
-                message.success('🎉 ¡Empaque y Recepción completados exitosamente!');
+                message.success('🎉 ¡Conteo completado exitosamente!');
                 setShowCompletionPanel(true);
                 return;
             } catch (e) {
@@ -1139,7 +1169,8 @@ const GenialityExecutionWizard = () => {
                             const batchNumber = note.productionBatch?.batchNumber || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber || '';
                             await api.post('/rpa/siigo-assembly', {
                                 productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${batchNumber}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`
+                                observations: `Empaque ${note.stageName}. Lote: ${batchNumber}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
+                                assemblyNoteId: note.id
                             });
                             message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);
                         } catch (e) {
@@ -1638,7 +1669,9 @@ const GenialityExecutionWizard = () => {
 
     // ── Wizard step navigation state ─────────────────────────────────────────
     const currentStep = wizardSteps[currentStepIndex];
-    const isLastStep = currentStepIndex === wizardSteps.length - 1;
+    // CRITICAL: G_CONTEO_CARRITOS should act as the last step in its own context
+    // because finishing it means finalizing the note, not advancing to bulk MARCADO_CAJAS.
+    const isLastStep = currentStepIndex === wizardSteps.length - 1 || currentStep?.type === 'G_CONTEO_CARRITOS';
 
     const isInputStep = currentStep.type === 'INPUT';
     const currentItemId = isInputStep ? currentStep.data.id : null;
@@ -1668,8 +1701,8 @@ const GenialityExecutionWizard = () => {
     }
 
     // Block SIGUIENTE on EMPAQUE multi-presentation selector until ALL are completed
-    const isEmpaque = note.processType?.code === 'EMPAQUE';
-    const empaqueNotes = isEmpaque ? allBatchNotes.filter(n => n.processType?.code === 'EMPAQUE') : [];
+    const isEmpaque = ['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code);
+    const empaqueNotes = isEmpaque ? allBatchNotes.filter(n => ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code)) : [];
     const isEmpaqueMultiSelector = isEmpaque && currentStep.type === 'INTRO' && empaqueNotes.length >= 1;
     const allEmpaqueDone = empaqueNotes.every(n => n.status === 'COMPLETED');
     if (isEmpaqueMultiSelector && !allEmpaqueDone) {
@@ -1721,7 +1754,7 @@ const GenialityExecutionWizard = () => {
     // Block FINALIZAR on OUTPUT step if REAL PRODUCIDO is empty or variation > 5%
     if (currentStep.type === 'OUTPUT') {
         const realQty = parseFloat(outputQuantity);
-        const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
+        const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(note.processType?.code);
         const isPesajeNote = note.processType?.code === 'PESAJE';
         const isFormacionNote = note.processType?.code === 'FORMACION';
         const productNameUpper = (note.product?.name || '').toUpperCase();
@@ -1809,12 +1842,36 @@ const GenialityExecutionWizard = () => {
         }
     }
 
-    // Block TERMINAR EMPAQUE (G_CONTEO_CARRITOS) until at least 1 carrito has been received
-    // empaqueCarriots comes from the CONTEO note processParameters (set by production side)
+    // Block TERMINAR EMPAQUE / CONTEO based on role rendering mode
     if (currentStep.type === 'G_CONTEO_CARRITOS') {
-        const totalReceived = empaqueCarriots.filter(c => c.receivedAt).reduce((s, c) => s + (c.qty || 0), 0);
-        if (totalReceived <= 0) {
-            canAdvance = false;
+        const isPackagingMode = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || currentStep.type === 'CARRITOS_RECEPTION';
+        
+        if (isPackagingMode) {
+            // EMPAQUE Role: Strict depth validation (must receive and assemble/label all carriots)
+            const createdCarriots = empaqueCarriots || [];
+            
+            if (createdCarriots.length > 0) {
+                const totalCreated = createdCarriots.length;
+                const fullyProcessedCount = createdCarriots.filter(c => c.receivedAt && c.labeledAt).length;
+
+                if (fullyProcessedCount < totalCreated) {
+                    canAdvance = false;
+                }
+            } else {
+                canAdvance = false; // Cannot finish if nothing has been sent over yet
+            }
+            
+            // Also enforce completion sequentially if looking at Empaque note
+            const conteoNoteLocal = allBatchNotes?.find(n => n.processType?.code === 'CONTEO');
+            const isConteoCompleted = conteoNoteLocal?.status === 'COMPLETED';
+            if (['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code) && !isConteoCompleted) {
+                canAdvance = false;
+            }
+        } else {
+            // PRODUCTION Role (Cocina): must print all carriots successfully
+            if (carriots.length > 0 && carriots.some(c => !c.printed)) {
+                canAdvance = false;
+            }
         }
     }
 
@@ -1832,6 +1889,14 @@ const GenialityExecutionWizard = () => {
     // ENSAMBLE within EMPAQUE uses the default FINALIZAR label (isLastStep)
 
     const handleCompleteWithConfirm = () => {
+        if (currentStep.type === 'MARCADO_CAJAS') {
+            // CRITICAL FIX: MARCADO_CAJAS is now the ONLY step in G_EMPAQUE, meaning isLastStep=true.
+            // If we run handleComplete(), the whole note is completed, skipping the Siigo per-carrito logic.
+            // We intercept it here and force handleNext() so the exact same carrito logic fires.
+            handleNext();
+            return;
+        }
+
         if (currentStep.type === 'G_CONTEO_CARRITOS') {
             const isConteo = note.processType?.code === 'CONTEO';
             const actionText = isConteo ? 'el conteo' : 'el empaque';
@@ -1856,9 +1921,13 @@ const GenialityExecutionWizard = () => {
             <div className="bg-white border-b border-slate-200 px-3 py-2 flex items-center justify-between z-40">
                 <div className="flex-1 min-w-0">
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">
-                        {note.noteNumber} — {note.status === 'EXECUTING' ? '🔄 En Proceso' : note.status === 'COMPLETED' ? '✅ Completado' : '⏳ Pendiente'}
+                        {note.productionBatch?.batchNumber || note.noteNumber} — {note.status === 'EXECUTING' ? '🔄 En Proceso' : note.status === 'COMPLETED' ? '✅ Completado' : '⏳ Pendiente'}
                     </div>
-                    <div className="text-sm font-bold text-slate-700 truncate">{note.stageName}</div>
+                    <div className="text-sm font-bold text-slate-700 truncate">
+                        {note.stageName.includes('ESCARCHADOR') && note.productionBatch?.batchNumber?.match(/^([A-ZÑ]+(?:[\s-][A-ZÑ]+)*)-(\d{6})/)
+                            ? note.stageName.replace('ESCARCHADOR', note.productionBatch.batchNumber.match(/^([A-ZÑ]+(?:[\s-][A-ZÑ]+)*)-(\d{6})/)[1].replace(/-/g, ' '))
+                            : note.stageName}
+                    </div>
                     {allBatchNotes.length > 1 && (
                         <div className="flex gap-0.5 mt-1">
                             {allBatchNotes.sort((a, b) => a.stageOrder - b.stageOrder).map((n, i) => (
@@ -1917,13 +1986,25 @@ const GenialityExecutionWizard = () => {
                     conteoPhotos={conteoPhotos}
                     onConteoPhotoChange={setConteoPhoto}
                     isPackagingRole={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || wizardSteps[currentStepIndex]?.type === 'CARRITOS_RECEPTION'}
+                    isAdmin={!['PRODUCCION', 'OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)}
                     carriots={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || ['EMPAQUE', 'CARRITOS_RECEPTION', 'G_CONTEO_CARRITOS', 'MARCADO_CAJAS'].includes(wizardSteps[currentStepIndex]?.type)
                         ? empaqueCarriots
-                        : carriots}
+                            : carriots}
                     onAddCarrito={handleAddCarrito}
                     onRemoveCarrito={handleRemoveCarrito}
                     onConfirmCarrito={handleConfirmCarrito}
                     onResumeCarrito={handleResumeCarrito}
+                    onUpdateCarrito={async (carritoId, updates) => {
+                        updateCarritoLocal(carritoId, updates);
+                        try {
+                            const updated = carriots.map(c => c.id === carritoId ? { ...c, ...updates } : c);
+                            await api.patch(`/assembly-notes/${note.id}`, {
+                                processParameters: { ...note.processParameters, carriots: updated }
+                            });
+                        } catch (e) {
+                            console.error('Error saving update state', e);
+                        }
+                    }}
                     onRotuladoChange={setRotuladoStatus}
 
                     empaqueDefective={empaqueDefective}

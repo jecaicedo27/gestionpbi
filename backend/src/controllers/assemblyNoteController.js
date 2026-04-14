@@ -377,14 +377,16 @@ const assemblyNoteController = {
                 where: { id },
                 select: { processType: { select: { code: true } }, stageOrder: true, productionBatchId: true }
             });
-            const startStageCode = noteForStart?.processType?.code;
+            const startStageCodeRaw = noteForStart?.processType?.code;
+            const normalizeCode = (c) => c === 'G_ENSAMBLE' ? 'ENSAMBLE' : c === 'G_EMPAQUE' ? 'EMPAQUE' : c;
+            const startStageCode = normalizeCode(startStageCodeRaw);
             const startRole = req.user?.role;
             let startRestricted = startStageCode === 'EMPAQUE';
             if (startStageCode === 'ENSAMBLE') {
                 const empBefore = await prisma.assemblyNote.count({
                     where: {
                         productionBatchId: noteForStart.productionBatchId,
-                        processType: { code: 'EMPAQUE' },
+                        processType: { code: { in: ['EMPAQUE', 'G_EMPAQUE'] } },
                         stageOrder: { lt: noteForStart.stageOrder }
                     }
                 });
@@ -487,15 +489,16 @@ const assemblyNoteController = {
                 where: { id },
                 select: { processType: { select: { code: true } }, stageOrder: true, productionBatchId: true }
             });
-            const stageCode = noteForRoleCheck?.processType?.code;
+            const stageCodeRaw = noteForRoleCheck?.processType?.code;
             const callerRole = req.user?.role;
-            let isRestricted = stageCode === 'EMPAQUE';
-            if (stageCode === 'ENSAMBLE') {
+            const stageCode = (c) => c === 'G_ENSAMBLE' ? 'ENSAMBLE' : c === 'G_EMPAQUE' ? 'EMPAQUE' : c;
+            let isRestricted = stageCode(stageCodeRaw) === 'EMPAQUE';
+            if (stageCode(stageCodeRaw) === 'ENSAMBLE') {
                 // Check if there are EMPAQUE siblings with lower stageOrder → this is a post-empaque ENSAMBLE
                 const empaqueBeforeCount = await prisma.assemblyNote.count({
                     where: {
                         productionBatchId: noteForRoleCheck.productionBatchId,
-                        processType: { code: 'EMPAQUE' },
+                        processType: { code: { in: ['EMPAQUE', 'G_EMPAQUE'] } },
                         stageOrder: { lt: noteForRoleCheck.stageOrder }
                     }
                 });
@@ -503,8 +506,8 @@ const assemblyNoteController = {
             }
             const allowedRoles = ['OPERARIO_PICKING', 'ADMIN'];
             if (isRestricted && callerRole && !allowedRoles.includes(callerRole)) {
-                console.log(`[completeNote] ⛔ BLOCKED — role ${callerRole} cannot complete ${stageCode} stage (post-empaque: ${isRestricted})`);
-                return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede finalizar etapas de ${stageCode}` });
+                console.log(`[completeNote] ⛔ BLOCKED — role ${callerRole} cannot complete ${stageCodeRaw} stage (post-empaque: ${isRestricted})`);
+                return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede finalizar etapas de ${stageCodeRaw}` });
             }
 
             // ── Hard cap: actualQuantity on each item must not exceed 120% of plannedQuantity ──

@@ -850,6 +850,21 @@ class AssemblyService {
             });
 
             if (!note) throw new Error('Note not found');
+
+            // ── Normalize Geniality process codes to their base equivalents ──
+            // G_ENSAMBLE → ENSAMBLE, G_EMPAQUE → EMPAQUE, G_PREMIX → PESAJE, etc.
+            // This ensures all stock injection, consumption, and RPA logic works
+            // identically for both classic and Geniality workflows.
+            const normalizeCode = (code) => {
+                if (!code) return code;
+                if (code === 'G_ENSAMBLE') return 'ENSAMBLE';
+                if (code === 'G_EMPAQUE') return 'EMPAQUE';
+                return code;
+            };
+            // Patch processType.code on the in-memory note object
+            if (note.processType) {
+                note.processType = { ...note.processType, code: normalizeCode(note.processType.code) };
+            }
             if (note.status === 'COMPLETED') {
                 // Idempotent: already completed — return success instead of error
                 // (handles double-tap on mobile/tablet)
@@ -1091,7 +1106,7 @@ class AssemblyService {
             }
 
             // ── ZONE STOCK VALIDATION — block if insufficient production zone stock ──
-            const processCode = note.processType?.code;
+            const processCode = normalizeCode(note.processType?.code); // already normalized but keep for clarity
             // Zone validation only for PESAJE — EMPAQUE items are auto-assigned at INPUT time
             const shouldValidateZone = processCode === 'PESAJE';
             // Auto-consume for PESAJE (raw materials) + EMPAQUE (exempt items: etiquetas, sellos, cajas)
@@ -1442,14 +1457,14 @@ class AssemblyService {
             let producesOutput = false;
             let createdLotNumber = null;
 
-            if (note.processType?.code === 'ENSAMBLE') {
-                // ENSAMBLE step: INJECTS stock with the correct scaled actualQuantity.
+            if (processCode === 'ENSAMBLE') {
+                // ENSAMBLE / G_ENSAMBLE step: INJECTS stock with the correct scaled actualQuantity.
                 // The actualQuantity here reflects the real formula output (e.g. 122,327g)
                 // which is more accurate than the Pesaje target (e.g. 120,347g).
                 producesOutput = true;
                 createdLotNumber = note.productionBatch?.batchNumber || null;
                 console.log(`[completeNote] 📊 ENSAMBLE step — WILL inject stock + fire RPA. lotNumber: ${createdLotNumber} | qty: ${actualQuantity}`);
-            } else if (note.processType?.code === 'FORMACION') {
+            } else if (processCode === 'FORMACION') {
                 // FORMACION (esferas) produces output directly — no ENSAMBLE follows it
                 producesOutput = true;
                 console.log(`[completeNote] 📊 FORMACION step — WILL inject stock. Stage: ${note.stageName} | qty: ${actualQuantity}`);
@@ -1471,8 +1486,9 @@ class AssemblyService {
                     // Look for the next step with same productId
                     for (let i = myIdx + 1; i < batchNotes.length; i++) {
                         if (batchNotes[i].productId === note.productId) {
-                            // Found next step for same product — is it ENSAMBLE?
-                            nextEnsambleForProduct = batchNotes[i].processType?.code === 'ENSAMBLE';
+                            // Found next step for same product — is it ENSAMBLE or G_ENSAMBLE?
+                            const nextCode = normalizeCode(batchNotes[i].processType?.code);
+                            nextEnsambleForProduct = nextCode === 'ENSAMBLE';
                             break; // only check the immediately next one for this product
                         }
                     }
@@ -1625,7 +1641,7 @@ class AssemblyService {
                 }
             }
 
-            const isEnsambleStep = ['ENSAMBLE', 'FORMACION'].includes(note.processType?.code);
+            const isEnsambleStep = ['ENSAMBLE', 'FORMACION'].includes(processCode);
             return { updatedNote, createdLotNumber, producesOutput, isEnsambleStep, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName, batchNumber: note.productionBatch?.batchNumber || null, targetQuantity: note.targetQuantity, consumptionAlerts: consumptionAlerts.length > 0 ? consumptionAlerts : undefined };
         });
 
@@ -1646,6 +1662,17 @@ class AssemblyService {
             // If those per-carrito RPAs succeeded, we must NOT fire another ENSAMBLE
             // RPA or it will double-register the assembly in Siigo accounting.
             let skipRpa = false;
+            try {
+                // ── EXPLICIT skipRpa FLAG (set by frontend auto-skip for "Ensamble Siigo" notes) ──
+                // Per-carrito RPAs already handled Siigo accounting during MARCADO_CAJAS.
+                const freshNoteParams = await prisma.assemblyNote.findUnique({
+                    where: { id: noteId }, select: { processParameters: true }
+                });
+                if (freshNoteParams?.processParameters?.skipRpa) {
+                    console.log(`[completeNote] ⏭️ RPA SKIPPED — skipRpa flag set on note ${noteId} (per-carrito RPAs already handled Siigo)`);
+                    skipRpa = true;
+                }
+            } catch (e) { /* continue to other guards */ }
             try {
                 // ── GLOBAL RPA DUPLICATE LOCK ────────────────────────────────────────────────
                 // Prevents multiple concurrent clicks/HTTP requests from queueing duplicate RPAs

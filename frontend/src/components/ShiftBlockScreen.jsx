@@ -38,6 +38,9 @@ export default function ShiftBlockScreen({ userRole }) {
                 setBlocked(res.data.blocked);
                 setPending(res.data.pending || []);
                 setOutgoingShift(res.data.outgoingShift || '');
+                if (res.data.blocked) {
+                    loadHandoffData();
+                }
             } catch (e) {
                 console.error('Block check error:', e);
                 setBlocked(false);
@@ -63,6 +66,8 @@ export default function ShiftBlockScreen({ userRole }) {
         setHandoffLoading(false);
     };
 
+    const [selectedAction, setSelectedAction] = useState(null); // { type: 'OPERATOR'|'LEADER_OUT'|'LEADER_IN', data }
+
     // ── PIN verification: validate against backend ──
     const handlePinSubmit = async () => {
         if (entregaPin.length !== 4) {
@@ -74,14 +79,45 @@ export default function ShiftBlockScreen({ userRole }) {
         setEntregaPinError('');
 
         try {
-            // We'll use a lightweight endpoint to verify PIN and get user info
-            // Try to hit the checklists endpoint with auth - if PIN is valid, user exists
             const res = await api.post('/shifts/handoff/verify-pin', { pin: entregaPin });
-            if (res.data.user) {
-                setAuthenticatedUser(res.data.user);
-                await loadHandoffData();
+            const identifiedUser = res.data.user;
+
+            if (selectedAction) {
+                if (selectedAction.type === 'OPERATOR') {
+                    if (identifiedUser.id === selectedAction.data.userId || identifiedUser.role === 'ADMIN') {
+                        setAuthenticatedUser(identifiedUser);
+                        await loadHandoffData();
+                    } else {
+                        setEntregaPinError(`PIN no pertenece a ${selectedAction.data.name.split(' ')[0]}`);
+                    }
+                } else if (selectedAction.type === 'LEADER_OUT' || selectedAction.type === 'LEADER_IN') {
+                    if (identifiedUser.role !== 'LIDER' && identifiedUser.role !== 'ADMIN') {
+                        setEntregaPinError('Acceso denegado: Solo un líder puede firmar');
+                        setVerifyingPin(false);
+                        return;
+                    }
+
+                    const targetStatus = selectedAction.type === 'LEADER_OUT' ? 'Firma pendiente: Líder Saliente' : 'Firma pendiente: Líder Entrante';
+                    const route = selectedAction.type === 'LEADER_OUT' ? 'approve-outgoing' : 'approve-incoming';
+                    const pendingIds = pending.filter(p => p.reason === targetStatus && p.handoffId).map(p => p.handoffId);
+
+                    await Promise.all(pendingIds.map(id => api.post(`/shifts/handoff/${id}/${route}`, { pin: entregaPin })));
+                    
+                    setShowEntregaMode(false);
+                    setSelectedAction(null);
+                    setEntregaPin('');
+                    
+                    const blockRes = await api.get('/shifts/handoff/block-status');
+                    setBlocked(blockRes.data.blocked);
+                    setPending(blockRes.data.pending || []);
+                }
             } else {
-                setEntregaPinError('PIN no reconocido');
+                if (identifiedUser) {
+                    setAuthenticatedUser(identifiedUser);
+                    await loadHandoffData();
+                } else {
+                    setEntregaPinError('PIN no reconocido');
+                }
             }
         } catch (e) {
             setEntregaPinError(e.response?.data?.error || 'PIN incorrecto');
@@ -104,23 +140,35 @@ export default function ShiftBlockScreen({ userRole }) {
 
         // Auto-submit on 4 digits
         if (joined.replace(/\s/g, '').length === 4 && index === 3) {
-            setTimeout(() => handlePinSubmit(), 200);
+            setTimeout(() => {
+                // Must access latest state via dispatch or ref if it was stale, but using it directly is fine for this async boundary if we simulate a click or run a function outside
+                // Due to closure staleness with setTimeout, we use a submit trigger by relying on the effect or just passing the joined value. 
+                // Wait, React state `entregaPin` would be stale in `handlePinSubmit`. 
+            }, 50);
         }
     };
+
+    // We use a useEffect to auto-submit when length === 4 to avoid closure staleness.
+    useEffect(() => {
+        if (entregaPin.length === 4 && !verifyingPin && !entregaPinError) {
+            handlePinSubmit();
+        }
+    }, [entregaPin]);
 
     const handlePinKeyDown = (index, e) => {
         if (e.key === 'Backspace' && !entregaPin[index] && index > 0) {
             pinRefs.current[index - 1]?.focus();
         }
-        if (e.key === 'Enter') {
+        if (e.key === 'Enter' && entregaPin.length === 4) {
             handlePinSubmit();
         }
     };
 
     // ── Approval handlers ──
-    const handleApprove = async (handoffId, pin) => {
+    const handleApprove = async (handoffId, pin, status) => {
         try {
-            await api.post(`/shifts/handoff/${handoffId}/approve`, { pin });
+            const endpoint = status === 'PENDING' ? 'approve-outgoing' : 'approve-incoming';
+            await api.post(`/shifts/handoff/${handoffId}/${endpoint}`, { pin });
             await loadHandoffData();
             // Re-check block status
             const blockRes = await api.get('/shifts/handoff/block-status');
@@ -281,14 +329,20 @@ export default function ShiftBlockScreen({ userRole }) {
                         fontSize: 22, fontWeight: 800, color: '#fff',
                         margin: '0 0 8px', letterSpacing: '-0.5px'
                     }}>
-                        Identificación
+                        {selectedAction?.type === 'OPERATOR' ? `Hola, ${selectedAction.data.name.split(' ')[0]}` :
+                         selectedAction?.type === 'LEADER_OUT' ? 'Firma Líder Saliente' :
+                         selectedAction?.type === 'LEADER_IN' ? 'Firma Líder Entrante' :
+                         'Identificación'}
                     </h2>
 
                     <p style={{
                         fontSize: 14, color: '#94a3b8', margin: '0 0 24px',
                         lineHeight: 1.5, fontWeight: 500
                     }}>
-                        Ingresa tu PIN para acceder al formulario de entrega de turno
+                        {selectedAction?.type === 'OPERATOR' ? `Ingresa tu PIN para completar el checklist de ${selectedAction.data.area}` :
+                         selectedAction?.type === 'LEADER_OUT' ? 'Ingresa tu PIN de líder para aprobar las entregas salientes' :
+                         selectedAction?.type === 'LEADER_IN' ? 'Ingresa tu PIN para recibir la planta formalmente' :
+                         'Ingresa tu PIN para acceder al sistema'}
                     </p>
 
                     {/* PIN input */}
@@ -363,132 +417,179 @@ export default function ShiftBlockScreen({ userRole }) {
         );
     }
 
-    // ── Default block screen ──
+    // ── Default block screen (Tablero Inicial Interactivo) ──
+    const operariosPorArea = {};
+    (handoffOperators || []).forEach(op => {
+        if (!operariosPorArea[op.area]) operariosPorArea[op.area] = [];
+        operariosPorArea[op.area].push(op);
+    });
+
+    const pendingEntrega = pending.filter(p => !p.reason.startsWith('Firma pendiente:'));
+    const pendingLeaderOut = pending.some(p => p.reason === 'Firma pendiente: Líder Saliente');
+    const pendingLeaderIn = pending.some(p => p.reason === 'Firma pendiente: Líder Entrante');
+    const allOperatorsDelivered = pendingEntrega.length === 0;
+
     return (
         <div style={{
             position: 'fixed', inset: 0, zIndex: 9999,
             background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif"
+            fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
+            overflow: 'auto', padding: '20px 0'
         }}>
             <div style={{
-                maxWidth: 480, width: '90%', textAlign: 'center',
-                padding: '40px 32px', borderRadius: 24,
+                maxWidth: 600, width: '95%',
+                padding: '30px 24px', borderRadius: 24,
                 background: 'rgba(255,255,255,0.05)',
                 backdropFilter: 'blur(20px)',
                 border: '1px solid rgba(255,255,255,0.1)',
                 boxShadow: '0 20px 60px rgba(0,0,0,0.4)'
             }}>
-                {/* Lock icon */}
                 <div style={{
-                    width: 80, height: 80, borderRadius: '50%', margin: '0 auto 20px',
-                    background: 'linear-gradient(135deg, #dc2626, #ef4444)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 40, boxShadow: '0 8px 30px rgba(220,38,38,0.4)',
-                    animation: 'pulse 2s ease-in-out infinite'
-                }}>
-                    🔒
-                </div>
-
-                <h1 style={{
-                    fontSize: 26, fontWeight: 800, color: '#fff',
-                    margin: '0 0 8px', letterSpacing: '-0.5px'
-                }}>
-                    TURNO NO ENTREGADO
-                </h1>
-
-                <p style={{
-                    fontSize: 15, color: '#94a3b8', margin: '0 0 24px',
-                    lineHeight: 1.5, fontWeight: 500
-                }}>
-                    No puedes ingresar al sistema hasta que <strong style={{ color: '#e2e8f0' }}>TODOS</strong> los
-                    operarios del turno anterior entreguen y el líder apruebe.
-                </p>
-
-                {/* Pending list */}
-                <div style={{
-                    background: 'rgba(220,38,38,0.1)', borderRadius: 16,
-                    padding: '16px', border: '1px solid rgba(220,38,38,0.2)',
-                    textAlign: 'left', marginBottom: 20
+                    display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20,
+                    borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 16
                 }}>
                     <div style={{
-                        fontSize: 13, fontWeight: 700, color: '#f87171',
-                        marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1
+                        width: 50, height: 50, borderRadius: '50%',
+                        background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 24, boxShadow: '0 4px 14px rgba(37,99,235,0.4)'
                     }}>
-                        ⏳ Pendientes ({pending.length})
+                        🔄
                     </div>
-                    {pending.map((p, i) => (
-                        <div key={i} style={{
-                            padding: '10px 12px', marginBottom: 6, borderRadius: 10,
-                            background: 'rgba(255,255,255,0.05)',
-                            border: '1px solid rgba(255,255,255,0.08)',
-                            display: 'flex', alignItems: 'center', gap: 10
+                    <div>
+                        <h1 style={{ fontSize: 22, fontWeight: 800, color: '#fff', margin: '0 0 4px' }}>
+                            Turno en proceso de entrega
+                        </h1>
+                        <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 600 }}>
+                            Turno Saliente: {outgoingShift}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Lista de operarios por área */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+                    {Object.entries(operariosPorArea).map(([area, ops]) => (
+                        <div key={area} style={{
+                            background: 'rgba(255,255,255,0.02)', borderRadius: 16,
+                            padding: '12px 16px', border: '1px solid rgba(255,255,255,0.05)'
                         }}>
-                            <span style={{ fontSize: 18 }}>{AREA_ICONS[p.area] || '👤'}</span>
-                            <div>
-                                <div style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9' }}>{p.name}</div>
-                                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{p.reason}</div>
+                            <div style={{
+                                fontSize: 13, fontWeight: 700, color: '#94a3b8',
+                                marginBottom: 10, textTransform: 'uppercase', letterSpacing: 1,
+                                display: 'flex', alignItems: 'center', gap: 8
+                            }}>
+                                {AREA_ICONS[area]} {area}
+                            </div>
+                            
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {ops.map(op => {
+                                    const needsDelivery = op.status === 'NOT_DELIVERED' || op.status === 'REJECTED';
+                                    return (
+                                        <div key={op.userId} style={{
+                                            padding: '12px 14px', borderRadius: 12,
+                                            background: needsDelivery ? 'rgba(255,255,255,0.05)' : 'rgba(34,197,94,0.05)',
+                                            border: `1px solid ${needsDelivery ? 'rgba(255,255,255,0.1)' : 'rgba(34,197,94,0.2)'}`,
+                                            display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+                                        }}>
+                                            <div style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>
+                                                {op.role === 'LIDER' ? '👑 ' : ''}{op.name}
+                                            </div>
+                                            
+                                            {needsDelivery ? (
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedAction({ type: 'OPERATOR', data: op });
+                                                        setShowEntregaMode(true);
+                                                    }}
+                                                    style={{
+                                                        padding: '8px 16px', borderRadius: 8, border: 'none',
+                                                        background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                                                        color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                                                        boxShadow: '0 2px 8px rgba(37,99,235,0.3)', transition: 'transform 0.1s'
+                                                    }}
+                                                    onMouseDown={e => e.currentTarget.style.transform = 'scale(0.95)'}
+                                                    onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
+                                                >
+                                                    Entregar
+                                                </button>
+                                            ) : (
+                                                <div style={{
+                                                    fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6,
+                                                    color: op.status === 'APPROVED' ? '#4ade80' : '#facc15'
+                                                }}>
+                                                    {op.status === 'APPROVED' ? '✅ Aprobado' : '✅ Entregado'} 
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     ))}
+                    
+                    {handoffLoading && (!handoffOperators || handoffOperators.length === 0) && (
+                        <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>
+                            Cargando datos del turno...
+                        </div>
+                    )}
+                    {!handoffLoading && (!handoffOperators || handoffOperators.length === 0) && (
+                        <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>
+                            No se encontraron operarios en el turno saliente. (La sesión de bloqueo podría ser de otro empleado o haber un error de red).
+                        </div>
+                    )}
                 </div>
 
-                <p style={{ fontSize: 13, color: '#64748b', fontWeight: 500, marginBottom: 16 }}>
-                    Contacta al líder del turno {outgoingShift} para agilizar la entrega
-                </p>
+                {/* ── ACTION BUTTONS FOR LEADERS ── */}
+                {handoffOperators.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10,
+                        paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.1)'
+                    }}>
+                        {allOperatorsDelivered && pendingLeaderOut && (
+                            <button
+                                onClick={() => {
+                                    setSelectedAction({ type: 'LEADER_OUT' });
+                                    setShowEntregaMode(true);
+                                }}
+                                style={{
+                                    padding: '14px 24px', borderRadius: 14, border: 'none',
+                                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                                    color: '#fff', fontWeight: 800, fontSize: 16, cursor: 'pointer',
+                                    boxShadow: '0 4px 20px rgba(245,158,11,0.35)', width: '100%'
+                                }}
+                            >
+                                📝 Firma Líder Saliente (Aprobar Todas)
+                            </button>
+                        )}
 
-                {/* ── ACTION BUTTONS ── */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {/* Main CTA: Enter handoff mode */}
-                    <button
-                        onClick={() => setShowEntregaMode(true)}
-                        style={{
-                            padding: '14px 24px', borderRadius: 14, border: 'none',
-                            background: 'linear-gradient(135deg, #f59e0b, #d97706)',
-                            color: '#fff', fontWeight: 800, fontSize: 16, cursor: 'pointer',
-                            boxShadow: '0 4px 20px rgba(245,158,11,0.35)',
-                            transition: 'all 0.2s', width: '100%'
-                        }}
-                    >
-                        🔑 Soy del turno anterior — Entregar
-                    </button>
-
-                    {/* Leader CTA: Go to shift schedule to verify */}
-                    <button
-                        onClick={() => { window.location.href = '/shift-schedule'; }}
-                        style={{
-                            padding: '12px 24px', borderRadius: 12, border: 'none',
-                            background: 'linear-gradient(135deg, #7c3aed, #8b5cf6)',
-                            color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer',
-                            boxShadow: '0 4px 16px rgba(124,58,237,0.3)',
-                            width: '100%'
-                        }}
-                    >
-                        📋 Ver Cuadro de Turnos
-                    </button>
-
-                    {/* Secondary: refresh */}
-                    <button
-                        onClick={() => window.location.reload()}
-                        style={{
-                            padding: '12px 24px', borderRadius: 12, border: 'none',
-                            background: 'linear-gradient(135deg, #2563eb, #3b82f6)',
-                            color: '#fff', fontWeight: 700, fontSize: 15, cursor: 'pointer',
-                            boxShadow: '0 4px 16px rgba(37,99,235,0.3)',
-                            width: '100%'
-                        }}
-                    >
-                        🔄 Verificar de nuevo
-                    </button>
-                </div>
+                        {!pendingLeaderOut && pendingLeaderIn && (
+                            <button
+                                onClick={() => {
+                                    setSelectedAction({ type: 'LEADER_IN' });
+                                    setShowEntregaMode(true);
+                                }}
+                                style={{
+                                    padding: '14px 24px', borderRadius: 14, border: 'none',
+                                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                                    color: '#fff', fontWeight: 800, fontSize: 16, cursor: 'pointer',
+                                    boxShadow: '0 4px 20px rgba(16,185,129,0.35)', width: '100%'
+                                }}
+                            >
+                                ✅ Recibir Turno (Líder Entrante)
+                            </button>
+                        )}
+                        
+                        {!allOperatorsDelivered && (
+                            <div style={{
+                                textAlign: 'center', fontSize: 13, color: '#f87171', fontWeight: 600,
+                                background: 'rgba(239,68,68,0.1)', padding: '10px', borderRadius: 12, border: '1px solid rgba(239,68,68,0.2)'
+                            }}>
+                                ⏳ Esperando que todos los operarios entreguen para habilitar la firma del líder
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
-
-            <style>{`
-                @keyframes pulse {
-                    0%, 100% { transform: scale(1); }
-                    50% { transform: scale(1.05); }
-                }
-            `}</style>
         </div>
     );
 }

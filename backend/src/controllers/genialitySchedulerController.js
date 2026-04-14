@@ -258,7 +258,7 @@ exports.getSuggestions = async (req, res) => {
                 const TARGET_DAYS = config.targetDays;
                 const deficitKg = ((TARGET_DAYS * dailyConsumptionKg) - totalStockKg) * SYRUP_RATIO;
 
-                // Target: Multiples of BATCH_SIZE
+                // Target exact quantity, no rigid minimums or multiples
                 let baseTarget = Math.max(0, deficitKg); // No buffer
 
                 // If negative stock, ensure we cover it (also apply syrup ratio)
@@ -267,19 +267,16 @@ exports.getSuggestions = async (req, res) => {
                 // Add Backorder Demand
                 if (totalBackorderKg > 0) baseTarget += totalBackorderKg * SYRUP_RATIO;
 
-                // Round UP to nearest BATCH_SIZE
-                let target = Math.ceil(Math.max(1, baseTarget) / BATCH_SIZE) * BATCH_SIZE;
-
-                // Minimum batch is BATCH_SIZE
-                if (target < BATCH_SIZE) target = BATCH_SIZE;
+                // Exact target, ensure at least 1 fractional decimal
+                let target = Math.max(0.1, baseTarget);
 
                 // Special Case: No consumption but Negative Stock
                 if (dailyConsumptionKg < 0.05 && totalStockKg < 0) {
                     const hole = Math.abs(totalStockKg) * SYRUP_RATIO;
-                    target = Math.ceil(hole / BATCH_SIZE) * BATCH_SIZE;
+                    target = Math.max(0.1, hole);
                 }
 
-                suggestedAction = `Producir ${Math.round(target)}kg`;
+                suggestedAction = `Producir ${Math.round(target * 10) / 10}kg`;
             }
 
             return {
@@ -452,7 +449,7 @@ exports.calculateBatchMix = async (req, res) => {
             boostedNeedKg += Math.abs(totalFlavorStock) * SYRUP_RATIO;
         }
 
-        let targetTotalKg = Math.ceil(boostedNeedKg / BATCH_SIZE) * BATCH_SIZE;
+        let targetTotalKg = boostedNeedKg; // Disable rigid ceiling for precision batching
 
         console.log('DEBUG MIX:', { flavor, totalNeedKg, boostedNeedKg, totalFlavorStock, targetTotalKg });
 
@@ -480,9 +477,9 @@ exports.calculateBatchMix = async (req, res) => {
             // Ensure minimum covers net order demand
             const effectiveUnits = Math.max(rawUnits, item.netOrderNeedUnits);
 
-            // Round UP to complete boxes (packSize)
+            // Exact unit targeting, skip complete boxes constraint for scaling flexibility
             const ps = item.packSize;
-            const boxRoundedUnits = ps > 1 ? Math.ceil(effectiveUnits / ps) * ps : effectiveUnits;
+            const boxRoundedUnits = effectiveUnits; // Box rounding disabled to allow exact batch tracking
 
             finalMix.push({
                 productId: item.product.id,
@@ -500,9 +497,9 @@ exports.calculateBatchMix = async (req, res) => {
 
         const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
 
-        // Adjust targetTotalKg upward if rounding exceeded it
+        // Keep exact targetTotalKg without ceiling roundup
         if (totalPlannedKg > targetTotalKg) {
-            targetTotalKg = Math.ceil(totalPlannedKg / BATCH_SIZE) * BATCH_SIZE;
+            targetTotalKg = totalPlannedKg;
         }
 
         const syrupBatchesNeeded = Math.ceil(targetTotalKg / BATCH_SIZE);

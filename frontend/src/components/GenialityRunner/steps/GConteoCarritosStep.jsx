@@ -1,13 +1,15 @@
 import React, { useState, useRef } from 'react';
-import { ShoppingCart, Trash2, Printer, Camera, Loader2 } from 'lucide-react';
+import { ShoppingCart, Trash2, Printer, Camera, Loader2, Pencil, Check, X } from 'lucide-react';
+import { compressImage } from '../../../utils/imageCompression';
 import { useZebra } from '../../../context/ZebraContext';
 import { buildCarritoLabelZPL } from '../../../services/zplLabelBuilder';
 import api from '../../../services/api';
 
 
 const RpaStatusTag = ({ executionId }) => {
-    const [status, React_useState] = React.useState('PENDING');
+    const [status, setStatus] = React.useState('PENDING');
     const [noteCode, setNoteCode] = React.useState(null);
+    const [screenshotUrl, setScreenshotUrl] = React.useState(null);
 
     React.useEffect(() => {
         let timer;
@@ -15,11 +17,10 @@ const RpaStatusTag = ({ executionId }) => {
             try {
                 const res = await api.get(`/rpa/${executionId}`);
                 if (res.data) {
-                    React_useState(res.data.status);
-                    if (res.data.siigoNoteCode) {
-                        setNoteCode(res.data.siigoNoteCode);
-                    }
-                    if (res.data.status === 'COMPLETED' || res.data.status === 'FAILED') {
+                    setStatus(res.data.status);
+                    if (res.data.siigoNoteCode) setNoteCode(res.data.siigoNoteCode);
+                    if (res.data.screenshotPath) setScreenshotUrl(res.data.screenshotPath);
+                    if (['SUCCESS', 'FAILED'].includes(res.data.status)) {
                         return;
                     }
                 }
@@ -32,11 +33,16 @@ const RpaStatusTag = ({ executionId }) => {
         return () => clearTimeout(timer);
     }, [executionId]);
 
-    if (status === 'COMPLETED' && noteCode) {
+    if (status === 'SUCCESS' && noteCode) {
         return (
             <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 font-black text-[10px] uppercase rounded-md border border-blue-200">
                 <span className="text-blue-500 font-extrabold text-[12px]">📝</span> 
                 {noteCode}
+                {screenshotUrl && (
+                    <a href={screenshotUrl} target="_blank" rel="noopener noreferrer" className="ml-1 text-[10px] underline hover:text-blue-800" title="Ver Evidencia RPA">
+                        IMG
+                    </a>
+                )}
             </div>
         );
     }
@@ -63,7 +69,9 @@ const GConteoCarritosStep = ({
     onRemoveCarrito,
     onConfirmCarrito,
     onResumeCarrito,
-    isPackagingRole = false
+    onUpdateCarrito,
+    isPackagingRole = false,
+    isAdmin = false
 }) => {
     const [newCarritoQtys, setNewCarritoQtys] = useState({});
     const fileInputRef = useRef(null);
@@ -72,6 +80,9 @@ const GConteoCarritosStep = ({
     const [uploading, setUploading] = useState(false);
     const [uploadingAdd, setUploadingAdd] = useState(null);
     const [previewImage, setPreviewImage] = useState(null);
+    // Admin inline edit state
+    const [editingCarritoId, setEditingCarritoId] = useState(null);
+    const [editQtyMap, setEditQtyMap] = useState({});
     const { zebraStatus, printZPL } = useZebra();
     
     const outputTargets = note?.productionBatch?.outputTargets || [];
@@ -95,7 +106,7 @@ const GConteoCarritosStep = ({
 
         try {
             const zpl = buildCarritoLabelZPL({
-                carritoId: carrito.carritoNum || carrito.id || '',
+                carritoId: carrito.carritoNum || (carriots.indexOf(carrito) + 1) || carrito.id || '',
                 productName: targetName || 'GENIALITY SIROPE',
                 lotNumber: note?.productionBatch?.batchNumber || '',
                 quantity: carrito.qty || 0,
@@ -107,6 +118,10 @@ const GConteoCarritosStep = ({
             const result = await printZPL(zpl);
             if (!result.ok) {
                 alert('Error Zebra: ' + (result.error || 'No se pudo imprimir'));
+            } else {
+                if (onUpdateCarrito && !carrito.printed) {
+                    onUpdateCarrito(carrito.id, { printed: true });
+                }
             }
         } catch (err) {
             alert('Error enviando a Zebra: ' + err.message);
@@ -141,8 +156,9 @@ const GConteoCarritosStep = ({
 
         setUploadingAdd(t.productId);
         try {
+            const compressedFile = await compressImage(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1280 });
             const fd = new FormData();
-            fd.append('photo', file);
+            fd.append('photo', compressedFile);
             if (note?.id) fd.append('noteId', note.id);
             fd.append('context', 'produccion_carrito');
             const res = await api.post('/assembly-notes/upload-photo', fd, {
@@ -167,8 +183,9 @@ const GConteoCarritosStep = ({
         if (!file || !pendingCarrito) return;
         setUploading(true);
         try {
+            const compressedFile = await compressImage(file, { maxSizeMB: 0.8, maxWidthOrHeight: 1280 });
             const fd = new FormData();
-            fd.append('photo', file);
+            fd.append('photo', compressedFile);
             const res = await api.post('/assembly-notes/upload-photo', fd, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
@@ -214,10 +231,17 @@ const GConteoCarritosStep = ({
             {/* Target Cards */}
             <div className="space-y-6">
                 {outputTargets.map(t => {
-                    const targetQty = t.plannedUnits || 0;
+                    let targetQty = t.plannedUnits || 0;
+                    if (targetQty === 0 && t.plannedWeightKg > 0) {
+                        const is360 = t.product?.name?.includes('360');
+                        targetQty = is360 
+                            ? Math.round((t.plannedWeightKg * 1000) / 360) 
+                            : t.plannedWeightKg; // 1000 ML ~ 1 KG
+                    }
                     const targetCarriots = carriots.filter(c => c.productId === t.productId);
-                    const deliveredQty = targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0);
-                    const missingQty = Math.max(0, targetQty - deliveredQty);
+                    const deliveredQty = targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0);                    // Redondear a máximo 2 decimales para evitar errores de precisión de punto flotante en cálculo
+                    const missingQtyRaw = Math.max(0, targetQty - deliveredQty);
+                    const missingQty = Math.round(missingQtyRaw * 100) / 100;
                     const sizeLabel = extractSize(t.product?.name);
                     const flavorLabel = getFlavorLabel(t.product?.name);
 
@@ -251,7 +275,7 @@ const GConteoCarritosStep = ({
                                 </div>
                             </div>
 
-                            {/* Input Area */}
+                            {/* Input Area — visible solo a operarios de PRODUCCION */}
                             {!isPackagingRole && (
                                 <div className="p-3 bg-slate-50 border-b border-slate-100">
                                     <div className="flex gap-2 items-center">
@@ -304,57 +328,138 @@ const GConteoCarritosStep = ({
                                                         <div className="text-orange-500"><ShoppingCart size={14} /></div>
                                                         <span className="font-black text-slate-800 text-sm">Carrito #{c.carritoNum || (i + 1)}</span>
                                                     </div>
-                                                    <div className="font-extrabold text-orange-600">{c.qty} uds</div>
+                                                    {/* Qty — inline edit for ADMIN */}
+                                                    {editingCarritoId === c.id ? (
+                                                        <div className="flex items-center gap-1">
+                                                            <input
+                                                                type="number"
+                                                                min="1"
+                                                                autoFocus
+                                                                value={editQtyMap[c.id] ?? c.qty}
+                                                                onChange={(e) => setEditQtyMap(prev => ({ ...prev, [c.id]: e.target.value }))}
+                                                                className="w-20 text-center font-bold text-base py-1 px-2 rounded-lg border-2 border-orange-300 focus:ring-2 focus:ring-orange-200 focus:outline-none"
+                                                            />
+                                                            <button
+                                                                onClick={async () => {
+                                                                    const newQty = parseFloat(editQtyMap[c.id]);
+                                                                    if (!isNaN(newQty) && newQty > 0 && onUpdateCarrito) {
+                                                                        await onUpdateCarrito(c.id, { qty: newQty });
+                                                                    }
+                                                                    setEditingCarritoId(null);
+                                                                }}
+                                                                className="p-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg active:scale-95 transition-all"
+                                                                title="Guardar"
+                                                            >
+                                                                <Check size={13} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => setEditingCarritoId(null)}
+                                                                className="p-1.5 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded-lg active:scale-95 transition-all"
+                                                                title="Cancelar"
+                                                            >
+                                                                <X size={13} />
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="font-extrabold text-orange-600">{c.qty} uds</span>
+                                                            {isAdmin && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        setEditQtyMap(prev => ({ ...prev, [c.id]: c.qty }));
+                                                                        setEditingCarritoId(c.id);
+                                                                    }}
+                                                                    className="p-1 text-slate-300 hover:text-blue-500 hover:bg-blue-50 rounded transition-all"
+                                                                    title="Editar cantidad (Admin)"
+                                                                >
+                                                                    <Pencil size={11} />
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    )}
                                                 </div>
+
                                                 <div className="flex items-center gap-4">
                                                     <div className="text-[10px] text-slate-400 font-bold uppercase flex items-center gap-1">
                                                         {new Date(c.timestamp || c.createdAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
                                                         {c.receivedAt && <span className="text-emerald-500">· Recibido</span>}
                                                     </div>
-                                                    
                                                     {isPackagingRole ? (
-                                                        !c.receivedAt && onConfirmCarrito ? (
-                                                            <button 
-                                                                onClick={() => {
-                                                                    setPendingCarrito({ id: c.id, productId: t.productId });
-                                                                    fileInputRef.current?.click();
-                                                                }} 
-                                                                disabled={uploading && pendingCarrito?.id === c.id}
-                                                                className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[10px] uppercase px-3 py-1.5 rounded active:scale-95 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
-                                                            >
-                                                                {uploading && pendingCarrito?.id === c.id ? (
-                                                                    <Loader2 size={12} className="animate-spin" />
-                                                                ) : (
-                                                                    <Camera size={12} />
-                                                                )}
-                                                                {uploading && pendingCarrito?.id === c.id ? 'Subiendo...' : 'Recibir'}
-                                                            </button>
-                                                        ) : c.receivedAt ? (
-    <div className="flex items-center gap-2">
-        {c.photoUrl && (
-            <button 
-                onClick={() => setPreviewImage(c.photoUrl)} 
-                className="w-10 h-10 rounded border border-emerald-200 overflow-hidden shadow-sm inline-block shrink-0 active:scale-95 transition-transform"
-            >
-                <img src={c.photoUrl} alt="Evidencia" className="w-full h-full object-cover" />
-            </button>
-        )}
-        {onResumeCarrito ? (
-            <button
-                onClick={() => onResumeCarrito(t.productId, c.qty, c.id)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white font-black text-[10px] uppercase rounded-md shadow-sm transition-all active:scale-95"
-            >
-                <Printer size={11} />
-                Etiquetar
-            </button>
-        ) : (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-600 font-black text-[10px] uppercase rounded-md border border-emerald-200">
-                <span className="text-emerald-500 font-extrabold text-[12px]">✓</span> 
-                RECIBIDO OK
-            </div>
-        )}
-    </div>
-) : null
+                                                        <div className="flex items-center gap-3">
+                                                            {c.productionPhotoUrl && (
+                                                                <button 
+                                                                    onClick={() => setPreviewImage(c.productionPhotoUrl)} 
+                                                                    className="w-10 h-10 rounded border border-orange-200 overflow-hidden shadow-sm inline-block shrink-0 active:scale-95 transition-transform"
+                                                                    title="Ver foto de producción"
+                                                                >
+                                                                    <img src={c.productionPhotoUrl} alt="Produccion" className="w-full h-full object-cover" />
+                                                                </button>
+                                                            )}
+                                                            {!c.receivedAt && onConfirmCarrito ? (
+                                                                <button 
+                                                                    onClick={() => {
+                                                                        setPendingCarrito({ id: c.id, productId: t.productId });
+                                                                        fileInputRef.current?.click();
+                                                                    }} 
+                                                                    disabled={uploading && pendingCarrito?.id === c.id}
+                                                                    className="bg-emerald-500 hover:bg-emerald-600 text-white font-black text-[10px] uppercase px-3 py-1.5 rounded active:scale-95 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                                                                >
+                                                                    {uploading && pendingCarrito?.id === c.id ? (
+                                                                        <Loader2 size={12} className="animate-spin" />
+                                                                    ) : (
+                                                                        <Camera size={12} />
+                                                                    )}
+                                                                    {uploading && pendingCarrito?.id === c.id ? 'Subiendo...' : 'Recibir'}
+                                                                </button>
+                                                            ) : c.receivedAt ? (
+                                                                <div className="flex items-center gap-2">
+                                                                    {c.photoUrl && (
+                                                                        <button 
+                                                                            onClick={() => setPreviewImage(c.photoUrl)} 
+                                                                            className="w-10 h-10 rounded border border-emerald-200 overflow-hidden shadow-sm inline-block shrink-0 active:scale-95 transition-transform"
+                                                                        >
+                                                                            <img src={c.photoUrl} alt="Evidencia" className="w-full h-full object-cover" />
+                                                                        </button>
+                                                                    )}
+                                                                    {c.labeledAt ? (
+                                                                        <div className="flex items-center gap-2">
+                                                                            <div className="flex flex-col gap-1 items-end">
+                                                                                <span className="bg-emerald-100 text-emerald-700 font-black text-[9px] px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1 uppercase" title="El carrito fue rotulado en empaque">
+                                                                                    <Printer size={10} /> ROTULADO OK
+                                                                                </span>
+                                                                                {!c.rpaExecutionId && (
+                                                                                    <span className="bg-slate-100 text-slate-500 font-black text-[9px] px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1 uppercase" title="No hay registro de ensamble en Siigo para este lote (posible prueba antigua o error)">
+                                                                                        <svg xmlns="http://www.w0.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg> SIN SIIGO
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                            {c.rpaExecutionId && <RpaStatusTag executionId={c.rpaExecutionId} />}
+                                                                            {onResumeCarrito && (
+                                                                                <button
+                                                                                    onClick={() => onResumeCarrito(t.productId, c.qty, c.id)}
+                                                                                    className="text-[9px] font-bold text-slate-400 hover:text-blue-500 underline ml-1 px-2 py-1"
+                                                                                >
+                                                                                    Editar
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
+                                                                    ) : onResumeCarrito ? (
+                                                                        <button
+                                                                            onClick={() => onResumeCarrito(t.productId, c.qty, c.id)}
+                                                                            className="flex items-center gap-1.5 px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white font-black text-[11px] uppercase rounded-lg shadow-sm transition-all active:scale-95 border-b-2 border-blue-700"
+                                                                        >
+                                                                            <Printer size={13} />
+                                                                            Etiquetar
+                                                                        </button>
+                                                                    ) : (
+                                                                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-600 font-black text-[10px] uppercase rounded-md border border-emerald-200">
+                                                                            <span className="text-emerald-500 font-extrabold text-[12px]">✓</span> 
+                                                                            RECIBIDO OK
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            ) : null}
+                                                        </div>
                                                     ) : (
                                                         <div className="flex items-center gap-8 pl-4 border-l border-slate-100 ml-2">
                                                             {c.productionPhotoUrl && (
@@ -367,9 +472,12 @@ const GConteoCarritosStep = ({
                                                             )}
                                                             <button 
                                                                 onClick={() => handlePrintCarrito(c, t.product?.name)} 
-                                                                className="p-3 -m-3 text-slate-400 bg-slate-50 rounded-full hover:bg-slate-200 hover:text-slate-700 active:scale-95 transition-all"
+                                                                className={`p-3 -m-3 relative rounded-full hover:bg-slate-200 active:scale-95 transition-all ${c.printed ? 'text-emerald-500 bg-emerald-50 hover:text-emerald-700' : 'text-slate-400 bg-slate-50 hover:text-slate-700'}`}
                                                             >
                                                                 <Printer size={18} />
+                                                                {c.printed && (
+                                                                    <span className="absolute -bottom-1 -right-1 bg-emerald-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] font-bold border-2 border-white">✓</span>
+                                                                )}
                                                             </button>
                                                             {!c.receivedAt && (
                                                                 <button 

@@ -13,8 +13,9 @@ exports.getLotsByZone = async (req, res) => {
     try {
         const lots = await prisma.materialLot.findMany({
             where: {
-                status: { in: ['AVAILABLE', 'LOW_STOCK'] },
-                currentQuantity: { gt: 0 }
+                // Include DEPLETED (qty=0) so operators see the result after adjustments
+                status: { in: ['AVAILABLE', 'LOW_STOCK', 'DEPLETED'] },
+                currentQuantity: { gte: 0 }
             },
             include: {
                 product: {
@@ -51,6 +52,7 @@ exports.getLotsByZone = async (req, res) => {
                 lotNumber: lot.lotNumber,
                 sku: lot.siigoProductCode,
                 currentQuantity: lot.currentQuantity,
+                status: lot.status,
                 siigoStock: lot.product?.currentStock || 0,
                 unit: lot.unit,
                 receivedAt: lot.receivedAt,

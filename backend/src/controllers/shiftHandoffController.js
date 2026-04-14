@@ -34,14 +34,30 @@ const CHECKLISTS = {
     ],
 };
 
-// ── Grace period: 15 minutes after shift change for handoff completion ───────
-const GRACE_MINUTES = 30;
+// ── Grace period: 20 minutes after shift change for handoff completion ───────
+const GRACE_MINUTES = 20;
+
+function getNow() {
+    return process.env.MOCK_TIME ? new Date(process.env.MOCK_TIME) : new Date();
+}
+
+// ── Get employee IDs with active absence on a given date ─────────────────────
+async function getAbsentEmployeeIds(date) {
+    const absences = await prisma.shiftAbsence.findMany({
+        where: {
+            startDate: { lte: date },
+            endDate: { gte: date }
+        },
+        select: { employeeId: true }
+    });
+    return new Set(absences.map(a => a.employeeId));
+}
 
 // ── Determine outgoing shift by current hour (Colombia UTC-5) ────────────────
 // With GRACE_MINUTES: e.g. at 14:10 (within grace), outgoing is still NOCHE
 // so MANANA workers can still hand off and TARDE workers are NOT blocked yet.
 function getOutgoingShift() {
-    const now = new Date();
+    const now = getNow();
     // Adjust to Colombia timezone (UTC-5)
     const colombiaOffset = -5 * 60;
     const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -81,7 +97,7 @@ function getMonday(dateInput) {
 
 // ── Get today as date-only (for @db.Date field) ──────────────────────────────
 function getTodayDate() {
-    const now = new Date();
+    const now = getNow();
     // Colombia UTC-5
     const colombiaMs = now.getTime() + (-5 * 60 * 60 * 1000) - (now.getTimezoneOffset() * 60 * 1000);
     const colombia = new Date(colombiaMs);
@@ -189,8 +205,11 @@ const createHandoff = async (req, res) => {
                     lotsProduced,
                     deliveredAt: new Date(),
                     status: 'PENDING',
-                    approvedById: null,
-                    approvedAt: null,
+                    status: 'PENDING',
+                    outgoingLeaderId: null,
+                    outgoingLeaderAt: null,
+                    incomingLeaderId: null,
+                    incomingLeaderAt: null,
                     rejectionReason: null
                 }
             });
@@ -221,61 +240,77 @@ const createHandoff = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  POST /handoff/:id/approve — Leader approves a handoff with PIN
+//  POST /handoff/:id/approve-outgoing — Leader outgoing approves a handoff
 // ═══════════════════════════════════════════════════════════════════════════════
-const approveHandoff = async (req, res) => {
+const approveOutgoing = async (req, res) => {
     try {
         const { id } = req.params;
         const { pin } = req.body;
 
-        // 1. Validate PIN
         const user = await validatePin(pin);
-        if (!user) {
-            return res.status(401).json({ error: 'PIN incorrecto' });
-        }
+        if (!user) return res.status(401).json({ error: 'PIN incorrecto' });
 
-        // 2. Check if they're a leader
         const shiftEmployee = user.shiftEmployee;
         if (!shiftEmployee || shiftEmployee.role !== 'LIDER') {
-            return res.status(403).json({ error: 'Solo un líder de turno puede aprobar entregas' });
+            return res.status(403).json({ error: 'Solo un líder puede aprobar entregas' });
         }
 
-        // 3. Verify leader is in the incoming shift this week
-        const today = getTodayDate();
-        const monday = getMonday(today);
-        const week = await prisma.shiftWeek.findUnique({ where: { weekStart: monday } });
-        if (!week) return res.status(400).json({ error: 'No hay cuadro de turnos esta semana' });
-
-        const incomingShift = getIncomingShift();
-        const leaderAssignment = await prisma.shiftAssignment.findFirst({
-            where: { weekId: week.id, employeeId: shiftEmployee.id, shift: incomingShift }
-        });
-
-        if (!leaderAssignment && user.role !== 'ADMIN') {
-            return res.status(403).json({
-                error: `Solo el líder del turno entrante (${incomingShift}) puede aprobar`
-            });
-        }
-
-        // 4. Get handoff and approve
         const handoff = await prisma.shiftHandoff.findUnique({ where: { id } });
         if (!handoff) return res.status(404).json({ error: 'Entrega no encontrada' });
-        if (handoff.status === 'APPROVED') return res.status(409).json({ error: 'Esta entrega ya fue aprobada' });
+        if (handoff.status !== 'PENDING') return res.status(409).json({ error: 'El estado actual no permite esta firma' });
 
         const updated = await prisma.shiftHandoff.update({
             where: { id },
             data: {
-                approvedById: user.id,
-                approvedAt: new Date(),
+                outgoingLeaderId: user.id,
+                outgoingLeaderAt: new Date(),
+                status: 'PENDING_INCOMING'
+            },
+            include: { deliveredBy: { select: { name: true } } }
+        });
+
+        logger.info(`Handoff outgoing approved: ${updated.deliveredBy.name} by leader ${user.name}`);
+        res.json({ success: true, handoff: updated });
+    } catch (err) {
+        logger.error('approveOutgoing error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  POST /handoff/:id/approve-incoming — Leader incoming approves a handoff
+// ═══════════════════════════════════════════════════════════════════════════════
+const approveIncoming = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { pin } = req.body;
+
+        const user = await validatePin(pin);
+        if (!user) return res.status(401).json({ error: 'PIN incorrecto' });
+
+        const shiftEmployee = user.shiftEmployee;
+        if (!shiftEmployee || shiftEmployee.role !== 'LIDER') {
+            return res.status(403).json({ error: 'Solo un líder puede aprobar entregas' });
+        }
+
+        const handoff = await prisma.shiftHandoff.findUnique({ where: { id } });
+        if (!handoff) return res.status(404).json({ error: 'Entrega no encontrada' });
+        if (handoff.status === 'APPROVED') return res.status(409).json({ error: 'Esta entrega ya fue aprobada completamente' });
+
+        const updated = await prisma.shiftHandoff.update({
+            where: { id },
+            data: {
+                incomingLeaderId: user.id,
+                incomingLeaderAt: new Date(),
                 status: 'APPROVED'
             },
             include: { deliveredBy: { select: { name: true } } }
         });
 
-        logger.info(`Handoff approved: ${updated.deliveredBy.name} by leader ${user.name}`);
+        logger.info(`Handoff incoming approved: ${updated.deliveredBy.name} by leader ${user.name}`);
         res.json({ success: true, handoff: updated });
     } catch (err) {
-        logger.error('approveHandoff error:', err);
+        logger.error('approveIncoming error:', err);
         res.status(500).json({ error: err.message });
     }
 };
@@ -306,7 +341,7 @@ const rejectHandoff = async (req, res) => {
         const updated = await prisma.shiftHandoff.update({
             where: { id },
             data: {
-                approvedById: user.id,
+                incomingLeaderId: user.id,
                 rejectionReason: reason.trim(),
                 status: 'REJECTED'
             },
@@ -366,9 +401,11 @@ const getTodayHandoffs = async (req, res) => {
         }
 
         // Get all operators assigned to the outgoing shift (only production areas)
+        // Exclude employees with active absences and LIDERs (they only sign, don't deliver)
         const productionAreas = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
+        const absentIds = await getAbsentEmployeeIds(today);
         const outgoingOperators = week.assignments
-            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area))
+            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area) && !absentIds.has(a.employeeId) && a.employee?.role !== 'LIDER')
             .map(a => ({
                 shiftEmployeeId: a.employeeId,
                 userId: a.employee?.user?.id || null,
@@ -382,7 +419,8 @@ const getTodayHandoffs = async (req, res) => {
             where: { weekId: week.id, date: today, outgoingShift },
             include: {
                 deliveredBy: { select: { id: true, name: true } },
-                approvedBy: { select: { id: true, name: true } }
+                outgoingLeader: { select: { id: true, name: true } },
+                incomingLeader: { select: { id: true, name: true } }
             },
             orderBy: { deliveredAt: 'asc' }
         });
@@ -395,7 +433,8 @@ const getTodayHandoffs = async (req, res) => {
                 status: handoff ? handoff.status : 'NOT_DELIVERED',
                 handoffId: handoff?.id || null,
                 deliveredAt: handoff?.deliveredAt || null,
-                approvedAt: handoff?.approvedAt || null,
+                outgoingLeaderAt: handoff?.outgoingLeaderAt || null,
+                incomingLeaderAt: handoff?.incomingLeaderAt || null,
                 rejectionReason: handoff?.rejectionReason || null,
             };
         });
@@ -460,8 +499,10 @@ const getBlockStatus = async (req, res) => {
         const productionAreas = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
 
         // Get outgoing shift operators (only those with a linked user account, since they need a PIN)
+        // Exclude employees with active absences and LIDERs (they only sign, don't deliver)
+        const absentIds = await getAbsentEmployeeIds(today);
         const outgoingOperators = week.assignments
-            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area) && a.employee?.user?.id != null)
+            .filter(a => a.shift === outgoingShift && productionAreas.includes(a.employee?.area) && a.employee?.user?.id != null && !absentIds.has(a.employeeId) && a.employee?.role !== 'LIDER')
             .map(a => ({
                 userId: a.employee?.user?.id,
                 name: a.employee?.name || 'Sin nombre',
@@ -478,40 +519,82 @@ const getBlockStatus = async (req, res) => {
             where: { weekId: week.id, date: today, outgoingShift }
         });
 
+        // Determine current user's area group
+        let currentUserAreaGroup = null; // 'PRODUCCION_SIROPES' or 'EMPAQUE'
+        const currentUserShiftEmp = await prisma.shiftEmployee.findFirst({
+            where: { userId: req.user?.id }
+        });
+
+        if (currentUserShiftEmp) {
+            if (['PRODUCCION', 'SIROPES'].includes(currentUserShiftEmp.area)) {
+                currentUserAreaGroup = 'PRODUCCION_SIROPES';
+            } else if (currentUserShiftEmp.area === 'EMPAQUE') {
+                currentUserAreaGroup = 'EMPAQUE';
+            }
+        }
+
         const pending = [];
         for (const op of outgoingOperators) {
+            // Determine if the operator is in the same area group as the current user
+            // If the user's group is unknown, or they are an admin, we check everything by default, 
+            // but Admin is already handled and never blocked.
+            let opGroup = null;
+            if (['PRODUCCION', 'SIROPES'].includes(op.area)) {
+                opGroup = 'PRODUCCION_SIROPES';
+            } else if (op.area === 'EMPAQUE') {
+                opGroup = 'EMPAQUE';
+            }
+
+            // Only consider operators in the same area group as the current user
+            if (currentUserAreaGroup && opGroup !== currentUserAreaGroup) continue;
+
             const handoff = handoffs.find(h => h.deliveredById === op.userId);
             if (!handoff) {
-                pending.push({ name: op.name, area: op.area, reason: 'No ha entregado su turno' });
+                pending.push({ userId: op.userId, name: op.name, area: op.area, reason: 'No ha entregado su turno', handoffId: null });
             } else if (handoff.status === 'PENDING') {
-                pending.push({ name: op.name, area: op.area, reason: 'Entregó pero falta aprobación del líder' });
+                pending.push({ userId: op.userId, name: op.name, area: op.area, reason: 'Firma pendiente: Líder Saliente', handoffId: handoff.id });
+            } else if (handoff.status === 'PENDING_INCOMING') {
+                pending.push({ userId: op.userId, name: op.name, area: op.area, reason: 'Firma pendiente: Líder Entrante', handoffId: handoff.id });
             } else if (handoff.status === 'REJECTED') {
-                pending.push({ name: op.name, area: op.area, reason: 'Entrega rechazada — debe re-entregar' });
+                pending.push({ userId: op.userId, name: op.name, area: op.area, reason: 'Entrega rechazada — debe re-entregar', handoffId: handoff.id });
             }
         }
 
         const blocked = pending.length > 0;
 
-        // Check if current user is in the incoming shift (only block incoming shift workers)
+        // Check if current user is in the incoming or outgoing shift
         const incomingShift = getIncomingShift();
-        const currentUserShiftEmp = await prisma.shiftEmployee.findFirst({
-            where: { userId: req.user?.id }
-        });
-
         let isIncomingWorker = false;
+        let isOutgoingWorker = false;
         if (currentUserShiftEmp) {
             const incomingAssignment = week.assignments.find(a =>
                 a.employeeId === currentUserShiftEmp.id && a.shift === incomingShift
             );
             isIncomingWorker = !!incomingAssignment;
+
+            const outgoingAssignment = week.assignments.find(a =>
+                a.employeeId === currentUserShiftEmp.id && a.shift === outgoingShift
+            );
+            isOutgoingWorker = !!outgoingAssignment;
         }
 
-        // Only block if user is in the incoming shift
+        // Outgoing workers: blocked until all operators have delivered AND outgoing leader has signed
+        // (i.e., no more NOT_DELIVERED, PENDING, or REJECTED statuses — only PENDING_INCOMING or APPROVED)
+        const outgoingPending = pending.filter(p =>
+            p.reason === 'No ha entregado su turno' ||
+            p.reason === 'Firma pendiente: Líder Saliente' ||
+            p.reason.startsWith('Entrega rechazada')
+        );
+        const outgoingBlocked = outgoingPending.length > 0;
+
+        // Block if user is in incoming shift (full block) OR outgoing shift (partial block until leader signs)
         res.json({
-            blocked: blocked && isIncomingWorker,
+            blocked: (blocked && isIncomingWorker) || (outgoingBlocked && isOutgoingWorker),
             pending,
             outgoingShift,
-            incomingShift
+            incomingShift,
+            isOutgoingWorker,
+            isIncomingWorker
         });
     } catch (err) {
         logger.error('getBlockStatus error:', err);
@@ -528,7 +611,8 @@ const getHandoffDetail = async (req, res) => {
             where: { id: req.params.id },
             include: {
                 deliveredBy: { select: { id: true, name: true } },
-                approvedBy: { select: { id: true, name: true } }
+                outgoingLeader: { select: { id: true, name: true } },
+                incomingLeader: { select: { id: true, name: true } }
             }
         });
         if (!handoff) return res.status(404).json({ error: 'No encontrada' });
@@ -566,13 +650,74 @@ const verifyPin = async (req, res) => {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+//  GET /handoff/alarm-status — Checks if current user should receive alarms
+// ═══════════════════════════════════════════════════════════════════════════════
+const getAlarmStatus = async (req, res) => {
+    try {
+        if (!req.user?.id) return res.json({ shouldAlert: false });
+
+        const today = getTodayDate();
+        const outgoingShift = getOutgoingShift(); // El turno que ESTÁ SALIENDO o A PUNTO DE SALIR
+        
+        // No alertar los domingos, ni el lunes en la madrugada
+        const isSunday = today.getDay() === 0;
+        const isMondayEarlyMorning = today.getDay() === 1 && outgoingShift === 'TARDE';
+        if (isSunday || isMondayEarlyMorning) {
+            return res.json({ shouldAlert: false });
+        }
+
+        const monday = getMonday(today);
+        const shiftEmp = await prisma.shiftEmployee.findFirst({
+            where: { userId: req.user.id }
+        });
+
+        if (!shiftEmp) return res.json({ shouldAlert: false });
+
+        const week = await prisma.shiftWeek.findUnique({
+            where: { weekStart: monday },
+            include: { assignments: { where: { employeeId: shiftEmp.id } } }
+        });
+
+        if (!week) return res.json({ shouldAlert: false });
+
+        const assignment = week.assignments.find(a => a.shift === outgoingShift);
+        if (!assignment) return res.json({ shouldAlert: false }); // User is not in the outgoing shift
+
+        let shouldAlert = false;
+        
+        // Rules for alerting:
+        // 1. Produccion/Siropes: Only the LIDER.
+        // 2. Empaque: Any operator in Empaque.
+        if (['PRODUCCION', 'SIROPES'].includes(shiftEmp.area)) {
+            if (shiftEmp.role === 'LIDER') shouldAlert = true;
+        } else if (shiftEmp.area === 'EMPAQUE') {
+            shouldAlert = true;
+        }
+
+        res.json({
+            shouldAlert,
+            outgoingShift,
+            area: shiftEmp.area,
+            role: shiftEmp.role,
+            userName: req.user.name
+        });
+
+    } catch (err) {
+        logger.error('getAlarmStatus error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 module.exports = {
     getChecklists,
     createHandoff,
-    approveHandoff,
+    approveOutgoing,
+    approveIncoming,
     rejectHandoff,
     getTodayHandoffs,
     getBlockStatus,
     getHandoffDetail,
-    verifyPin
+    verifyPin,
+    getAlarmStatus
 };

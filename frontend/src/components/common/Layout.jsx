@@ -6,6 +6,8 @@ import GlobalTimerAlert from './GlobalTimerAlert';
 import PinLockScreen from './PinLockScreen';
 import ShiftBlockScreen from '../ShiftBlockScreen';
 import ShiftEndAlert from '../ShiftEndAlert';
+import ShiftAlarm from '../ShiftAlarm';
+import PurchaseOrderAlert from './PurchaseOrderAlert';
 import { Bell, LogOut, Printer, Wifi, LockKeyhole } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useZebra } from '../../context/ZebraContext';
@@ -84,16 +86,18 @@ const Layout = () => {
     return (
         <div className={`flex min-h-screen bg-neutral-50 text-neutral-900 font-sans ${isTabletMode ? 'layout--tablet' : ''}`}>
             <GlobalTimerAlert />
+            <ShiftAlarm />
+            <PurchaseOrderAlert />
             {!isTabletMode && !isDistributorWelcome && <Sidebar />}
 
             <main className="flex-1 flex flex-col min-w-0">
-                <header className={`layout__header bg-white border-b border-neutral-200 ${isTabletMode ? 'h-12' : 'h-16'} flex items-center justify-between px-6 sticky top-0 z-30`}>
-                    <h2 className={`${isTabletMode ? 'text-base' : 'text-lg'} font-semibold text-neutral-800`}>{getTitle()}</h2>
+                <header className={`layout__header bg-white border-b border-neutral-200 ${isTabletMode ? 'h-12' : 'h-16'} flex items-center justify-between px-3 sm:px-6 sticky top-0 z-30`}>
+                    <h2 className={`${isTabletMode ? 'text-base' : 'text-lg'} font-semibold text-neutral-800 truncate mr-2`}>{getTitle()}</h2>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
                         {/* Zebra printer status — shown to operational roles */}
                         {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA', 'SUPERADMIN'].includes(user?.role) && (
-                            <div className="relative" ref={zebraRef}>
+                            <div className="relative hidden sm:block" ref={zebraRef}>
                                 <button
                                     onClick={() => { setInputRelay(relayIp || ''); setInputForce(forceIp || ''); setShowZebraConfig(v => !v); }}
                                     title="Estado impresora Zebra — clic para configurar"
@@ -134,7 +138,7 @@ const Layout = () => {
                                                     type="text"
                                                     value={inputForce}
                                                     onChange={e => setInputForce(e.target.value)}
-                                                    placeholder="192.168.68.113"
+                                                    placeholder="192.168.0.126"
                                                     className="flex-1 border border-amber-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
                                                 />
                                                 <button onClick={saveForceIp} className="bg-amber-500 text-white text-xs rounded-lg px-3 py-1.5 font-semibold hover:bg-amber-600">
@@ -151,7 +155,7 @@ const Layout = () => {
                                                 type="text"
                                                 value={inputRelay}
                                                 onChange={e => setInputRelay(e.target.value)}
-                                                placeholder="192.168.68.x"
+                                                placeholder="192.168.0.x"
                                                 className="flex-1 border border-neutral-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary-400"
                                             />
                                             <button onClick={saveRelayIp} className="bg-primary-600 text-white text-xs rounded-lg px-3 py-1.5 font-semibold hover:bg-primary-700">
@@ -170,12 +174,12 @@ const Layout = () => {
 
                         {!isTabletMode && <div className="h-8 w-px bg-neutral-200 mx-1"></div>}
 
-                        <div className="flex items-center gap-3">
-                            <div className="text-right">
-                                <p className="text-sm font-medium text-neutral-900">{user?.name}</p>
+                        <div className="flex items-center gap-2 sm:gap-3">
+                            <div className="text-right hidden sm:block">
+                                <p className="text-sm font-medium text-neutral-900 truncate max-w-[150px]">{user?.name}</p>
                                 <p className="text-xs text-neutral-500">{user?.role}</p>
                             </div>
-                            <div className="w-9 h-9 bg-primary-100 text-primary-700 rounded-full flex items-center justify-center font-bold">
+                            <div className="w-8 h-8 sm:w-9 sm:h-9 bg-primary-100 text-primary-700 rounded-full flex items-center justify-center font-bold flex-shrink-0">
                                 {user?.name?.substring(0, 2).toUpperCase()}
                             </div>
                         </div>
@@ -186,7 +190,7 @@ const Layout = () => {
                         {user?.role !== 'DISTRIBUIDOR' && (
                             <button
                                 onClick={lockScreen}
-                                className="p-2 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                className="p-1.5 sm:p-2 text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors flex-shrink-0"
                                 title="Bloquear pantalla (PIN)"
                             >
                                 <LockKeyhole size={18} />
@@ -195,11 +199,11 @@ const Layout = () => {
 
                         <button
                             onClick={logout}
-                            className="p-2 text-neutral-500 hover:text-red-600 hover:bg-neutral-100 rounded-lg transition-colors flex items-center gap-2"
+                            className="p-1.5 sm:p-2 text-neutral-500 hover:text-red-600 hover:bg-neutral-100 rounded-lg transition-colors flex items-center gap-1 sm:gap-2 flex-shrink-0"
                             title="Cerrar Sesión"
                         >
                             <LogOut size={20} />
-                            <span className="text-xs font-semibold">Salir</span>
+                            <span className="text-xs font-semibold hidden sm:inline">Salir</span>
                         </button>
                     </div>
                 </header>

@@ -1,3 +1,19 @@
+/* 
+=============================================================================
+⛔ WARNING ⛔ DEPRECATED FILE ⛔ NO USAR ⛔
+=============================================================================
+Este componente es un archivo huérfano (ORPHANED). 
+NO se está renderizando en la aplicación en vivo para la URL /production/schedule.
+
+La aplicación maestro que maneja ACTULMENTE ambas líneas productivas
+(Liquipops Y Geniality) es:
+👉 /var/www/gestionpbi/frontend/src/pages/ProductionScheduler.jsx 👈
+
+Todos los cambios, arreglos del ratio de ingredientes, o ajustes de GUI
+(Como la lógica fraccional "Marmita Grande", scaling)
+DEBEN hacerse en ProductionScheduler.jsx. 
+=============================================================================
+*/
 import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import { format, parse, startOfWeek, getDay } from 'date-fns';
@@ -429,8 +445,12 @@ const GenialityScheduler = ({ readOnly = false }) => {
             // GENIALITY: Single batch with N lots (large kettle)
             // ═══════════════════════════════════════════════════════
             if (activeLine === 'geniality') {
-                const totalWeight = numBatches * BATCH_SIZE; // e.g. 3 lots × 100kg = 300kg
-                const batchDuration = DURATION + (numBatches - 1) * 40;
+                // Use actual totalSyrupKg (updated when user edits units) instead of numBatches × BATCH_SIZE
+                // This prevents the auto-suggestion weight (e.g. 500kg) from overwriting what the user really entered (e.g. 50kg)
+                const actualSyrupKg = Math.round(modalData.totalSyrupKg || modalData.totalPlannedKg || numBatches * BATCH_SIZE);
+                const totalWeight = actualSyrupKg > 0 ? actualSyrupKg : numBatches * BATCH_SIZE;
+                const actualLots = Math.max(1, Math.ceil(totalWeight / BATCH_SIZE));
+                const batchDuration = DURATION + (actualLots - 1) * 40;
                 let currentStartDate = new Date(modalData.scheduledStart);
                 let currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
 
@@ -459,7 +479,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
 
                 setEvents(prev => [...prev, {
                     id: res.data.id,
-                    title: `${modalData.flavor} (${totalWeight}kg · ${numBatches} ${numBatches === 1 ? 'lote' : 'lotes'})`,
+                    title: `${modalData.flavor} (${totalWeight}kg · ${actualLots} ${actualLots === 1 ? 'lote' : 'lotes'})`,
                     start: new Date(currentStartDate),
                     end: new Date(currentEndDate),
                     flavor: modalData.flavor,
@@ -1224,57 +1244,46 @@ const GenialityScheduler = ({ readOnly = false }) => {
                                                             </span>
                                                             <input
                                                                 type="number"
-                                                                min="1"
-                                                                max={activeLine === 'geniality' ? 7 : 5}
+                                                                min={activeLine === 'geniality' ? '0.1' : '1'}
+                                                                max={activeLine === 'geniality' ? '7' : '5'}
+                                                                step={activeLine === 'geniality' ? '0.1' : '1'}
                                                                 className="w-16 p-1 text-center text-sm border border-blue-300 rounded text-blue-700 font-bold focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                                value={modalData.targetBatchCount || getProjectedBatches()}
+                                                                value={activeLine === 'geniality'
+                                                                    ? (() => { const v = (modalData.totalSyrupKg || 0) / 100; return Number.isInteger(v) ? v : parseFloat(v.toFixed(2)); })()
+                                                                    : (modalData.targetBatchCount || getProjectedBatches())}
                                                                 onChange={(e) => {
-                                                                    const maxVal = activeLine === 'geniality' ? 7 : 5;
-                                                                    const newVal = Math.min(maxVal, Math.max(1, parseInt(e.target.value) || 1));
-
+                                                                    const newVal = activeLine === 'geniality'
+                                                                        ? Math.min(7, Math.max(0.1, parseFloat(e.target.value) || 0.1))
+                                                                        : Math.min(5, Math.max(1, parseInt(e.target.value) || 1));
                                                                     setModalData(prev => {
-                                                                        const currentVal = prev.targetBatchCount || getProjectedBatches() || 1;
-                                                                        if (currentVal === 0) return { ...prev, targetBatchCount: newVal };
-
-                                                                        const ratio = newVal / currentVal;
-
-                                                                        const updatedMix = prev.mix.map(m => {
-                                                                            const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
-                                                                            const newUnits = Math.round((m.plannedUnits || 0) * ratio);
-                                                                            return {
-                                                                                ...m,
-                                                                                plannedUnits: newUnits,
-                                                                                plannedWeightKg: newUnits * factor
-                                                                            };
-                                                                        });
-
-                                                                        const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                        const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-                                                                        const newTotalSyrupKg = newVal * BATCH_SIZE;
-
-                                                                        // For Geniality: update duration based on lots
-                                                                        let newEnd = prev.scheduledEnd;
                                                                         if (activeLine === 'geniality') {
-                                                                            const baseDuration = 160;
-                                                                            const totalDuration = baseDuration + (newVal - 1) * 40;
-                                                                            newEnd = new Date(new Date(prev.scheduledStart).getTime() + totalDuration * 60000);
+                                                                            const newTotalSyrupKg = Math.round(newVal * 100);
+                                                                            const ratio = newTotalSyrupKg / (prev.totalSyrupKg || 1);
+                                                                            const updatedMix = prev.mix.map(m => {
+                                                                                const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
+                                                                                const newUnits = Math.round((m.plannedUnits || 0) * ratio);
+                                                                                return { ...m, plannedUnits: newUnits, plannedWeightKg: newUnits * factor };
+                                                                            });
+                                                                            const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
+                                                                            return { ...prev, targetBatchCount: newVal, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: newTotalSyrupKg, baseWeight: newTotalSyrupKg };
+                                                                        } else {
+                                                                            const currentVal = prev.targetBatchCount || getProjectedBatches() || 1;
+                                                                            const ratio = newVal / (currentVal || 1);
+                                                                            const updatedMix = prev.mix.map(m => {
+                                                                                const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
+                                                                                const newUnits = Math.round((m.plannedUnits || 0) * ratio);
+                                                                                return { ...m, plannedUnits: newUnits, plannedWeightKg: newUnits * factor };
+                                                                            });
+                                                                            const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
+                                                                            const newTotalSyrupKg = newTotalPlannedKg * (config.syrupRatio || 0.70);
+                                                                            return { ...prev, targetBatchCount: newVal, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: Math.round(newTotalSyrupKg), baseWeight: Math.round(newTotalSyrupKg) };
                                                                         }
-
-                                                                        return {
-                                                                            ...prev,
-                                                                            targetBatchCount: newVal,
-                                                                            mix: updatedMix,
-                                                                            totalPlannedKg: newTotalPlannedKg,
-                                                                            totalSyrupKg: newTotalSyrupKg,
-                                                                            baseWeight: newTotalSyrupKg,
-                                                                            scheduledEnd: newEnd
-                                                                        };
                                                                     });
                                                                 }}
                                                             />
-                                                            {activeLine === 'geniality' && (
-                                                                <span className="text-[10px] text-blue-400 font-semibold">máx 7</span>
-                                                            )}
+                                                            <span className="text-[10px] text-blue-400 font-semibold">
+                                                                {activeLine === 'geniality' ? 'máx 7' : 'máx 5'}
+                                                            </span>
                                                         </div>
                                                     )}
                                                     {/* Geniality: Capacity bar */}
@@ -1317,9 +1326,13 @@ const GenialityScheduler = ({ readOnly = false }) => {
                                                             const total = modalData.totalSyrupKg || modalData.totalPlannedKg || 0;
 
                                                             if (activeLine === 'geniality') {
-                                                                const lots = modalData.targetBatchCount || 1;
+                                                                const BATCH_SIZE_G = 100;
+                                                                // Use actual lots derived from real weight, not the auto-suggested targetBatchCount
+                                                                const realLots = total / BATCH_SIZE_G;
+                                                                // Show fractional: 50kg = 0.5 lotes, 100kg = 1 lote, 250kg = 2.5 lotes
+                                                                const lotsDisplay = Number.isInteger(realLots) ? realLots : realLots.toFixed(1);
                                                                 return total <= 700
-                                                                    ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">{lots} {lots === 1 ? 'lote' : 'lotes'} · {Math.round(total)}kg</span></>
+                                                                    ? <><CheckCircle className="w-5 h-5 text-green-600" /><span className="text-green-700 font-bold">{lotsDisplay} {realLots === 1 ? 'lote' : 'lotes'} · {Math.round(total)}kg</span></>
                                                                     : <><AlertTriangle className="w-5 h-5 text-red-600" /><span className="text-red-700 font-bold">Excede 700kg</span></>;
                                                             }
 
@@ -1398,8 +1411,8 @@ const GenialityScheduler = ({ readOnly = false }) => {
 
                                                                                 // Recalculate Totals
                                                                                 const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                                // Jarabe = peso producto × syrupRatio (ej: 183kg × 0.71 = 130kg)
-                                                                                const ratio = config.syrupRatio || 0.70;
+                                                                                // Geniality syrupRatio = 1.0 (no growth/loss). Liquipops uses config syrupRatio (~0.70)
+                                                                                const ratio = activeLine === 'geniality' ? 1.0 : (config.syrupRatio || 0.70);
                                                                                 const newTotalSyrupKg = newTotalPlannedKg * ratio;
 
                                                                                 return {

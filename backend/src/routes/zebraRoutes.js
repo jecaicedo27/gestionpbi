@@ -17,7 +17,7 @@ const ZEBRA_PORT = 9100;
 // --- Configurable printer IP ---
 // Can be overridden per-request via body { printerIp: '...' }
 // Falls back to env variable ZEBRA_PRINTER_IP, then to hardcoded default.
-const DEFAULT_PRINTER_IP = process.env.ZEBRA_PRINTER_IP || '192.168.68.112';
+const DEFAULT_PRINTER_IP = process.env.ZEBRA_PRINTER_IP || '192.168.0.126';
 
 // ── In-memory print job queue (survives process restarts poorly, but fine for labels) ──
 const printJobQueue = [];
@@ -88,7 +88,7 @@ function sendZPL(ip, zpl, timeoutMs = 8000) {
 /**
  * GET /api/zebra/status
  * Checks if the Zebra printer is reachable.
- * Query: ?ip=192.168.68.112 (optional, overrides default)
+ * Query: ?ip=192.168.0.126 (optional, overrides default)
  */
 router.get('/status', auth, async (req, res) => {
     const printerIp = req.query.ip || DEFAULT_PRINTER_IP;

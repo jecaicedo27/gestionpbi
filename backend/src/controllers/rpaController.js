@@ -8,7 +8,7 @@ const browserManager = require('../services/siigoBrowserManager');
  */
 const createSiigoAssemblyNote = async (req, res) => {
     try {
-        const { productName, productSku, quantity, assemblyType, observations, assemblyNoteId } = req.body;
+        const { productName, productSku, quantity, assemblyType, observations, assemblyNoteId, allowMultiple } = req.body;
 
         if (!productName || !quantity) {
             return res.status(400).json({
@@ -18,7 +18,7 @@ const createSiigoAssemblyNote = async (req, res) => {
         }
 
         // ── Idempotency guard: reject if same assemblyNoteId already running or done ──
-        if (assemblyNoteId) {
+        if (assemblyNoteId && !allowMultiple) {
             const existing = await prisma.rpaExecution.findFirst({
                 where: {
                     assemblyNoteId,

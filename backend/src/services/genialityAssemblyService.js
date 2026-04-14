@@ -146,7 +146,7 @@ class AssemblyService {
 
                         // Check if the sub-template product contains a flavor that differs from batch flavor
                         // Known flavor keywords to detect mismatch
-                        const KNOWN_FLAVORS = ['MARACUYA', 'FRESA', 'BLUEBERRY', 'MANGO BICHE', 'CEREZA', 'MANZANA VERDE', 'LYCHE', 'GRANADINA', 'CURAZAO', 'TAMARINDO', 'CHICLE', 'CHAMOY', 'ICE PINK', 'MORA', 'DURAZNO'];
+                        const KNOWN_FLAVORS = ['MARACUYA', 'FRESA', 'BLUEBERRY', 'MANGO BICHE', 'CEREZA', 'MANZANA VERDE', 'LYCHE', 'GRANADINA', 'CURAZAO', 'TAMARINDO', 'CHICLE', 'CHAMOY', 'ICE PINK', 'MORA', 'DURAZNO', 'ESCARCHADOR'];
                         const detectedFlavor = KNOWN_FLAVORS.find(f => subProductName.includes(f));
 
                         if (detectedFlavor && detectedFlavor !== batchFlavorUpper && !subProductName.includes(batchFlavorUpper)) {
@@ -220,7 +220,7 @@ class AssemblyService {
             // Runs BEFORE the transaction so any missing product aborts generation cleanly.
             if (batch.flavor) {
                 const batchFlavorUp = batch.flavor.toUpperCase();
-                const knownFlavorsCheck = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA'];
+                const knownFlavorsCheck = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA', 'MORA', 'DURAZNO', 'ESCARCHADOR'];
                 const flavorKeywordsCheck = ['ESFERAS', 'PROTECCION', 'ETIQUETA'];
                 const missingProducts = [];
 
@@ -283,6 +283,12 @@ class AssemblyService {
 
             // 2. Wrap in a transaction
             let globalStageOrder = 0;
+            
+            // For Geniality, templates are always scaled to a 100kg standard base.
+            // When baseWeight is specified (e.g. 75kg), we scale all raw materials.
+            const baseStandardKg = 100.0;
+            const scaleFactor = (batch.baseWeight && batch.baseWeight > 0) ? (batch.baseWeight / baseStandardKg) : 1.0;
+
             await prisma.$transaction(async (tx) => {
                 for (const stage of flatStages) {
                     globalStageOrder++;
@@ -307,7 +313,7 @@ class AssemblyService {
                             orderBy: { version: 'desc' }
                         });
                         if (stageFormula) {
-                            targetQuantity = stageFormula.baseQuantity || 1;
+                            targetQuantity = (stageFormula.baseQuantity || 1) * scaleFactor;
                             targetUnit = stageFormula.baseUnit || 'gramo';
                         }
                     }
@@ -319,7 +325,7 @@ class AssemblyService {
                             orderBy: { version: 'desc' }
                         });
                         if (formula) {
-                            targetQuantity = formula.baseQuantity || 1;
+                            targetQuantity = (formula.baseQuantity || 1) * scaleFactor;
                             targetUnit = formula.baseUnit || 'gramo';
                         }
                     }
@@ -363,10 +369,10 @@ class AssemblyService {
                             }
                         }
                         if (formacionFormula) {
-                            targetQuantity = formacionFormula.baseQuantity || 150000;
+                            targetQuantity = (formacionFormula.baseQuantity || 150000) * scaleFactor;
                             targetUnit = formacionFormula.baseUnit || 'g';
                         } else {
-                            targetQuantity = 150000;
+                            targetQuantity = 150000 * scaleFactor;
                             targetUnit = 'g';
                             console.warn('[generateNotes] ⚠️ No ESFERAS formula found — using default 150,000g for FORMACION');
                         }
@@ -440,16 +446,34 @@ class AssemblyService {
                         }
                     }
 
+                    // ── Resolve productId to REAL flavor product for EMPAQUE/ENSAMBLE ──
+                    // The template uses a generic product (e.g. ESCARCHADOR), but the actual
+                    // note must point to the real flavor product from outputTargets (e.g. SABOR A CEREZA).
+                    let finalProductId = resolvedProductId;
+                    let finalStageName = stage.stageName;
+                    if ((isEmpaque || isEnsamble) && noteProcessParams.product_id) {
+                        finalProductId = noteProcessParams.product_id;
+                        // Update stageName to show real product name instead of ESCARCHADOR
+                        const matchedOT = (batch.outputTargets || []).find(t => t.productId === noteProcessParams.product_id);
+                        if (matchedOT?.product?.name && finalStageName) {
+                            // Replace generic product name with flavor-specific one
+                            const genericName = stage.outputProduct?.name || '';
+                            if (genericName) {
+                                finalStageName = finalStageName.replace(genericName, matchedOT.product.name);
+                            }
+                        }
+                    }
+
                     // Create Assembly Note
                     const note = await tx.assemblyNote.create({
                         data: {
                             noteNumber,
-                            productId: resolvedProductId,
+                            productId: finalProductId,
                             productionBatchId: batch.id,
                             templateId: template.id,
                             stageId: stage._fromSubTemplate ? null : stage.id,
                             stageOrder: globalStageOrder,
-                            stageName: stage.stageName,
+                            stageName: finalStageName,
                             targetQuantity,
                             unit: targetUnit,
                             status: noteStatus,
@@ -472,6 +496,9 @@ class AssemblyService {
                                 // Check if this is a packaging item (1:1 with containers)
                                 const isPackaging = /(TARRO|TAPA|FOIL|ETIQUETA|SELLO|LINER|ENVASE)/i.test(input.product?.name || '');
                                 plannedQuantity = isPackaging ? targetQuantity : input.quantityPerUnit * targetQuantity;
+                            } else {
+                                // Apply the fractional scaling factor for Base/Jarabe/Esferificacion inputs
+                                plannedQuantity = input.quantityPerUnit * scaleFactor;
                             }
 
                             // ── Dynamic flavor resolution for flavor-specific components ──
@@ -505,7 +532,7 @@ class AssemblyService {
                                     // Strategy 2: For complex names (ETIQUETA LIQUIPOPS SABOR A CAFE X 350 GR),
                                     // replace the old flavor with the batch flavor using known flavors list
                                     if (!flavorProduct) {
-                                        const knownFlavors = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA'];
+                                        const knownFlavors = ['MANGO BICHE CON SAL', 'MANGO BICHE', 'ICE PINK', 'FRESA', 'CHAMOY', 'CAFE', 'CAFÉ', 'LYCHE', 'LYCHEE', 'CHICLE', 'MARACUYA', 'MORA', 'DURAZNO', 'ESCARCHADOR'];
                                         let searchName = inputName;
                                         for (const flv of knownFlavors) {
                                             if (stripAccents(inputName).includes(stripAccents(flv))) {

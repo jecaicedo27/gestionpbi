@@ -35,6 +35,7 @@ const GInputStep = ({
     const [availableLots, setAvailableLots] = useState([]);
     const [lotsLoading, setLotsLoading] = useState(false);
     const [useManualLot, setUseManualLot] = useState(false);
+    const [lotRefetchKey, setLotRefetchKey] = useState(0);
 
     const currentSelections = lotSelections[item.id] || [];
     const totalCovered = currentSelections.reduce((sum, s) => sum + (s.qty || 0), 0);
@@ -63,7 +64,7 @@ const GInputStep = ({
             .catch(() => { })
             .finally(() => { if (!cancelled) setLotsLoading(false); });
         return () => { cancelled = true; };
-    }, [componentId]);
+    }, [componentId, lotRefetchKey]);
 
     const fmtQty = (q, unit) => {
         const weightUnits = ['g', 'gramo', 'gramos', 'kg'];
@@ -205,7 +206,16 @@ const GInputStep = ({
 
                     {/* Selección de Lote */}
                     <div className="w-full max-w-lg">
-                        <label className="text-xs font-bold text-slate-500 uppercase mb-1.5 block">Nº Lote del Insumo</label>
+                        <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-xs font-bold text-slate-500 uppercase">Nº Lote del Insumo</label>
+                            <button
+                                onClick={() => setLotRefetchKey(k => k + 1)}
+                                disabled={lotsLoading}
+                                className="flex items-center gap-1 text-[10px] font-bold text-teal-500 hover:text-teal-700 disabled:opacity-40 transition-all"
+                            >
+                                {lotsLoading ? '⏳' : '🔄'} Recargar lotes
+                            </button>
+                        </div>
                         {currentSelections.length > 0 && (
                             <div className="space-y-2 mb-3">
                                 {currentSelections.map(sel => (

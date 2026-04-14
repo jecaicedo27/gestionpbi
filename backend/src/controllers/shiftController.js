@@ -207,12 +207,43 @@ const getWeekSchedule = async (req, res) => {
             include: { employee: { select: { id: true, name: true } } }
         });
 
-        // Build a set of absent employee IDs for this week
-        const absentEmployeeIds = new Set(weekAbsences.map(a => a.employeeId));
-        const absentMap = {}; // employeeId → absence reason
-        weekAbsences.forEach(a => { absentMap[a.employeeId] = a.reason; });
+        const parseToUTC = (d) => {
+            const dStr = typeof d === 'string' ? d : d.toISOString();
+            const [y, m, day] = (dStr.split('T')[0]).split('-').map(Number);
+            return Date.UTC(y, m - 1, day);
+        };
 
-        res.json({ week, shifts: SHIFTS, weekAbsences, absentEmployeeIds: [...absentEmployeeIds], absentMap });
+        const mondayUTC = parseToUTC(monday);
+        const sundayUTC = parseToUTC(sunday);
+
+        // Build a set of absent employee IDs for this week
+        const absentEmployeeIds = new Set();
+        const absentMap = {}; // employeeId → absence reason
+        const partialAbsentMap = {}; // employeeId → absence details for <= 3 days
+
+        weekAbsences.forEach(a => { 
+            absentMap[a.employeeId] = a.reason; 
+            
+            const aStartUTC = parseToUTC(a.startDate.toISOString ? a.startDate.toISOString() : a.startDate.toString());
+            const aEndUTC = parseToUTC(a.endDate.toISOString ? a.endDate.toISOString() : a.endDate.toString());
+            
+            const overlapStart = Math.max(mondayUTC, aStartUTC);
+            const overlapEnd = Math.min(sundayUTC, aEndUTC);
+            const overlapDays = Math.max(0, Math.floor((overlapEnd - overlapStart) / 86400000) + 1);
+
+            if (overlapDays >= 4) {
+                absentEmployeeIds.add(a.employeeId);
+            } else {
+                partialAbsentMap[a.employeeId] = {
+                    reason: a.reason,
+                    days: overlapDays,
+                    startDate: a.startDate,
+                    endDate: a.endDate
+                };
+            }
+        });
+
+        res.json({ week, shifts: SHIFTS, weekAbsences, absentEmployeeIds: [...absentEmployeeIds], absentMap, partialAbsentMap });
     } catch (err) {
         logger.error('getWeekSchedule error:', err);
         res.status(500).json({ error: err.message });

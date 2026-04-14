@@ -1,9 +1,13 @@
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
-prisma.assemblyNote.findMany({
-  where: { 
-    productionBatch: { batchNumber: 'MARACUYA-260410-1623' }
-  },
-  orderBy: { stageOrder: 'asc' },
-  select: { stageOrder: true, stageName: true, processType: { select: { code: true } } }
-}).then(res => console.log('YESTERDAY BATCH:', JSON.stringify(res, null, 2))).catch(console.error).finally(() => prisma.$disconnect());
+const p = new PrismaClient();
+(async () => {
+  const batch = await p.productionBatch.findFirst({ where: { batchNumber: 'CEREZA-260413-1339' } });
+  if (!batch) return process.exit(0);
+  const notes = await p.assemblyNote.findMany({ where: { productionBatchId: batch.id }, include: { processType: true } });
+  
+  notes.forEach(n => {
+    console.log(n.id, n.processType?.code, n.stageName);
+  });
+  
+  process.exit(0);
+})();

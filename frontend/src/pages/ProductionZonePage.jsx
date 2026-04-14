@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Input, Button, message, Modal, InputNumber, Select, Tag, Empty, Spin, Typography, Card } from 'antd';
 import { Search, ArrowRightCircle, ArrowLeftCircle, Package, Warehouse, RefreshCw, Clock, Camera, X, ChevronDown, ChevronUp, QrCode } from 'lucide-react';
 import api from '../services/api';
+import { parseScanInput } from '../services/scannerParser';
 import { useAuth } from '../context/AuthContext';
 import './ProductionZonePage.css';
 
@@ -78,44 +79,81 @@ const ProductionZonePage = () => {
     // ── Scanner Input Handling ──
     const handleScannerInput = async (value) => {
         setScannerInput(value);
-        if (value.includes('{') && value.includes('}')) {
-            try {
-                // Ensure we extract only the JSON part in case scanner has weird prefix/suffix
-                const startIndex = value.indexOf('{');
-                const endIndex = value.lastIndexOf('}') + 1;
-                const jsonStr = value.slice(startIndex, endIndex);
-                
-                const qrData = JSON.parse(jsonStr);
-                if (qrData.sku && qrData.lot && qrData.qty) {
-                    message.success(`Rótulo Detectado: ${qrData.sku} Lote ${qrData.lot}`);
-                    setSearching(true);
-                    
-                    const res = await api.get('/zone-transfers/search-products', { params: { q: qrData.sku } });
-                    const foundProduct = res.data?.find(p => p.sku === qrData.sku);
-                    
-                    if (foundProduct) {
-                        setSelectedProduct(foundProduct);
-                        setTransferQty(qrData.qty);
-                        setSearchQuery('');
-                        
-                        setLotsLoading(true);
-                        const lotsRes = await api.get(`/zone-transfers/available-lots/${foundProduct.id}`);
-                        setAvailableLots(lotsRes.data || []);
-                        
-                        const matchedLot = lotsRes.data?.find(l => l.lotNumber === qrData.lot);
-                        if (matchedLot) {
-                            setSelectedLot(matchedLot.id);
-                        } else {
-                            message.warning(`El lote ${qrData.lot} no se encontró con saldo en Bodega Ppal.`);
-                        }
-                    } else {
-                        message.error('Producto no encontrado para el SKU: ' + qrData.sku);
-                    }
-                }
-            } catch (e) {
-                console.error('Invalid QR JSON parsed', e);
+
+        // Detect end of scan: pipe-delimited strings are "complete" patterns
+        // JSON scans end with }, pipe scans we detect by having key fields
+        const hasJson = value.includes('{') && value.includes('}');
+        const hasPipe = (value.includes('R:') || value.includes('SKU:') || value.includes('LOT:')) && value.includes('|');
+
+        if (!hasJson && !hasPipe) return;
+
+        // Parse with centralized scanner parser
+        const scan = parseScanInput(value);
+        if (scan.type === 'unknown') return;
+
+        setScannerInput(''); // clear immediately after detection
+
+        const searchKey = scan.sku || scan.barcode;
+        if (!searchKey) {
+            message.warning('QR no contiene SKU ni código de barras');
+            return;
+        }
+
+        try {
+            setSearching(true);
+            message.loading({ content: `Buscando ${searchKey}...`, key: 'qr-search', duration: 5 });
+
+            // Search by SKU
+            const res = await api.get('/zone-transfers/search-products', { params: { q: searchKey } });
+            const foundProduct = res.data?.find(p =>
+                p.sku?.toUpperCase() === searchKey.toUpperCase()
+            ) || res.data?.[0]; // fallback to first match
+
+            if (!foundProduct) {
+                message.error({ content: `Producto no encontrado: ${searchKey}`, key: 'qr-search' });
+                setSearching(false);
+                return;
             }
-            setScannerInput(''); // clear after parse attempt
+
+            // Auto-fill product
+            setSelectedProduct(foundProduct);
+            setSearchQuery('');
+
+            // Auto-fill quantity from QR (if present)
+            if (scan.unitsPerBox && scan.unitsPerBox > 0) {
+                setTransferQty(scan.unitsPerBox);
+            }
+
+            // Load available lots
+            setLotsLoading(true);
+            const lotsRes = await api.get(`/zone-transfers/available-lots/${foundProduct.id}`);
+            setAvailableLots(lotsRes.data || []);
+
+            // Auto-select lot if QR includes lot number
+            if (scan.lotNumber) {
+                const matchedLot = lotsRes.data?.find(l =>
+                    l.lotNumber === scan.lotNumber ||
+                    l.lotNumber?.includes(scan.lotNumber)
+                );
+                if (matchedLot) {
+                    setSelectedLot(matchedLot.id);
+                    message.success({ content: `✅ ${foundProduct.name} — Lote ${matchedLot.lotNumber} (${scan.unitsPerBox || '?'} uds)`, key: 'qr-search', duration: 3 });
+                } else {
+                    message.warning({ content: `${foundProduct.name} encontrado, pero lote "${scan.lotNumber}" no disponible en bodega`, key: 'qr-search', duration: 4 });
+                }
+            } else {
+                // No lot in QR — auto-select first available lot
+                if (lotsRes.data?.length > 0) {
+                    setSelectedLot(lotsRes.data[0].id);
+                    message.success({ content: `✅ ${foundProduct.name} — Lote auto-seleccionado: ${lotsRes.data[0].lotNumber}`, key: 'qr-search', duration: 3 });
+                } else {
+                    message.success({ content: `✅ ${foundProduct.name} — Sin lotes en bodega`, key: 'qr-search', duration: 3 });
+                }
+            }
+        } catch (e) {
+            console.error('QR scan error:', e);
+            message.error({ content: `Error procesando QR: ${e.message}`, key: 'qr-search' });
+        } finally {
             setSearching(false);
             setLotsLoading(false);
         }

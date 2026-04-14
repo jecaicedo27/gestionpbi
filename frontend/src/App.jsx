@@ -47,6 +47,7 @@ import GenialityTemplateEditorPage from './pages/Geniality/GenialityTemplateEdit
 import GenialityFormulasPage from './pages/Geniality/GenialityFormulasPage';
 import GenialityOperatorPage from './pages/Geniality/GenialityOperatorPage';
 import GenialityExecutionPage from './pages/Geniality/GenialityExecutionPage';
+import GenialityMonitoringPage from './pages/Geniality/GenialityMonitoringPage';
 
 
 import MovementsPage from './pages/MovementsPage';
@@ -161,6 +162,7 @@ function App() {
                             <Route path="geniality/formulas/:id" element={<FormulaEditorPage />} />
                             <Route path="geniality/operator" element={<GenialityOperatorPage />} />
                             <Route path="geniality/assembly-execution/:id" element={<GenialityExecutionPage />} />
+                            <Route path="geniality/monitor" element={<GenialityMonitoringPage />} />
 
 
                             <Route path="admin/users" element={<Users />} />

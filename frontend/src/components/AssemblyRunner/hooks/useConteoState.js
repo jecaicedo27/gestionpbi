@@ -39,9 +39,10 @@ export function useConteoState() {
         };
 
         setCarriots(prev => {
-            // Give it a number scoped to this product
-            const sameProduct = prev.filter(c => c.productId === productId);
-            newEntry.carritoNum = sameProduct.length + 1;
+            // Numero siguiente = máximo número ya usado en cualquier carrito + 1
+            // (si se elimina un carrito y se crea otro, no reutiliza el número)
+            const maxNum = prev.reduce((m, c) => Math.max(m, c.carritoNum || 0), 0);
+            newEntry.carritoNum = maxNum + 1;
             const updated = [...prev, newEntry];
 
             // Auto-update the running total for this product
@@ -90,12 +91,17 @@ export function useConteoState() {
         if (actuals) setConteoActuals(actuals);
     };
 
+    /** Update an existing carrito (e.g. mark as printed) */
+    const updateCarritoLocal = (carritoId, updates) => {
+        setCarriots(prev => prev.map(c => c.id === carritoId ? { ...c, ...updates } : c));
+    };
+
     const reset = () => { setConteoActuals({}); setConteoPhotos({}); setCarriots([]); };
 
     return {
         conteoActuals, setConteoActual,
         conteoPhotos, setConteoPhoto,
-        carriots, addCarritoLocal, removeCarritoLocal, preloadCarriots,
+        carriots, addCarritoLocal, removeCarritoLocal, updateCarritoLocal, preloadCarriots,
         preloadPhotos, preloadActuals,
         reset,
     };

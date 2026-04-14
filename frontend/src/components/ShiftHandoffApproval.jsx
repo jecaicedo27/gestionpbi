@@ -18,11 +18,11 @@ export default function ShiftHandoffApproval({ operators, handoffs, outgoingShif
     const [rejectReason, setRejectReason] = useState({});
     const [actionLoading, setActionLoading] = useState(null);
 
-    const handleApprove = async (handoffId) => {
+    const handleApprove = async (handoffId, status) => {
         const pin = pinInputs[handoffId];
         if (!pin || pin.length !== 4) return;
         setActionLoading(handoffId);
-        await onApprove(handoffId, pin);
+        await onApprove(handoffId, pin, status);
         setActionLoading(null);
         setPinInputs(prev => ({ ...prev, [handoffId]: '' }));
     };
@@ -182,7 +182,7 @@ export default function ShiftHandoffApproval({ operators, handoffs, outgoingShif
                                         )}
 
                                         {/* Approve / Reject actions */}
-                                        {handoff.status === 'PENDING' && (
+                                        {['PENDING', 'PENDING_INCOMING'].includes(handoff.status) && (
                                             <div style={{
                                                 marginTop: 12, padding: '14px', background: '#fff',
                                                 borderRadius: 12, border: '2px solid #e2e8f0'
@@ -211,7 +211,7 @@ export default function ShiftHandoffApproval({ operators, handoffs, outgoingShif
                                                 />
                                                 <div style={{ display: 'flex', gap: 8 }}>
                                                     <button
-                                                        onClick={() => handleApprove(handoff.id)}
+                                                        onClick={() => handleApprove(handoff.id, handoff.status)}
                                                         disabled={actionLoading === handoff.id}
                                                         style={{
                                                             flex: 1, padding: '12px', borderRadius: 10, border: 'none',

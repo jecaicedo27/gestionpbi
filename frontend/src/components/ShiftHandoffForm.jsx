@@ -10,14 +10,21 @@ const SHIFT_LABELS = {
     MANANA: '🌅 Mañana', TARDE: '☀️ Tarde', NOCHE: '🌙 Noche'
 };
 
-export default function ShiftHandoffForm({ onSuccess }) {
+export default function ShiftHandoffForm({ onSuccess, preselectedUser = null, prefilledPin = '' }) {
     const [checklists, setChecklists] = useState({});
     const [outgoingShift, setOutgoingShift] = useState('');
-    const [selectedArea, setSelectedArea] = useState('');
+    const [selectedArea, setSelectedArea] = useState(preselectedUser?.area || '');
     const [formState, setFormState] = useState({});
-    const [pin, setPin] = useState('');
+    const [pin, setPin] = useState(prefilledPin);
     const [submitting, setSubmitting] = useState(false);
     const [msg, setMsg] = useState('');
+
+    // If preselected user is passed without an area mapped, log an error
+    useEffect(() => {
+        if (preselectedUser && !selectedArea) {
+            setMsg('❌ Error: Operario preseleccionado no tiene área asignada');
+        }
+    }, [preselectedUser, selectedArea]);
 
     // ── Load checklists ──────────────────────────────────────────────────────
     useEffect(() => {
@@ -88,25 +95,27 @@ export default function ShiftHandoffForm({ onSuccess }) {
             </p>
 
             {/* Area selector */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-                {Object.keys(AREA_LABELS).map(area => (
-                    <button
-                        key={area}
-                        onClick={() => setSelectedArea(area)}
-                        style={{
-                            flex: 1, padding: '14px 12px', borderRadius: 12, cursor: 'pointer',
-                            background: selectedArea === area
-                                ? 'linear-gradient(135deg, #1e3a5f, #2563eb)' : '#f8fafc',
-                            color: selectedArea === area ? '#fff' : '#334155',
-                            border: selectedArea === area ? 'none' : '2px solid #e2e8f0',
-                            fontWeight: 700, fontSize: 15, transition: 'all 0.2s',
-                            boxShadow: selectedArea === area ? '0 4px 12px rgba(37,99,235,0.3)' : 'none'
-                        }}
-                    >
-                        {AREA_ICONS[area]} {AREA_LABELS[area]}
-                    </button>
-                ))}
-            </div>
+            {!preselectedUser && (
+                <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+                    {Object.keys(AREA_LABELS).map(area => (
+                        <button
+                            key={area}
+                            onClick={() => setSelectedArea(area)}
+                            style={{
+                                flex: 1, padding: '14px 12px', borderRadius: 12, cursor: 'pointer',
+                                background: selectedArea === area
+                                    ? 'linear-gradient(135deg, #1e3a5f, #2563eb)' : '#f8fafc',
+                                color: selectedArea === area ? '#fff' : '#334155',
+                                border: selectedArea === area ? 'none' : '2px solid #e2e8f0',
+                                fontWeight: 700, fontSize: 15, transition: 'all 0.2s',
+                                boxShadow: selectedArea === area ? '0 4px 12px rgba(37,99,235,0.3)' : 'none'
+                            }}
+                        >
+                            {AREA_ICONS[area]} {AREA_LABELS[area]}
+                        </button>
+                    ))}
+                </div>
+            )}
 
             {selectedArea && currentChecklist.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
