@@ -10,13 +10,48 @@ const ID_TYPES = [
     { id: '11', label: 'Reg. Civil' },
 ];
 
+const SHIFT_SYNC_ROLES = ['PRODUCCION', 'OPERARIO_PICKING', 'LOGISTICA'];
+const SHIFT_AREA_OPTIONS = [
+    { value: 'PRODUCCION', label: 'Producción' },
+    { value: 'SIROPES', label: 'Siropes' },
+    { value: 'EMPAQUE', label: 'Empaque' },
+    { value: 'LOGISTICA', label: 'Logística' },
+    { value: 'ASEO', label: 'Servicios Generales' },
+];
+const FIXED_SHIFT_AREAS = ['LOGISTICA', 'ASEO'];
+
+const getDefaultShiftArea = (role) => {
+    if (role === 'OPERARIO_PICKING') return 'EMPAQUE';
+    if (role === 'LOGISTICA') return 'LOGISTICA';
+    return 'PRODUCCION';
+};
+
+const isFixedShiftArea = (area) => FIXED_SHIFT_AREAS.includes(area);
+
+const getInitialFormData = () => ({
+    name: '',
+    email: '',
+    password: '',
+    role: 'DISTRIBUIDOR',
+    nit: '',
+    idType: '13',
+    discountPercent: '34.8',
+    reteFuente: true,
+    addToShiftSchedule: false,
+    shiftArea: 'PRODUCCION',
+    shiftEmployeeRole: 'OPERARIO',
+    shiftGroupNumber: '',
+    shiftIsFixed: false
+});
+
 const Users = () => {
     const [users, setUsers] = useState([]);
     const [showModal, setShowModal] = useState(false);
-    const [formData, setFormData] = useState({ name: '', email: '', password: '', role: 'DISTRIBUIDOR', nit: '', idType: '13', discountPercent: '34.8', reteFuente: true });
+    const [formData, setFormData] = useState(getInitialFormData());
     const [editingNit, setEditingNit] = useState(null); // { userId, value }
     const [editingName, setEditingName] = useState(null); // { userId, value }
     const [editingBilling, setEditingBilling] = useState(null); // { userId, nit, idType, discountPercent }
+    const [editingRole, setEditingRole] = useState(null); // { userId, value }
     const [pinModal, setPinModal] = useState(null); // { userId, name }
     const [pinInput, setPinInput] = useState('');
     const [pinError, setPinError] = useState('');
@@ -28,6 +63,19 @@ const Users = () => {
     const loadUsers = async () => {
         const res = await api.get('/admin/users');
         setUsers(res.data.data);
+    };
+
+    const handleRoleChange = (role) => {
+        const canSyncToShifts = SHIFT_SYNC_ROLES.includes(role);
+        const nextShiftArea = canSyncToShifts ? getDefaultShiftArea(role) : 'PRODUCCION';
+        setFormData(prev => ({
+            ...prev,
+            role,
+            addToShiftSchedule: canSyncToShifts ? prev.addToShiftSchedule : false,
+            shiftArea: nextShiftArea,
+            shiftIsFixed: isFixedShiftArea(nextShiftArea),
+            shiftGroupNumber: isFixedShiftArea(nextShiftArea) ? '' : prev.shiftGroupNumber
+        }));
     };
 
     const handleDelete = async (id) => {
@@ -46,9 +94,9 @@ const Users = () => {
             });
             setShowModal(false);
             loadUsers();
-            setFormData({ name: '', email: '', password: '', role: 'DISTRIBUIDOR', nit: '', idType: '13', discountPercent: '34.8', reteFuente: true });
+            setFormData(getInitialFormData());
         } catch (error) {
-            alert('Error creando usuario');
+            alert(error.response?.data?.error || 'Error creando usuario');
         }
     };
 
@@ -69,6 +117,16 @@ const Users = () => {
             loadUsers();
         } catch (error) {
             alert('Error actualizando Nombre');
+        }
+    };
+
+    const handleSaveRole = async (userId, newRole) => {
+        try {
+            await api.patch(`/admin/users/${userId}`, { role: newRole });
+            setEditingRole(null);
+            loadUsers();
+        } catch (error) {
+            alert('Error actualizando rol');
         }
     };
 
@@ -181,7 +239,41 @@ const Users = () => {
                                         )}
                                     </td>
                                     <td className="p-3 text-neutral-600">{user.email}</td>
-                                    <td className="p-3"><span className="px-2 py-1 bg-neutral-100 rounded text-xs">{user.role}</span></td>
+                                    <td className="p-3">
+                                        {editingRole?.userId === user.id ? (
+                                            <select
+                                                className="px-2 py-1 border-2 border-indigo-400 rounded text-xs font-semibold bg-white focus:outline-none"
+                                                value={editingRole.value}
+                                                onChange={e => {
+                                                    const newRole = e.target.value;
+                                                    setEditingRole({ ...editingRole, value: newRole });
+                                                    handleSaveRole(user.id, newRole);
+                                                }}
+                                                onBlur={() => setEditingRole(null)}
+                                                autoFocus
+                                            >
+                                                <option value="ADMIN">Administrador</option>
+                                                <option value="LOGISTICA">Logística</option>
+                                                <option value="OPERARIO_PICKING">Operario Picking</option>
+                                                <option value="PRODUCCION">Producción</option>
+                                                <option value="CARTERA">Cartera</option>
+                                                <option value="DISTRIBUIDOR">Distribuidor</option>
+                                                <option value="CALIDAD">Calidad</option>
+                                                <option value="CONTABILIDAD">Contabilidad</option>
+                                                <option value="COMERCIAL">Comercial</option>
+                                                <option value="QUIMICO">Químico</option>
+                                                <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
+                                            </select>
+                                        ) : (
+                                            <button
+                                                onClick={() => setEditingRole({ userId: user.id, value: user.role })}
+                                                className="px-2 py-1 bg-neutral-100 rounded text-xs hover:bg-indigo-100 hover:text-indigo-700 transition-colors cursor-pointer"
+                                                title="Clic para cambiar rol"
+                                            >
+                                                {user.role}
+                                            </button>
+                                        )}
+                                    </td>
                                     
                                     {/* PIN status */}
                                     <td className="p-3">
@@ -482,7 +574,7 @@ const Users = () => {
                             <div>
                                 <label className="block text-sm font-medium mb-1">Rol</label>
                                 <select className="w-full p-2 border rounded"
-                                    value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })}>
+                                    value={formData.role} onChange={e => handleRoleChange(e.target.value)}>
                                     <option value="DISTRIBUIDOR">Distribuidor</option>
                                     <option value="ADMIN">Administrador</option>
                                     <option value="LOGISTICA">Logística</option>
@@ -493,8 +585,87 @@ const Users = () => {
                                     <option value="CONTABILIDAD">Contabilidad</option>
                                     <option value="COMERCIAL">Comercial</option>
                                     <option value="QUIMICO">Químico</option>
+                                    <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
                                 </select>
                             </div>
+                            {SHIFT_SYNC_ROLES.includes(formData.role) && (
+                                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 space-y-3">
+                                    <label className="flex items-start gap-2 text-sm font-semibold text-blue-900">
+                                        <input
+                                            type="checkbox"
+                                            className="mt-1"
+                                            checked={formData.addToShiftSchedule}
+                                            onChange={e => setFormData({ ...formData, addToShiftSchedule: e.target.checked })}
+                                        />
+                                            <span>
+                                                Agregar tambien al cuadro de turnos
+                                                <span className="block text-xs font-normal text-blue-700 mt-0.5">
+                                                Producción, Siropes y Empaque rotan. Logística y Servicios Generales quedan fijos 8:00 a 17:00.
+                                                </span>
+                                            </span>
+                                        </label>
+                                    {formData.addToShiftSchedule && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                                            <div>
+                                                <label className="block text-xs font-semibold text-blue-900 mb-1">Area</label>
+                                                <select
+                                                    className="w-full p-2 border rounded bg-white text-sm"
+                                                    value={formData.shiftArea}
+                                                    onChange={e => {
+                                                        const nextArea = e.target.value;
+                                                        setFormData({
+                                                            ...formData,
+                                                            shiftArea: nextArea,
+                                                            shiftIsFixed: isFixedShiftArea(nextArea),
+                                                            shiftGroupNumber: isFixedShiftArea(nextArea) ? '' : formData.shiftGroupNumber
+                                                        });
+                                                    }}
+                                                >
+                                                    {SHIFT_AREA_OPTIONS.map(option => (
+                                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-blue-900 mb-1">Rol turno</label>
+                                                <select
+                                                    className="w-full p-2 border rounded bg-white text-sm"
+                                                    value={formData.shiftEmployeeRole}
+                                                    onChange={e => setFormData({ ...formData, shiftEmployeeRole: e.target.value })}
+                                                >
+                                                    <option value="OPERARIO">Operario</option>
+                                                    <option value="LIDER">Lider</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-blue-900 mb-1">Grupo</label>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    max="3"
+                                                    className="w-full p-2 border rounded bg-white text-sm"
+                                                    disabled={formData.shiftIsFixed}
+                                                    placeholder="Luego"
+                                                    value={formData.shiftGroupNumber}
+                                                    onChange={e => setFormData({ ...formData, shiftGroupNumber: e.target.value })}
+                                                />
+                                            </div>
+                                            <label className="flex items-center gap-2 text-xs font-semibold text-blue-900 pt-5">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={formData.shiftIsFixed}
+                                                    onChange={e => setFormData({
+                                                        ...formData,
+                                                        shiftIsFixed: e.target.checked,
+                                                        shiftGroupNumber: e.target.checked ? '' : formData.shiftGroupNumber
+                                                    })}
+                                                />
+                                                Turno fijo
+                                            </label>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                             {formData.role === 'DISTRIBUIDOR' && (
                                 <>
                                     <div>

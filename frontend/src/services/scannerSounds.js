@@ -56,3 +56,10 @@ export function playAlreadyDone() {
     beep(800, 0.18, 0.5, 'square');
     setTimeout(() => beep(250, 0.25, 0.5, 'square'), 220);
 }
+
+/** Urgent triple-beep alarm — stock in wrong zone, needs transfer 🔶 */
+export function playZoneWarning() {
+    beep(600, 0.15, 0.5, 'square');
+    setTimeout(() => beep(400, 0.15, 0.5, 'square'), 200);
+    setTimeout(() => beep(600, 0.15, 0.5, 'square'), 400);
+}

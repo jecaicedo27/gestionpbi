@@ -3,7 +3,7 @@
  *
  * ═══════════════════════════════════════════════════════════════════════
  * STANDARD QR FORMAT (pipe-delimited string):
- *   LOT:{lot}|SKU:{sku}|BAR:{barcode}|QTY:{qty}|BOX:{boxNumber}/{totalBoxes}
+ *   PKG:{packageId}|LOT:{lot}|SKU:{sku}|BAR:{barcode}|QTY:{qty}|TYP:{containerType}|REC:{yyyy-mm-dd}|EXP:{yyyy-mm-dd}|BOX:{boxNumber}/{totalBoxes}
  *
  * Used by:
  *   - Frontend: qrService.js, zplLabelBuilder.js, tsplLabelBuilder.js
@@ -41,9 +41,43 @@ function stripLotPrefix(lotNumber) {
  * @param {number}  [p.totalBoxes=1]
  * @returns {string}
  */
-function buildQrString({ lotNumber, sku, barcode, quantity, boxNumber = 1, totalBoxes = 1 }) {
+function formatDatePart(value) {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString().slice(0, 10);
+}
+
+function buildQrString({
+    packageId,
+    lotNumber,
+    sku,
+    barcode,
+    quantity,
+    containerType,
+    receivedAt,
+    expiresAt,
+    boxNumber = 1,
+    totalBoxes = 1
+}) {
     const cleanLot = stripLotPrefix(lotNumber);
-    return `LOT:${cleanLot}|SKU:${sku || ''}|BAR:${barcode || sku || ''}|QTY:${quantity || 0}|BOX:${boxNumber}/${totalBoxes}`;
+    const parts = [];
+
+    if (packageId) parts.push(`PKG:${packageId}`);
+    if (cleanLot) parts.push(`LOT:${cleanLot}`);
+    if (sku) parts.push(`SKU:${sku}`);
+    if (barcode || sku) parts.push(`BAR:${barcode || sku}`);
+    if (quantity !== undefined && quantity !== null) parts.push(`QTY:${quantity}`);
+    if (containerType) parts.push(`TYP:${containerType}`);
+
+    const received = formatDatePart(receivedAt);
+    if (received) parts.push(`REC:${received}`);
+
+    const expires = formatDatePart(expiresAt);
+    if (expires) parts.push(`EXP:${expires}`);
+
+    parts.push(`BOX:${boxNumber}/${totalBoxes}`);
+    return parts.join('|');
 }
 
 module.exports = { buildQrString, stripLotPrefix };

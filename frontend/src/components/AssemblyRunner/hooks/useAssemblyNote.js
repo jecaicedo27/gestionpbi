@@ -78,38 +78,41 @@ export function useAssemblyNote(id) {
                     let actualQty = data.targetQuantity;
                     
                     if (isEnsambleSiigo && data.productionBatchId) {
-                        // ── "Ensamble Siigo" = finished product assembly ──
-                        // Per-carrito RPAs already handled Siigo accounting during MARCADO_CAJAS.
-                        // We must: (1) use real carrito qty, (2) skip RPA to avoid duplicates.
                         try {
                             const batchNotesRes = await api.get(`/assembly-notes?batchId=${data.productionBatchId}`);
                             const conteoNote = batchNotesRes.data?.find(n => n.processType?.code === 'CONTEO');
-                            
-                            if (conteoNote?.status !== 'COMPLETED') {
-                                // CONTEO not finished — can't auto-complete Ensamble Siigo yet
-                                console.log(`[Auto-Skip] ⏸️ Deferring Ensamble Siigo ${data.id} — CONTEO not completed`);
-                                const nextNote = batchNotesRes.data
-                                    ?.filter(n => n.id !== data.id && n.status !== 'COMPLETED')
-                                    .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
-                                if (nextNote) {
-                                    window.history.replaceState(null, '', `/geniality/assembly-execution/${nextNote.id}`);
-                                    window.location.reload();
-                                } else {
-                                    window.location.href = '/production/operator';
+                            const isPreConteo = conteoNote && (data.stageOrder || 0) < (conteoNote.stageOrder || 0);
+
+                            if (!isPreConteo) {
+                                // ── Finished product Ensamble Siigo (after CONTEO) ──
+                                // Per-carrito RPAs already handled Siigo. Defer until CONTEO completes.
+                                if (conteoNote?.status !== 'COMPLETED') {
+                                    console.log(`[Auto-Skip] ⏸️ Deferring Ensamble Siigo ${data.id} — CONTEO not completed`);
+                                    const nextNote = batchNotesRes.data
+                                        ?.filter(n => n.id !== data.id && n.status !== 'COMPLETED')
+                                        .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
+                                    if (nextNote) {
+                                        window.history.replaceState(null, '', `/geniality/assembly-execution/${nextNote.id}`);
+                                        window.location.reload();
+                                    } else {
+                                        window.location.href = '/production/operator';
+                                    }
+                                    return;
                                 }
-                                return;
+
+                                const carriots = conteoNote.processParameters?.carriots || [];
+                                const productCarriots = carriots.filter(c => c.productId === data.productId && c.receivedAt);
+                                const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+                                if (realQty > 0) actualQty = realQty;
+
+                                await api.patch(`/assembly-notes/${data.id}`, {
+                                    processParameters: { ...(data.processParameters || {}), skipRpa: true }
+                                });
+                            } else {
+                                // ── Intermediate product Ensamble Siigo (before CONTEO) ──
+                                // e.g. SABORIZACION: needs its own RPA, no CONTEO dependency
+                                console.log(`[Auto-Skip] ✅ Pre-CONTEO Ensamble Siigo ${data.id} — completing immediately (RPA will fire)`);
                             }
-                            
-                            // Calculate real qty from carriots for THIS product
-                            const carriots = conteoNote.processParameters?.carriots || [];
-                            const productCarriots = carriots.filter(c => c.productId === data.productId && c.receivedAt);
-                            const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
-                            if (realQty > 0) actualQty = realQty;
-                            
-                            // Set skipRpa flag — per-carrito RPAs already registered in Siigo
-                            await api.patch(`/assembly-notes/${data.id}`, {
-                                processParameters: { ...(data.processParameters || {}), skipRpa: true }
-                            });
                         } catch (e) {
                             console.warn('[Auto-Skip] Could not fetch CONTEO data for Ensamble Siigo:', e.message);
                         }
@@ -184,17 +187,22 @@ export function useAssemblyNote(id) {
 
     const buildWizardSteps = (noteData) => {
         const steps = [];
-        const isEnsamble = noteData.processType?.code === 'ENSAMBLE' || noteData.processType?.code === 'G_ENSAMBLE';
-        const isConteo = noteData.processType?.code === 'CONTEO';
-        const isEmpaque = noteData.processType?.code === 'EMPAQUE';
-        const isCoccion = noteData.processType?.code === 'COCCION';
-        const isMedicion = noteData.processType?.code === 'MEDICION';
-        const isProteccionGate = noteData.processType?.code === 'PROTECCION_GATE';
+        const processCode = noteData.processType?.code;
+        const isPesaje = ['PESAJE', 'G_PESAJE'].includes(processCode);
+        const isFormacion = ['FORMACION', 'G_FORMACION'].includes(processCode);
+        const isEnsamble = ['ENSAMBLE', 'G_ENSAMBLE'].includes(processCode);
+        const isConteo = ['CONTEO', 'G_CONTEO'].includes(processCode);
+        const isEmpaque = ['EMPAQUE', 'G_EMPAQUE'].includes(processCode);
+        const isCoccion = processCode === 'COCCION';
+        const isMedicion = processCode === 'MEDICION';
+        const isProteccionGate = processCode === 'PROTECCION_GATE';
+        const isGEPremix = processCode === 'GE_PREMIX';
+        const isGEBaseLiquida = processCode === 'GE_BASE_LIQUIDA';
+        const isGECoccion = processCode === 'GE_COCCION';
+        const isEscarchadoStep = isGEPremix || isGEBaseLiquida || isGECoccion;
 
         const isSiropeGeniality = (
-            noteData.processType?.code === 'G_EMPAQUE' || 
-            noteData.processType?.code === 'EMPAQUE' || 
-            noteData.processType?.code === 'CONTEO'
+            ['G_EMPAQUE', 'EMPAQUE', 'CONTEO', 'G_CONTEO'].includes(processCode)
         ) && (
             noteData.product?.name?.toUpperCase().includes('SIROPE') || 
             noteData.product?.name?.toUpperCase().includes('MASA') ||
@@ -202,8 +210,8 @@ export function useAssemblyNote(id) {
             noteData.product?.name?.toUpperCase().includes('SABORIZACION')
         );
 
-        // Skip INTRO for Geniality notes — operators go directly to G_CONTEO_CARRITOS or empaque
-        if (!isSiropeGeniality) {
+        // Skip INTRO for Geniality notes and Escarchado dedicated steps
+        if (!isSiropeGeniality && !isEscarchadoStep) {
             steps.push({ type: 'INTRO', data: noteData });
         }
 
@@ -211,7 +219,7 @@ export function useAssemblyNote(id) {
             steps.push({ type: 'G_CONTEO_CARRITOS', data: noteData });
             // Only inject MARCADO_CAJAS for label printing deep-links.
             // DO NOT inject generic EMPAQUE or ENSAMBLE steps for Geniality.
-            if (isEmpaque || noteData.processType?.code === 'G_EMPAQUE') {
+            if (isEmpaque) {
                 steps.push({ type: 'MARCADO_CAJAS', data: noteData });
             }
         } 
@@ -224,7 +232,7 @@ export function useAssemblyNote(id) {
                 steps.push({ type: 'MARCADO_CAJAS', data: noteData });
                 steps.push({ type: 'OUTPUT', data: noteData });   // Mandatory: operator enters REAL qty
                 steps.push({ type: 'ENSAMBLE', data: noteData });
-            } else if (isEmpaque || noteData.processType?.code === 'G_EMPAQUE') {
+            } else if (isEmpaque) {
                 const preConsumed = noteData.processParameters?.materialsPreConsumed === true;
             if (!preConsumed) {
                 // Exempt packaging materials AND bulk ingredients already weighed in earlier steps
@@ -249,19 +257,24 @@ export function useAssemblyNote(id) {
             steps.push({ type: 'MEDICION', data: noteData });
         } else if (isProteccionGate) {
             steps.push({ type: 'PROTECCION_GATE', data: noteData });
+        } else if (isEscarchadoStep) {
+            // Escarchado dedicated steps — each has its own specialized UI
+            if (isGEPremix) steps.push({ type: 'GE_PREMIX', data: noteData });
+            if (isGEBaseLiquida) steps.push({ type: 'GE_BASE_LIQUIDA', data: noteData });
+            if (isGECoccion) steps.push({ type: 'GE_COCCION', data: noteData });
         } else {
             if (noteData.items && noteData.items.length > 0) {
                 noteData.items.forEach(item => steps.push({ type: 'INPUT', data: item }));
             }
             // For FORMACION (Esferas): QC step → timer after inputs
-            if (noteData.processType?.code === 'FORMACION') {
+            if (isFormacion) {
                 steps.push({ type: 'FORMACION_QC', data: noteData });
                 steps.push({ type: 'ESFERIFICACION', data: noteData });
             }
         }
         } // Close the outer if statement
 
-        if (!isEnsamble && !isConteo && !isEmpaque && !isCoccion && !isMedicion && !isProteccionGate && !isSiropeGeniality) {
+        if (!isEnsamble && !isConteo && !isEmpaque && !isCoccion && !isMedicion && !isProteccionGate && !isSiropeGeniality && !isEscarchadoStep) {
             steps.push({ type: 'OUTPUT', data: noteData });
         }
 
@@ -359,7 +372,7 @@ export function useAssemblyNote(id) {
             return sum + inGrams;
         }, 0);
 
-        if (noteData.processType?.code === 'FORMACION') {
+        if (isFormacion) {
             const compuestoItem = (noteData.items || []).find(i =>
                 i.component?.name?.toUpperCase().includes('COMPUESTO')
             );
@@ -368,19 +381,19 @@ export function useAssemblyNote(id) {
             }
         }
 
-        if (noteData.processType?.code === 'ENSAMBLE') {
+        if (isEnsamble) {
             const productId = noteData.processParameters?.product_id;
             const target = (noteData.productionBatch?.outputTargets || []).find(t => t.productId === productId);
             if (target?.plannedUnits) plannedTotal = target.plannedUnits;
         }
 
-        if (noteData.processType?.code === 'EMPAQUE' && noteData.empaqueData?.conteo_qty != null) {
+        if (isEmpaque && noteData.empaqueData?.conteo_qty != null) {
             plannedTotal = noteData.empaqueData.conteo_qty;
         }
 
-        // For PESAJE: use the note's targetQuantity directly (e.g. "1 lote")
-        // instead of summing item grams (which would give 156 for 108g + 48g)
-        if (noteData.processType?.code === 'PESAJE' && noteData.targetQuantity) {
+        // For aggregate PESAJE notes, targetQuantity may come from older generated
+        // data as the lot count (e.g. 2 lotes), while items hold the real grams.
+        if (isPesaje && noteData.targetQuantity && !noteData.processParameters?.aggregateNote) {
             plannedTotal = noteData.targetQuantity;
         }
 
@@ -389,7 +402,6 @@ export function useAssemblyNote(id) {
         const defaultTarget = savedTarget || (plannedTotal > 0 ? plannedTotal.toFixed(0) : (noteData.targetQuantity || 1).toString());
 
         // For PESAJE: auto-fill Real Producido = Planificado (no scale at output step)
-        const isPesaje = noteData.processType?.code === 'PESAJE';
         setOutputQuantity(isPesaje ? defaultTarget : '');
         setTargetQuantity(defaultTarget);
         setOutputObservations('');

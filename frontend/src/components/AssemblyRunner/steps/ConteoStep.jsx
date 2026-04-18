@@ -1,6 +1,8 @@
 import React, { useState, useCallback } from 'react';
-import { Camera, CheckCircle, AlertTriangle, Printer } from 'lucide-react';
+import { Camera, CheckCircle, AlertTriangle, Printer, Plus, X } from 'lucide-react';
 import { useZebra } from '../../../context/ZebraContext';
+import { useAuth } from '../../../context/AuthContext';
+import api from '../../../services/api';
 
 /**
  * ConteoStep — LIQUIPOPS ONLY
@@ -15,6 +17,9 @@ const ConteoStep = ({
     onConteoActualChange,
     conteoPhotos = {},
     onConteoPhotoChange,
+    extraConteoTargets = [],
+    onAddExtraConteoTarget,
+    onRemoveExtraConteoTarget,
     isPackagingRole = false,
 }) => {
     const noteData = stepData;
@@ -22,7 +27,17 @@ const ConteoStep = ({
     const batchNumber = noteData.productionBatch?.batchNumber || '';
     const esferaFactors = noteData.processParameters?.esfera_factors || {};
     const [uploading, setUploading] = useState({});
+    const [showAddSize, setShowAddSize] = useState(false);
+    const [availableSizes, setAvailableSizes] = useState([]);
+    const [toast, setToast] = useState(null);
+    const [loadingSizes, setLoadingSizes] = useState(false);
     const { zebraStatus, printZPL } = useZebra();
+    const { user } = useAuth();
+
+    const allTargets = [
+        ...outputTargets,
+        ...extraConteoTargets.filter(et => !outputTargets.some(t => t.productId === et.productId))
+    ];
 
     // ── GATE: Packaging roles must NOT see the production counting form ──
     if (isPackagingRole) {
@@ -42,6 +57,43 @@ const ConteoStep = ({
         );
     }
 
+    // ── Fetch sibling sizes for the same flavor ──
+    const fetchAvailableSizes = useCallback(async () => {
+        if (allTargets.length === 0) return;
+        setLoadingSizes(true);
+        try {
+            const firstProduct = allTargets[0]?.product?.name || '';
+            const flavorMatch = firstProduct.match(/SABOR\s+A\s+(.+?)\s+X\s+/i);
+            if (!flavorMatch) { setLoadingSizes(false); return; }
+            const flavor = flavorMatch[1].trim();
+            const res = await api.get('/products', { params: { search: `LIQUIPOPS SABOR A ${flavor}` } });
+            const products = (res.data || []).filter(p => {
+                const name = (p.name || '').toUpperCase();
+                return name.includes('LIQUIPOPS') && name.includes('SABOR') && !name.includes('ETIQUETA')
+                    && !allTargets.some(t => t.productId === p.id);
+            });
+            setAvailableSizes(products);
+        } catch (e) {
+            console.warn('Error fetching sizes:', e.message);
+        } finally {
+            setLoadingSizes(false);
+        }
+    }, [allTargets]);
+
+    const handleAddSize = (product) => {
+        if (onAddExtraConteoTarget) {
+            onAddExtraConteoTarget({
+                id: `extra-${product.id}`,
+                productId: product.id,
+                product: { id: product.id, name: product.name },
+                plannedUnits: 0,
+                _isExtra: true,
+            });
+        }
+        setShowAddSize(false);
+        setAvailableSizes([]);
+    };
+
     // ── Sort targets by size DESCENDING: 3400 → 1150 → 350 ──
     const extractSize = (name) => {
         if (!name) return 0;
@@ -49,13 +101,13 @@ const ConteoStep = ({
         return match ? parseInt(match[1], 10) : 0;
     };
 
-    const sortedTargets = [...outputTargets].sort((a, b) => {
+    const sortedTargets = [...allTargets].sort((a, b) => {
         return extractSize(b.product?.name) - extractSize(a.product?.name);
     });
 
     const getEsferaFactor = (target) => esferaFactors[target.productId] || null;
 
-    const totalEsferas = outputTargets.reduce((sum, t) => {
+    const totalEsferas = allTargets.reduce((sum, t) => {
         const factor = getEsferaFactor(t);
         if (!factor) return sum;
         const rawActual = conteoActuals[t.productId];
@@ -134,10 +186,19 @@ const ConteoStep = ({
                 let y = 10;
                 let fields = '';
 
-                // Header: batch number inverted (larger font requested by user)
-                fields += `^FO${x},${y}^GB380,34,34^FS\n`;
-                fields += `^FO${x + 8},${y + 5}^A0N,26,24^FR^FD${escZpl(batchNumber)}^FS\n`;
-                y += 40;
+                // Header: batch number inverted — split into 2 lines for readability
+                const bnText = escZpl(batchNumber);
+                const dateMatch = bnText.match(/^(.+)-(\d{6}-\d+)$/);
+                if (dateMatch) {
+                    fields += `^FO${x},${y}^GB380,52,52^FS\n`;
+                    fields += `^FO${x + 8},${y + 4}^A0N,22,20^FR^FD${dateMatch[1]}^FS\n`;
+                    fields += `^FO${x + 8},${y + 28}^A0N,22,20^FR^FD${dateMatch[2]}^FS\n`;
+                    y += 58;
+                } else {
+                    fields += `^FO${x},${y}^GB380,34,34^FS\n`;
+                    fields += `^FO${x + 8},${y + 5}^A0N,24,22^FR^FD${bnText}^FS\n`;
+                    y += 40;
+                }
 
                 // Flavor name — big
                 const fl = flavor.length;
@@ -173,30 +234,41 @@ const ConteoStep = ({
                 }
 
                 // Footer
-                y = 296;
+                const operatorName = (user?.name || '').toUpperCase().split(' ').slice(0, 2).join(' ');
+                y = 282;
                 fields += `^FO${x},${y}^A0N,12,12^FD${escZpl(today)}  EMPAQUE^FS\n`;
+                fields += `^FO${x},${y + 14}^A0N,12,12^FD${escZpl(operatorName)}^FS\n`;
 
                 return fields;
             };
 
             let zpl = '^XA\n';
-            zpl += '^MMT\n^PW824\n^LL320\n^LS0\n^MD10\n^PR3\n^XB\n';
+            zpl += '^MMT\n^PW824\n^LL320\n^LS0\n^MD10\n^PR3\n';
             zpl += buildCol(0);
             zpl += buildCol(424);
             zpl += '^PQ1\n^XZ\n';
 
             const result = await printZPL(zpl);
             if (!result.ok) {
-                alert('Error Zebra: ' + (result.error || 'No se pudo imprimir'));
+                setToast({ type: 'error', msg: 'Error Zebra: ' + (result.error || 'No se pudo imprimir') });
             } else {
-                alert('Impresión enviada correctamente a la Zebra.');
+                setToast({ type: 'ok', msg: 'Impresión enviada' });
             }
+            setTimeout(() => setToast(null), 3000);
         } catch (err) {
-            alert('Error enviando a Zebra: ' + err.message);
+            setToast({ type: 'error', msg: 'Error: ' + err.message });
+            setTimeout(() => setToast(null), 4000);
         }
     }, [sortedTargets, conteoActuals, batchNumber, zebraStatus, printZPL]);
     return (
         <div className="flex flex-col h-full max-w-3xl mx-auto pt-1 pb-20 px-2">
+            {toast && (
+                <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-semibold transition-all animate-[fadeIn_0.2s] ${
+                    toast.type === 'ok' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
+                }`}>
+                    {toast.type === 'ok' ? '✓' : '✕'} {toast.msg}
+                </div>
+            )}
             {/* Compact header row */}
             <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-1.5">
@@ -266,16 +338,27 @@ const ConteoStep = ({
                         const actualEntered = actual !== undefined && actual !== '' && !isNaN(parseInt(actual, 10));
                         const needsPhoto = actualEntered && parseInt(actual, 10) > 0 && !photoUrl;
 
+                        const isExtra = target._isExtra || extraConteoTargets.some(et => et.productId === target.productId);
+
                         return (
-                            <div key={target.id} className={`rounded-lg border-2 px-3 py-2 transition-all ${actual !== undefined
-                                ? (isOk ? 'border-green-300 bg-green-50/50' : 'border-amber-300 bg-amber-50/50')
-                                : 'border-slate-200 bg-slate-50/50'
+                            <div key={target.id} className={`rounded-lg border-2 px-3 py-2 transition-all ${isExtra
+                                ? 'border-orange-300 bg-orange-50/50'
+                                : actual !== undefined
+                                    ? (isOk ? 'border-green-300 bg-green-50/50' : 'border-amber-300 bg-amber-50/50')
+                                    : 'border-slate-200 bg-slate-50/50'
                                 }`}>
-                                {/* Single-line: Flavor | Size | Programado → Real Producido | % | Evidencia */}
                                 <div className="flex items-center gap-2">
-                                    {/* Size badge */}
-                                    <div className="shrink-0 w-[70px]">
-                                        <span className="text-[10px] font-bold text-cyan-700 bg-cyan-100 px-2 py-0.5 rounded-full">{sizeLabel}</span>
+                                    <div className="shrink-0 w-[70px] flex items-center gap-1">
+                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isExtra ? 'text-orange-700 bg-orange-100' : 'text-cyan-700 bg-cyan-100'}`}>{sizeLabel}</span>
+                                        {isExtra && onRemoveExtraConteoTarget && (
+                                            <button
+                                                onClick={() => onRemoveExtraConteoTarget(target.productId)}
+                                                className="w-4 h-4 rounded-full bg-red-400 hover:bg-red-500 flex items-center justify-center transition-colors"
+                                                title="Quitar"
+                                            >
+                                                <X size={10} className="text-white" />
+                                            </button>
+                                        )}
                                     </div>
 
                                     {/* Flavor */}
@@ -363,6 +446,48 @@ const ConteoStep = ({
                             </div>
                         );
                     })}
+
+                    {/* Add extra size button */}
+                    {!isPackagingRole && onAddExtraConteoTarget && (
+                        <div className="mt-2">
+                            {!showAddSize ? (
+                                <button
+                                    onClick={() => { setShowAddSize(true); fetchAvailableSizes(); }}
+                                    className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border-2 border-dashed border-orange-300 text-orange-600 hover:bg-orange-50 transition-all text-xs font-bold"
+                                >
+                                    <Plus size={14} />
+                                    Agregar tamaño no programado
+                                </button>
+                            ) : (
+                                <div className="rounded-lg border-2 border-orange-300 bg-orange-50 p-3">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-orange-700">Seleccionar tamaño:</span>
+                                        <button onClick={() => setShowAddSize(false)} className="text-slate-400 hover:text-slate-600">
+                                            <X size={16} />
+                                        </button>
+                                    </div>
+                                    {loadingSizes ? (
+                                        <div className="text-xs text-slate-500 text-center py-2">Cargando...</div>
+                                    ) : availableSizes.length === 0 ? (
+                                        <div className="text-xs text-slate-500 text-center py-2">No hay tamaños adicionales disponibles para este sabor</div>
+                                    ) : (
+                                        <div className="flex flex-wrap gap-2">
+                                            {availableSizes.map(p => (
+                                                <button
+                                                    key={p.id}
+                                                    onClick={() => handleAddSize(p)}
+                                                    className="flex items-center gap-1 bg-white border-2 border-orange-200 hover:border-orange-400 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700 transition-all"
+                                                >
+                                                    <Plus size={12} className="text-orange-500" />
+                                                    {getSizeLabel(p.name) || p.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Missing photos warning — compact */}
@@ -389,7 +514,7 @@ const ConteoStep = ({
                 {/* Footer info */}
                 <div className="px-2 pb-2 shrink-0">
                     <div className="text-[9px] text-slate-400 text-center bg-slate-50 rounded-lg p-1.5">
-                        💡 Después del conteo se crearán en Siigo: <strong>1 nota de ESFERAS</strong> ({totalEsferas.toLocaleString('es-CO')} und) + <strong>{outputTargets.length} notas</strong> por presentación.
+                        💡 Después del conteo se crearán en Siigo: <strong>1 nota de ESFERAS</strong> ({totalEsferas.toLocaleString('es-CO')} und) + <strong>{allTargets.length} notas</strong> por presentación.
                     </div>
                 </div>
             </div>

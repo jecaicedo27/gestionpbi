@@ -5,8 +5,23 @@ const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
 const { getClientIp, isInternalNetwork } = require('../middleware/auth');
 const { sendPushToAll } = require('../services/webPushService');
+const { KIOSK_REQUIRED_ROLES } = require('./attendanceController');
 
 const prisma = new PrismaClient();
+
+const saveLoginAudit = (auditData) => {
+    prisma.loginAudit.create({ data: auditData }).catch(e =>
+        logger.error('LoginAudit save failed:', e.message)
+    );
+};
+
+const getExternalAdminEmail = () => (process.env.EXTERNAL_ADMIN_EMAIL || '').toLowerCase();
+
+const isExternalAdminUser = (user) => {
+    const externalAdmin = getExternalAdminEmail();
+    const userEmail = (user?.email || '').toLowerCase();
+    return user?.role === 'ADMIN' || (externalAdmin && userEmail === externalAdmin);
+};
 
 const login = async (req, res) => {
     try {
@@ -15,11 +30,7 @@ const login = async (req, res) => {
         const userAgent = req.headers['user-agent'] || null;
 
         // Helper: save audit record (fire-and-forget)
-        const saveAudit = (auditData) => {
-            prisma.loginAudit.create({ data: auditData }).catch(e =>
-                logger.error('LoginAudit save failed:', e.message)
-            );
-        };
+        const saveAudit = saveLoginAudit;
 
         // Find user
         const user = await prisma.user.findUnique({
@@ -32,9 +43,8 @@ const login = async (req, res) => {
         }
 
         // ── Network Access Control ──────────────────────────────────────
-        const externalAdmin = (process.env.EXTERNAL_ADMIN_EMAIL || '').toLowerCase();
         if (!isInternalNetwork(clientIp)) {
-            const isAdmin = email?.toLowerCase() === externalAdmin;
+            const isAdmin = isExternalAdminUser(user);
             const isDistribuidor = user.role === 'DISTRIBUIDOR';
             const isContabilidad = user.role === 'CONTABILIDAD';
             if (!isAdmin && !isDistribuidor && !isContabilidad) {
@@ -65,7 +75,7 @@ const login = async (req, res) => {
         // ── Successful login ────────────────────────────────────────────
         const isInternal = isInternalNetwork(clientIp);
         const reason = isInternal ? 'INTERNAL'
-            : email?.toLowerCase() === externalAdmin ? 'ADMIN_EXTERNAL'
+            : isExternalAdminUser(user) ? 'ADMIN_EXTERNAL'
                 : user.role === 'CONTABILIDAD' ? 'CONTABILIDAD_EXTERNAL'
                 : 'DISTRIBUIDOR_EXTERNAL';
 
@@ -75,6 +85,29 @@ const login = async (req, res) => {
             where: { id: user.id },
             data: { lastLogin: new Date() }
         });
+
+        // ── Verificación de presencia en planta ─────────────────────────
+        if (KIOSK_REQUIRED_ROLES.includes(user.role)) {
+            const presenceSetting = await prisma.systemSettings.findUnique({
+                where: { key: 'require_plant_presence' }
+            });
+            const presenceRequired = presenceSetting?.value !== false && presenceSetting?.value !== 'false';
+
+            if (presenceRequired) {
+                const shiftEmployee = await prisma.shiftEmployee.findUnique({
+                    where: { userId: user.id },
+                    select: { isInPlant: true, name: true }
+                });
+                if (shiftEmployee && !shiftEmployee.isInPlant) {
+                    saveAudit({ email, role: user.role, ip: clientIp, allowed: false, reason: 'NOT_IN_PLANT', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
+                    logger.warn(`⛔ Login bloqueado (no en planta): ${email}`);
+                    return res.status(403).json({
+                        error: '⛔ Debes registrar tu ingreso en el kiosko de planta antes de acceder.',
+                        code: 'NOT_IN_PLANT'
+                    });
+                }
+            }
+        }
 
         const token = jwt.sign(
             { userId: user.id, role: user.role },
@@ -105,14 +138,9 @@ const getMe = async (req, res) => {
 // ── PIN-based quick login (lock screen) ──────────────────────────
 const pinLogin = async (req, res) => {
     try {
-        // ── Network restriction: PIN login only from internal network ──
         const clientIp = getClientIp(req);
-        if (!isInternalNetwork(clientIp)) {
-            logger.warn(`⛔ External PIN login blocked from IP ${clientIp}`);
-            return res.status(403).json({
-                error: '⛔ Acceso por PIN solo disponible desde la red interna de la empresa.'
-            });
-        }
+        const userAgent = req.headers['user-agent'] || null;
+        const isInternal = isInternalNetwork(clientIp);
 
         const { pin } = req.body;
         if (!pin || !/^\d{4}$/.test(pin)) {
@@ -139,7 +167,30 @@ const pinLogin = async (req, res) => {
         }
 
         if (!matchedUser) {
+            saveLoginAudit({
+                email: 'pin-login',
+                ip: clientIp,
+                allowed: false,
+                reason: 'PIN_WRONG',
+                userAgent
+            });
             return res.status(401).json({ error: 'PIN incorrecto' });
+        }
+
+        // ── Network Access Control: external PIN login only for admins ──
+        if (!isInternal && !isExternalAdminUser(matchedUser)) {
+            logger.warn(`⛔ External PIN login blocked: ${matchedUser.email} (${matchedUser.role}) from IP ${clientIp}`);
+            saveLoginAudit({
+                email: matchedUser.email,
+                role: matchedUser.role,
+                ip: clientIp,
+                allowed: false,
+                reason: 'PIN_EXTERNAL_BLOCKED',
+                userAgent
+            });
+            return res.status(403).json({
+                error: '⛔ Acceso externo por PIN solo disponible para administradores.'
+            });
         }
 
         // Update last login
@@ -157,8 +208,18 @@ const pinLogin = async (req, res) => {
 
         const { password: _, pin: _p2, ...userData } = matchedUser;
 
+        const reason = isInternal ? 'PIN_INTERNAL' : 'PIN_ADMIN_EXTERNAL';
+        saveLoginAudit({
+            email: matchedUser.email,
+            role: matchedUser.role,
+            ip: clientIp,
+            allowed: true,
+            reason,
+            userAgent
+        });
+
         res.json({ success: true, user: userData, token });
-        logger.info(`PIN login: ${matchedUser.name} (${matchedUser.role})`);
+        logger.info(`PIN login: ${matchedUser.name} (${matchedUser.role}) from ${clientIp} (${reason})`);
     } catch (error) {
         logger.error('PIN login error:', error);
         res.status(500).json({ success: false, error: 'Error en el servidor' });

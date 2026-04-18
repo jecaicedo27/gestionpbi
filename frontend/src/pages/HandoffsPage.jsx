@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { LayoutDashboard, Truck, Package, Clock, CheckCircle, AlertCircle, Search, RefreshCw, Send, ListChecks } from 'lucide-react';
+import { LayoutDashboard, Truck, Package, Clock, CheckCircle, AlertCircle, Search, RefreshCw, Send, ListChecks, ChevronDown, ChevronRight } from 'lucide-react';
 import { message, Spin, Modal, Badge, Empty, Table, Button, InputNumber } from 'antd';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -107,6 +107,38 @@ const HandoffsPage = () => {
     }, [activeTab]);
 
     // ── CREATE HANDOFF LOGIC ──
+    const [expandedProducts, setExpandedProducts] = useState({});
+
+    const toggleExpand = (productId) => {
+        setExpandedProducts(prev => ({ ...prev, [productId]: !prev[productId] }));
+    };
+
+    // Group productionStock by productId
+    const groupedStock = useMemo(() => {
+        const groups = {};
+        productionStock.forEach(s => {
+            const pid = s.productId;
+            if (!groups[pid]) {
+                groups[pid] = {
+                    productId: pid,
+                    productName: s.product?.name || s.sku || 'Desconocido',
+                    lots: [],
+                    totalAvailable: 0,
+                    totalDefective: 0,
+                    totalInTransit: 0,
+                    hasLocked: false,
+                };
+            }
+            const free = Math.max(0, s.currentQuantity - s.inTransitQty);
+            groups[pid].lots.push(s);
+            groups[pid].totalAvailable += free;
+            groups[pid].totalDefective += s.defective || 0;
+            groups[pid].totalInTransit += s.inTransitQty || 0;
+            if (s.assemblyPending) groups[pid].hasLocked = true;
+        });
+        return Object.values(groups).sort((a, b) => a.productName.localeCompare(b.productName));
+    }, [productionStock]);
+
     const handleQtyChange = (lot, val) => {
         const key = `${lot.productId}_${lot.lotNumber}`;
         setSelectedItems(prev => {
@@ -123,6 +155,41 @@ const HandoffsPage = () => {
             }
             return next;
         });
+    };
+
+    // Send all available for a product group (distribute across lots FIFO)
+    const handleSendAllProduct = (group) => {
+        setSelectedItems(prev => {
+            const next = { ...prev };
+            group.lots.forEach(lot => {
+                if (lot.assemblyPending) return;
+                const free = Math.max(0, lot.currentQuantity - lot.inTransitQty);
+                const key = `${lot.productId}_${lot.lotNumber}`;
+                if (free > 0) {
+                    next[key] = { productId: lot.productId, lotNumber: lot.lotNumber, requestedQuantity: free, stockInfo: lot };
+                }
+            });
+            return next;
+        });
+    };
+
+    // Clear all selected for a product group
+    const handleClearProduct = (group) => {
+        setSelectedItems(prev => {
+            const next = { ...prev };
+            group.lots.forEach(lot => {
+                delete next[`${lot.productId}_${lot.lotNumber}`];
+            });
+            return next;
+        });
+    };
+
+    // Count selected for a product group
+    const getGroupSelectedTotal = (group) => {
+        return group.lots.reduce((sum, lot) => {
+            const key = `${lot.productId}_${lot.lotNumber}`;
+            return sum + (selectedItems[key]?.requestedQuantity || 0);
+        }, 0);
     };
 
     const submitHandoff = async () => {
@@ -280,105 +347,149 @@ const HandoffsPage = () => {
                                 </div>
                             </div>
 
-                            {productionStock.length === 0 ? (
+                            {groupedStock.length === 0 ? (
                                 <Empty description="No hay cajas/lotes físicos disponibles en Producción ahora mismo." />
                             ) : (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                                    {productionStock
-                                        .filter(s => {
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    {groupedStock
+                                        .filter(group => {
                                             if (!searchQuery.trim()) return true;
                                             const q = searchQuery.toLowerCase();
-                                            return s.product?.name?.toLowerCase().includes(q) || 
-                                                   s.lotNumber?.toLowerCase().includes(q) || 
-                                                   s.sku?.toLowerCase().includes(q);
+                                            return group.productName.toLowerCase().includes(q) ||
+                                                group.lots.some(s => s.lotNumber?.toLowerCase().includes(q) || s.sku?.toLowerCase().includes(q));
                                         })
-                                        .map((s, idx) => {
-                                        const itemKey = `${s.productId}_${s.lotNumber}`;
-                                        const selectedQty = selectedItems[itemKey]?.requestedQuantity || null;
-                                        const isSelected = selectedQty !== null;
-                                        const locked = s.assemblyPending === true;
+                                        .map(group => {
+                                        const isExpanded = expandedProducts[group.productId];
+                                        const groupSelected = getGroupSelectedTotal(group);
+                                        const hasSelection = groupSelected > 0;
                                         return (
-                                            <div key={idx} style={{
-                                                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '12px 16px',
-                                                border: `1.5px solid ${locked ? '#f97316' : isSelected ? '#10b981' : '#e2e8f0'}`, borderRadius: 10,
-                                                background: locked ? '#fff7ed' : isSelected ? '#ecfdf5' : '#fff',
-                                                opacity: locked ? 0.85 : 1, transition: 'all 0.2s'
+                                            <div key={group.productId} style={{
+                                                border: `1.5px solid ${hasSelection ? '#10b981' : '#e2e8f0'}`,
+                                                borderRadius: 10, background: hasSelection ? '#f0fdf4' : '#fff',
+                                                overflow: 'hidden', transition: 'all 0.2s'
                                             }}>
-                                                <div style={{ flex: 1 }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                                        <span style={{ fontWeight: 800, fontSize: '0.9rem', color: '#1e293b' }}>{s.product?.name || s.sku}</span>
-                                                        {locked && (
+                                                {/* Product header row */}
+                                                <div
+                                                    style={{
+                                                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                                        padding: '12px 16px', cursor: 'pointer', userSelect: 'none'
+                                                    }}
+                                                    onClick={() => toggleExpand(group.productId)}
+                                                >
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                                                        {isExpanded ? <ChevronDown size={18} color="#64748b" /> : <ChevronRight size={18} color="#64748b" />}
+                                                        <span style={{ fontWeight: 800, fontSize: '0.92rem', color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                            {group.productName}
+                                                        </span>
+                                                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: 12, whiteSpace: 'nowrap' }}>
+                                                            {group.lots.length} lote{group.lots.length > 1 ? 's' : ''}
+                                                        </span>
+                                                        {group.hasLocked && (
                                                             <span style={{ fontSize: '0.68rem', fontWeight: 800, padding: '2px 8px', borderRadius: 20, background: '#fed7aa', color: '#9a3412', border: '1px solid #fb923c', whiteSpace: 'nowrap' }}>
-                                                                🔒 Ensamble pendiente
+                                                                🔒 Algunos bloqueados
                                                             </span>
                                                         )}
                                                     </div>
-                                                    <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: 2 }}>
-                                                        Lote: <strong style={{ color: '#0f172a' }}>{s.lotNumber}</strong>
-                                                        <span style={{ margin: '0 6px' }}>•</span>
-                                                        {s.defective > 0 ? (
-                                                            <span style={{ background: '#fef2f2', color: '#ef4444', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
-                                                                {s.defective} en mal estado
-                                                            </span>
-                                                        ) : (
-                                                            <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 8px', borderRadius: 4, fontWeight: 700 }}>
-                                                                sin defectos
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                            <span style={{ fontWeight: 700, color: '#0284c7' }}>📊 Balance:</span>
-                                                            <span>{s.initialQuantity} total ingresadas a zona</span>
-                                                            <span style={{ color: '#cbd5e1' }}>→</span>
-                                                            <span>{s.alreadyDelivered} entregadas a bodega</span>
-                                                        </div>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                            <span style={{ fontWeight: 700, color: '#f59e0b', marginLeft: 24 }}>↳</span>
-                                                            <span>{s.inTransitQty} en acta pendiente</span>
-                                                            <span style={{ color: '#cbd5e1' }}>→</span>
-                                                            <span style={{ fontWeight: 800, color: '#0f172a' }}>{Math.max(0, s.currentQuantity - s.inTransitQty)} libres para enviar</span>
-                                                        </div>
-                                                        {s.currentQuantity > 0 && s.defective > 0 && (
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', marginTop: 8, background: '#f8fafc', padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                                                                <span style={{ fontWeight: 800, color: '#ef4444' }}>⚠️ Libres para enviar {Math.max(0, s.currentQuantity - s.inTransitQty)}:</span>
-                                                                <span>{Math.max(0, s.currentQuantity - s.inTransitQty - s.defective)} sanas y {s.defective} en mal estado.</span>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                                                        <div style={{ textAlign: 'right' }}>
+                                                            <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#059669' }}>
+                                                                {group.totalAvailable} libres
                                                             </div>
-                                                        )}
-                                                        {s.currentQuantity > 0 && s.defective === 0 && (
-                                                            <div style={{ fontSize: '0.75rem', color: '#059669', marginTop: 8, padding: '4px 8px', background: '#ecfdf5', borderRadius: 4, fontStyle: 'italic', display: 'inline-block' }}>
-                                                                * Tienes {Math.max(0, s.currentQuantity - s.inTransitQty)} unidades sueltas listas y libres para enviarse a Logística.
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    {locked && (
-                                                        <div style={{ fontSize: '0.72rem', color: '#c2410c', marginTop: 4, fontStyle: 'italic' }}>
-                                                            ⚠️ Este lote debe finalizarse en el paso de Ensamble Siigo antes de poder enviarse a logística.
+                                                            {group.totalDefective > 0 && (
+                                                                <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600 }}>
+                                                                    {group.totalDefective} defectuosos
+                                                                </div>
+                                                            )}
+                                                            {group.totalInTransit > 0 && (
+                                                                <div style={{ fontSize: '0.7rem', color: '#f59e0b', fontWeight: 600 }}>
+                                                                    {group.totalInTransit} en tránsito
+                                                                </div>
+                                                            )}
                                                         </div>
-                                                    )}
-                                                </div>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12, flexShrink: 0 }}>
-                                                    {!locked && <span style={{ fontSize: '0.75rem', fontWeight: 600 }}>Enviar:</span>}
-                                                    {(() => {
-                                                        const maxSendable = Math.max(0, s.currentQuantity - s.inTransitQty);
-                                                        return (
-                                                        <>
-                                                        <InputNumber
-                                                            min={0}
-                                                            max={maxSendable}
-                                                            value={locked ? null : selectedQty}
-                                                            onChange={val => !locked && handleQtyChange(s, val)}
-                                                            placeholder={locked ? '—' : '0'}
-                                                            disabled={locked}
-                                                            style={{ width: 80 }}
-                                                        />
-                                                        {isSelected && !locked && (
-                                                            <Button type="primary" size="small" onClick={() => handleQtyChange(s, maxSendable)} style={{ background: '#10b981' }}>Max</Button>
+                                                        {hasSelection && (
+                                                            <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#fff', background: '#10b981', padding: '3px 10px', borderRadius: 20 }}>
+                                                                {groupSelected} sel.
+                                                            </span>
                                                         )}
-                                                        </>
-                                                        );
-                                                    })()}
+                                                        <Button
+                                                            size="small"
+                                                            onClick={e => { e.stopPropagation(); hasSelection ? handleClearProduct(group) : handleSendAllProduct(group); }}
+                                                            style={{
+                                                                background: hasSelection ? '#fef2f2' : '#ecfdf5',
+                                                                color: hasSelection ? '#dc2626' : '#059669',
+                                                                border: `1px solid ${hasSelection ? '#fca5a5' : '#6ee7b7'}`,
+                                                                fontWeight: 700, fontSize: '0.75rem'
+                                                            }}
+                                                        >
+                                                            {hasSelection ? 'Limpiar' : 'Enviar Todo'}
+                                                        </Button>
+                                                    </div>
                                                 </div>
+
+                                                {/* Expanded lot details */}
+                                                {isExpanded && (
+                                                    <div style={{ borderTop: '1px solid #e2e8f0', padding: '8px 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                                        {group.lots.map((s, idx) => {
+                                                            const itemKey = `${s.productId}_${s.lotNumber}`;
+                                                            const selectedQty = selectedItems[itemKey]?.requestedQuantity || null;
+                                                            const isSelected = selectedQty !== null;
+                                                            const locked = s.assemblyPending === true;
+                                                            const maxSendable = Math.max(0, s.currentQuantity - s.inTransitQty);
+                                                            return (
+                                                                <div key={idx} style={{
+                                                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                                                    padding: '10px 14px', borderRadius: 8,
+                                                                    border: `1px solid ${locked ? '#fdba74' : isSelected ? '#86efac' : '#f1f5f9'}`,
+                                                                    background: locked ? '#fff7ed' : isSelected ? '#f0fdf4' : '#f8fafc',
+                                                                    opacity: locked ? 0.8 : 1
+                                                                }}>
+                                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                                                            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#334155' }}>{s.lotNumber}</span>
+                                                                            {locked && (
+                                                                                <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '1px 6px', borderRadius: 12, background: '#fed7aa', color: '#9a3412' }}>
+                                                                                    🔒 Pendiente
+                                                                                </span>
+                                                                            )}
+                                                                            {s.defective > 0 && (
+                                                                                <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: '#fef2f2', color: '#ef4444' }}>
+                                                                                    {s.defective} defectuosos
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: 3, display: 'flex', gap: 12 }}>
+                                                                            <span>Total: {s.initialQuantity}</span>
+                                                                            <span>Entregadas: {s.alreadyDelivered}</span>
+                                                                            {s.inTransitQty > 0 && <span style={{ color: '#f59e0b' }}>En tránsito: {s.inTransitQty}</span>}
+                                                                            <span style={{ fontWeight: 800, color: '#059669' }}>Libres: {maxSendable}</span>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12, flexShrink: 0 }}>
+                                                                        <InputNumber
+                                                                            min={0}
+                                                                            max={maxSendable}
+                                                                            value={locked ? null : selectedQty}
+                                                                            onChange={val => !locked && handleQtyChange(s, val)}
+                                                                            placeholder={locked ? '—' : '0'}
+                                                                            disabled={locked}
+                                                                            style={{ width: 75 }}
+                                                                            size="small"
+                                                                        />
+                                                                        {!locked && (
+                                                                            <Button
+                                                                                size="small" type="link"
+                                                                                onClick={() => handleQtyChange(s, maxSendable)}
+                                                                                style={{ padding: '0 4px', fontSize: '0.72rem', fontWeight: 700, color: '#059669' }}
+                                                                            >
+                                                                                Max
+                                                                            </Button>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                )}
                                             </div>
                                         );
                                     })}
@@ -391,16 +502,35 @@ const HandoffsPage = () => {
                             <h2 style={{ fontSize: '1.1rem', fontWeight: 800, margin: '0 0 16px', display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <ListChecks size={20} /> Entregar a Bodega
                             </h2>
-                            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 16, minHeight: 100 }}>
+                            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 16, minHeight: 100, maxHeight: 320, overflowY: 'auto' }}>
                                 {Object.values(selectedItems).length === 0 ? (
                                     <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.8rem', padding: '30px 0' }}>Elige cuántas cajas vas a mandar para armar el acta.</div>
                                 ) : (
-                                    Object.values(selectedItems).map((i, idx) => (
-                                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
-                                            <span style={{ fontWeight: 600, color: '#334155', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.stockInfo?.product?.name}</span>
-                                            <strong style={{ color: '#10b981' }}>{i.requestedQuantity} uds</strong>
-                                        </div>
-                                    ))
+                                    (() => {
+                                        // Group selected items by product
+                                        const cartGroups = {};
+                                        Object.values(selectedItems).forEach(i => {
+                                            const name = i.stockInfo?.product?.name || 'Desconocido';
+                                            if (!cartGroups[name]) cartGroups[name] = { total: 0, lots: [] };
+                                            cartGroups[name].total += i.requestedQuantity;
+                                            cartGroups[name].lots.push(i);
+                                        });
+                                        return Object.entries(cartGroups).sort((a, b) => a[0].localeCompare(b[0])).map(([name, g], idx) => (
+                                            <div key={idx} style={{ padding: '6px 0', borderBottom: '1px solid #f1f5f9' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem' }}>
+                                                    <span style={{ fontWeight: 700, color: '#1e293b', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+                                                    <strong style={{ color: '#10b981' }}>{g.total} uds</strong>
+                                                </div>
+                                                {g.lots.length > 1 && (
+                                                    <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 2, paddingLeft: 8 }}>
+                                                        {g.lots.map((l, li) => (
+                                                            <div key={li}>{l.lotNumber}: {l.requestedQuantity}</div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ));
+                                    })()
                                 )}
                             </div>
                             <div style={{ marginBottom: 16 }}>

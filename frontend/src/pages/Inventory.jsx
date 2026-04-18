@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
-import Card from '../components/common/Card';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 import { socket } from '../services/socket';
-import { Search, Filter, AlertTriangle, CheckCircle, XCircle, Grid, List, RefreshCw } from 'lucide-react';
+import { Search, AlertTriangle, CheckCircle, XCircle, Grid, List, RefreshCw } from 'lucide-react';
 import InventoryMatrix from '../components/inventory/InventoryMatrix';
 import SyncProgressModal from '../components/inventory/SyncProgressModal';
 import ProductAnalysisModal from '../components/inventory/ProductAnalysisModal';
+import UnassignedBulkIngressModal from '../components/inventory/UnassignedBulkIngressModal';
+import { parseScanInput, resolveScannedQuantity } from '../services/scannerParser';
+import { useGlobalScanner } from '../hooks/useGlobalScanner';
 
 import PlanningModal from '../components/inventory/PlanningModal'; // Added
 
@@ -20,11 +22,21 @@ const Inventory = () => {
 
     // Product Analysis Modal State
     const [selectedProduct, setSelectedProduct] = useState(null);
+    const [pendingLotScan, setPendingLotScan] = useState(null);
+    const [scannerNotice, setScannerNotice] = useState(null);
+    const [bulkIngressContext, setBulkIngressContext] = useState(null);
+    const scannerNoticeTimerRef = useRef(null);
 
     // Sync UI State
     const [isSyncing, setIsSyncing] = useState(false);
     const [showSyncModal, setShowSyncModal] = useState(false);
     const [syncProgress, setSyncProgress] = useState({ percentage: 0, status: 'IDLE', message: '' });
+
+    const pushScannerNotice = useCallback((status, message) => {
+        setScannerNotice({ status, message });
+        if (scannerNoticeTimerRef.current) clearTimeout(scannerNoticeTimerRef.current);
+        scannerNoticeTimerRef.current = setTimeout(() => setScannerNotice(null), 4500);
+    }, []);
 
     useEffect(() => {
         loadInventory();
@@ -66,8 +78,93 @@ const Inventory = () => {
             socket.off('inventory:updated', handleUpdate);
             socket.off('inventory:sync:progress', handleSyncProgress);
             clearInterval(syncInterval);
+            if (scannerNoticeTimerRef.current) clearTimeout(scannerNoticeTimerRef.current);
         };
     }, []);
+
+    const handleLotScanConsumed = useCallback(() => setPendingLotScan(null), []);
+    const handleCloseProductModal = useCallback(() => {
+        setPendingLotScan(null);
+        setSelectedProduct(null);
+    }, []);
+
+    const findProductByScan = useCallback((scan, packageLabel = null) => {
+        if (packageLabel?.productId) {
+            return products.find(product => product.id === packageLabel.productId) || null;
+        }
+
+        return products.find(product =>
+            product.code === scan.sku ||
+            product.barcode === scan.barcode ||
+            product.code === scan.barcode
+        ) || null;
+    }, [products]);
+
+    const handleInventoryScan = useCallback(async (rawValue) => {
+        const scan = parseScanInput(rawValue);
+        if (scan.type === 'unknown' || (!scan.sku && !scan.barcode && !scan.packageId && !scan.packageCode)) {
+            return;
+        }
+
+        let packageLabel = null;
+        if (scan.packageId || scan.packageCode) {
+            try {
+                const { data } = await api.post('/inventory/package-labels/validate-scan', {
+                    packageCode: scan.packageId || scan.packageCode,
+                    recordScan: false
+                });
+                packageLabel = data.packageLabel || null;
+            } catch (error) {
+                if (error.response?.status !== 404) {
+                    pushScannerNotice('error', error.response?.data?.error || 'No se pudo validar el ID unico');
+                    return;
+                }
+            }
+        }
+
+        const matchedProduct = findProductByScan(scan, packageLabel);
+        if (!matchedProduct) {
+            pushScannerNotice('error', `No encontre producto para ${scan.packageId || scan.barcode || scan.sku || 'el codigo escaneado'}`);
+            return;
+        }
+
+        const resolvedQuantity = resolveScannedQuantity({
+            scan,
+            product: matchedProduct,
+            packageLabel,
+            fallback: null
+        });
+
+        const normalizedScan = {
+            ...scan,
+            productId: packageLabel?.productId || matchedProduct.id,
+            duplicatePackageLabel: packageLabel,
+            packageDuplicate: Boolean(packageLabel),
+            packageId: packageLabel?.packageCode || scan.packageId || scan.packageCode || null,
+            packageCode: packageLabel?.packageCode || scan.packageCode || scan.packageId || null,
+            quantity: resolvedQuantity,
+            unitsPerBox: resolvedQuantity,
+            lotNumber: packageLabel?.lotNumber || scan.lotNumber || null,
+            receivedAt: packageLabel?.receivedAt || scan.receivedAt || null,
+            expirationDate: packageLabel?.expiresAt || scan.expirationDate || null,
+            sku: packageLabel?.sku || scan.sku || matchedProduct.code,
+            barcode: packageLabel?.barcode || scan.barcode || matchedProduct.barcode,
+        };
+
+        setSelectedProduct(matchedProduct);
+        setPendingLotScan(normalizedScan);
+        pushScannerNotice(
+            packageLabel ? 'warning' : 'success',
+            packageLabel
+                ? `ID ${packageLabel.packageCode} ya registrado. Abrí ${matchedProduct.name} para validarlo.`
+                : `Escaneo listo en ${matchedProduct.name}.`
+        );
+    }, [findProductByScan, pushScannerNotice]);
+
+    useGlobalScanner({
+        onScan: handleInventoryScan,
+        enabled: !showSyncModal && !bulkIngressContext
+    });
 
     const loadInventory = async () => {
         try {
@@ -243,6 +340,18 @@ const Inventory = () => {
                     ))}
                 </div>
 
+                {scannerNotice && (
+                    <div className={`px-3 py-2 rounded-lg text-sm font-medium border ${
+                        scannerNotice.status === 'error'
+                            ? 'bg-red-50 text-red-700 border-red-200'
+                            : scannerNotice.status === 'warning'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}>
+                        {scannerNotice.message}
+                    </div>
+                )}
+
                 <div>
                     <div className="flex gap-2 mb-3 px-1">
                         <div className="relative flex-1">
@@ -258,7 +367,11 @@ const Inventory = () => {
                     </div>
 
                     {viewMode === 'MATRIX' ? (
-                        <InventoryMatrix products={filteredProducts} onProductClick={setSelectedProduct} />
+                        <InventoryMatrix
+                            products={filteredProducts}
+                            onProductClick={setSelectedProduct}
+                            onBulkValidationOpen={setBulkIngressContext}
+                        />
                     ) : (
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm text-left">
@@ -304,11 +417,25 @@ const Inventory = () => {
                 <PlanningModal onClose={() => setShowPlanningModal(false)} />
             )}
 
-            <ProductAnalysisModal
-                product={selectedProduct}
-                onClose={() => setSelectedProduct(null)}
-                onUpdate={loadInventory}
-            />
+            {bulkIngressContext && (
+                <UnassignedBulkIngressModal
+                    context={bulkIngressContext}
+                    products={products}
+                    onClose={() => setBulkIngressContext(null)}
+                    onCompleted={loadInventory}
+                />
+            )}
+
+            {selectedProduct && (
+                <ProductAnalysisModal
+                    key={selectedProduct.id}
+                    product={selectedProduct}
+                    initialLotScan={pendingLotScan}
+                    onLotScanConsumed={handleLotScanConsumed}
+                    onClose={handleCloseProductModal}
+                    onUpdate={loadInventory}
+                />
+            )}
         </div>
     );
 };

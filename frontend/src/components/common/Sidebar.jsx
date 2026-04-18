@@ -1,11 +1,27 @@
-import React, { useState } from 'react';
-import { LayoutDashboard, Package, Factory, ShoppingCart, Tag, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search, FileSpreadsheet } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { useState } from 'react';
+import { LayoutDashboard, Package, Factory, ShoppingCart, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search, FileSpreadsheet, Building2 } from 'lucide-react';
+import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+
+const sectionIcons = {
+    'Distribución': ShoppingCart,
+    'Logística': Package,
+    'Producción': Factory,
+    'Calidad': AlertCircle,
+    'Compras': Truck,
+    'Reportes': BarChart2,
+};
+
+const isPathActive = (pathname, path) => {
+    if (path === '/') return pathname === '/';
+    return pathname === path || pathname.startsWith(`${path}/`);
+};
 
 const Sidebar = () => {
     const { user } = useAuth();
+    const location = useLocation();
     const [isCollapsed, setIsCollapsed] = useState(false);
+    const [expandedGroups, setExpandedGroups] = useState({});
 
     const allItems = [
         // ── General ──
@@ -45,7 +61,7 @@ const Sidebar = () => {
         { icon: AlertCircle, label: 'Recall por Lote', path: '/recall-report', roles: ['ADMIN', 'CALIDAD', 'LOGISTICA', 'QUIMICO'] },
         { icon: Printer, label: 'Impresión Etiquetas', path: '/labeling', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'] },
         { icon: ClipboardList, label: 'Reg. de Lavado POES', path: '/sanitation/operator', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
-        { icon: Calendar, label: 'Cuadro de Turnos', path: '/shift-schedule', roles: ['ADMIN'] },
+        { icon: Calendar,   label: 'Cuadro de Turnos',   path: '/shift-schedule', roles: ['ADMIN'] },
 
         // ── Calidad ──
         { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL', 'LOGISTICA', 'QUIMICO'], section: 'Calidad' },
@@ -66,7 +82,9 @@ const Sidebar = () => {
         { icon: FileText, label: 'Garantías (PQR)', path: '/pqr/list', roles: ['DISTRIBUIDOR'], section: 'Distribución' },
 
         // ── Reportes & Admin ──
-        { icon: Search, label: 'Conciliación Siigo', path: '/reconciliation', roles: ['ADMIN'], section: 'Reportes' },
+        { icon: Building2,  label: 'Control de Ingreso', path: '/attendance', roles: ['ADMIN', 'RECURSOS_HUMANOS'], section: 'Reportes' },
+        { icon: Search, label: 'Conciliación Siigo', path: '/reconciliation', roles: ['ADMIN'] },
+        { icon: FileSpreadsheet, label: 'Validación Recuperación', path: '/recovery/forensic', roles: ['ADMIN', 'QUIMICO'] },
         { icon: LineChart, label: 'Análisis Ejecutivo', path: '/analytics/executive', roles: ['ADMIN'] },
         { icon: BarChart2, label: 'Ventas por Cliente', path: '/analytics/sales', roles: ['ADMIN'] },
         { icon: FileText, label: 'Movimientos', path: '/admin/movements', roles: ['ADMIN'] },
@@ -76,9 +94,60 @@ const Sidebar = () => {
 
     // ADMIN sees ALL items; other roles see only their allowed items
     const isAdmin = user?.role === 'ADMIN';
-    const items = isAdmin
-        ? allItems
-        : allItems.filter(item => item.roles.includes(user?.role));
+    let currentSection = null;
+    const flatItems = [];
+    const directItems = [];
+    const groupsBySection = new Map();
+
+    allItems.forEach((item) => {
+        if (item.section) currentSection = item.section;
+        const canSeeItem = isAdmin || item.roles.includes(user?.role);
+        if (!canSeeItem) return;
+
+        flatItems.push(item);
+
+        if (!currentSection) {
+            directItems.push(item);
+            return;
+        }
+
+        if (!groupsBySection.has(currentSection)) {
+            groupsBySection.set(currentSection, {
+                label: currentSection,
+                icon: sectionIcons[currentSection] || Layers,
+                items: [],
+            });
+        }
+
+        groupsBySection.get(currentSection).items.push(item);
+    });
+
+    const groupedItems = Array.from(groupsBySection.values());
+    const toggleGroup = (groupLabel) => {
+        setExpandedGroups(prev => ({
+            ...prev,
+            [groupLabel]: !prev[groupLabel],
+        }));
+    };
+
+    const renderNavItem = (item, className = '', tabIndex) => (
+        <NavLink
+            key={`${item.path}-${item.label}`}
+            to={item.path}
+            title={item.label}
+            aria-label={item.label}
+            tabIndex={tabIndex}
+            className={({ isActive }) =>
+                `flex items-center rounded-lg text-sm font-medium transition-colors ${isCollapsed ? 'justify-center px-2 py-2.5' : 'gap-3 px-3 py-2'} ${className} ${isActive
+                    ? 'bg-primary-50 text-primary-700'
+                    : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
+                }`
+            }
+        >
+            <item.icon size={20} className="flex-shrink-0" />
+            {!isCollapsed && <span className="truncate">{item.label}</span>}
+        </NavLink>
+    );
 
     return (
         <aside className={`${isCollapsed ? 'w-20' : 'w-64'} bg-white border-r border-neutral-200 flex flex-col min-h-screen transition-all duration-300`}>
@@ -104,31 +173,55 @@ const Sidebar = () => {
                 </button>
             </div>
 
-            <nav className={`flex-1 overflow-y-auto ${isCollapsed ? 'p-3 space-y-1' : 'p-4 space-y-0.5'}`}>
-                {Array.isArray(items) && items.map((item, index) => (
-                    <React.Fragment key={index}>
-                        {/* Section header for ADMIN */}
-                        {!isCollapsed && isAdmin && item.section && (index === 0 || items[index - 1]?.section !== item.section) && (
-                            <div className={`text-xs font-bold uppercase tracking-wider text-neutral-400 ${index > 0 ? 'mt-4 pt-3 border-t border-neutral-100' : ''} mb-1 px-3`}>
-                                {item.section}
-                            </div>
-                        )}
-                        <NavLink
-                            to={item.path}
-                            title={item.label}
-                            aria-label={item.label}
-                            className={({ isActive }) =>
-                                `flex items-center rounded-lg text-sm font-medium transition-colors ${isCollapsed ? 'justify-center px-2 py-2.5' : 'gap-3 px-3 py-2'} ${isActive
-                                    ? 'bg-primary-50 text-primary-700'
-                                    : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
-                                }`
-                            }
-                        >
-                            <item.icon size={20} />
-                            {!isCollapsed && <span className="truncate">{item.label}</span>}
-                        </NavLink>
-                    </React.Fragment>
-                ))}
+            <nav className={`flex-1 overflow-y-auto ${isCollapsed ? 'p-3 space-y-1' : 'p-4 space-y-2'}`}>
+                {isCollapsed ? (
+                    flatItems.map(item => renderNavItem(item))
+                ) : (
+                    <>
+                        {directItems.map(item => renderNavItem(item))}
+
+                        {groupedItems.map((group) => {
+                            const GroupIcon = group.icon;
+                            const isOpen = Boolean(expandedGroups[group.label]);
+                            const hasActiveItem = group.items.some(item => isPathActive(location.pathname, item.path));
+                            const panelId = `sidebar-group-${group.label.toLowerCase().replace(/\s+/g, '-')}`;
+
+                            return (
+                                <div key={group.label} className="rounded-lg">
+                                    <button
+                                        type="button"
+                                        onClick={() => toggleGroup(group.label)}
+                                        className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs font-bold uppercase tracking-wider transition-all duration-200 ${hasActiveItem
+                                            ? 'bg-primary-50 text-primary-700'
+                                            : 'text-neutral-500 hover:bg-neutral-50 hover:text-neutral-900'
+                                        }`}
+                                        aria-expanded={isOpen}
+                                        aria-controls={panelId}
+                                    >
+                                        <span className="flex items-center gap-2 min-w-0">
+                                            <GroupIcon size={16} className="flex-shrink-0" />
+                                            <span className="truncate">{group.label}</span>
+                                        </span>
+                                        <ChevronDown
+                                            size={16}
+                                            className={`flex-shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}
+                                        />
+                                    </button>
+
+                                    <div
+                                        id={panelId}
+                                        aria-hidden={!isOpen}
+                                        className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr] opacity-100 mt-1' : 'grid-rows-[0fr] opacity-0'}`}
+                                    >
+                                        <div className="min-h-0 overflow-hidden pl-3 space-y-0.5">
+                                            {group.items.map(item => renderNavItem(item, 'border-l border-transparent', isOpen ? undefined : -1))}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </>
+                )}
             </nav>
 
         </aside>

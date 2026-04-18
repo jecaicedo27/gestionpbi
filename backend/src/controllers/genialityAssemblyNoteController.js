@@ -100,7 +100,8 @@ const assemblyNoteController = {
             // If the note is pending AND we know the template stage, recalculate
             // plannedQuantity from the current template inputs so template changes
             // propagate automatically to all scheduled (not yet started) batches.
-            const isFormacionNote = note.processType?.code === 'FORMACION';
+            const processCode = note.processType?.code;
+            const isFormacionNote = ['FORMACION', 'G_FORMACION'].includes(processCode);
             if (note.status === 'PENDING' && note.stageId && note.targetQuantity && !isFormacionNote) {
                 const templateInputs = await prisma.assemblyTemplateStageInput.findMany({
                     where: { stageId: note.stageId },
@@ -122,8 +123,8 @@ const assemblyNoteController = {
                     // absolute grams (already scaled), NOT per-unit ratios. Multiplying
                     // again by targetQuantity would produce wildly inflated values.
                     // Live recalc would lose the scaling and show raw template values.
-                    const isPesajeNote = note.processType?.code === 'PESAJE';
-                    const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
+                    const isPesajeNote = ['PESAJE', 'G_PESAJE'].includes(processCode);
+                    const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(processCode);
                     if (isPesajeNote || isEnsambleNote) {
                         // Keep stored DB values — they are already correct
                         // Just re-sort items to match template order (below)
@@ -819,11 +820,12 @@ const assemblyNoteController = {
             const mm = String(co.getMinutes()).padStart(2, '0');
 
             // ── Flavor resolution for generic templates ──
-            const isGeniality = template.templateCode === 'BATCH-GENIALITY';
+            const isGeniality = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR';
+            const isEscarchadorBatch = template.templateCode === 'BATCH-ESCARCHADOR';
             let flavorProductId = null; // resolved output product (ESFERAS [SABOR])
             let flavorCompuestoId = null; // resolved input product (COMPUESTO [SABOR])
             let sizeMap = {}; // resolved output products per size (3400, 1150, 350)
-            if (flavorKey && isGeniality) {
+            if (flavorKey && isGeniality && !isEscarchadorBatch) {
                 // ── GENIALITY flavor resolution: just replace {SABOR} in stage names ──
                 const flavorNorm = stripAccents(flavorKey).toUpperCase();
                 console.log(`[quickStart] Geniality flavor resolution: ${flavorKey}`);
@@ -1020,6 +1022,44 @@ const assemblyNoteController = {
                 }
 
                 console.log(`[quickStart] After Geniality substitution, ${flatStages.length} flat stages`);
+            } else if (isEscarchadorBatch) {
+                // BATCH-ESCARCHADOR: sub-templates are already correct (TMPL101 = BASE ESCARCHADOR).
+                // Only resolve SIROPE GENIALITY ESCARCHADOR output products per size for EMPAQUE/ENSAMBLE stages.
+                console.log(`[quickStart] BATCH-ESCARCHADOR — skipping flavor resolution, resolving output products`);
+                const allSirope = await prisma.product.findMany({
+                    where: { name: { contains: 'SIROPE GENIALITY ESCARCHADOR', mode: 'insensitive' } },
+                    select: { id: true, name: true }
+                });
+                for (const size of ['1000', '360']) {
+                    const target = `ESCARCHADOR X ${size}`;
+                    const prod = allSirope.find(p => p.name.toUpperCase().includes(target));
+                    if (prod) {
+                        sizeMap[size] = prod;
+                        console.log(`[quickStart] Escarchador size ${size}ml → ${prod.name} (${prod.id})`);
+                    }
+                }
+                // Assign outputProductId to EMPAQUE/ENSAMBLE stages
+                for (const stage of flatStages) {
+                    const code = stage.processType?.code;
+                    if (code !== 'EMPAQUE' && code !== 'ENSAMBLE' && code !== 'G_EMPAQUE' && code !== 'G_ENSAMBLE') continue;
+                    const name = (stage.stageName || '').toUpperCase();
+                    for (const [size, prod] of Object.entries(sizeMap)) {
+                        if (name.includes(size)) {
+                            stage.outputProductId = prod.id;
+                            console.log(`[quickStart] Escarchador ${code} "${stage.stageName}" → outputProductId=${prod.id} (${prod.name})`);
+                            break;
+                        }
+                    }
+                    // Skip if 0 planned units
+                    if (stage.outputProductId) {
+                        const schedulerTarget = (reqOutputTargets || []).find(t => t.productId === stage.outputProductId);
+                        if (schedulerTarget && schedulerTarget.plannedUnits === 0) {
+                            stage._skipStage = true;
+                            console.log(`[quickStart] Escarchador ${code} "${stage.stageName}" → skipped (0 planned units)`);
+                        }
+                    }
+                }
+                console.log(`[quickStart] BATCH-ESCARCHADOR: ${flatStages.length} flat stages ready`);
             } else if (flavorKey) {
                 // Use accent-insensitive JS matching (CAFE matches CAFÉ)
                 const flavorNorm = stripAccents(flavorKey).toUpperCase();
@@ -1305,8 +1345,8 @@ const assemblyNoteController = {
                 console.log(`[quickStart] ⚠️ Ignored frontend quantity=${quantity} for Geniality, forcing 1 massive bundle.`);
             }
 
-            const isGenialityTemplate = template.templateCode === 'BATCH-GENIALITY';
-            const scaleFactor = (isGenialityTemplate && batch.baseWeight && batch.baseWeight > 0) 
+            const isGenialityTemplate = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR';
+            const scaleFactor = (isGenialityTemplate && batch.baseWeight && batch.baseWeight > 0)
                  ? (batch.baseWeight / 100.0) // Simply total kg divided by 100kg formula baseline
                  : 1.0;
 
@@ -1523,6 +1563,10 @@ const assemblyNoteController = {
                             unit: input.unit || 'gramo',
                             notes: null
                         }));
+                        const aggTargetQuantity = aggItems.reduce((sum, item) => {
+                            const unit = String(item.unit || '').toLowerCase();
+                            return sum + (unit === 'kg' ? item.plannedQuantity * 1000 : item.plannedQuantity);
+                        }, 0);
 
                         const aggNote = await prisma.assemblyNote.create({
                             data: {
@@ -1533,7 +1577,7 @@ const assemblyNoteController = {
                                 stageId: stage._fromSubTemplate ? null : stage.id,
                                 stageOrder: globalStageOrder,
                                 stageName: `${stage.stageName} — Total ${baseQty} lotes`,
-                                targetQuantity: baseQty,
+                                targetQuantity: aggTargetQuantity,
                                 unit: noteUnit,
                                 status: 'PENDING',
                                 processTypeId: stage.processTypeId,
@@ -1649,6 +1693,8 @@ const assemblyNoteController = {
                         }));
                     }
 
+                    // Create note first, then items separately (avoids Prisma nested create
+                    // silently dropping items when multiple share the same componentId)
                     const note = await prisma.assemblyNote.create({
                         data: {
                             noteNumber,
@@ -1671,8 +1717,19 @@ const assemblyNoteController = {
                                 ...conteoParams
                             },
                             createdById: userId || null,
-                            items: { create: itemsToCreate }
-                        },
+                        }
+                    });
+
+                    // Create items individually to preserve duplicates (e.g. AZUCAR added twice at different process steps)
+                    if (itemsToCreate.length > 0) {
+                        await prisma.assemblyNoteItem.createMany({
+                            data: itemsToCreate.map(item => ({ ...item, assemblyNoteId: note.id }))
+                        });
+                    }
+
+                    // Re-fetch with includes for response
+                    const fullNote = await prisma.assemblyNote.findUnique({
+                        where: { id: note.id },
                         include: {
                             items: { include: { component: true } },
                             processType: true,
@@ -1680,7 +1737,11 @@ const assemblyNoteController = {
                         }
                     });
 
-                    notes.push(note);
+                    if (fullNote.items.length !== itemsToCreate.length) {
+                        console.warn(`[quickStart] ⚠️ Item count mismatch for "${stage.stageName}": expected ${itemsToCreate.length}, got ${fullNote.items.length}`);
+                    }
+
+                    notes.push(fullNote);
                 }
             }
 

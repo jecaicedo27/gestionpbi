@@ -576,66 +576,58 @@ class SiigoBrowserManager {
 
             // === PRODUCT BODEGA (only the product row, ingredients come from template) ===
             // ALWAYS force "Sin asignar" here because the Siigo template may have
-            // overridden the bodega to MAQUILAS after loading ingredients.
-            await page.waitForTimeout(3000); // Wait for template to load ingredients
+            // overridden the bodega after loading ingredients.
+            await page.waitForTimeout(3000);
             log('=== BODEGA PRODUCTO (forzar Sin asignar) ===');
             try {
-                // Find the exact Bodega input inside the "Entrada de producto" table
-                const foundBodega = await page.evaluate(() => {
-                    const tables = document.querySelectorAll('table');
-                    let targetInput = null;
-                    if (tables.length > 0) {
-                        const productTable = Array.from(tables).find(t => t.textContent.includes('Entrada de producto') || t.textContent.includes('ensamblar')) || tables[0];
-                        const inputs = productTable.querySelectorAll('#autocomplete_autocompleteInput');
-                        if (inputs.length >= 2) {
-                            targetInput = inputs[1]; // Usually second autocomplete is Bodega
-                        } else if (inputs.length === 1) {
-                            targetInput = inputs[0]; // If product turned to plain text, only 1 autocomplete left
-                        }
-                    }
-                    
-                    if (targetInput && targetInput.offsetHeight > 0) {
-                        targetInput.scrollIntoView();
-                        targetInput.focus();
-                        targetInput.click();
-                        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                        nativeSetter.call(targetInput, '');
-                        targetInput.dispatchEvent(new Event('input', { bubbles: true }));
-                        return true;
-                    }
-                    return false;
-                });
-                
-                if (foundBodega) {
-                    await page.waitForTimeout(500);
-                    await page.keyboard.type('Sin asig', { delay: 100 });
-                    await page.waitForTimeout(3000);
-                    await page.keyboard.press('ArrowDown');
-                    await page.waitForTimeout(500);
-                    await page.keyboard.press('Enter');
-                    await page.waitForTimeout(1000);
-                    log(`✅ Bodega producto: forzada vía JS locator`);
+                // The bodega is a <siigo-autocomplete id="warehouse"> with an autocomplete input inside.
+                // Find it in the product table (first table, which contains "ensamblar" in headers).
+                // Use the product table's second autocomplete (first=product name, second=bodega).
+                const productTableLocator = page.locator('table').filter({ hasText: 'ensamblar' });
+                const bodegaLocator = productTableLocator.locator('#autocomplete_autocompleteInput').nth(1);
+
+                // Clear any existing value using the X button if present
+                const clearBtn = productTableLocator.locator('siigo-autocomplete#warehouse .fa-remove').first();
+                await clearBtn.click({ force: true, timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(500);
+
+                // Click the bodega input to open the autocomplete dropdown
+                await bodegaLocator.click({ force: true });
+                await page.waitForTimeout(500);
+
+                // Clear and type "Sin asig"
+                await bodegaLocator.fill('');
+                await page.waitForTimeout(300);
+                await bodegaLocator.pressSequentially('Sin asig', { delay: 100 });
+                await page.waitForTimeout(3000);
+                await page.keyboard.press('ArrowDown');
+                await page.waitForTimeout(500);
+                await page.keyboard.press('Enter');
+                await page.waitForTimeout(1000);
+
+                // Verify
+                const bodegaVerify = await bodegaLocator.inputValue().catch(() => '');
+                if (bodegaVerify && bodegaVerify.toLowerCase().includes('sin asig')) {
+                    log(`✅ Bodega producto: "${bodegaVerify}"`);
                 } else {
-                    // Fallback to original `.nth(3)` behavior
-                    log(`⚠️ No se encontró la tabla de entrada vía JS, usando fallback nth(3)`);
-                    const bodegaInput = page.locator('id=autocomplete_autocompleteInput').nth(3);
-                    await bodegaInput.click({ timeout: 5000, force: true }).catch(() => { });
+                    log(`⚠️ Bodega verify: "${bodegaVerify}" — retrying with nth(3) fallback`);
+                    // Fallback: use global nth(3) which is the product bodega before template loads extra autocompletes
+                    const fallbackInput = page.locator('id=autocomplete_autocompleteInput').nth(3);
+                    await fallbackInput.click({ force: true, timeout: 5000 }).catch(() => {});
                     await page.waitForTimeout(500);
-                    
-                    // Use keyboard backspaces instead of playwright .fill('') to avoid visibility strictness
-                    await bodegaInput.focus();
-                    await page.keyboard.press('End');
-                    for(let i=0; i<25; i++) await page.keyboard.press('Backspace');
-                    
-                    await page.waitForTimeout(500);
-                    await bodegaInput.pressSequentially('Sin asig', { delay: 100 });
+                    await fallbackInput.fill('').catch(async () => {
+                        await page.keyboard.press('End');
+                        for (let i = 0; i < 25; i++) await page.keyboard.press('Backspace');
+                    });
+                    await page.waitForTimeout(300);
+                    await fallbackInput.pressSequentially('Sin asig', { delay: 100 });
                     await page.waitForTimeout(3000);
                     await page.keyboard.press('ArrowDown');
                     await page.waitForTimeout(500);
                     await page.keyboard.press('Enter');
                     await page.waitForTimeout(1000);
-                    const bodegaVal2 = await bodegaInput.inputValue().catch(() => '');
-                    log(`✅ Bodega producto: ${bodegaVal2 || '(set via fallback keyboard)'}`);
+                    const val2 = await fallbackInput.inputValue().catch(() => '');
+                    log(`✅ Bodega producto (fallback): "${val2}"`);
                 }
             } catch (e) {
                 log(`⚠️ Bodega producto falló: ${e.message}`);
@@ -703,10 +695,11 @@ class SiigoBrowserManager {
             }
             await page.waitForTimeout(500);
 
-            // === FILL EMPTY INGREDIENT BODEGAS before saving ===
+            // === INGREDIENT BODEGAS — DO NOT TOUCH ===
+            // Ingredient bodegas are inherited from the product bodega in Siigo templates.
+            // Only fill them if Siigo shows a validation error (bodega obligatoria).
             log('=== BODEGAS INGREDIENTES ===');
             try {
-                // Find all empty bodega selects AND autocompletes in ingredient rows
                 const emptyBodegaSelects = await page.evaluate(() => {
                     const tables = document.querySelectorAll('table');
                     const empties = [];
@@ -717,20 +710,14 @@ class SiigoBrowserManager {
                             if (sel && (!sel.value || sel.value === '' || sel.value === 'undefined')) {
                                 empties.push({ rowIdx: r, type: 'select' });
                             }
-                            const inp = rows[r].querySelector('#autocomplete_autocompleteInput:not([placeholder*="Buscar"]):not([placeholder*="buscar"])');
-                            // Exclude inputs that are clearly for searching products (they usually have placeholder="Buscar")
-                            if (inp && (!inp.value || inp.value.trim() === '') && !inp.readOnly) {
-                                empties.push({ rowIdx: r, type: 'autocomplete' });
-                            }
                         }
                     }
                     return empties;
                 });
 
                 if (emptyBodegaSelects.length > 0) {
-                    log(`🔧 ${emptyBodegaSelects.length} bodegas ingrediente vacías — llenando`);
+                    log(`🔧 ${emptyBodegaSelects.length} bodegas ingrediente vacías — llenando con "Sin asignar"`);
 
-                    // Try JS first: set value to "Sin asignar" option
                     const filledJS = await page.evaluate(() => {
                         const tables = document.querySelectorAll('table');
                         let filled = 0;
@@ -740,7 +727,6 @@ class SiigoBrowserManager {
                                 const selects = row.querySelectorAll('select');
                                 for (const sel of selects) {
                                     if (!sel.value || sel.value === '' || sel.value === 'undefined') {
-                                        // Try to find "Sin asignar" or first non-empty option
                                         for (const opt of sel.options) {
                                             if (opt.text.toLowerCase().includes('sin asig')) {
                                                 sel.value = opt.value;
@@ -748,18 +734,6 @@ class SiigoBrowserManager {
                                                 sel.dispatchEvent(new Event('input', { bubbles: true }));
                                                 filled++;
                                                 break;
-                                            }
-                                        }
-                                        // If no "Sin asignar" found, try the first option with value
-                                        if (!sel.value || sel.value === '') {
-                                            for (const opt of sel.options) {
-                                                if (opt.value && opt.value !== '') {
-                                                    sel.value = opt.value;
-                                                    sel.dispatchEvent(new Event('change', { bubbles: true }));
-                                                    sel.dispatchEvent(new Event('input', { bubbles: true }));
-                                                    filled++;
-                                                    break;
-                                                }
                                             }
                                         }
                                     }
@@ -1135,7 +1109,7 @@ class SiigoBrowserManager {
     /**
      * Execute inventory adjustment creation on the current page
      */
-    async executeInventoryAdjustment({ productName, quantity, accountCode }) {
+    async executeInventoryAdjustment({ productName, quantity, accountCode, triggeredBy, lotNumber }) {
         const page = this.page;
         const screenshotDir = path.join(__dirname, '..', 'rpa-screenshots');
         const timestamp = Date.now();
@@ -1145,72 +1119,250 @@ class SiigoBrowserManager {
         log(`🚀 Creando Ajuste Inventario: ${productName} x${quantity} (Cuenta: ${accountCode})`);
 
         try {
+            // === NAVEGACIÓN ===
             log('Navegando a Comprobante de Inventario...');
             await page.goto(INVENTORY_ADJUSTMENT_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
-            await page.waitForTimeout(5000); // Wait for SPA to render
+            await page.waitForTimeout(5000);
 
-            // === Llenado genérico (para asegurar que atrapamos el form) ===
+            // Limpiar modals MUI que puedan bloquear
             await page.evaluate(() => {
                 document.querySelectorAll('.MuiDialog-root, .MuiModal-root, .MuiBackdrop-root').forEach(el => el.remove());
             });
 
-            // 1. PRODUCTO
+            // Esperar a que el formulario cargue
+            log('Esperando que el formulario cargue...');
+            try {
+                await page.waitForSelector('#autocomplete_autocompleteInput', { timeout: 15000 });
+                log('✅ Formulario cargado');
+            } catch (e) {
+                log('⚠️ Autocomplete no apareció, esperando más...');
+                await page.waitForTimeout(5000);
+            }
+            await page.waitForTimeout(2000);
+
+            // === 0. TERCERO (autocomplete — NIT de la empresa) ===
+            log('=== TERCERO ===');
+            const terceroInput = page.locator('#autocomplete_autocompleteInput').first();
+            let terceroSelected = false;
+            const terceroAlreadyFilled = await terceroInput.inputValue().catch(() => '');
+
+            if (terceroAlreadyFilled && terceroAlreadyFilled.length > 5) {
+                log(`✅ Tercero ya pre-llenado: ${terceroAlreadyFilled}`);
+                terceroSelected = true;
+            } else {
+                await terceroInput.click({ timeout: 5000 });
+                await page.waitForTimeout(500);
+                await terceroInput.fill('');
+                await page.waitForTimeout(300);
+                await page.keyboard.type('901878434', { delay: 200 });
+                await page.waitForTimeout(4000);
+
+                // Seleccionar del dropdown
+                await page.keyboard.press('ArrowDown');
+                await page.waitForTimeout(500);
+                await page.keyboard.press('Enter');
+                await page.waitForTimeout(2000);
+
+                const terceroVal = await terceroInput.inputValue().catch(() => '');
+                if (terceroVal && terceroVal.length > 3) {
+                    terceroSelected = true;
+                    log(`✅ Tercero: ${terceroVal}`);
+                } else {
+                    // Fallback: click directo en dropdown
+                    log('⚠️ Tercero no seleccionado, intentando click directo...');
+                    const clicked = await page.evaluate(() => {
+                        const els = document.querySelectorAll('li, tr, div, span, a');
+                        for (const el of els) {
+                            if (el.textContent.includes('901878434') && el.offsetHeight > 0) {
+                                el.click(); return true;
+                            }
+                        }
+                        return false;
+                    });
+                    if (clicked) {
+                        await page.waitForTimeout(2000);
+                        const terceroVal2 = await terceroInput.inputValue().catch(() => '');
+                        if (terceroVal2 && terceroVal2.length > 3) {
+                            terceroSelected = true;
+                            log(`✅ Tercero (fallback click): ${terceroVal2}`);
+                        }
+                    }
+                }
+            }
+            if (!terceroSelected) {
+                log('⚠️ No se pudo llenar el Tercero');
+            }
+
+            // === 1. PRODUCTO (autocomplete — igual que nota de ensamble) ===
             log('=== PRODUCTO ===');
             const autocompletes = page.locator('#autocomplete_autocompleteInput');
-            const count = await autocompletes.count();
+            const acCount = await autocompletes.count();
+            log(`   Encontrados ${acCount} autocompletes en la página`);
+
+            // El producto en ajuste de inventario es el autocomplete en la tabla.
+            // Intentar índices 2, 1, 0 (en ensamble es el #2)
             let productFilled = false;
-            
-            for (let i = 0; i < count; i++) {
+            const tryOrder = [2, 1, 0, ...Array.from({length: acCount}, (_, i) => i).filter(i => i > 2)];
+            const tried = new Set();
+
+            for (const i of tryOrder) {
+                if (i >= acCount || tried.has(i)) continue;
+                tried.add(i);
                 const ac = autocompletes.nth(i);
                 try {
                     const isVisible = await ac.isVisible();
                     if (!isVisible) continue;
-                    
                     const val = await ac.inputValue();
-                    if (!val || val === '') {
-                        await ac.click({ timeout: 2000 });
-                        await ac.pressSequentially(productName, { delay: 100 });
-                        await page.waitForTimeout(3000);
-                        await page.keyboard.press('ArrowDown');
-                        await page.waitForTimeout(500);
-                        await page.keyboard.press('Enter');
-                        await page.waitForTimeout(1000);
-                        
-                        const newVal = await ac.inputValue();
-                        if (newVal && newVal.length > 3) {
-                            log(`✅ Producto llenado en autocomplete #${i}: ${newVal}`);
-                            productFilled = true;
-                            // Asumimos que el primer autocomplete vacío que acepta el producto es el correcto.
-                            break;
-                        }
+                    if (val && val.length > 3) continue;
+
+                    log(`   Intentando producto en autocomplete #${i}...`);
+                    await ac.click({ timeout: 3000 });
+                    await page.waitForTimeout(500);
+                    await ac.fill('');
+                    await page.waitForTimeout(300);
+                    await ac.pressSequentially(productName, { delay: 100 });
+                    await page.waitForTimeout(4000);
+
+                    // Enter directo — Siigo pre-selecciona el primer resultado
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(2000);
+
+                    const newVal = await ac.inputValue();
+                    if (newVal && newVal.length > 3) {
+                        log(`✅ Producto llenado en autocomplete #${i}: ${newVal}`);
+                        productFilled = true;
+                        break;
                     }
-                } catch(e) {}
+
+                    // Fallback: ArrowDown + Enter
+                    await ac.click({ timeout: 2000 });
+                    await ac.fill('');
+                    await page.waitForTimeout(300);
+                    await ac.pressSequentially(productName, { delay: 100 });
+                    await page.waitForTimeout(4000);
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(2000);
+
+                    const newVal2 = await ac.inputValue();
+                    if (newVal2 && newVal2.length > 3) {
+                        log(`✅ Producto llenado (ArrowDown) en autocomplete #${i}: ${newVal2}`);
+                        productFilled = true;
+                        break;
+                    }
+                } catch(e) {
+                    log(`   ⚠️ Error en autocomplete #${i}: ${e.message}`);
+                }
             }
 
             if (!productFilled) {
-                log('⚠️ No se pudo llenar el producto, intentando vía fallback tabla...');
+                throw new Error(`No se pudo seleccionar el producto ${productName} en ningún autocomplete`);
             }
 
-            // 2. BODEGA
-            log('=== BODEGA Y CUENTA ===');
-            for (let i = 0; i < count; i++) {
-                const ac = autocompletes.nth(i);
+            // === 2. BODEGA (autocomplete — buscar "Sin asignar") ===
+            log('=== BODEGA ===');
+            let bodegaFilled = false;
+            // Refrescar autocompletes después de llenar producto (pueden haber aparecido nuevos en la fila)
+            const acBodega = page.locator('#autocomplete_autocompleteInput');
+            const acBodegaCount = await acBodega.count();
+            log(`   Autocompletes disponibles para bodega: ${acBodegaCount}`);
+
+            // La bodega es un autocomplete en la fila del producto, aparece después del producto.
+            // Buscar autocompletes vacíos (saltar Tercero #0 y Producto que ya están llenos)
+            for (let i = 0; i < acBodegaCount; i++) {
+                const ac = acBodega.nth(i);
                 try {
-                    if (await ac.isVisible() && (await ac.inputValue()) === '') {
-                        await ac.click();
-                        await ac.pressSequentially('Sin asig', { delay: 100 });
-                        await page.waitForTimeout(2000);
-                        await page.keyboard.press('ArrowDown');
-                        await page.waitForTimeout(500);
-                        await page.keyboard.press('Enter');
-                        await page.waitForTimeout(1000);
-                        log(`✅ Intentado Bodega en autocomplete #${i}`);
-                    }
-                } catch(e) {}
-            }
+                    const isVisible = await ac.isVisible();
+                    if (!isVisible) continue;
+                    const val = await ac.inputValue();
+                    if (val && val.length > 2) continue; // ya lleno, saltar
 
-            // 3. CANTIDAD
+                    log(`   Intentando bodega en autocomplete #${i}...`);
+                    await ac.click({ timeout: 3000 });
+                    await page.waitForTimeout(500);
+                    await ac.fill('');
+                    await page.waitForTimeout(300);
+                    await ac.pressSequentially('Sin asig', { delay: 100 });
+                    await page.waitForTimeout(4000);
+
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(2000);
+
+                    const newVal = await ac.inputValue();
+                    if (newVal && newVal.toLowerCase().includes('sin asig')) {
+                        log(`✅ Bodega llenada en autocomplete #${i}: ${newVal}`);
+                        bodegaFilled = true;
+                        break;
+                    }
+
+                    // Fallback: ArrowDown + Enter
+                    await ac.click({ timeout: 2000 });
+                    await ac.fill('');
+                    await page.waitForTimeout(300);
+                    await ac.pressSequentially('Sin asig', { delay: 100 });
+                    await page.waitForTimeout(4000);
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(500);
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(2000);
+
+                    const newVal2 = await ac.inputValue();
+                    if (newVal2 && newVal2.length > 3) {
+                        log(`✅ Bodega llenada (ArrowDown) en autocomplete #${i}: ${newVal2}`);
+                        bodegaFilled = true;
+                        break;
+                    }
+                } catch(e) {
+                    log(`   ⚠️ Error en bodega autocomplete #${i}: ${e.message}`);
+                }
+            }
+            if (!bodegaFilled) {
+                log('⚠️ No se pudo llenar la bodega automáticamente');
+            }
+            await page.waitForTimeout(1500);
+
+            // === 3. AUMENTA/DISMINUYE (SELECT dropdown nativo — depende del signo de quantity) ===
+            const movType = quantity < 0 ? 'disminuye' : 'aumenta';
+            const absQuantity = Math.abs(quantity);
+            log(`=== AUMENTA/DISMINUYE (${movType}, qty absoluta: ${absQuantity}) ===`);
+            const movOK = await page.evaluate((targetType) => {
+                const selects = document.querySelectorAll('select');
+                for (const select of selects) {
+                    const options = Array.from(select.options);
+                    const opt = options.find(o =>
+                        o.text.toLowerCase().includes(targetType)
+                    );
+                    if (opt) {
+                        select.value = opt.value;
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                        return opt.text;
+                    }
+                }
+                return false;
+            }, movType);
+            if (movOK) {
+                log(`✅ Tipo movimiento: ${movOK}`);
+            } else {
+                log(`⚠️ No se encontró opción "${movType}" en ningún SELECT. Intentando fallback...`);
+                const selects = page.locator('select');
+                const selCount = await selects.count();
+                for (let i = 0; i < selCount; i++) {
+                    try {
+                        const options = await selects.nth(i).locator('option').allTextContents();
+                        const targetOpt = options.find(t => t.toLowerCase().includes(movType));
+                        if (targetOpt) {
+                            await selects.nth(i).selectOption({ label: targetOpt });
+                            log(`✅ Tipo movimiento (fallback): ${targetOpt}`);
+                            break;
+                        }
+                    } catch(e) {}
+                }
+            }
+            await page.waitForTimeout(1500);
+
+            // === 4. CANTIDAD (solo el primer inputDecimal — el segundo es Costo Total que Siigo autollena) ===
             log('=== CANTIDAD ===');
             const qtyInput = page.locator('#inputDecimal_siigoInputDecimal').first();
             try {
@@ -1218,82 +1370,263 @@ class SiigoBrowserManager {
                 await qtyInput.click({ clickCount: 3, force: true });
                 await page.waitForTimeout(300);
                 await page.keyboard.press('Backspace');
-                await qtyInput.pressSequentially(String(quantity), { delay: 100 });
-                await page.keyboard.press('Tab');
-                log('✅ Cantidad forzada a ' + quantity);
+                await qtyInput.pressSequentially(String(absQuantity), { delay: 100 });
+                // Click fuera del input para que Siigo calcule el costo promedio automáticamente
+                // NO usar Tab porque salta al campo "Costo Total" y puede sobrescribirlo
+                await page.locator('body').click({ position: { x: 10, y: 10 }, force: true });
+                log('✅ Cantidad: ' + absQuantity);
             } catch(e) {
-                log('⚠️ Fallo el qty locator, intentando fallback JS');
+                log('⚠️ Fallo qty locator, intentando fallback JS');
+                // Solo llenar el PRIMER input decimal (Cantidad), NO el segundo (Costo Total)
                 await page.evaluate((qty) => {
-                    const inputs = document.querySelectorAll('#inputDecimal_siigoInputDecimal, input[type="number"], .ui-grid-cell input');
+                    const inputs = document.querySelectorAll('#inputDecimal_siigoInputDecimal, input[type="number"]');
+                    let filled = false;
                     for (const inp of inputs) {
-                        if (inp.closest('.ui-grid') || inp.offsetHeight > 0) {
-                            inp.focus();
-                            inp.value = qty;
+                        if (inp.offsetHeight > 0 && !filled) {
+                            const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                            nativeSet.call(inp, String(qty));
                             inp.dispatchEvent(new Event('input', { bubbles: true }));
                             inp.dispatchEvent(new Event('change', { bubbles: true }));
+                            filled = true;
+                            break;
                         }
                     }
-                }, String(quantity));
+                }, String(absQuantity));
+                log('✅ Cantidad (JS fallback): ' + absQuantity);
             }
+            // Esperar a que Siigo calcule el costo promedio automáticamente
+            await page.waitForTimeout(2000);
 
-            // === LOTE DE PRODUCTO ===
-            log('=== LOTE ===');
-            try {
-                const foundLote = await page.evaluate(() => {
-                    const inputs = document.querySelectorAll('input');
-                    for (const inp of inputs) {
-                        const name = (inp.name || '').toLowerCase();
-                        const id = (inp.id || '').toLowerCase();
-                        const placeholder = (inp.placeholder || '').toLowerCase();
-                        if ((name.includes('lote') || id.includes('lote') || placeholder.includes('lote') || placeholder.includes('lot')) && inp.offsetHeight > 0) {
-                            inp.scrollIntoView();
-                            inp.focus();
-                            inp.value = 'AJUSTE';
-                            inp.dispatchEvent(new Event('input', { bubbles: true }));
-                            inp.dispatchEvent(new Event('change', { bubbles: true }));
-                            return true;
+            // === 4.5 LOTE (si el producto lo requiere) ===
+            if (lotNumber) {
+                log(`=== LOTE: ${lotNumber} ===`);
+                try {
+                    const foundLote = await page.evaluate((lval) => {
+                        const inputs = document.querySelectorAll('input');
+                        for (const inp of inputs) {
+                            const name = (inp.name || '').toLowerCase();
+                            const id = (inp.id || '').toLowerCase();
+                            const placeholder = (inp.placeholder || '').toLowerCase();
+                            if ((name.includes('lote') || id.includes('lote') || placeholder.includes('lote') || placeholder.includes('lot')) && inp.offsetHeight > 0) {
+                                inp.scrollIntoView();
+                                inp.focus();
+                                inp.value = lval;
+                                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                                inp.dispatchEvent(new Event('change', { bubbles: true }));
+                                return true;
+                            }
                         }
-                    }
-                    return false;
-                });
-                if (foundLote) {
-                    await page.waitForTimeout(500);
-                    await page.keyboard.press('Tab');
-                    log(`✅ Campo Lote detectado y llenado con: AJUSTE`);
-                } else {
-                    const loteInput = page.locator('input[placeholder*="Lote" i], input[id*="lote" i]').first();
-                    if (await loteInput.isVisible({ timeout: 1000 })) {
-                        await loteInput.fill('AJUSTE');
-                        await page.waitForTimeout(300);
+                        return false;
+                    }, lotNumber);
+
+                    if (foundLote) {
+                        await page.waitForTimeout(500);
                         await page.keyboard.press('Tab');
-                        log(`✅ Campo Lote llenado por fallback con: AJUSTE`);
+                        log(`✅ Lote llenado: ${lotNumber}`);
+                    } else {
+                        log('ℹ️ No se detectó campo Lote en el formulario');
+                        try {
+                            const loteInput = page.locator('input[placeholder*="Lote" i], input[id*="lote" i]').first();
+                            if (await loteInput.isVisible({ timeout: 1000 })) {
+                                await loteInput.fill(lotNumber);
+                                await page.waitForTimeout(300);
+                                await page.keyboard.press('Tab');
+                                log(`✅ Lote llenado (fallback): ${lotNumber}`);
+                            }
+                        } catch(e2) {}
                     }
+                } catch(e) {
+                    log(`⚠️ Lote falló: ${e.message}`);
                 }
-            } catch(e) {
-                log(`⚠️ No se detectó o llenó campo Lote: ${e.message}`);
+                await page.waitForTimeout(1000);
             }
 
-            // 4. OBSERVACIONES Y CUENTA
-            const obsText = `Ajuste automático RPA. Producto: ${productName} | Cuenta: ${accountCode} - ${new Date().toLocaleString()}`;
+            // === 5. CUENTA CONTABLE INGRESO/GASTO (autocomplete) ===
+            log('=== CUENTA CONTABLE ===');
+            let cuentaFilled = false;
+            const acAfter = page.locator('#autocomplete_autocompleteInput');
+            const acAfterCount = await acAfter.count();
+            log(`   Autocompletes disponibles ahora: ${acAfterCount}`);
+
+            for (let i = acAfterCount - 1; i >= 0; i--) {
+                const ac = acAfter.nth(i);
+                try {
+                    const isVisible = await ac.isVisible();
+                    if (!isVisible) continue;
+                    const val = await ac.inputValue();
+                    if (val && val.length > 3) continue;
+
+                    log(`   Intentando cuenta contable en autocomplete #${i}...`);
+
+                    // Cerrar cualquier dropdown abierto primero
+                    await page.keyboard.press('Escape');
+                    await page.waitForTimeout(500);
+
+                    // Focus + click + limpiar con teclado
+                    await ac.focus();
+                    await page.waitForTimeout(300);
+                    await ac.click({ timeout: 3000 });
+                    await page.waitForTimeout(500);
+
+                    // Limpiar el input usando select-all + delete
+                    await page.keyboard.press('Control+A');
+                    await page.waitForTimeout(200);
+                    await page.keyboard.press('Delete');
+                    await page.waitForTimeout(500);
+
+                    // Escribir con keyboard.type (más bajo nivel que pressSequentially)
+                    await page.keyboard.type(accountCode, { delay: 200 });
+                    log(`   Escribió "${accountCode}" en autocomplete #${i}`);
+                    await page.waitForTimeout(5000);
+
+                    // Verificar si se filtró el dropdown y hacer click en el resultado
+                    const clicked = await page.evaluate((code) => {
+                        // Buscar en todas las tablas/listas visibles
+                        const rows = document.querySelectorAll('tr, li, [role="option"]');
+                        for (const row of rows) {
+                            if (row.textContent.includes(code) && row.offsetHeight > 0 && row.offsetWidth > 0 && !row.querySelector('input')) {
+                                row.click();
+                                return row.textContent.trim().substring(0, 80);
+                            }
+                        }
+                        return null;
+                    }, accountCode);
+
+                    if (clicked) {
+                        await page.waitForTimeout(2000);
+                        log(`✅ Cuenta contable clickeada: ${clicked}`);
+                        cuentaFilled = true;
+                        break;
+                    }
+
+                    // Fallback A: El dropdown no se filtró. Intentar ArrowDown + Enter
+                    log('   Dropdown no filtrado, intentando ArrowDown+Enter...');
+                    await page.keyboard.press('Escape');
+                    await page.waitForTimeout(500);
+                    await ac.focus();
+                    await ac.click({ timeout: 2000 });
+                    await page.waitForTimeout(300);
+                    await page.keyboard.press('Control+A');
+                    await page.keyboard.press('Delete');
+                    await page.waitForTimeout(300);
+                    await page.keyboard.type(accountCode, { delay: 200 });
+                    await page.waitForTimeout(5000);
+                    await page.keyboard.press('ArrowDown');
+                    await page.waitForTimeout(800);
+                    await page.keyboard.press('Enter');
+                    await page.waitForTimeout(2000);
+
+                    const newVal2 = await ac.inputValue();
+                    if (newVal2 && newVal2.length > 3) {
+                        log(`✅ Cuenta contable (ArrowDown+Enter): ${newVal2}`);
+                        // Blur para confirmar
+                        await page.locator('body').click({ position: { x: 10, y: 10 }, force: true });
+                        await page.waitForTimeout(1000);
+                        cuentaFilled = true;
+                        break;
+                    }
+
+                    // Fallback B: Usar React nativeInputValueSetter directamente
+                    log('   Intentando setear valor via React nativeInputValueSetter...');
+                    await page.keyboard.press('Escape');
+                    await page.waitForTimeout(500);
+                    const reactSet = await page.evaluate((idx, code) => {
+                        const inputs = document.querySelectorAll('#autocomplete_autocompleteInput');
+                        const inp = inputs[idx];
+                        if (!inp) return false;
+                        const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                        nativeSet.call(inp, code);
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }, i, accountCode);
+                    if (reactSet) {
+                        await page.waitForTimeout(5000);
+                        // Intentar click en resultado filtrado
+                        const clicked2 = await page.evaluate((code) => {
+                            const rows = document.querySelectorAll('tr, li, [role="option"]');
+                            for (const row of rows) {
+                                if (row.textContent.includes(code) && row.offsetHeight > 0 && !row.querySelector('input')) {
+                                    row.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }, accountCode);
+                        if (clicked2) {
+                            await page.waitForTimeout(2000);
+                            log('✅ Cuenta contable via React setter');
+                            cuentaFilled = true;
+                            break;
+                        }
+                    }
+                } catch(e) {
+                    log(`   ⚠️ Error en cuenta contable autocomplete #${i}: ${e.message}`);
+                }
+            }
+            if (!cuentaFilled) {
+                throw new Error('No se pudo seleccionar la cuenta contable ' + accountCode);
+            }
+
+            // === OBSERVACIONES ===
+            const obsText = `Ajuste automático RPA. Producto: ${productName} | Cuenta: ${accountCode} | Usuario: ${triggeredBy || 'Sistema'} - ${new Date().toLocaleString()}`;
             try { await page.locator('textarea[placeholder*="bservacion"]').fill(obsText); } catch (e) {
                 try { await page.locator('textarea').first().fill(obsText); } catch(e2) {}
             }
 
-            // GUARDAR
+            // === SCREENSHOT PRE-GUARDAR ===
+            const preScreenshot = path.join(screenshotDir, `siigo-adj-pre-save-${timestamp}.png`);
+            try { await page.screenshot({ path: preScreenshot, fullPage: true }); } catch (e) {}
+            log('📸 Screenshot pre-guardar tomado');
+
+            // === GUARDAR ===
             log('=== GUARDAR ===');
             const urlBeforeSave = page.url();
             await page.locator('button:has-text("Guardar")').first().click({ force: true }).catch(() => {});
-            
+
             // Wait for redirect
-            await page.waitForTimeout(6000);
+            await page.waitForTimeout(8000);
             const urlChanged = page.url() !== urlBeforeSave;
             let finalNote = null;
 
             if (urlChanged) {
+                // Wait a bit more for the detail page to render
+                await page.waitForTimeout(3000);
                 finalNote = await page.evaluate(() => {
-                    const match = document.body.innerText.match(/(AJ-\d+-\d+|Ajuste-\d+-\d+|IE-\d+-\d+|CE-\d+-\d+|NE-\d+-\d+)/i);
-                    return match ? match[1] : 'Guardado Exitoso';
+                    const text = document.body.innerText;
+                    // Try known Siigo document code patterns
+                    const m1 = text.match(/(AJ-\d+-\d+)/i);
+                    if (m1) return m1[1];
+                    const m2 = text.match(/(IE-\d+-\d+)/i);
+                    if (m2) return m2[1];
+                    const m3 = text.match(/(CE-\d+-\d+)/i);
+                    if (m3) return m3[1];
+                    const m4 = text.match(/(NE-\d+-\d+)/i);
+                    if (m4) return m4[1];
+                    // Try "Ajuste N° XXXX" or "Número: XXXX" or "Consecutivo: XXXX"
+                    const m5 = text.match(/(?:Ajuste|N[°ú]mero|Consecutivo|C[oó]digo)[:\s]*(\d{3,})/i);
+                    if (m5) return `AJ-${m5[1]}`;
+                    // Siigo uses hash routing (#/inventories/1542/645584) — get the last numeric segment
+                    const hashParts = window.location.hash.match(/\d+/g);
+                    if (hashParts && hashParts.length > 0) {
+                        const lastNum = hashParts[hashParts.length - 1];
+                        if (lastNum.length >= 4) return `AJ-${lastNum}`;
+                    }
+                    return null;
                 });
+                log(`📋 Código capturado: ${finalNote || 'no encontrado'}`);
+            }
+            // Fallback: extract from redirected URL directly (handles hash routing)
+            if (!finalNote && urlChanged) {
+                const currentUrl = page.url();
+                const nums = currentUrl.match(/\d+/g);
+                if (nums && nums.length > 0) {
+                    const lastNum = nums[nums.length - 1];
+                    if (lastNum.length >= 4) {
+                        finalNote = `AJ-${lastNum}`;
+                        log(`📋 Código extraído de URL: ${finalNote}`);
+                    }
+                }
             }
 
             const screenshotPath = path.join(screenshotDir, `siigo-adjustment-${timestamp}.png`);

@@ -22,11 +22,11 @@ import AdminConfig from './pages/AdminConfig';
 import DistributorPortal from './pages/DistributorPortal'; // NEW
 import OrderManagement from './pages/OrderManagement'; // NEW
 
-import AssemblyTemplatesPage from './pages/AssemblyTemplatesPage';
-import TemplateEditorPage from './pages/TemplateEditorPage';
 import FormulasPage from './pages/FormulasPage';
 import FormulaEditorPage from './pages/FormulaEditorPage';
 import AssemblyExecutionPage from './pages/AssemblyExecutionPage';
+import AssemblyTemplatesPage from './pages/AssemblyTemplatesPage';
+import TemplateEditorPage from './pages/TemplateEditorPage';
 import ProductionOperatorPage from './pages/ProductionOperatorPage';
 import RpaHistoryPage from './pages/RpaHistoryPage';
 import MRPDashboard from './pages/MRPDashboard';
@@ -76,6 +76,8 @@ import PhysicalCountPage from './pages/PhysicalCountPage';
 import InventoryCountPage from './pages/InventoryCountPage';
 import SalesAnalyticsDashboard from './pages/SalesAnalyticsDashboard';
 import ShiftSchedulePage from './pages/ShiftSchedulePage';
+import AttendancePage from './pages/AttendancePage';
+import ForensicRecoveryPage from './pages/ForensicRecoveryPage';
 
 
 import { useEffect } from 'react';
@@ -196,6 +198,8 @@ function App() {
                             <Route path="procurement/suppliers" element={<SuppliersPage />} />
                             <Route path="reconciliation" element={<ReconciliationPage />} />
                             <Route path="shift-schedule" element={<ShiftSchedulePage />} />
+                            <Route path="attendance" element={<AttendancePage />} />
+                            <Route path="recovery/forensic" element={<ForensicRecoveryPage />} />
                         </Route>
                     </Route>
                 </Routes>

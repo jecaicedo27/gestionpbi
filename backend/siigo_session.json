@@ -1,0 +1,490 @@
+{
+  "cookies": [
+    {
+      "name": "__cf_bm",
+      "value": "Ogjv7py9PzBhS_xZUtKZrqsHbqYhDAYPY_hTTpM4dBo-1776532458.3538194-1.0.1.1-hanfG97nc5ZnLWfDCsX8v3Sao8UgDGVeE.ewQ3Ixzxmjdv2XATtL3W3J0MFJIUUCg86mg5EWj1axlswkb1vY68.yJV1smk7.k5lah48Yr0.a_ERZY_1jMSjIgfIUK.m5",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1776534259.044533,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_fbp",
+      "value": "fb.1.1776532461465.283106405762525274",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1784308475,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "IDE",
+      "value": "AHWqTUkOH7ca66AeljT5ysCTe49wNiPSMm7k-jOvdpPVREp88SYW21UAyn7O-OVo",
+      "domain": ".doubleclick.net",
+      "path": "/",
+      "expires": 1811092461.691844,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "x-ms-cpim-csrf",
+      "value": "NkhMZUNFWXdPQUtGOHUzQ0VGQ3ErVmUyc3BHU3VWVjN5cUpsemhoQlQxVGtla01Jak01Q1k2RU85bWc5VkJFakFqV0txdzN3YnIwYjJkQU93Uys4NEE9PTsyMDI2LTA0LTE4VDE3OjE0OjIzLjU0MTUxMzZaO2xmVlM0bnF1ZHZCK0hvY3V1V25aaWc9PTt7Ik9yY2hlc3RyYXRpb25TdGVwIjoxfQ==",
+      "domain": ".account.siigo.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "subDomain",
+      "value": "https://monolithprod.siigo.com/",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": 1776618875,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "isMfAccountantPortal",
+      "value": "id_token=eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJpc3MiOiJodHRwczovL2FjY291bnQuc2lpZ28uY29tLzBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNC92Mi4wLyIsImV4cCI6MTc3NjYxODg2OCwibmJmIjoxNzc2NTMyNDY4LCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJuYW1lIjoiR2VyZW5jaWFAcG9wcGluZ2JvYmFpbnRlcm5hdGlvbmFsLmNvbSIsIm1haWxfc2lpZ28iOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwic3RvcmFnZV9rZXkiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwiY29tcGFuaWVzIjoiMiIsImFjY291bnRhbnQiOiJmYWxzZSIsInRpZCI6IjBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNCIsImNsaWVudF9pZCI6IlNpaWdvV2ViIiwic2NvcGUiOiJXZWJBUEksb2ZmbGluZV9hY2Nlc3MiLCJzY3AiOiJiYXNpYyIsImF6cCI6ImMwZjk1ZDAwLWE1YjctNGNmYy1hODRjLTdmYzFiZTJhNjcyMCIsInZlciI6IjEuMCIsImlhdCI6MTc3NjUzMjQ2OH0.T-cepxZEaEpr6egk-bAkvGwaPwcNvElh4BMQwYLPYbTEGa4rLhVA1kpSLjpsu0HpOf_8rTFbGQYdT_DhlW4-I92DFsvAGsUk2qSukv6K6f1X7efv21VycG_3EKNnhlZEjzuePfSq6WPx0og8ES0jeWIDW8rBJYCU6FAOfm6YJSOTCSzQaDHtQa3suFWaXgGO6ZtAqFktEhFrtqZ1mJcLpCMCg_XycpdeATvEy6TewAwM1E2p1Q6snvFZGYS1UtrFYS_WivWjFocKZQt3r8L1sMJCGdYqZkOWuF6zENiCEcvuARa5AbnVUez1Ok3MKr8wXwkewRasXYcoSjeE4ACgfA",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "x-ms-cpim-sso:siigob2cco.onmicrosoft.com_0",
+      "value": "m1.x6VVuCN3FzKM7XIJ.ylo8bqubs725WU6nD+iRpg==.0.3E+lAQtG/SH5owshCkOoOhL2T1CIHrlfw/QSSLRaoiCyd3QRA+zBxWAMgC5fc592uz8bnPoO9QduGElC+w4KMKBvVtolluGAeBen5YtceYjfE5vWPfSyrRmr/19CtZfVouEWxia5c36PeatqN7lw9sE4MkJElgFFFji6q4dkhlXQ8aXSHywMSbkgATH7J1V8AWmoV8qDXuKe6Wdh+ewvoOduq+4AgaJAJcw0vuWC0KuwPDvFo61qVw90VTpwqKAr9Od7h6+IX1zMuAImtaxzUqD1c2NdJxAApo2pk5jPaxr0rxDenFao/bt0j0bK6skhIOt12JQrzbmCiyPSkjTsi650b64ua64AIakk8Q5arfmBvLV30xs5TvvXBJfpkGz3UjSH6exRgYvUe+T7BfFcFGfIr1oHM5bxu4MmyIG/dxySGUTOdU9dU73z8tDXuynVDDkGejyHL9WCb60kocwzi3rubdBbb2xFgWicyuFwHUMl5GMxRhwnBrHVU0hHomoB3UwswOQ0e66/z+r7WteiaEWj1iHebTdC3DjqhWYOU7oOU+TfkUmTN1Ug5FAVGxs24qZZMeHjME3n9AlbDnRDfaie4Z208sk4xjKZrxcQwxLTR2Aa4Jl/WnXmt0UdH2YXoVMTCGmn2a/GV4Jjw85zkDYXosW7u0EzKlyQcPaRG8zaatvZFGpwW8J16ddy0BUc0TciNGAsu9Nue7RjPeDCf588w7rSeIZBN2XLNPJq3FGgndWp3o8UQ78xMfRqAZQdn5KVt1oEjwzPCg==",
+      "domain": ".account.siigo.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_cnname_",
+      "value": "POPPINGBOBAINTERNATIONALSAS",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": 1776618875,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "TKNSGRDDGERENCIA%40POPPINGBOBAINTERNATIONAL.COM",
+      "value": "eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJpc3MiOiJodHRwczovL2FjY291bnQuc2lpZ28uY29tLzBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNC92Mi4wLyIsImV4cCI6MTc3NjYxODg3NSwibmJmIjoxNzc2NTMyNDc1LCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJuYW1lIjoiR2VyZW5jaWFAcG9wcGluZ2JvYmFpbnRlcm5hdGlvbmFsLmNvbSIsIm1haWxfc2lpZ28iOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwic3RvcmFnZV9rZXkiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwiY29tcGFuaWVzIjoiMiIsImFjY291bnRhbnQiOiJmYWxzZSIsImNsb3VkX3RlbmFudF9jb21wYW55X2tleSI6IlBPUFBJTkdCT0JBSU5URVJOQVRJT05BTFNBUyIsInVzZXJzX2lkIjoiMjQwIiwidGVuYW50X2lkIjoiMHgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMTA0NTg4OCIsInVzZXJfbGljZW5zZV90eXBlIjoiMCIsInBsYW5fdHlwZSI6IjE0IiwidGVuYW50X3N0YXRlIjoiMSIsIm11bHRpdGVuYW50X2lkIjoiMTQ2MSIsInRpZCI6IjBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNCIsImNsaWVudF9pZCI6IlNpaWdvV2ViIiwic2NvcGUiOiJXZWJBUEksb2ZmbGluZV9hY2Nlc3MiLCJzY3AiOiJiYXNpYyIsImF6cCI6ImMwZjk1ZDAwLWE1YjctNGNmYy1hODRjLTdmYzFiZTJhNjcyMCIsInZlciI6IjEuMCIsImlhdCI6MTc3NjUzMjQ3NX0.qqRvy4kY4n1oC9Swo3PYiFwpfWJQhsqxBwauT_PxvwOC_iBeI9AOjxbTrzzdtpj1KeMd2M8fxSqDwR99QabacIGMOgHJe1f3QUn5cZDj9iUFenwDrf0BcSN8ViIswUix2GOqY-Hq5bR2nWhs2xfUSmD-vfeYKORI5dNmj4dtOme26qEP-KikIP5hIc6qgIZadaBCr-fRzQi4SKdLLppAWLM6ulSo6H1y7nGMXRDe4zQKeNQzm5Yoi71c_kM2Ix44DwLVC_3vcI5jamcpKzBQ_UVhVZWzzVxNtk5S2M4lhWzgRhi9q_T-a0ziDPgMI3PdfKhcoLS9rLKMk6sXddmfIg",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": 1776618875,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "TKNSGRDDPOPPINGBOBAINTERNATIONALSAS",
+      "value": "eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NzY2MTg4NzUsIm5iZiI6MTc3NjUzMjQ3NSwidmVyIjoiMS4wIiwiaXNzIjoiaHR0cHM6Ly9hY2NvdW50LnNpaWdvLmNvbS8wZTRlZTVlNi03YWU5LTQzYWEtODhkMS05NTAzOWZmYmE3YTQvdjIuMC8iLCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJhY3IiOiJiMmNfMWFfY29sX3BkX3Nzb3NpaWdvIiwiaWF0IjoxNzc2NTMyNDc1LCJhdXRoX3RpbWUiOjE3NzY1MzI0NzQsIm5hbWUiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwibWFpbF9zaWlnbyI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJzdG9yYWdlX2tleSI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJjb21wYW5pZXMiOiIyIiwiYWNjb3VudGFudCI6ImZhbHNlIiwiY2xvdWRfdGVuYW50X2NvbXBhbnlfa2V5IjoiUE9QUElOR0JPQkFJTlRFUk5BVElPTkFMU0FTIiwidXNlcnNfaWQiOiIyNDAiLCJ0ZW5hbnRfaWQiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDQ1ODg4IiwidXNlcl9saWNlbnNlX3R5cGUiOiIwIiwicGxhbl90eXBlIjoiMTQiLCJ0ZW5hbnRfc3RhdGUiOiIxIiwibXVsdGl0ZW5hbnRfaWQiOiIxNDYxIiwidGlkIjoiMGU0ZWU1ZTYtN2FlOS00M2FhLTg4ZDEtOTUwMzlmZmJhN2E0IiwiY2xpZW50X2lkIjoiU2lpZ29XZWIiLCJzY29wZSI6IldlYkFQSSxvZmZsaW5lX2FjY2VzcyIsImF0X2hhc2giOiJfS3JyN0hmWUp1WmFlLU14MFZQVWZBIn0.qgvFwEkYV4y6JQMi5dCWoPHESaMUD1psdyyMTsGBnVT22pXvcTeZHVa9vGxSSw6z9QWzLQENeoWQpzvayEUUd-Y0lgr4ilVcvEElFGtDMmg2-xkYKpImK67YyQMpCeQCKQERh_4JDOQE_8cWfPKq5Ra_OQfFc8dPL1CKhEgi6dj0recd4kGbnzhV9C9IVXjzguf4HsASK_MtswO3408uRtma8issrpSqUT6Mry3VZx_725jCqTVSn297Hsv17U9bHj4tqCQ5Dq1MlusDLFrfEFqVuXWqNJWgKrp7QZGSCgg_GDnUv7S3KV1QIIxS0HDL5Er7JY4sHctRIDgBR22tXA",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": 1776618875,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "TKNSGRDDPOPPINGBOBAINTERNATIONALSAS",
+      "value": "eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NzY2MTg4NzUsIm5iZiI6MTc3NjUzMjQ3NSwidmVyIjoiMS4wIiwiaXNzIjoiaHR0cHM6Ly9hY2NvdW50LnNpaWdvLmNvbS8wZTRlZTVlNi03YWU5LTQzYWEtODhkMS05NTAzOWZmYmE3YTQvdjIuMC8iLCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJhY3IiOiJiMmNfMWFfY29sX3BkX3Nzb3NpaWdvIiwiaWF0IjoxNzc2NTMyNDc1LCJhdXRoX3RpbWUiOjE3NzY1MzI0NzQsIm5hbWUiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwibWFpbF9zaWlnbyI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJzdG9yYWdlX2tleSI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJjb21wYW5pZXMiOiIyIiwiYWNjb3VudGFudCI6ImZhbHNlIiwiY2xvdWRfdGVuYW50X2NvbXBhbnlfa2V5IjoiUE9QUElOR0JPQkFJTlRFUk5BVElPTkFMU0FTIiwidXNlcnNfaWQiOiIyNDAiLCJ0ZW5hbnRfaWQiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDQ1ODg4IiwidXNlcl9saWNlbnNlX3R5cGUiOiIwIiwicGxhbl90eXBlIjoiMTQiLCJ0ZW5hbnRfc3RhdGUiOiIxIiwibXVsdGl0ZW5hbnRfaWQiOiIxNDYxIiwidGlkIjoiMGU0ZWU1ZTYtN2FlOS00M2FhLTg4ZDEtOTUwMzlmZmJhN2E0IiwiY2xpZW50X2lkIjoiU2lpZ29XZWIiLCJzY29wZSI6IldlYkFQSSxvZmZsaW5lX2FjY2VzcyIsImF0X2hhc2giOiJfS3JyN0hmWUp1WmFlLU14MFZQVWZBIn0.qgvFwEkYV4y6JQMi5dCWoPHESaMUD1psdyyMTsGBnVT22pXvcTeZHVa9vGxSSw6z9QWzLQENeoWQpzvayEUUd-Y0lgr4ilVcvEElFGtDMmg2-xkYKpImK67YyQMpCeQCKQERh_4JDOQE_8cWfPKq5Ra_OQfFc8dPL1CKhEgi6dj0recd4kGbnzhV9C9IVXjzguf4HsASK_MtswO3408uRtma8issrpSqUT6Mry3VZx_725jCqTVSn297Hsv17U9bHj4tqCQ5Dq1MlusDLFrfEFqVuXWqNJWgKrp7QZGSCgg_GDnUv7S3KV1QIIxS0HDL5Er7JY4sHctRIDgBR22tXA",
+      "domain": "monolithprod.siigo.com",
+      "path": "/",
+      "expires": 1779124476.691834,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_cnname_",
+      "value": "POPPINGBOBAINTERNATIONALSAS",
+      "domain": "monolithprod.siigo.com",
+      "path": "/",
+      "expires": 1779124476.691898,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "SP",
+      "value": "11",
+      "domain": "monolithprod.siigo.com",
+      "path": "/",
+      "expires": 1779124476.691912,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": ".ASPXAUTH",
+      "value": "E1CEB8E5406009BB23A203E767153C8CCB4380782F3353962143EB792D99C6848F124DA558946F75FBA6DE55049B5B79EB3450FBA35E06FACFCAB5DFC82DE0C492E733E7F571B56A6935B96DEFBD7FA54386C608F0051B3B808CAC3D834425F852E0F84C8CCC0FA4563058088F1763501B8EB26FB575F55508D7D4E592CAB93EC783DE5097E4CEF86233CB9B23AC19895F28C1EEAEBAD69900A5BCD07C88904B5CDE0F51B272F3ED2149A370044B200ABD1BC3907EF9A7AE3FD7D37695F243BAF7067EC516C92FC7113D67FD991AF22341666DE89AB02ECA805524BB02A8C483F9276864",
+      "domain": "monolithprod.siigo.com",
+      "path": "/",
+      "expires": 1779124476.691922,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga",
+      "value": "GA1.2.742252295.1776532461",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1811092478.02744,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_gid",
+      "value": "GA1.2.1093341707.1776532478",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1776618878,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_gat_gtag_UA_107714507_5",
+      "value": "1",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1776532538,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "contractRequestMade",
+      "value": "true",
+      "domain": "siigonube.siigo.com",
+      "path": "/",
+      "expires": 1776571200,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga_ET65N6HDB5",
+      "value": "GS2.1.s1776532461$o1$g1$t1776532480$j41$l0$h0",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1811092480.647695,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga_QJ8KB03WJM",
+      "value": "GS2.1.s1776532461$o1$g1$t1776532480$j41$l0$h0",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1811092480.651827,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga_E32PB50K4H",
+      "value": "GS2.1.s1776532461$o1$g1$t1776532480$j41$l0$h0",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1811092480.660363,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_gcl_au",
+      "value": "1.1.1397463268.1776532462.27716961.1776532481.1776532480",
+      "domain": ".siigo.com",
+      "path": "/",
+      "expires": 1784308462,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "AWSALBCORS",
+      "value": "Qn2aO6+dZOFWSrpPV/oJJbUqTlfS/vkAjhzN+AnXurLcBp8YbOtUFOh4M9csZ+V+T+uttjfhDi6lICLNNxx6kiIJLHsgHZZyD1RK9vEenjTpEe3IsNPo8O0iUrwg",
+      "domain": "analytex-us.userpilot.io",
+      "path": "/",
+      "expires": 1777137280.867298,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://siigonube.siigo.com",
+      "localStorage": [
+        {
+          "name": "typePortal",
+          "value": "multi-company"
+        },
+        {
+          "name": "accountantPortalUrl",
+          "value": "/multi-login/companies"
+        },
+        {
+          "name": "LoadSettings_POPPINGBOBAINTERNATIONALSAS",
+          "value": "{\"firstTimeURL\":\"\",\"sUrlApplicationLogo\":\"/#/asp/RGVmYXVsdC5hc3B4P1RhYklEPTIxMw__?TabID=213\",\"numIdGoogleAnalytics\":\"UA-107714507-5\",\"tagManagerGoogle\":\"\",\"userLicense\":0,\"planType\":14,\"virtualPath\":\"\",\"maxValueAllowed\":0,\"sCompanyKey\":\"POPPINGBOBAINTERNATIONALSAS\",\"userID\":240,\"maxAttachmentSize\":\"10486\",\"blnFormIsDirtyValidate\":\"true\",\"applicationLogo\":\"\",\"defaultTabId\":1055,\"itemsToShowCard\":\"\",\"isLiteUser\":false,\"URLYoutubeAPI\":\"https://www.youtube.com/iframe_api\",\"IdYoutubeWelcomeVideo\":\"Iuc_WvI0EoI\",\"AllowChat\":\"\\\"{\\\\\\\"isAllowChat\\\\\\\" : true , \\\\\\\"testingEnvironment\\\\\\\" : false}\\\"\",\"Serial\":\"01580124297711\",\"ListHelpTabID\":\"[]\",\"CompanyKeyWithPermissionToEditHelpEdit\":\"empresacentraltextoayuda,empresacentraltextoayudasolofacturacion,empresacentraltextoayudacontador,empresacentraltextoayudapremium,empresacentraltextoayudaemprendedor,empresacentraltextoayudaindependiente\",\"ShowNews\":true,\"ShowNewsOnLogin\":false,\"ShowDebitInvoicing\":true,\"ShowNewPurchase\":true,\"msDocumentTypeEnabled\":false,\"AllowMetricsFirebase\":false,\"ShowExportInvoice\":true,\"ShowGiftInvoice\":true,\"ShowChargesAndDiscounts\":true,\"ShowAccountByItem\":true,\"URLPaymentGateway\":\"http://40.79.66.140:8198/#/purchaseBillingActivation\",\"ShowSetTests\":false,\"CountryCode\":170,\"Language\":\"es-ES\",\"allowInvoices\":-1,\"agreementType\":0,\"creationDateTenant\":\"2024/11/14\",\"userName\":\"Gerencia@poppingbobainternational.com\",\"eSiigoPreviousValidationState\":3,\"digitalCertificateInfo\":\"\",\"NumberRowsAllowedToImport\":\"500\",\"VATExclusionDates\":\"2020-06-19,2020-07-03,2020-11-21,2021-10-28,2021-11-19,2021-12-03,2022-03-11,2022-06-17\",\"PrintFormatExclusionDate\":\"2021-04-27\",\"DIANAnnexStartDate\":\"2021-08-18\",\"menuCardEnabled\":true,\"msThirdPartyEnabled\":true,\"remittanceNoteEnabled\":true,\"orderDeliveryEnabled\":true,\"AIUNewFormatEnabled\":true,\"enableTaxAddAdjust\":false,\"enableNewSideMenu\":false,\"msSearchEnable\":true,\"enableMsNotification\":true,\"ShowNewInventoryAdjustment\":true,\"maximumShareholdersParty\":5,\"adValoremEnabled\":true,\"defaultTimeZone\":7,\"ShowNewMenu\":true,\"ShowNewTransferVoucher\":true,\"ShowNewPhysicalInventory\":true,\"enabledDocumentSupport\":true,\"ShowNotificationOutOfStock\":true,\"contactsPopupEnable\":true,\"calculationsLibraryEnable\":false,\"editDocumentFromACDocument\":true,\"calculationsLibraryRMEnabled\":false,\"CompanyKey\":\"POPPINGBOBAINTERNATIONALSAS\",\"OnlyInModulesWarehouses\":\"1\",\"HasWarehouse\":\"1\",\"AllowForeignMoney\":0,\"AccountFreeFields\":1,\"FunctionalMoney\":\"COP\",\"UsesPOS\":\"true\",\"TenantState\":1,\"PrepaidPlanType\":3,\"AllowedInvoices\":-1,\"UserInformation\":{\"show\":\"true\",\"checkUpgrade\":\"true\",\"HelpItems\":[{\"Name\":\"PayrollElectronicPaymentUrl\",\"Path\":\"https://sapayrollpayment.z20.web.core.windows.net?v=1.0\",\"ClassCss\":\"\",\"Visible\":true},{\"Name\":\"QAEnviroment\",\"Path\":\"false\",\"ClassCss\":\"\",\"Visible\":true},{\"Name\":\"PayrollFremiumMT\",\"Path\":\"False\",\"ClassCss\":\"\",\"Visible\":true}],\"Email\":\"gerencia@poppingbobainternational.com\",\"Classification\":4},\"UserOptions\":{\"userOptions\":[{\"Name\":\"31530\",\"Path\":\"#/user-profile/50/view?RecordCode=240\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32618\",\"Path\":\"#/user-account\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32957\",\"Path\":\"/POPPINGBOBAINTERNATIONALSAS/Default.aspx?TabID=606\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"23195\",\"Path\":\"/Default.aspx?TabID=320\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32476\",\"Path\":\"/POPPINGBOBAINTERNATIONALSAS/LogOff.aspx\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"}],\"urlProfileImage\":\"\",\"userPrincipalName\":\"Gerencia .\",\"urlUserProfile\":\"#/user-profile/50/view?RecordCode=240\",\"companyKey\":\"POPPING BOBA INTERNATIONAL SAS\",\"companyNIT\":\"901878434\",\"companyNitCheckDigit\":\"901878434-1\",\"headerMenuItems\":[]},\"msActionLogEnabled\":1,\"cookies\":{\"Value\":\"/fddyZ00UtA8WiWo7AlQJSY4Lm236pgWqGpFIth+LuJgFkDFbb+Ph0cWyfCzN9WxJxPfoJAXAiYT4qF08fiIXvMF556dhJKG5T93phnRz5iUfcoazddsaC9mwlbDSmFbsI36EEvEjTYk6pFvr5Ifa9tfIJ1BUX0JTNcsQ5zcPCoId+UKlg78wnFRJ2XNrLaV58JeU+N7c3eU5xwGqviUVvwcQGt+QnWWIE5YuQiofSw=\",\"Path\":\"/\",\"Expires\":\"2026-04-19 17:14\",\"Name\":\"91-A6-A3-91-3A-C4-31-B1-08-BF-B7-64-FA-EA-90-5C\"},\"DefaultUrl\":\"/POPPINGBOBAINTERNATIONALSAS/#/dashboard/1055\",\"ACDocumentFlag\":false,\"NewInvoiceView\":true,\"UseMailProvider\":false,\"UseEMailControl\":false,\"EnableCalculationsLibraryNC\":false,\"ChangeLabelViewFV\":false,\"productFastCreateEnabled\":true,\"UseMSElectronicDocuments\":true,\"newBankFlag\":false,\"ShowNewPurchaseOrderEnabled\":false,\"ShowNewAdjustmenNoteEnabled\":true,\"ShowMenuAI\":true,\"ShowNewImportInitialBalanceEnabled\":true,\"MsEDocumentBalanceEnabled\":true,\"ShowNewPurchaseViewEnabled\":true,\"ShowNewDebitNoteViewEnabled\":true,\"ShowInventoryConfigurationEnabled\":true,\"CountryCodeAlpha3\":\"COL\",\"TimeZoneId\":0,\"ShowDay\":false,\"ShowHour\":false,\"DatePattern\":0,\"UseAMPMFormat\":false,\"LanguageCode\":\"es\",\"Offset\":-5,\"TimeZoneInfo\":\"\",\"UseEDocumentBalanceAPIEnabled\":false,\"UsersProfilesEnabled\":false,\"ShowNewPosInvoiceConfig\":true,\"ProductDomainEnabled\":false,\"ShowNewUnitCostReportEnabled\":true,\"UseIdentityValidation\":false,\"ShowAttachXMLPurchaseEnabled\":false,\"ShowAttachXMLDebitNoteEnabled\":false,\"ShowNewRemittanceNoteViewEnabled\":true,\"ShowInvoiceSuperModal\":false,\"MsUsersDomainInMsProductEnabled\":false,\"ShowInventoryValuationReportEnabled\":false,\"ShowProductManagementEnabled\":true,\"ShowNewPosCreditNoteConfig\":false,\"ShowNewTabSalesManagerEnabled\":false,\"ShowNewDebitInvoicingViewEnabled\":false,\"ShowDueStateDateReportEnabled\":true,\"ShowNewWarehouseConfigurationEnabled\":true,\"ShowNewDueStateClientEnabled\":false,\"ShowNewInvoiceViewEnabled\":true,\"ShowNewCreditNoteViewEnabled\":true,\"EnvironmentName\":\"prod\",\"ShowNewTreasuryEnabled\":false,\"ShowNewQuotationViewEnabled\":true,\"ShowProductDetailTemplateEnabled\":false,\"UseXmlConciliationPurchase\":false,\"ShowNewPaymentsViewEnabled\":true,\"ShowXMLPaymentToSuppliers\":false,\"ShowRequestCharge\":true,\"ShowIndicators\":true,\"UseConciliationDebitNote\":false,\"UseNewBrowserVersion\":false,\"ShowElectronicTransferVoucherEnabled\":false,\"ShowHealthSectorCompanyEnabled\":true,\"EnabledNewLegalTerms\":true,\"EnabledDocumentsStateReportsExtended\":false,\"ClosingByBlocksEnabled\":true,\"EnabledTransferVoucherReportExtended\":false,\"EnabledCreditNoteForSalesNote\":false,\"EnableMassiveSendEmailWithMS\":true,\"EnableHealthyTaxes\":true,\"EnabledTransferVoucherRecount\":false,\"EnabledTransferVoucherRelatedCfdi\":false,\"EnabledInvoiceIncomeNewLabels\":true,\"ShowNewTitleMenuPOS\":true,\"EnabledNewInventoryProcess\":false,\"EnableTreasuryDomain\":false,\"ShowForeignMoneyEnabled\":false,\"EnableMonolithMailBreakage\":true,\"MfThirdPartiesEnabled\":false,\"LogoForDocumentsEnabled\":true,\"MfThirdPartiesFastCreationEnabled\":false,\"SalesManagementEnabled\":true,\"ShowSenderDataManagementParcelEnabled\":false,\"DateRangeUserProfilesEnabled\":\"\",\"EnabledElectronicCreditNoteV2CompanyKeys\":false,\"EnabledPOSMassiveSendEmail\":true,\"ProductsQuickCreationEnabled\":true,\"CompanyKeyPermissionInvoice\":\"\",\"EnabledAdvertisementBanner\":false,\"CostingProcessSettingsEnabled\":true,\"EnabledUsersManager\":true,\"EnabledTreasuryDomainPlanType\":\"\",\"EnabledExchangeSector\":true,\"EnabledSimplifyQuotaManagement\":false,\"ShowInconsistenciesSidepanel\":false,\"ShowPurchaseList\":\"\",\"NewSalesNoteEnabled\":false,\"CompanyKeyResolutionSync\":\"\",\"ProductCombosEnabled\":false,\"EnabledCreateUserCatalog\":false,\"EnabledNewSimplifiedPortfolio\":false,\"EnabledNewClosingProcess\":true,\"EnabledAccountantPortalHome\":false,\"EnabledMobileFlag\":false,\"EnabledUnlocated\":false,\"IepsTaxEnabled\":false,\"ShowSendEmailModal\":false,\"EnableHealthSectorCustomization\":true,\"EnabledInvoiceViewSimplification\":true,\"EnableSimplifyQuotaManagementByCompanyKeys\":\"PRDCOLPTLPREMIUM14T1234,PRDCOLPTLPREMIUM14T1234\",\"NewBalanceAdjustment\":false,\"EnableNewTaxExperience\":false,\"EnableActiveReports\":\"5349,5440,5455,5478,5429,5436,5452,5397,5448,5406,2011,5409,5415,5054,5443,5498,5410,5543,5516,5501,5250,5238,5451,5364,5412,5438,5454,5612\",\"EnabledPhoneValidation\":true,\"EnableThirdPartyQuickInvoice\":false,\"EnableAditionalDocumentsFields\":true,\"MSPurchaseSupportDocumentSaveCompanyKeys\":\"PREMIUMNATA\",\"EnableNewTabValidation\":false,\"NewExperienceUsersEnabled\":false,\"EnableNewViewSalesManagement\":true,\"NewTabValidationAllowedMfs\":\"sales-management,inventory-management,agreements,indicators,costing,payroll,reports,process,payroll/employee,payroll/electronic,reports-extended,accountingparameter,downloadcoi,conciliation-documents-cfdi,treasury,dashboard,user-administration,product-management\",\"EnabledRoleToProfile\":false,\"ShowIEPSPurchase\":\"\",\"EnableAditionalDocumentsCreditNote\":true,\"ShowInvoiceCopyOption\":false,\"EnableThirdPartyQuickQuotation\":false,\"ShowCancellationModalEnabled\":false,\"EnableThirdPartyQuickVoucher\":false,\"EnableThirdPartyAccountingIncome\":false,\"EnableConvertSalesNoteIntoInvoice\":false,\"ProductMenuIAEnabled\":true,\"AdvancedVariantComboEnabled\":true,\"EnableDocumentCounter\":false,\"SuggestedCategoriesEnabled\":true,\"NewMoneyExchangeExperienceEnabled\":false,\"ReportsV2Ids\":\"\",\"ReportsV2Allowed\":false,\"EnableNewCashReceipt\":false,\"EnableSalesManagementQuickFilters\":false,\"EnableNewEmailModal\":true,\"ShowTaxLegendsEnabled\":false,\"ExternalInvoicePaymentSupplementEnabled\":false,\"PlanTypesUserProfileEnabled\":\"7,12,15\",\"EnabledEDocumentBalanceV2\":false,\"EnableConciliationCfdiNew\":false,\"EnableNewSalesConfiguration\":false,\"CaptchaExcludedEmailSend\":true,\"EnableTheSearchEngineNewExperience\":false,\"EnableNewNCEmailModal\":true,\"EnableNewNDEmailModal\":true,\"EnableNewCTEmailModal\":false,\"ShowSalesNoteV2ViewEnabled\":false,\"EnableSiigoPayFeature\":false,\"ChatProvider\":\"zendesk\",\"EnableMultiplePaymentForms\":false,\"IepsPurchaseOrderEnabled\":false,\"MultiDecimalPrecisionEnabled\":false,\"EnablePurchaseEntryLocalization\":false,\"GlobalInvoiceIepsEnabled\":false,\"EnableEmailBridgeFlow\":false,\"NewSideMenuHeaderReact\":false,\"EnableNewPurchasesEmailModal\":false,\"EnableSixDecimalPurchase\":false,\"EnableCreatePosCashiers\":false,\"UsersProfilesFEPROEnabled\":true,\"UsersProfilesINDEPENDENTEnabled\":false,\"NewSideMenuHeaderReactBackButton\":false,\"NewSideMenuHeaderReactAppButton\":false,\"ShowHealthSectorContingencyEnabled\":false,\"EnableStampingPushNotifications\":false}"
+        },
+        {
+          "name": "esiigoConfiguration",
+          "value": "[{\"eSiigoEnvironmentType\":-1,\"eSiigoPreviousValidationState\":3,\"ESiigoTenantCode\":\"30bdc191-982e-445f-8805-00707e31cff6\",\"ESiigoCompanykey\":\"901878434\"}]"
+        },
+        {
+          "name": "CompanyKey",
+          "value": "POPPINGBOBAINTERNATIONALSAS"
+        },
+        {
+          "name": "CanaryTenants",
+          "value": ";73;174;889;562;1538;1984;1990;106;107;108;109;110;111;112;113;114;115;116;117;118;119;121;122;123;125;127;129;130;132;133;136;137;138;139;140;141;143;144;145;146;147;148;149;150;151;152;153;154;155;156;158;159;160;161;162;163;164;165;166;168;169;170;172;173;175;176;178;179;180;186;187;188;189;190;191;192;193;194;195;196;197;198;199;200;201;202;203;205;206;207;208;209;210;352;1527;1569;1573;"
+        },
+        {
+          "name": "defaultUrl",
+          "value": "/dashboard/1055"
+        },
+        {
+          "name": "global-context",
+          "value": "{\"exposedConfig\":\"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\"}"
+        },
+        {
+          "name": "_gcl_ls",
+          "value": "{\"schema\":\"gcl\",\"version\":1,\"gcl_ctr\":{\"value\":{\"value\":0,\"timeouts\":0,\"errors\":0,\"eopCount\":0,\"creationTimeMs\":1776532461612},\"expires\":1784308461612}}"
+        },
+        {
+          "name": "userGlobal",
+          "value": "Gerencia@poppingbobainternational.com"
+        },
+        {
+          "name": "Terms_LegalTerms_Status_Gerencia@poppingbobainternational.com|POPPINGBOBAINTERNATIONALSAS",
+          "value": "Igp48cLB0sX/g3pChxJoTKYQfRX9zMYHUBk8EXDzGMsQcDzRWj36VJGnrpTXjbxT+TfH14fgbW5J13MnpRm+cKoGRVx0aUrvitWi6PimRx6zyIv/bBF3LCHh9Mbky/RUPnvhjJ3WhTnJ5sVkV8foDuBdywFBXbEUq3Wk1aJ1eEE5T9JF5wSn1zLRV0Rm65HuIJi4cBgCG7TOwFCO7mLgAg2gBFQFggqMB+H8J12R+uTTofjL7m2cm+8L6R6hFoih9erfVlfyPfwlY+y9HFv9/s8WtCMnXjd3XtJwNwO8jwSPphuylJ+UVrrPbbySE8TcPmd3yr49y+TEAx9YW2RkSa95PO4P8UjFKlN6tQvkuQGQ/AZoBN2RsfYnCpvn0PlLztn6XX44rVjJE8/JHYLiFb6V6HFEyCamML9Gv+rT8z1zAmTaHqyVT30kohOvM2L9a8/JntFsCgioeFUGrolcrUcKBGv4yhGWHN8w7NpELYGcWsolHOfTJqO+s0i9RaH3IXfjk9e/gwmMklX7RAOnJkVw2EXO2byYfgQyBlm0R8KMNFFgHEj7TPoe76wRubA45bModG7EyYA4+s5G4IUXMbo8FPdnXB28ys0cUAiBOG7J1XBdREPgr3VIvELwy1AdCsQelcAvurFnB7z2L3HP73p3v+oNB1oTG4vrJx21iCqnMgZnLqrRPjLByRAoxbZ0t44DUhhqI6so0f8uYGKa84IjZbsrfSX2woVX/+AwIkePRdSbJuarJSkPnpQYNMN23Q1/5S7b6m561ox+mzII6Kknzzfcn+feRYlUWukN5jSh11gfcIJhZ1BYRazSYMGhJu6rZWhdPdVve4wrDt6BgQRRKRlKIZhnDryW/E4wuJmH2bJO3C5MnI1RTEg9L6uXqa1lNS0Mf3p5mlJXhQ+SMZ3MhA=="
+        },
+        {
+          "name": "ListHelpTabIDStorage",
+          "value": "[]"
+        },
+        {
+          "name": "fingerprintSended",
+          "value": "true"
+        },
+        {
+          "name": "planLinks",
+          "value": "[{\"LinkId\":\"WebinaRegister\",\"Url\":\"https://us06web.zoom.us/webinar/register/WN_hrmfh4ACR9i7UtQ_ycEgew#/registration\"},{\"LinkId\":\"ElectronicInvoicing\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/facturacionelectronica/\"},{\"LinkId\":\"BookletsVideo\",\"Url\":\"https://msfacturaelectdian.azurewebsites.net/videos-cartillas-17.html\"},{\"LinkId\":\"ZipCode\",\"Url\":\"https://visor.codigopostal.gov.co/472/visor/\"},{\"LinkId\":\"Checkbook\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/manejo-factura-talonario-papel-contingencia/\"},{\"LinkId\":\"SiigoAsMyProvider\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/como-seleccionar-a-siigo-como-mi-proveedor-de-nomina-electronica/\"},{\"LinkId\":\"PayrollElectronic\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/nomina-electronica/\"},{\"LinkId\":\"CreatedPayrollElectronicProPlus\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/creacion-empleados-en-nomina-electronica-pro-plus/\"},{\"LinkId\":\"BroadcastPayrollElectronicProPlus\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/crear-liquidar-y-contabilizar-o-pagar-la-nomina-electronica-pro-plus/\"},{\"LinkId\":\"PayrollElectronicProPlusDian\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/transmision-envio-de-nomina-electronica-pro-plus-dian/\"},{\"LinkId\":\"SupportingDocumentDian\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/solicitud-resolucion-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"DocumentNumberingElectronicSupport\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"ConfigureElectronicSalesInvoice\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/configura-tu-factura-de-venta-electronica-por-primera-vez/\"},{\"LinkId\":\"OrderInvoiceResolutionDian\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/solicitar-resolucion-de-facturacion-dian/\"},{\"LinkId\":\"facturationPrefixesDian\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/asociar-prefijos-de-facturacion-dian/\"},{\"LinkId\":\"DocumentSupport\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/solicitud-resolucion-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"PaymentMarketConfiguration\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/configuracion-de-pagos-en-linea-mercado-pago/\"},{\"LinkId\":\"CalculateOvertimeWithEeducedWorkingHours\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/calculo-horas-extras-recargos-con-reduccion-jornada-laboral-nomina-pro/\"},{\"LinkId\":\"TipsForSettingUpTaxes\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/tips-configuracion-de-impuestos/\"},{\"LinkId\":\"CreateAccountingAccounts\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/crear-cuentas-contables/\"},{\"LinkId\":\"Training\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/capacitaciones/\"},{\"LinkId\":\"Anydesk\",\"Url\":\"https://portaldeclientes.siigo.com/anydesk/\"},{\"LinkId\":\"CustomerPortal\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/\"},{\"LinkId\":\"FrequentlyAskedQuestions\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/preguntas-frecuentes-elaboracion-de-la-factura-electronica-de-venta/\"},{\"LinkId\":\"FrequentlyAskedQuestionsDian\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/solicitar-habilitacion-rangos-numeracion-facturacion-dian/\"},{\"LinkId\":\"FrequentlyAskedQuestionsDianDS\",\"Url\":\"https://siigonube2.portaldeclientes.siigo.com/solicitud-resolucion-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"catalogVpfe\",\"Url\":\"https://catalogo-vpfe.dian.gov.co/User/Login\"},{\"LinkId\":\"Resolution85Electronic\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/resolucion-85-factura-electronica-como-soporte-fiscal-y-titulo-valor-eventos-en-factura-electronica-de-proveedores/\"},{\"LinkId\":\"creation of products and services\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/creacion-de-productos-y-servicios/\"},{\"LinkId\":\"YearEnd\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/cierre-de-ano/\"},{\"LinkId\":\"ReverseYearClose\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/como-reversar-un-cierre-de-ano/\"},{\"LinkId\":\"ClosingAccountsTaxOtherAccountsThird\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/cierre-de-cuentas-de-impuestos-y-otras-cuentas-por-tercero/\"},{\"LinkId\":\"MagneticMedia2022\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/asistente-de-medios-magneticos-2022/\"},{\"LinkId\":\"MagneticMedia\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/medios-magneticos/\"},{\"LinkId\":\"RetentionCertificate\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-de-retenciones/\"},{\"LinkId\":\"HandlingInvoiceCheckbookPaperonting\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/manejo-factura-de-talonario-papel-contingencia/\"},{\"LinkId\":\"EnablingDianDocumentSupportElectronic\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"RequestResolutionDocumentSupportElectronic\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/solicitud-resolucion-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"PrefixesRangesNumberingDocumentSupportElectronic\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"ConfigureInvoiceForSaleElectronically\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/configura-tu-factura-de-venta-electronica/\"},{\"LinkId\":\"RequestResolutionInvoiceDian\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/solicitar-resolucion-de-facturacion-dian/\"},{\"LinkId\":\"AssociatePrefixesFacturationDianOnly\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/solicitar-habilitacion-rangos-numeracion-facturacion-dian/\"},{\"LinkId\":\"InvoiceSupportDocument\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/manejo-del-documento-soporte/\"},{\"LinkId\":\"ConfigurationOnlinePaymentMarket\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/configuracion-de-pagos-en-linea-mercado-pago/\"},{\"LinkId\":\"TrainingOnly\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/capacitaciones/\"},{\"LinkId\":\"FrequentlyAskedQuestionsOnly\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/preguntas-frecuentes-cartera-siigo/\"},{\"LinkId\":\"OrderRatingRangesNumberingDianOnly\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/solicitar-habilitacion-rangos-numeracion-facturacion-dian/\"},{\"LinkId\":\"Resolution85ElectronicInvoice\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/resolucion-85-factura-electronica-como-soporte-fiscal-y-titulo-valor-eventos-en-factura-electronica-de-proveedores/\"},{\"LinkId\":\"CreationProductsServices\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/creacion-de-productos-y-o-servicios/\"},{\"LinkId\":\"CreationConceptsPayrollPro\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/creacion-conceptos-en-nomina-electronica-pro/\"},{\"LinkId\":\"RejectionRule92\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/motivos-de-rechazo-regla-92/\"},{\"LinkId\":\"SalesInvoiceConfiguration\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/configuracion-de-factura-de-venta-electronica/\"},{\"LinkId\":\"WantToRegister\",\"Url\":\"https://us06web.zoom.us/webinar/register/WN_Z0Zenw_SQ-qjVCdiEDvOwg#/registration/\"},{\"LinkId\":\"wantToReadGuides\",\"Url\":\"https://siigofacturacion.portaldeclientes.siigo.com/\"},{\"LinkId\":\"FeConfiguration\",\"Url\":\"https://us06web.zoom.us/webinar/register/WN_hrmfh4ACR9i7UtQ_ycEgew#/registration/\"},{\"LinkId\":\"SupportDocumentSiigo\",\"Url\":\"https://us06web.zoom.us/webinar/register/WN_66WxZ8iqQKex2giBIuvsRQ#/registration/\"},{\"LinkId\":\"SignUpForTraining\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/capacitaciones/\"},{\"LinkId\":\"DownloadVirtualSupportHeader\",\"Url\":\"https://portaldeclientes.siigo.com/anydesk/\"},{\"LinkId\":\"WatchVideosGuides\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/\"},{\"LinkId\":\"AssociateHere\",\"Url\":\"https://catalogo-vpfe.dian.gov.co/User/Login\"},{\"LinkId\":\"AssociateHereDS\",\"Url\":\"https://www.dian.gov.co/\"},{\"LinkId\":\"LearnhowAssociate\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/asociar-prefijos-o-rangos-de-numeracion-de-facturacion-electronica/\"},{\"LinkId\":\"LearnhowAssociateDS\",\"Url\":\"https://siigonube2.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-documento-soporte-electronico-en-la-dian/\"},{\"LinkId\":\"ConnectOurWebinars\",\"Url\":\"https://us06web.zoom.us/webinar/register/WN_vuP7SY_mSrqi8NOlxG2f6g#/registration\"},{\"LinkId\":\"HowCreateProducts\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/creacion-de-productos-y-servicios/\"},{\"LinkId\":\"CreationElectronicInvoiceTutorial\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-factura-electronica-de-venta/\"},{\"LinkId\":\"CrossingPaymentsInvoiceTutorail\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/cruzar-anticipos-en-factura-de-venta/\"},{\"LinkId\":\"CreatingInvoiceAIU\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-factura-electronica-con-modelo-1-base-aiu-no-sumada-al-total-de-la-factura/\"},{\"LinkId\":\"FrequentlyAskedQuestionsCreditNote\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/preguntas-frecuentes-elaboracion-de-nota-credito-electronica/\"},{\"LinkId\":\"ElaborationElectronicSupportDocument\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaboracion-documento-soporte-electronico/\"},{\"LinkId\":\"HandlingReteICAElectronicSupportSocument\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/manejo-de-reteica-en-documento-soporte-electronico/\"},{\"LinkId\":\"CreationElectronicCreditNote\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elabora-tu-nota-debito-electronica/\"},{\"LinkId\":\"PrepareYourElectronicCreditNote\",\"Url\":\"https://siigofacturacionpro.portaldeclientes.siigo.com/elabora-tu-nota-credito-electronica/\"},{\"LinkId\":\"ManagementCreditNotesWithChargesDiscountsTotals\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/manejo-nota-credito-con-cargos-y-descuentos-en-totales/\"},{\"LinkId\":\"CreationOfTaxes\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/crear-impuestos-autorretencion-iva-retefuente-reteica-entre-otros/\"},{\"LinkId\":\"ModifyTaxes\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/modificar-o-editar-impuestos-autorretencion-iva-retefuente-reteica-entre-otros/\"},{\"LinkId\":\"TipsTaxConfiguration\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/tips-configuracion-de-impuestos/\"},{\"LinkId\":\"CreationInventoryClassification\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/grupo-de-inventario-y-servicios/\"},{\"LinkId\":\"ChangeInventoryService\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/modificar-o-editar-grupos-de-inventario-y-servicios/\"},{\"LinkId\":\"InactivateInventoryService\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/inactivar-grupos-de-inventario-y-servicios/\"},{\"LinkId\":\"CreatingAccountingAccounts\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/crear-cuentas-contables/\"},{\"LinkId\":\"ChangeAccountingAccounts\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/modificar-o-editar-cuentas-contables/\"},{\"LinkId\":\"InactivateAccountingAccounts\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/inactivar-cuentas-contables/\"},{\"LinkId\":\"CreateGeneralCashReceipt\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-recibo-de-caja/\"},{\"LinkId\":\"CreateAdvancePaymentClients\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/anticipo-de-clientes/\"},{\"LinkId\":\"CreatingAdvancedCashReceipt\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/registro-de-impuestos-descuentos-o-ajustes-que-no-se-contabilizaron-en-la-factura/\"},{\"LinkId\":\"CreationAccountingReceipt\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-comprobante-contable/\"},{\"LinkId\":\"CreatingWalletVoucher\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-comprobante-contable-de-cuentas-por-cobrar/\"},{\"LinkId\":\"CreatingInventoryReceipt\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-comprobante-contable-de-ajuste-a-inventarios/\"},{\"LinkId\":\"CreatingTaxReceipt\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/elaborar-comprobante-contable-con-impuestos/\"},{\"LinkId\":\"CreationVoucherInitialBalancesFixedAct\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/saldos-iniciales-de-activos-fijos/\"},{\"LinkId\":\"CreationDepreciationVoucherFixedAssets\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/depreciacion-de-activos-fijos/\"},{\"LinkId\":\"LearnPosAdvancedPlusEnterprising\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/solicitar-resolucion-de-facturacion-dian-pos-avanzado-emprendedor/\"},{\"LinkId\":\"LearnAdvancedPosPlusPremium\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/solicitar-resolucion-de-facturacion-dian-pos-avanzado-premium/\"},{\"LinkId\":\"LearnPosAdvancedPlusEnterprisingPrefix\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-facturacion-dian-pos-avanzado-emprendedor/\"},{\"LinkId\":\"LearnAdvancedPosPlusPremiumPrefix\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/asociar-prefijos-rangos-de-numeracion-de-facturacion-dian-pos-avanzado-premium/\"},{\"LinkId\":\"PostAdvancedElectronicInvoicing\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/habilitacion-facturacion-electronica-pos-avanzado-premium/\"},{\"LinkId\":\"PlusElectronicAuthorization\",\"Url\":\"https://posweb.portaldeclientes.siigo.com/habilitacion-facturacion-electronica-pos-avanzado-emprendedor/\"},{\"LinkId\":\"CreateNewContractForAnExistingEmployee\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/crear-nuevo-contrato-a-empleado-que-ya-existe/\"},{\"LinkId\":\"ChangeInTypeOfApprenticeContract\",\"Url\":\"https://siigonube2.portaldeclientes.siigo.com/cambio-de-tipo-de-contrato-para-aprendiz-sena/\"},{\"LinkId\":\"ConceptCreation\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/creacion-conceptos-de-nomina-electronica-lite/\"},{\"LinkId\":\"SendingSupportingDocument\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/transmision-o-envio-de-nomina-electronica-lite-a-la-dian/\"},{\"LinkId\":\"SendingSupplies\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/envio-de-provisiones-a-la-dian-en-la-nomina-electronica-lite/\"},{\"LinkId\":\"PreparationOfAdjustmentNote\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/notas-de-ajuste-nomina-electronica-lite/\"},{\"LinkId\":\"PerformMonthlyCosting\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/costeo-mensual-causacion-costos-de-inventario/\"},{\"LinkId\":\"EliminateMonthlyCosting\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/borrar-o-eliminar-costeo/\"},{\"LinkId\":\"CertificateIncomeWithholdings\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-de-ingresos-y-retenciones/\"},{\"LinkId\":\"GenerateWithholdingCertificate\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-de-retenciones/\"},{\"LinkId\":\"GenerateCertificateSource\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-retencion-en-la-fuente/\"},{\"LinkId\":\"GenerateWithholdingCertificateIva\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-retencion-de-iva/\"},{\"LinkId\":\"GenerateWithholdingCertificateIca\",\"Url\":\"https://siigonube.portaldeclientes.siigo.com/certificado-retencion-de-ica/\"}]"
+        },
+        {
+          "name": "sessionLimit",
+          "value": "1776574800000"
+        },
+        {
+          "name": "companyName",
+          "value": "POPPING BOBA INTERNATIONAL SAS"
+        },
+        {
+          "name": "ZD-suid",
+          "value": "{\"id\":\"7acc4db0365641bfb1c0b551e4242bda\",\"expiry\":1776533378777,\"tabs\":{\"count\":1,\"expiry\":0}}"
+        },
+        {
+          "name": "AddOnModules",
+          "value": "[{\"name\":\"Pro (documentos ilimitados)\",\"state\":true,\"tenantId\":\"0x00000000000000000000000001045888\",\"type\":0,\"module\":2,\"dateActive\":\"02/21/2025 08:56:34.045\",\"posActiveCashiers\":null,\"documentBase\":0,\"readOnly\":null,\"subState\":1,\"updateType\":null,\"complements\":null,\"payrollComplements\":null}]"
+        },
+        {
+          "name": "moduleContextEnabled",
+          "value": "false"
+        },
+        {
+          "name": "alreadyDoneOnBoardingPOS",
+          "value": "false"
+        },
+        {
+          "name": "ZD-buid",
+          "value": "a1190fcdff3940ed9cb211c67f51eead"
+        },
+        {
+          "name": "lastExternalReferrer",
+          "value": "other"
+        },
+        {
+          "name": "userpilot:sessions",
+          "value": "{\"292180195\":[]}"
+        },
+        {
+          "name": "id_token",
+          "value": "eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJpc3MiOiJodHRwczovL2FjY291bnQuc2lpZ28uY29tLzBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNC92Mi4wLyIsImV4cCI6MTc3NjYxODg3NSwibmJmIjoxNzc2NTMyNDc1LCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJuYW1lIjoiR2VyZW5jaWFAcG9wcGluZ2JvYmFpbnRlcm5hdGlvbmFsLmNvbSIsIm1haWxfc2lpZ28iOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwic3RvcmFnZV9rZXkiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwiY29tcGFuaWVzIjoiMiIsImFjY291bnRhbnQiOiJmYWxzZSIsImNsb3VkX3RlbmFudF9jb21wYW55X2tleSI6IlBPUFBJTkdCT0JBSU5URVJOQVRJT05BTFNBUyIsInVzZXJzX2lkIjoiMjQwIiwidGVuYW50X2lkIjoiMHgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMTA0NTg4OCIsInVzZXJfbGljZW5zZV90eXBlIjoiMCIsInBsYW5fdHlwZSI6IjE0IiwidGVuYW50X3N0YXRlIjoiMSIsIm11bHRpdGVuYW50X2lkIjoiMTQ2MSIsInRpZCI6IjBlNGVlNWU2LTdhZTktNDNhYS04OGQxLTk1MDM5ZmZiYTdhNCIsImNsaWVudF9pZCI6IlNpaWdvV2ViIiwic2NvcGUiOiJXZWJBUEksb2ZmbGluZV9hY2Nlc3MiLCJzY3AiOiJiYXNpYyIsImF6cCI6ImMwZjk1ZDAwLWE1YjctNGNmYy1hODRjLTdmYzFiZTJhNjcyMCIsInZlciI6IjEuMCIsImlhdCI6MTc3NjUzMjQ3NX0.qqRvy4kY4n1oC9Swo3PYiFwpfWJQhsqxBwauT_PxvwOC_iBeI9AOjxbTrzzdtpj1KeMd2M8fxSqDwR99QabacIGMOgHJe1f3QUn5cZDj9iUFenwDrf0BcSN8ViIswUix2GOqY-Hq5bR2nWhs2xfUSmD-vfeYKORI5dNmj4dtOme26qEP-KikIP5hIc6qgIZadaBCr-fRzQi4SKdLLppAWLM6ulSo6H1y7nGMXRDe4zQKeNQzm5Yoi71c_kM2Ix44DwLVC_3vcI5jamcpKzBQ_UVhVZWzzVxNtk5S2M4lhWzgRhi9q_T-a0ziDPgMI3PdfKhcoLS9rLKMk6sXddmfIg"
+        },
+        {
+          "name": "userpilotSDK1564043874",
+          "value": "{\"SR-CONFIG\":{\"session_id\":\"176903520\",\"recording_enabled\":false,\"is_recording\":false,\"record_canvas\":false,\"pathOnly\":false,\"withHash\":false}}"
+        },
+        {
+          "name": "CompanyUserInformation_POPPINGBOBAINTERNATIONALSAS",
+          "value": "{\"firstTimeURL\":\"\",\"sUrlApplicationLogo\":\"/#/asp/RGVmYXVsdC5hc3B4P1RhYklEPTIxMw__?TabID=213\",\"numIdGoogleAnalytics\":\"UA-107714507-5\",\"tagManagerGoogle\":\"\",\"userLicense\":0,\"planType\":14,\"virtualPath\":\"\",\"maxValueAllowed\":0,\"sCompanyKey\":\"POPPINGBOBAINTERNATIONALSAS\",\"userID\":240,\"maxAttachmentSize\":\"10486\",\"blnFormIsDirtyValidate\":\"true\",\"applicationLogo\":\"\",\"defaultTabId\":1055,\"itemsToShowCard\":\"\",\"isLiteUser\":false,\"URLYoutubeAPI\":\"https://www.youtube.com/iframe_api\",\"IdYoutubeWelcomeVideo\":\"Iuc_WvI0EoI\",\"AllowChat\":\"\\\"{\\\\\\\"isAllowChat\\\\\\\" : true , \\\\\\\"testingEnvironment\\\\\\\" : false}\\\"\",\"Serial\":\"01580124297711\",\"ListHelpTabID\":\"[]\",\"CompanyKeyWithPermissionToEditHelpEdit\":\"empresacentraltextoayuda,empresacentraltextoayudasolofacturacion,empresacentraltextoayudacontador,empresacentraltextoayudapremium,empresacentraltextoayudaemprendedor,empresacentraltextoayudaindependiente\",\"ShowNews\":true,\"ShowNewsOnLogin\":false,\"ShowDebitInvoicing\":true,\"ShowNewPurchase\":true,\"msDocumentTypeEnabled\":false,\"AllowMetricsFirebase\":false,\"ShowExportInvoice\":true,\"ShowGiftInvoice\":true,\"ShowChargesAndDiscounts\":true,\"ShowAccountByItem\":true,\"URLPaymentGateway\":\"http://40.79.66.140:8198/#/purchaseBillingActivation\",\"ShowSetTests\":false,\"CountryCode\":170,\"Language\":\"es-ES\",\"allowInvoices\":-1,\"agreementType\":0,\"creationDateTenant\":\"2024/11/14\",\"userName\":\"Gerencia@poppingbobainternational.com\",\"eSiigoPreviousValidationState\":3,\"digitalCertificateInfo\":\"\",\"NumberRowsAllowedToImport\":\"500\",\"VATExclusionDates\":\"2020-06-19,2020-07-03,2020-11-21,2021-10-28,2021-11-19,2021-12-03,2022-03-11,2022-06-17\",\"PrintFormatExclusionDate\":\"2021-04-27\",\"DIANAnnexStartDate\":\"2021-08-18\",\"menuCardEnabled\":true,\"msThirdPartyEnabled\":true,\"remittanceNoteEnabled\":true,\"orderDeliveryEnabled\":true,\"AIUNewFormatEnabled\":true,\"enableTaxAddAdjust\":false,\"enableNewSideMenu\":false,\"msSearchEnable\":true,\"enableMsNotification\":true,\"ShowNewInventoryAdjustment\":true,\"maximumShareholdersParty\":5,\"adValoremEnabled\":true,\"defaultTimeZone\":7,\"ShowNewMenu\":true,\"ShowNewTransferVoucher\":true,\"ShowNewPhysicalInventory\":true,\"enabledDocumentSupport\":true,\"ShowNotificationOutOfStock\":true,\"contactsPopupEnable\":true,\"calculationsLibraryEnable\":false,\"editDocumentFromACDocument\":true,\"calculationsLibraryRMEnabled\":false,\"CompanyKey\":\"POPPINGBOBAINTERNATIONALSAS\",\"OnlyInModulesWarehouses\":\"1\",\"HasWarehouse\":\"1\",\"AllowForeignMoney\":0,\"AccountFreeFields\":1,\"FunctionalMoney\":\"COP\",\"UsesPOS\":\"true\",\"TenantState\":1,\"PrepaidPlanType\":3,\"AllowedInvoices\":-1,\"UserInformation\":{\"show\":\"true\",\"checkUpgrade\":\"true\",\"HelpItems\":[{\"Name\":\"PayrollElectronicPaymentUrl\",\"Path\":\"https://sapayrollpayment.z20.web.core.windows.net?v=1.0\",\"ClassCss\":\"\",\"Visible\":true},{\"Name\":\"QAEnviroment\",\"Path\":\"false\",\"ClassCss\":\"\",\"Visible\":true},{\"Name\":\"PayrollFremiumMT\",\"Path\":\"False\",\"ClassCss\":\"\",\"Visible\":true}],\"Email\":\"gerencia@poppingbobainternational.com\",\"Classification\":4},\"UserOptions\":{\"userOptions\":[{\"Name\":\"31530\",\"Path\":\"#/user-profile/50/view?RecordCode=240\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32618\",\"Path\":\"#/user-account\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32957\",\"Path\":\"/POPPINGBOBAINTERNATIONALSAS/Default.aspx?TabID=606\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"23195\",\"Path\":\"/Default.aspx?TabID=320\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"},{\"Name\":\"32476\",\"Path\":\"/POPPINGBOBAINTERNATIONALSAS/LogOff.aspx\",\"Key\":\"\",\"Target\":\"\",\"IconName\":\"\",\"Parent\":\"\",\"IsDropDownList\":\"\",\"WebTabItemsSubMenu\":\"\",\"Visibility\":\"\",\"Active\":false,\"TabDescription\":\"\"}],\"urlProfileImage\":\"\",\"userPrincipalName\":\"Gerencia .\",\"urlUserProfile\":\"#/user-profile/50/view?RecordCode=240\",\"companyKey\":\"POPPING BOBA INTERNATIONAL SAS\",\"companyNIT\":\"901878434\",\"companyNitCheckDigit\":\"901878434-1\",\"headerMenuItems\":[]},\"msActionLogEnabled\":1,\"cookies\":{\"Value\":\"/fddyZ00UtA8WiWo7AlQJSY4Lm236pgWqGpFIth+LuJgFkDFbb+Ph0cWyfCzN9WxJxPfoJAXAiYT4qF08fiIXvMF556dhJKG5T93phnRz5iUfcoazddsaC9mwlbDSmFbsI36EEvEjTYk6pFvr5Ifa9tfIJ1BUX0JTNcsQ5zcPCoId+UKlg78wnFRJ2XNrLaV58JeU+N7c3eU5xwGqviUVvwcQGt+QnWWIE5YuQiofSw=\",\"Path\":\"/\",\"Expires\":\"2026-04-19 17:14\",\"Name\":\"91-A6-A3-91-3A-C4-31-B1-08-BF-B7-64-FA-EA-90-5C\"},\"DefaultUrl\":\"/POPPINGBOBAINTERNATIONALSAS/#/dashboard/1055\",\"ACDocumentFlag\":false,\"NewInvoiceView\":true,\"UseMailProvider\":false,\"UseEMailControl\":false,\"EnableCalculationsLibraryNC\":false,\"ChangeLabelViewFV\":false,\"productFastCreateEnabled\":true,\"UseMSElectronicDocuments\":true,\"newBankFlag\":false,\"ShowNewPurchaseOrderEnabled\":false,\"ShowNewAdjustmenNoteEnabled\":true,\"ShowMenuAI\":true,\"ShowNewImportInitialBalanceEnabled\":true,\"MsEDocumentBalanceEnabled\":true,\"ShowNewPurchaseViewEnabled\":true,\"ShowNewDebitNoteViewEnabled\":true,\"ShowInventoryConfigurationEnabled\":true,\"CountryCodeAlpha3\":\"COL\",\"TimeZoneId\":0,\"ShowDay\":false,\"ShowHour\":false,\"DatePattern\":0,\"UseAMPMFormat\":false,\"LanguageCode\":\"es\",\"Offset\":-5,\"TimeZoneInfo\":\"\",\"UseEDocumentBalanceAPIEnabled\":false,\"UsersProfilesEnabled\":false,\"ShowNewPosInvoiceConfig\":true,\"ProductDomainEnabled\":false,\"ShowNewUnitCostReportEnabled\":true,\"UseIdentityValidation\":false,\"ShowAttachXMLPurchaseEnabled\":false,\"ShowAttachXMLDebitNoteEnabled\":false,\"ShowNewRemittanceNoteViewEnabled\":true,\"ShowInvoiceSuperModal\":false,\"MsUsersDomainInMsProductEnabled\":false,\"ShowInventoryValuationReportEnabled\":false,\"ShowProductManagementEnabled\":true,\"ShowNewPosCreditNoteConfig\":false,\"ShowNewTabSalesManagerEnabled\":false,\"ShowNewDebitInvoicingViewEnabled\":false,\"ShowDueStateDateReportEnabled\":true,\"ShowNewWarehouseConfigurationEnabled\":true,\"ShowNewDueStateClientEnabled\":false,\"ShowNewInvoiceViewEnabled\":true,\"ShowNewCreditNoteViewEnabled\":true,\"EnvironmentName\":\"prod\",\"ShowNewTreasuryEnabled\":false,\"ShowNewQuotationViewEnabled\":true,\"ShowProductDetailTemplateEnabled\":false,\"UseXmlConciliationPurchase\":false,\"ShowNewPaymentsViewEnabled\":true,\"ShowXMLPaymentToSuppliers\":false,\"ShowRequestCharge\":true,\"ShowIndicators\":true,\"UseConciliationDebitNote\":false,\"UseNewBrowserVersion\":false,\"ShowElectronicTransferVoucherEnabled\":false,\"ShowHealthSectorCompanyEnabled\":true,\"EnabledNewLegalTerms\":true,\"EnabledDocumentsStateReportsExtended\":false,\"ClosingByBlocksEnabled\":true,\"EnabledTransferVoucherReportExtended\":false,\"EnabledCreditNoteForSalesNote\":false,\"EnableMassiveSendEmailWithMS\":true,\"EnableHealthyTaxes\":true,\"EnabledTransferVoucherRecount\":false,\"EnabledTransferVoucherRelatedCfdi\":false,\"EnabledInvoiceIncomeNewLabels\":true,\"ShowNewTitleMenuPOS\":true,\"EnabledNewInventoryProcess\":false,\"EnableTreasuryDomain\":false,\"ShowForeignMoneyEnabled\":false,\"EnableMonolithMailBreakage\":true,\"MfThirdPartiesEnabled\":false,\"LogoForDocumentsEnabled\":true,\"MfThirdPartiesFastCreationEnabled\":false,\"SalesManagementEnabled\":true,\"ShowSenderDataManagementParcelEnabled\":false,\"DateRangeUserProfilesEnabled\":\"\",\"EnabledElectronicCreditNoteV2CompanyKeys\":false,\"EnabledPOSMassiveSendEmail\":true,\"ProductsQuickCreationEnabled\":true,\"CompanyKeyPermissionInvoice\":\"\",\"EnabledAdvertisementBanner\":false,\"CostingProcessSettingsEnabled\":true,\"EnabledUsersManager\":true,\"EnabledTreasuryDomainPlanType\":\"\",\"EnabledExchangeSector\":true,\"EnabledSimplifyQuotaManagement\":false,\"ShowInconsistenciesSidepanel\":false,\"ShowPurchaseList\":\"\",\"NewSalesNoteEnabled\":false,\"CompanyKeyResolutionSync\":\"\",\"ProductCombosEnabled\":false,\"EnabledCreateUserCatalog\":false,\"EnabledNewSimplifiedPortfolio\":false,\"EnabledNewClosingProcess\":true,\"EnabledAccountantPortalHome\":false,\"EnabledMobileFlag\":false,\"EnabledUnlocated\":false,\"IepsTaxEnabled\":false,\"ShowSendEmailModal\":false,\"EnableHealthSectorCustomization\":true,\"EnabledInvoiceViewSimplification\":true,\"EnableSimplifyQuotaManagementByCompanyKeys\":\"PRDCOLPTLPREMIUM14T1234,PRDCOLPTLPREMIUM14T1234\",\"NewBalanceAdjustment\":false,\"EnableNewTaxExperience\":false,\"EnableActiveReports\":\"5349,5440,5455,5478,5429,5436,5452,5397,5448,5406,2011,5409,5415,5054,5443,5498,5410,5543,5516,5501,5250,5238,5451,5364,5412,5438,5454,5612\",\"EnabledPhoneValidation\":true,\"EnableThirdPartyQuickInvoice\":false,\"EnableAditionalDocumentsFields\":true,\"MSPurchaseSupportDocumentSaveCompanyKeys\":\"PREMIUMNATA\",\"EnableNewTabValidation\":false,\"NewExperienceUsersEnabled\":false,\"EnableNewViewSalesManagement\":true,\"NewTabValidationAllowedMfs\":\"sales-management,inventory-management,agreements,indicators,costing,payroll,reports,process,payroll/employee,payroll/electronic,reports-extended,accountingparameter,downloadcoi,conciliation-documents-cfdi,treasury,dashboard,user-administration,product-management\",\"EnabledRoleToProfile\":false,\"ShowIEPSPurchase\":\"\",\"EnableAditionalDocumentsCreditNote\":true,\"ShowInvoiceCopyOption\":false,\"EnableThirdPartyQuickQuotation\":false,\"ShowCancellationModalEnabled\":false,\"EnableThirdPartyQuickVoucher\":false,\"EnableThirdPartyAccountingIncome\":false,\"EnableConvertSalesNoteIntoInvoice\":false,\"ProductMenuIAEnabled\":true,\"AdvancedVariantComboEnabled\":true,\"EnableDocumentCounter\":false,\"SuggestedCategoriesEnabled\":true,\"NewMoneyExchangeExperienceEnabled\":false,\"ReportsV2Ids\":\"\",\"ReportsV2Allowed\":false,\"EnableNewCashReceipt\":false,\"EnableSalesManagementQuickFilters\":false,\"EnableNewEmailModal\":true,\"ShowTaxLegendsEnabled\":false,\"ExternalInvoicePaymentSupplementEnabled\":false,\"PlanTypesUserProfileEnabled\":\"7,12,15\",\"EnabledEDocumentBalanceV2\":false,\"EnableConciliationCfdiNew\":false,\"EnableNewSalesConfiguration\":false,\"CaptchaExcludedEmailSend\":true,\"EnableTheSearchEngineNewExperience\":false,\"EnableNewNCEmailModal\":true,\"EnableNewNDEmailModal\":true,\"EnableNewCTEmailModal\":false,\"ShowSalesNoteV2ViewEnabled\":false,\"EnableSiigoPayFeature\":false,\"ChatProvider\":\"zendesk\",\"EnableMultiplePaymentForms\":false,\"IepsPurchaseOrderEnabled\":false,\"MultiDecimalPrecisionEnabled\":false,\"EnablePurchaseEntryLocalization\":false,\"GlobalInvoiceIepsEnabled\":false,\"EnableEmailBridgeFlow\":false,\"NewSideMenuHeaderReact\":false,\"EnableNewPurchasesEmailModal\":false,\"EnableSixDecimalPurchase\":false,\"EnableCreatePosCashiers\":false,\"UsersProfilesFEPROEnabled\":true,\"UsersProfilesINDEPENDENTEnabled\":false,\"NewSideMenuHeaderReactBackButton\":false,\"NewSideMenuHeaderReactAppButton\":false,\"ShowHealthSectorContingencyEnabled\":false,\"EnableStampingPushNotifications\":false}"
+        },
+        {
+          "name": "userpilotUser1564043874",
+          "value": "{\"token\":\"48dt39m5\",\"sdkUrl\":\"https://js.userpilot.io/sdk/version/v0/app.js\",\"accessibility\":0,\"customer\":{\"name\":\"Gerencia .\",\"firstname\":\"Gerencia\",\"email\":\"Gerencia@poppingbobainternational.com\",\"creationdate\":\"2024-11-14T05:00:00.000Z\",\"created_at\":1731560400,\"role\":\"Con acceso\",\"plan\":\"Premium\",\"serial\":\"01580124297711\",\"nit\":\"901878434\",\"companykey\":\"POPPINGBOBAINTERNATIONALSAS\",\"prepaidplantype\":3,\"company\":{\"id\":\"POPPINGBOBAINTERNATIONALSAS\",\"name\":\"POPPING BOBA INTERNATIONAL SAS\",\"created_at\":1731560400,\"plan\":\"Premium\",\"serial\":\"01580124297711\",\"nit\":\"901878434\"},\"contract1StartDate\":\"2024-11-18T05:00:00.000Z\",\"contract1Prolongationdate\":\"2026-12-18T05:00:00.000Z\",\"contract1State\":true,\"contract1ProductCode\":\"9460001000009\",\"contract2StartDate\":\"2024-11-18T05:00:00.000Z\",\"contract2Prolongationdate\":\"2026-12-05T02:50:07.000Z\",\"contract2State\":true,\"contract2ProductCode\":\"9410001000108,9410001000118,9410001000102\",\"contract3StartDate\":\"2024-11-18T05:00:00.000Z\",\"contract3Prolongationdate\":\"2026-12-18T05:00:00.000Z\",\"contract3State\":true,\"contract3ProductCode\":\"9380002000073\",\"browser_language\":\"en-US\",\"browser\":\"Chrome - Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/145.0.7632.6 Safari/537.36\",\"device_type\":\"Desktop\",\"os\":\"Linux\",\"host name\":\"siigonube.siigo.com\",\"last_seen\":1},\"userid\":\"Gerencia@poppingbobainternational.com\",\"auto\":{\"viewport_width\":1280,\"viewport_height\":720,\"browser_language\":\"en-US\",\"browser\":\"Chrome - Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/145.0.7632.6 Safari/537.36\",\"device_type\":\"Desktop\",\"os\":\"Linux\",\"host name\":\"siigonube.siigo.com\"}}"
+        },
+        {
+          "name": "urlAccountantPortal",
+          "value": "/multi-login/companies"
+        },
+        {
+          "name": "expires_at",
+          "value": "1776618868"
+        },
+        {
+          "name": "accountantPortalEnable",
+          "value": "true"
+        },
+        {
+          "name": "POPPINGBOBAINTERNATIONALSAS240username",
+          "value": "Gerencia ."
+        },
+        {
+          "name": "enableFrontManager",
+          "value": "true"
+        },
+        {
+          "name": "GoogleAnalyticsKey",
+          "value": "UA-107714507-5"
+        },
+        {
+          "name": "companyNitCheckDigit",
+          "value": "901878434-1"
+        },
+        {
+          "name": "Notifications_ModalNotification_userRole",
+          "value": "ngA/EAxL4viRrmmioRgY5bGiCJEQHSuParI2gT6buwY1F8yW"
+        },
+        {
+          "name": "SiigoPayToken",
+          "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjb21wYW55S2V5IjoiUE9QUElOR0JPQkFJTlRFUk5BVElPTkFMU0FTIiwiZmVhdHVyZXMiOiJ7XCJTaWlnb1BheU1hbmFnZW1lbnRcIjp0cnVlLFwiU2lpZ29QYXlDb2xsZWN0aW9uc1wiOnRydWUsXCJTaWlnb1BheUNJSVVFeGNsdWRlXCI6ZmFsc2V9IiwiZXhwIjoxNzc2NTM5Njc3LCJpc3MiOiJzaWlnby1wYXkiLCJhdWQiOiJzaWlnb3BheS1jbGllbnRlIn0.ZhuHTFnP01n1YyF8kf-yqbIHSBJuk7ASMmkXxeLy81o"
+        },
+        {
+          "name": "DatabaseConfig",
+          "value": "{\"dbversion\":2,\"dbstores\":[{\"name\":\"indicator\",\"parameters\":{\"keyPath\":\"name\"},\"indexes\":[{\"name\":\"value\",\"keyPath\":\"value\",\"options\":{\"unique\":false}}]},{\"name\":\"lastUpdateIndicator\",\"parameters\":{\"keyPath\":\"name\"},\"indexes\":[{\"name\":\"value\",\"keyPath\":\"value\",\"options\":{\"unique\":false}}]},{\"name\":\"configuration\",\"parameters\":{\"keyPath\":\"name\"},\"indexes\":[{\"name\":\"value\",\"keyPath\":\"value\",\"options\":{\"unique\":false}}]}]}"
+        },
+        {
+          "name": "com.grafana.faro.session",
+          "value": "{\"sessionId\":\"9UXLHWFKyC\",\"lastActivity\":1776532480715,\"started\":1776532461163,\"isSampled\":true,\"sessionMeta\":{\"id\":\"9UXLHWFKyC\",\"attributes\":{\"isSampled\":\"true\"}}}"
+        },
+        {
+          "name": "userpilot:session_id",
+          "value": "{\"Gerencia@poppingbobainternational.com\":{\"id\":\"176903520\",\"last_active\":1776532481150}}"
+        },
+        {
+          "name": "AnalyticsConfig",
+          "value": "[{\"name\":\"payroll_colombia_production\",\"code\":\"G-FMRKTXR8T1\"},{\"name\":\"payroll_colombia_test\",\"code\":\"G-W21RRJ6KN3\"},{\"name\":\"reports_colombia_production\",\"code\":\"G-YVLXJ1LBKG\"},{\"name\":\"reports_colombia_test\",\"code\":\"G-HW9M9MKW22\"},{\"name\":\"processes_colombia_production\",\"code\":\"G-00WM7NX9KB\"},{\"name\":\"processes_colombia_test\",\"code\":\"G-DEX6EJ3EKX\"},{\"name\":\"erpdocuments_colombia_production\",\"code\":\"G-F56D7PZKNX\"},{\"name\":\"erpdocuments_colombia_test\",\"code\":\"G-SSTH0X3W8Q\"},{\"name\":\"general_colombia_production\",\"code\":\"UA-107714507-5\"},{\"name\":\"general_colombia_test\",\"code\":\"G-BMJ388RDRP\"},{\"name\":\"payroll_ecuador_production\",\"code\":\"G-CLMDSFL6B3\"},{\"name\":\"payroll_ecuador_test\",\"code\":\"G-43N4YQXGS7\"},{\"name\":\"reports_ecuador_production\",\"code\":\"G-97L4VX0H1E\"},{\"name\":\"reports_ecuador_test\",\"code\":\"G-6J9XBB4CV5\"},{\"name\":\"processes_ecuador_production\",\"code\":\"G-1F7R8W34DQ\"},{\"name\":\"processes_ecuador_test\",\"code\":\"G-SRPZ01ZER8\"},{\"name\":\"erpdocuments_ecuador_production\",\"code\":\"G-3TSZYHS8DS\"},{\"name\":\"erpdocuments_ecuador_test\",\"code\":\"G-K9NG4Y41TF\"},{\"name\":\"general_ecuador_production\",\"code\":\"G-8KLTQSBCR1\"},{\"name\":\"general_ecuador_test\",\"code\":\"G-HSFPM7F5NJ\"},{\"name\":\"stark\",\"code\":\"G-E32PB50K4H\"},{\"name\":\"alliances_colombia_production\",\"code\":\"G-1Z0V8W65S4\"},{\"name\":\"alliances_colombia_test\",\"code\":\"G-GNSP89CKJH\"},{\"name\":\"expanse_colombia_production\",\"code\":\"G-KXKSLCMK72\"},{\"name\":\"expanse_colombia_test\",\"code\":\"G-YZ8X2BH33N\"},{\"name\":\"expanse_mexico_production\",\"code\":\"G-0VSLZPYHZB\"},{\"name\":\"expanse_mexico_test\",\"code\":\"G-GJY9ZCCC59\"},{\"name\":\"sales_colombia_production\",\"code\":\"G-QJ8KB03WJM\"}]"
+        },
+        {
+          "name": "MenuSettings",
+          "value": "{\"MenuModules\":[1]}"
+        },
+        {
+          "name": "AcademicTenants",
+          "value": ";1538;5001;5002;1589;5004;5005;5006;5007;5008;1612;5009;5010;5011;5012;5013;5014;5015;5016;5017;1696;1698;1705;1711;1785;1789;1791;1795;1800;1803;1805;1808;1811;1813;1823;1831;1838;1841;1845;1854;1870;1926;1942;1944;1949;1950;1955;1963;1969;1970;1976;1979;1980;1983;1997;2004;"
+        },
+        {
+          "name": "AppConfig",
+          "value": "{\"userPilotEnabled\":true,\"featureBannerAccountStatusReminder\":{\"expTime\":3,\"flag\":\"true\",\"tenants\":[\"*\"]},\"featureHelpCenter\":{\"solvvy\":true,\"flag\":true,\"tenants\":[\"*\"]},\"autocomplete\":[{\"browserID\":1,\"enabled\":false,\"service\":\"third-party\"},{\"browserID\":5,\"enabled\":false,\"service\":\"fixed-asset\"}],\"urlHelpCenter\":{\"accountant\":{\"guidesAndVideos\":\"https://contadornube.portaldeclientes.siigo.com/\",\"train\":\"https://portaldeclientes.siigo.com/capacitaciones/#1592334806395-de456d00-ddf1\",\"virtualSupport\":\"https://portaldeclientes.siigo.com/soporte-teamviewer/\"},\"default\":{\"guidesAndVideos\":\"https://siigonube.portaldeclientes.siigo.com/\",\"train\":\"https://portaldeclientes.siigo.com/capacitaciones/\",\"virtualSupport\":\"https://portaldeclientes.siigo.com/soporte-teamviewer/\"}},\"featureShop\":{\"flag\":\"true\",\"tenants\":[\"*\"],\"planTypes\":[\"*\"],\"prepaidPlanTypes\":[\"*\"]},\"featureBannerAdvertisementReminder\":{\"expTime\":\"6\",\"flag\":\"false\",\"tenants\":[\"34\"]},\"featureUserAccount\":{\"flag\":\"true\",\"products\":[{\"name\":\"productName\",\"billingOrUpdateUrl\":false,\"detailPage\":\"https://siigonube.siigo.com/\"}]},\"urlPosWeb\":\"https://pos.siigo.com/auth/login\"}"
+        },
+        {
+          "name": "i18nextLng",
+          "value": "en-US"
+        },
+        {
+          "name": "ROARR_LOG",
+          "value": "true"
+        },
+        {
+          "name": "companyNIT",
+          "value": "901878434"
+        },
+        {
+          "name": "lastExternalReferrerTime",
+          "value": "1776532467712"
+        },
+        {
+          "name": "subDomain",
+          "value": "https://monolithprod.siigo.com/"
+        },
+        {
+          "name": "loginType",
+          "value": "openID"
+        },
+        {
+          "name": "oidc.a68f98695a20469db131e5038ac66f8f",
+          "value": "{\"id\":\"a68f98695a20469db131e5038ac66f8f\",\"created\":1776532473,\"request_type\":\"si:r\",\"code_verifier\":\"767c90b77f1147209b92fbc66c8f6fd3fca55fd4a07f4487a07a08947a58b6beec79f62f6b4046759afa20e438456995\",\"authority\":\"https://account.siigo.com/siigob2cco.onmicrosoft.com/b2c_1a_col_pd_ssosiigo/v2.0\",\"client_id\":\"c0f95d00-a5b7-4cfc-a84c-7fc1be2a6720\",\"redirect_uri\":\"https://siigonube.siigo.com/openid-callback\",\"scope\":\"openid profile https://siigob2cco.onmicrosoft.com/shell-pd-col/basic offline_access\",\"extraTokenParams\":{},\"response_mode\":\"fragment\"}"
+        },
+        {
+          "name": "aspLogoutPath",
+          "value": "https://monolithprod.siigo.com/ISIIGO2/LogOut.aspx"
+        },
+        {
+          "name": "AddOnPosWeb",
+          "value": "[]"
+        },
+        {
+          "name": "Apis",
+          "value": "[{\"apiName\":\"ACGeneralService\",\"apiUrl\":\"https://servicespd.siigo.com/ACGeneralApi/api/\",\"version\":\"v1\"},{\"apiName\":\"ACEntryService\",\"apiUrl\":\"https://servicespd.siigo.com/ACEntryApi/api/\",\"version\":\"v1\"},{\"apiName\":\"ACRecoveryService\",\"apiUrl\":\"https://services.siigo.com/ACRecoveryApi/api/\",\"version\":\"v1\"},{\"apiName\":\"ACDocumentService\",\"apiUrl\":\"https://services.siigo.com/isiigo2ACDocumentAPI/api/\",\"version\":\"v1\"},{\"apiName\":\"Report\",\"apiUrl\":\"https://services.siigo.com/ACReportApi/api/\",\"version\":\"v1\"},{\"apiName\":\"GlobalService\",\"apiUrl\":\"https://services2.siigo.com/cross/globalstate/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollService\",\"apiUrl\":\"https://services.siigo.com/AcPayrollApi/api/\",\"version\":\"v1\"},{\"apiName\":\"SiigoProcess\",\"apiUrl\":\"http://sic.siigo.com/_/service/com.siigo.SIC\",\"version\":\"\"},{\"apiName\":\"SiigoSICProcess\",\"apiUrl\":\"https://provisioningfunctionsapi.azurewebsites.net/api/\",\"version\":\"\"},{\"apiName\":\"eSiigoACGeneralService\",\"apiUrl\":\"https://esiigoservices.siigo.com/GeneralAPI/api/\",\"version\":\"v1\"},{\"apiName\":\"PartnersApiSiigo\",\"apiUrl\":\"https://siigopartnersapiprod.azurewebsites.net/api/\",\"version\":\"\"},{\"apiName\":\"BulkDataService\",\"apiUrl\":\"https://acdocument.siigo.com/isiigo2ACBulkAPI/api/\",\"version\":\"v1\"},{\"apiName\":\"CostingService\",\"apiUrl\":\"https://services.siigo.com/ACCostingApi/api/\",\"version\":\"v1\"},{\"apiName\":\"AuthenticationService\",\"apiUrl\":\"https://services.siigo.com/auth/connect/\",\"version\":\"v1\"},{\"apiName\":\"ACClosingService\",\"apiUrl\":\"https://services.siigo.com/ACClosingApi/api/\",\"version\":\"v1\"},{\"apiName\":\"ACMagneticService\",\"apiUrl\":\"https://services.siigo.com/ACMagneticApi/api/\",\"version\":\"v1\"},{\"apiName\":\"SendMail\",\"apiUrl\":\"https://services.siigo.com/ISIIGO2SendMailAPI/api/\",\"version\":\"v1\"},{\"apiName\":\"Siigo5To6\",\"apiUrl\":\"https://acdocument.siigo.com/isiigo2Siigo5ToSiigo6API/api/\",\"version\":\"v1\"},{\"apiName\":\"SiigoNews\",\"apiUrl\":\"https://siigonewsfunctions.azurewebsites.net/api/\",\"version\":\"\",\"code\":\"CEmcI4dPEQbOG3caqSJi9dB/faVeJYC8fthiGrmxzYduzn25GoenpA==\"},{\"apiName\":\"WorkFlowService\",\"apiUrl\":\"https://services.siigo.com/WorkFlowApi/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollPayment\",\"apiUrl\":\"https://fnpayrollpayment02.azurewebsites.net/api/Payroll/\",\"version\":\"v1\"},{\"apiName\":\"ReportApi\",\"apiUrl\":\"https://report-api-prod.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"ReportSheetApi\",\"apiUrl\":\"https://report-sheet-api-prod.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"ReportOrchestrator\",\"apiUrl\":\"https://report-orchestrator-prod.azurewebsites.net/api/\",\"version\":\"\"},{\"apiName\":\"PayrollPilaServices\",\"apiUrl\":\"https://services.siigo.com/payroll/pila/api/\",\"version\":\"\"},{\"apiName\":\"MagneticMediaServices\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"\"},{\"apiName\":\"PayrollUGPPServices\",\"apiUrl\":\"https://isiigoacpayrollugppapi.azurewebsites.net/api/v1/\",\"version\":\"\"},{\"apiName\":\"ThirdPartyServices\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"\"},{\"apiName\":\"DocumentBalance\",\"apiUrl\":\"https://services.siigo.com/documentbalance/api/\",\"version\":\"\"},{\"apiName\":\"UserContracts\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"CLConsecutives\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"UserLeads\",\"apiUrl\":\"https://isiigocommercialleadsapi.azurewebsites.net/api/\",\"version\":\"\"},{\"apiName\":\"CLDigitalCertificate\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"PayrollLiquidatorServices\",\"apiUrl\":\"https://services.siigo.com/payroll/liquidator/api/\",\"version\":\"\"},{\"apiName\":\"DocumentTypeServices\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"\"},{\"apiName\":\"FileStorage\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"\"},{\"apiName\":\"FreeFieldsServices\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"UserAPIManagement\",\"apiUrl\":\"https://pduserapimanagementapi.azurewebsites.net/api/\",\"version\":\"\"},{\"apiName\":\"ActionLogServices\",\"apiUrl\":\"https://services.siigo.com/company/api/\",\"version\":\"\"},{\"apiName\":\"ProductServices\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"\"},{\"apiName\":\"SiigoSICLeads\",\"apiUrl\":\"https://services.siigo.com/strategy/api/v1/leadsmanager/\",\"version\":\"\"},{\"apiName\":\"AlliancesApi\",\"apiUrl\":\"https://services.siigo.com/alliances/api/\",\"version\":\"\"},{\"apiName\":\"BrowserApi\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollSendMail\",\"apiUrl\":\"https://services.siigo.com/payroll/sendmail/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollAccounting\",\"apiUrl\":\"https://services.siigo.com/payroll/accounting/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollDocument\",\"apiUrl\":\"https://services.siigo.com/payroll/document/api/\",\"version\":\"v1\"},{\"apiName\":\"Autocomplete\",\"apiUrl\":\"https://services.siigo.com/catalog/api/search/\",\"version\":\"\"},{\"apiName\":\"BalanceAccountStatus\",\"apiUrl\":\"https://services.siigo.com/strategy/api/usersbalance/\",\"version\":\"\"},{\"apiName\":\"ThirdPartyDocumentServices\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"HelpCenterServices\",\"apiUrl\":\"https://services.siigo.com/help-center/\",\"version\":\"\"},{\"apiName\":\"eSiigoElectronicBillingService\",\"apiUrl\":\"https://esiigoservices.siigo.com/ElectronicBillingAPI/api/\",\"version\":\"\"},{\"apiName\":\"NotificationsService\",\"apiUrl\":\"https://services.siigo.com/cross/\",\"version\":\"\"},{\"apiName\":\"MailProvider\",\"apiUrl\":\"https://services.siigo.com/cross/api/send/mail/\",\"version\":\"\"},{\"apiName\":\"PayrollIncomeRetention\",\"apiUrl\":\"https://services.siigo.com/payroll/incomeRetention/api/\",\"version\":\"v1\"},{\"apiName\":\"SiigoAPIUsers\",\"apiUrl\":\"https://services.siigo.com/alliances/api/siigoapi-users/\",\"version\":\"\"},{\"apiName\":\"StrategyServices\",\"apiUrl\":\"https://services.siigo.com/strategy/api/\",\"version\":\"\"},{\"apiName\":\"PayrollEmployee\",\"apiUrl\":\"https://services.siigo.com/payroll/employee/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollConcept\",\"apiUrl\":\"https://services.siigo.com/payroll/concept/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollElectronic\",\"apiUrl\":\"https://services.siigo.com/payroll/electronic/api/\",\"version\":\"v1\"},{\"apiName\":\"Aurora\",\"apiUrl\":\"https://pagos.siigo.com/\",\"version\":\"v1\"},{\"apiName\":\"ECElectronicDocumentService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"AccountantPortalService\",\"apiUrl\":\"https://services.siigo.com/accountantportal/api/\",\"version\":\"v1\"},{\"apiName\":\"SearchService\",\"apiUrl\":\"https://services.siigo.com/cross/api/v2/\",\"version\":\"\"},{\"apiName\":\"BackgroundReportService\",\"apiUrl\":\"https://services.siigo.com/document/api/\",\"version\":\"\"},{\"apiName\":\"AddOn\",\"apiUrl\":\"https://services.siigo.com/cross/addon/api/\",\"version\":\"v1\"},{\"apiName\":\"SecurityService\",\"apiUrl\":\"https://services.siigo.com/auth/connect/\",\"version\":\"\"},{\"apiName\":\"UserManagementService\",\"apiUrl\":\"https://services.siigo.com/usersmanagement/api/\",\"version\":\"v1\"},{\"apiName\":\"MSACDocumentService\",\"apiUrl\":\"https://services.siigo.com/transactions/api/\",\"version\":\"v1\"},{\"apiName\":\"Supply\",\"apiUrl\":\"https://services.siigo.com/cross/supply/api/\",\"version\":\"v1\"},{\"apiName\":\"MSDocumentView\",\"apiUrl\":\"https://services.siigo.com/document/api/\",\"version\":\"v1\"},{\"apiName\":\"LogAccountantProcessService\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"\"},{\"apiName\":\"SiigoNewsV2\",\"apiUrl\":\"https://fnpdsiigonews.azurewebsites.net/api/\",\"version\":\"\",\"code\":\"nRjjShOUy1EM6G2ZPzTZL8XCbRo1vWGaPsUoBX8F6TZ3XxABTUd6Xw==\"},{\"apiName\":\"MSInitialBalance\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"v1\"},{\"apiName\":\"ShopFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"UserAccountFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"HelpCenterFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"SideMenuFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"NavbarFive9ChatSurveyApiUrl\",\"apiUrl\":\"https://wapdsurveysiigoapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"AccountantProcessApisUrl\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"v1\"},{\"apiName\":\"BankApiUrl\",\"apiUrl\":\"https://services.siigo.com/catalog/api/\",\"version\":\"v1\"},{\"apiName\":\"MSInitialBalanceInventoryApisUrl\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollSeverance\",\"apiUrl\":\"https://services.siigo.com/payroll/severance/api/\",\"version\":\"v1\"},{\"apiName\":\"ProcessThirdPartyDocument\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"PayrollPaymentService\",\"apiUrl\":\"https://services.siigo.com/payroll/payment/api/\",\"version\":\"v1\"},{\"apiName\":\"GlobalState\",\"apiUrl\":\"https://services.siigo.com/cross/globalstate/api/\",\"version\":\"v1\"},{\"apiName\":\"Transactions\",\"apiUrl\":\"https://services.siigo.com/transactions/\",\"version\":\"\"},{\"apiName\":\"ShopFive9ChatLanguageApiUrl\",\"apiUrl\":\"https://cdnmicrofrontends.azureedge.net/assets/chat/five9/language.js\",\"version\":\"v1\"},{\"apiName\":\"ManagementCSDApiUrl\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"ManagementCSDSignatureApiUrl\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"PayrollConfig\",\"apiUrl\":\"https://services.siigo.com/payroll/config/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollFund\",\"apiUrl\":\"https://services.siigo.com/payroll/fund/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollAccountingLite\",\"apiUrl\":\"https://services.siigo.com/payroll/accounting/lite/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollHoliday\",\"apiUrl\":\"https://services.siigo.com/payroll/holiday/api/\",\"version\":\"v1\"},{\"apiName\":\"VouchersApiUrl\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"DueStateClientApiUrl\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"v1\"},{\"apiName\":\"EDocumentBalanceApiUrl\",\"apiUrl\":\"https://services.siigo.com/transactions/edocumentbalance/api/\",\"version\":\"v1\"},{\"apiName\":\"EDocumentCounter\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"MSXmlDocument\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"PayrollSettlement\",\"apiUrl\":\"https://services.siigo.com/payroll/settlement/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollPeriodSettlement\",\"apiUrl\":\"https://services.siigo.com/payroll/period/settlement/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollBonus\",\"apiUrl\":\"https://services.siigo.com/payroll/bonus/api/\",\"version\":\"v1\"},{\"apiName\":\"MenuAIApiUrl\",\"apiUrl\":\"https://services.siigo.com/user-settings/menuai/api/\",\"version\":\"v1\"},{\"apiName\":\"MSElectronicInvoice\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"MSDIANEvents\",\"apiUrl\":\"https://services.siigo.com/electronic/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollBonusAccountingOrchestrator\",\"apiUrl\":\"https://services.siigo.com/payroll/bonus/orchestrator/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollJobCertificate\",\"apiUrl\":\"https://services.siigo.com/payroll/jobCertificate/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollNovelty\",\"apiUrl\":\"https://services.siigo.com/payroll/novelty/api/\",\"version\":\"v1\"},{\"apiName\":\"CustomUserProfiles\",\"apiUrl\":\"https://services.siigo.com/catalog/api/userprofile/\",\"version\":\"\"},{\"apiName\":\"PayrollJobTitle\",\"apiUrl\":\"https://services.siigo.com/payroll/jobtitle/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollImports\",\"apiUrl\":\"https://services.siigo.com/payroll/imports/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollNoveltyHistory\",\"apiUrl\":\"https://services.siigo.com/payroll/noveltyhistory/api/\",\"version\":\"v1\"},{\"apiName\":\"PaymentsApiUrl\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"MenuSettings\",\"apiUrl\":\"https://services.siigo.com/user-settings/Menu/api/\",\"version\":\"v1\"},{\"apiName\":\"MSElectronicDocuments\",\"apiUrl\":\"https://services.siigo.com/electronic/api/\",\"version\":\"v1\"},{\"apiName\":\"PaymentProviderConfiguration\",\"apiUrl\":\"https://services.siigo.com/alliances/api/payment-providers-config\",\"version\":\"\"},{\"apiName\":\"PaymentProvider\",\"apiUrl\":\"https://services.siigo.com/alliances/api/company-providers\",\"version\":\"\"},{\"apiName\":\"PayrollLoan\",\"apiUrl\":\"https://services.siigo.com/payroll/loan/api/\",\"version\":\"v1\"},{\"apiName\":\"FilesManagementPTMex\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"EDocumentBalancePayroll\",\"apiUrl\":\"https://services.siigo.com/payroll/edocumentbalance/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollSeveranceAccounting\",\"apiUrl\":\"https://services.siigo.com/payroll/severance/accounting/api/\",\"version\":\"v1\"},{\"apiName\":\"CompanyQueries\",\"apiUrl\":\"https://services.siigo.com/catalog/api/company\",\"version\":\"\"},{\"apiName\":\"BannerNotifications\",\"apiUrl\":\"https://services.siigo.com/alliances/api/v1/banner-notifications\",\"version\":\"\"},{\"apiName\":\"ThirdPartySalesImport\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"ThirdPartySalesImportProcess\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"FeatureToggleService\",\"apiUrl\":\"https://services.siigo.com/user-settings/featuretoggles/api/\",\"version\":\"v1\"},{\"apiName\":\"POSInvoice\",\"apiUrl\":\"https://servicesposweb01.siigo.com/mobile/api/\",\"version\":\"v1\"},{\"apiName\":\"ElectronicGateway\",\"apiUrl\":\"https://services.siigo.com/electronic/api/\",\"version\":\"v1\"},{\"apiName\":\"OpenExchange\",\"apiUrl\":\"https://openexchangerates.org/api/historical/{0}.json?app_id=5b7379009bb64714bb1f55eb501ea373&base={1}\",\"version\":\"\"},{\"apiName\":\"DueStateDateApiUrl\",\"apiUrl\":\"https://services.siigo.com/accountantprocess/api/\",\"version\":\"v1\"},{\"apiName\":\"MSSalesManagementReports\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"ThirdPartySalesImportAccounted\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"UserInvitation\",\"apiUrl\":\"https://services.siigo.com/usersmanagement/userinvitation/api/\",\"version\":\"v1\"},{\"apiName\":\"UserCatalog\",\"apiUrl\":\"https://services.siigo.com/usersmanagement/usercatalog/api/\",\"version\":\"v1\"},{\"apiName\":\"SalesSettings\",\"apiUrl\":\"https://services.siigo.com/entryvouchers/api/v1/SalesSettings\",\"version\":\"\"},{\"apiName\":\"PosConfigurationsApiUrl\",\"apiUrl\":\"https://wapdsiigoposapi.azurewebsites.net/api/\",\"version\":\"v1\"},{\"apiName\":\"EntryVouchers\",\"apiUrl\":\"https://services.siigo.com/entryvouchers/invoiceentrytransport/api/\",\"version\":\"\"},{\"apiName\":\"BaseSearch\",\"apiUrl\":\"https://services.siigo.com/search/api/v1\",\"version\":\"v1\"},{\"apiName\":\"EntryVouchersGateWay\",\"apiUrl\":\"https://services.siigo.com/entryvouchers\",\"version\":\"\"},{\"apiName\":\"AccountingReports\",\"apiUrl\":\"https://services.siigo.com/document/api/v1/\",\"version\":\"v1\"},{\"apiName\":\"SessionService\",\"apiUrl\":\"https://services.siigo.com/catalog/api\",\"version\":\"\"},{\"apiName\":\"LegalTermsService\",\"apiUrl\":\"https://services.siigo.com/usersmanagement/legaltermstracker/api/v1/\",\"version\":\"v1\"},{\"apiName\":\"PosSettingsApiUrl\",\"apiUrl\":\"https://servicesposwebblue.siigo.com/mobile/api/\",\"version\":\"v1\"},{\"apiName\":\"TreasuryDomainService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"TreasurySyncMTService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"TreasuryMovementsService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"PayrollPeriodView\",\"apiUrl\":\"https://services.siigo.com/payroll/period/view/api/\",\"version\":\"v1\"},{\"apiName\":\"MSEsiigoCompanyService\",\"apiUrl\":\"https://esiigoservices.siigo.com/pt/esiigocompany/api/\",\"version\":\"v1\"},{\"apiName\":\"MSEsiigoSupplyService\",\"apiUrl\":\"https://esiigoservices.siigo.com/pt/esiigosupplypt/api/\",\"version\":\"v1\"},{\"apiName\":\"UsersDomainService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"DocumentView\",\"apiUrl\":\"https://documentview.siigo.com\",\"version\":\"\"},{\"apiName\":\"EsiigoService\",\"apiUrl\":\"https://esiigoservices.siigo.com/pt/\",\"version\":\"v1\"},{\"apiName\":\"SiigoLeadService\",\"apiUrl\":\"\",\"version\":\"\"},{\"apiName\":\"UserProfilesDataNormalization\",\"apiUrl\":\"https://services.siigo.com/usersmanagement/userprofilesdatanormalization/api/\",\"version\":\"v1\"},{\"apiName\":\"PayrollParameter\",\"apiUrl\":\"https://services.siigo.com/payroll/parameter/api/\",\"version\":\"v1\"},{\"apiName\":\"MSInvoiceAuditService\",\"apiUrl\":\"\",\"version\":\"v1\"},{\"apiName\":\"PosWebUrl\",\"apiUrl\":\"https://pos.siigo.com\",\"version\":\"\"}]"
+        },
+        {
+          "name": "aspauthpath",
+          "value": "https://monolithprod.siigo.com/POPPINGBOBAINTERNATIONALSAS/Login.aspx?id_token=eyJhbGciOiJSUzI1NiIsImtpZCI6IkM3QzFFQTY5M0FCMDREQTM5RkRBNTc3RDc4NTM0NEYxRkI5MDcwQzgiLCJ4NXQiOiJ4OEhxYVRxd1RhT2YybGQ5ZUZORThmdVFjTWciLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NzY2MTg4NzUsIm5iZiI6MTc3NjUzMjQ3NSwidmVyIjoiMS4wIiwiaXNzIjoiaHR0cHM6Ly9hY2NvdW50LnNpaWdvLmNvbS8wZTRlZTVlNi03YWU5LTQzYWEtODhkMS05NTAzOWZmYmE3YTQvdjIuMC8iLCJzdWIiOiJhM2U4Nzk5MC0zNjY4LTQ3M2YtODQzMS05OTEzZGI0NWQ1YTMiLCJhdWQiOiJjMGY5NWQwMC1hNWI3LTRjZmMtYTg0Yy03ZmMxYmUyYTY3MjAiLCJhY3IiOiJiMmNfMWFfY29sX3BkX3Nzb3NpaWdvIiwiaWF0IjoxNzc2NTMyNDc1LCJhdXRoX3RpbWUiOjE3NzY1MzI0NzQsIm5hbWUiOiJHZXJlbmNpYUBwb3BwaW5nYm9iYWludGVybmF0aW9uYWwuY29tIiwibWFpbF9zaWlnbyI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJzdG9yYWdlX2tleSI6IkdlcmVuY2lhQHBvcHBpbmdib2JhaW50ZXJuYXRpb25hbC5jb20iLCJjb21wYW5pZXMiOiIyIiwiYWNjb3VudGFudCI6ImZhbHNlIiwiY2xvdWRfdGVuYW50X2NvbXBhbnlfa2V5IjoiUE9QUElOR0JPQkFJTlRFUk5BVElPTkFMU0FTIiwidXNlcnNfaWQiOiIyNDAiLCJ0ZW5hbnRfaWQiOiIweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxMDQ1ODg4IiwidXNlcl9saWNlbnNlX3R5cGUiOiIwIiwicGxhbl90eXBlIjoiMTQiLCJ0ZW5hbnRfc3RhdGUiOiIxIiwibXVsdGl0ZW5hbnRfaWQiOiIxNDYxIiwidGlkIjoiMGU0ZWU1ZTYtN2FlOS00M2FhLTg4ZDEtOTUwMzlmZmJhN2E0IiwiY2xpZW50X2lkIjoiU2lpZ29XZWIiLCJzY29wZSI6IldlYkFQSSxvZmZsaW5lX2FjY2VzcyIsImF0X2hhc2giOiJfS3JyN0hmWUp1WmFlLU14MFZQVWZBIn0.qgvFwEkYV4y6JQMi5dCWoPHESaMUD1psdyyMTsGBnVT22pXvcTeZHVa9vGxSSw6z9QWzLQENeoWQpzvayEUUd-Y0lgr4ilVcvEElFGtDMmg2-xkYKpImK67YyQMpCeQCKQERh_4JDOQE_8cWfPKq5Ra_OQfFc8dPL1CKhEgi6dj0recd4kGbnzhV9C9IVXjzguf4HsASK_MtswO3408uRtma8issrpSqUT6Mry3VZx_725jCqTVSn297Hsv17U9bHj4tqCQ5Dq1MlusDLFrfEFqVuXWqNJWgKrp7QZGSCgg_GDnUv7S3KV1QIIxS0HDL5Er7JY4sHctRIDgBR22tXA"
+        },
+        {
+          "name": "ROARR_FILTER",
+          "value": "context.logLevel:>40"
+        },
+        {
+          "name": "enableNewSideMenu",
+          "value": "true"
+        },
+        {
+          "name": "691626a34c86d74e858e4294.clientId",
+          "value": "a1190fcdff3940ed9cb211c67f51eead"
+        }
+      ]
+    },
+    {
+      "origin": "https://monolithprod.siigo.com",
+      "localStorage": [
+        {
+          "name": "AddOnPosWeb",
+          "value": "[]"
+        },
+        {
+          "name": "userGlobal",
+          "value": "null"
+        },
+        {
+          "name": "CompanyKey",
+          "value": "POPPINGBOBAINTERNATIONALSAS"
+        },
+        {
+          "name": "loadConfigJson",
+          "value": "true"
+        }
+      ]
+    }
+  ]
+}

@@ -36,9 +36,17 @@ const CHECKLISTS = {
 
 // ── Grace period: 20 minutes after shift change for handoff completion ───────
 const GRACE_MINUTES = 20;
+const PRE_HANDOFF_MINUTES = 10; // Block outgoing workers 10 min before shift end
 
 function getNow() {
     return process.env.MOCK_TIME ? new Date(process.env.MOCK_TIME) : new Date();
+}
+
+function getColombiaMinutes() {
+    const now = getNow();
+    const colombiaOffset = -5 * 60;
+    const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    return ((utcMinutes + colombiaOffset) % 1440 + 1440) % 1440;
 }
 
 // ── Get employee IDs with active absence on a given date ─────────────────────
@@ -53,26 +61,65 @@ async function getAbsentEmployeeIds(date) {
     return new Set(absences.map(a => a.employeeId));
 }
 
+// ── Get current active shift (no grace period) ──────────────────────────────
+function getCurrentActiveShift() {
+    const localMinutes = getColombiaMinutes();
+    if (localMinutes >= 6 * 60 && localMinutes < 14 * 60) return 'MANANA';
+    if (localMinutes >= 14 * 60 && localMinutes < 22 * 60) return 'TARDE';
+    return 'NOCHE';
+}
+
+// ── Minutes until a specific shift ends ──────────────────────────────────────
+function getMinutesUntilShiftEnd(shift) {
+    const localMinutes = getColombiaMinutes();
+    const endTimes = { MANANA: 14 * 60, TARDE: 22 * 60, NOCHE: 6 * 60 };
+    let endMin = endTimes[shift];
+    // NOCHE: if past 22:00, end is tomorrow at 6:00
+    if (shift === 'NOCHE' && localMinutes >= 22 * 60) endMin += 24 * 60;
+    return endMin - localMinutes;
+}
+
 // ── Determine outgoing shift by current hour (Colombia UTC-5) ────────────────
 // With GRACE_MINUTES: e.g. at 14:10 (within grace), outgoing is still NOCHE
 // so MANANA workers can still hand off and TARDE workers are NOT blocked yet.
 function getOutgoingShift() {
-    const now = getNow();
-    // Adjust to Colombia timezone (UTC-5)
-    const colombiaOffset = -5 * 60;
-    const utcMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-    const localMinutes = ((utcMinutes + colombiaOffset) % 1440 + 1440) % 1440;
+    const localMinutes = getColombiaMinutes();
 
-    // Shift boundaries with grace period (shifted forward by GRACE_MINUTES):
-    // Original:  06:00, 14:00, 22:00
-    // With grace: 06:15, 14:15, 22:15
-    const morningStart = 6 * 60 + GRACE_MINUTES;   // 06:15
-    const afternoonStart = 14 * 60 + GRACE_MINUTES; // 14:15
-    const nightStart = 22 * 60 + GRACE_MINUTES;     // 22:15
+    // From 06:20 to 14:20 -> MANANA shift is working and will hand off near 14:00
+    // From 14:20 to 22:20 -> TARDE shift is working and will hand off near 22:00
+    // From 22:20 to 06:20 -> NOCHE shift is working and will hand off near 06:00
 
-    if (localMinutes >= morningStart && localMinutes < afternoonStart) return 'NOCHE';
-    if (localMinutes >= afternoonStart && localMinutes < nightStart) return 'MANANA';
-    return 'TARDE';
+    const morningGrace = 6 * 60 + GRACE_MINUTES; // 380
+    const afternoonGrace = 14 * 60 + GRACE_MINUTES; // 860
+
+    if (localMinutes >= morningGrace && localMinutes < afternoonGrace) return 'MANANA';
+    if (localMinutes >= afternoonGrace) return 'TARDE';
+    return 'NOCHE'; // less than morningGrace (00:00 to 06:20) OR after nightGrace (22:20 to 00:00). Wait, 22:20 to 24:00 localMinutes >= 1340. 
+}
+
+// ── Get the actual date the current Shift STARTED ────────────────────────
+function getShiftDate() {
+    const today = getTodayDate();
+    const localMinutes = getColombiaMinutes();
+    const morningGrace = 6 * 60 + GRACE_MINUTES; // 380
+
+    // If we are looking at NOCHE shift (before 06:20), it belongs to YESTERDAY
+    if (localMinutes < morningGrace) {
+        today.setDate(today.getDate() - 1);
+    }
+    return today;
+}
+
+// ── Build audit log entry ────────────────────────────────────────────────────
+function buildAuditEntry(action, user, req) {
+    return {
+        action,
+        userId: user.id,
+        name: user.name,
+        at: new Date().toISOString(),
+        ip: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown',
+        device: (req.headers['user-agent'] || 'unknown').substring(0, 150)
+    };
 }
 
 // ── Determine incoming shift (the one starting now) ──────────────────────────
@@ -126,6 +173,26 @@ async function validatePin(pin) {
 //  GET /handoff/checklists — Return checklist templates per area
 // ═══════════════════════════════════════════════════════════════════════════════
 const getChecklists = async (req, res) => {
+    let today = getShiftDate();
+    let outgoingShift = getOutgoingShift();
+
+    // Check if query overrides shift/date
+    if (req.query.date) {
+        today = new Date(req.query.date + 'T00:00:00.000Z');
+    }
+    if (req.query.shift) {
+        outgoingShift = req.query.shift;
+    }
+
+    // Sunday daytime shifts don't exist
+    if (today.getDay() === 0 && (outgoingShift === 'MANANA' || outgoingShift === 'TARDE')) {
+        return res.json({
+            checklists: [],
+            outgoingShift,
+            incomingShift: getIncomingShift(),
+            isSimulated: true
+        });
+    }
     res.json({
         checklists: CHECKLISTS,
         outgoingShift: getOutgoingShift(),
@@ -193,9 +260,13 @@ const createHandoff = async (req, res) => {
             return res.status(409).json({ error: 'Ya entregaste tu turno hoy. Espera la aprobación del líder.' });
         }
 
-        // 6. Create or update (re-deliver after rejection)
+        // 6. Build audit entry
+        const auditEntry = buildAuditEntry('DELIVERED', user, req);
+
+        // 7. Create or update (re-deliver after rejection)
         let handoff;
         if (existing && existing.status === 'REJECTED') {
+            const prevLog = Array.isArray(existing.auditLog) ? existing.auditLog : [];
             handoff = await prisma.shiftHandoff.update({
                 where: { id: existing.id },
                 data: {
@@ -205,15 +276,15 @@ const createHandoff = async (req, res) => {
                     lotsProduced,
                     deliveredAt: new Date(),
                     status: 'PENDING',
-                    status: 'PENDING',
                     outgoingLeaderId: null,
                     outgoingLeaderAt: null,
                     incomingLeaderId: null,
                     incomingLeaderAt: null,
-                    rejectionReason: null
+                    rejectionReason: null,
+                    auditLog: [...prevLog, auditEntry]
                 }
             });
-            logger.info(`Re-delivery after rejection: ${user.name} (${area}) - ${outgoingShift}`);
+            logger.info(`Re-delivery after rejection: ${user.name} (${area}) - ${outgoingShift} | IP: ${auditEntry.ip}`);
         } else {
             handoff = await prisma.shiftHandoff.create({
                 data: {
@@ -226,10 +297,11 @@ const createHandoff = async (req, res) => {
                     checklist,
                     notes,
                     pendingTasks,
-                    lotsProduced
+                    lotsProduced,
+                    auditLog: [auditEntry]
                 }
             });
-            logger.info(`Shift handoff created: ${user.name} (${area}) - ${outgoingShift}`);
+            logger.info(`Shift handoff created: ${user.name} (${area}) - ${outgoingShift} | IP: ${auditEntry.ip}`);
         }
 
         res.json({ success: true, handoff, operatorName: user.name });
@@ -259,17 +331,21 @@ const approveOutgoing = async (req, res) => {
         if (!handoff) return res.status(404).json({ error: 'Entrega no encontrada' });
         if (handoff.status !== 'PENDING') return res.status(409).json({ error: 'El estado actual no permite esta firma' });
 
+        const auditEntry = buildAuditEntry('OUTGOING_LEADER_APPROVED', user, req);
+        const prevLog = Array.isArray(handoff.auditLog) ? handoff.auditLog : [];
+
         const updated = await prisma.shiftHandoff.update({
             where: { id },
             data: {
                 outgoingLeaderId: user.id,
                 outgoingLeaderAt: new Date(),
-                status: 'PENDING_INCOMING'
+                status: 'PENDING_INCOMING',
+                auditLog: [...prevLog, auditEntry]
             },
             include: { deliveredBy: { select: { name: true } } }
         });
 
-        logger.info(`Handoff outgoing approved: ${updated.deliveredBy.name} by leader ${user.name}`);
+        logger.info(`Handoff outgoing approved: ${updated.deliveredBy.name} by leader ${user.name} | IP: ${auditEntry.ip}`);
         res.json({ success: true, handoff: updated });
     } catch (err) {
         logger.error('approveOutgoing error:', err);
@@ -297,17 +373,21 @@ const approveIncoming = async (req, res) => {
         if (!handoff) return res.status(404).json({ error: 'Entrega no encontrada' });
         if (handoff.status === 'APPROVED') return res.status(409).json({ error: 'Esta entrega ya fue aprobada completamente' });
 
+        const auditEntry = buildAuditEntry('INCOMING_LEADER_APPROVED', user, req);
+        const prevLog = Array.isArray(handoff.auditLog) ? handoff.auditLog : [];
+
         const updated = await prisma.shiftHandoff.update({
             where: { id },
             data: {
                 incomingLeaderId: user.id,
                 incomingLeaderAt: new Date(),
-                status: 'APPROVED'
+                status: 'APPROVED',
+                auditLog: [...prevLog, auditEntry]
             },
             include: { deliveredBy: { select: { name: true } } }
         });
 
-        logger.info(`Handoff incoming approved: ${updated.deliveredBy.name} by leader ${user.name}`);
+        logger.info(`Handoff incoming approved: ${updated.deliveredBy.name} by leader ${user.name} | IP: ${auditEntry.ip}`);
         res.json({ success: true, handoff: updated });
     } catch (err) {
         logger.error('approveIncoming error:', err);
@@ -465,17 +545,18 @@ const getBlockStatus = async (req, res) => {
             return res.json({ blocked: false, pending: [] });
         }
 
-        const today = getTodayDate();
+        const today = getShiftDate();
         const outgoingShift = getOutgoingShift();
 
-        // El turno inicia el domingo a las 22:00 (NOCHE). 
-        // Antes de eso, y hasta el lunes a las 06:00, no se exige entrega del turno 'TARDE' porque el domingo de día no se trabaja.
-        const isSunday = today.getDay() === 0;
-        const isMondayEarlyMorning = today.getDay() === 1 && outgoingShift === 'TARDE';
-
-        if (isSunday || isMondayEarlyMorning) {
+        if (today.getDay() === 0 && (outgoingShift === 'MANANA' || outgoingShift === 'TARDE')) {
             return res.json({ blocked: false, pending: [] });
         }
+
+        // ── Pre-handoff window detection ──────────────────────────────────────
+        // 10 min before shift end: block outgoing workers BEFORE the grace period
+        const activeShift = getCurrentActiveShift();
+        const minutesToEnd = getMinutesUntilShiftEnd(activeShift);
+        const isPreHandoffWindow = minutesToEnd <= PRE_HANDOFF_MINUTES && minutesToEnd > 0;
 
         const monday = getMonday(today);
 
@@ -587,14 +668,41 @@ const getBlockStatus = async (req, res) => {
         );
         const outgoingBlocked = outgoingPending.length > 0;
 
-        // Block if user is in incoming shift (full block) OR outgoing shift (partial block until leader signs)
+        // ── Pre-handoff window: also block the user who is in the ACTIVE (ending) shift ──
+        let preHandoffBlock = false;
+        if (isPreHandoffWindow && currentUserShiftEmp) {
+            const userInEndingShift = week.assignments.find(a =>
+                a.employeeId === currentUserShiftEmp.id && a.shift === activeShift
+            );
+            if (userInEndingShift) {
+                // Check if THIS user has already delivered
+                const alreadyDelivered = await prisma.shiftHandoff.findFirst({
+                    where: {
+                        weekId: week.id,
+                        date: today,
+                        deliveredById: req.user.id,
+                        status: { not: 'REJECTED' }
+                    }
+                });
+                if (!alreadyDelivered) {
+                    preHandoffBlock = true;
+                }
+            }
+        }
+
+        // Block if:
+        // 1. Incoming shift worker and not all deliveries done
+        // 2. Outgoing shift worker and leader signatures still needed
+        // 3. Pre-handoff window and user hasn't delivered yet
         res.json({
-            blocked: (blocked && isIncomingWorker) || (outgoingBlocked && isOutgoingWorker),
+            blocked: (blocked && isIncomingWorker) || (outgoingBlocked && isOutgoingWorker) || preHandoffBlock,
+            preHandoffBlock,
             pending,
-            outgoingShift,
+            outgoingShift: preHandoffBlock ? activeShift : outgoingShift,
             incomingShift,
-            isOutgoingWorker,
-            isIncomingWorker
+            isOutgoingWorker: isOutgoingWorker || preHandoffBlock,
+            isIncomingWorker,
+            minutesToEnd: isPreHandoffWindow ? minutesToEnd : null
         });
     } catch (err) {
         logger.error('getBlockStatus error:', err);
@@ -657,13 +765,10 @@ const getAlarmStatus = async (req, res) => {
     try {
         if (!req.user?.id) return res.json({ shouldAlert: false });
 
-        const today = getTodayDate();
+        const today = getShiftDate();
         const outgoingShift = getOutgoingShift(); // El turno que ESTÁ SALIENDO o A PUNTO DE SALIR
         
-        // No alertar los domingos, ni el lunes en la madrugada
-        const isSunday = today.getDay() === 0;
-        const isMondayEarlyMorning = today.getDay() === 1 && outgoingShift === 'TARDE';
-        if (isSunday || isMondayEarlyMorning) {
+        if (today.getDay() === 0 && (outgoingShift === 'MANANA' || outgoingShift === 'TARDE')) {
             return res.json({ shouldAlert: false });
         }
 

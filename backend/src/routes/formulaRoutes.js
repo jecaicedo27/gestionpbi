@@ -5,6 +5,9 @@ const formulaController = require('../controllers/formulaController');
 // GET /api/formulas - Listar todas las formulaciones
 router.get('/', formulaController.listFormulas);
 
+// GET /api/formulas/next-code - Obtener siguiente código disponible
+router.get('/next-code', formulaController.getNextCode);
+
 // GET /api/formulas/:id - Obtener una formulación
 router.get('/:id', formulaController.getFormula);
 

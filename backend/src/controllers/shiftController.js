@@ -4,6 +4,21 @@
  */
 const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
+const { generateHandoversForWeek, isHandoverEnabled } = require('../services/shiftHandoverService');
+const {
+    SHIFT_OPERATION_AREAS,
+    SHIFT_OPERATION_USER_ROLES,
+    assignEmployeeToCurrentWeek,
+    createShiftEmployeeFromUser,
+    isFixedShiftArea,
+    isOperationalUserRole,
+    normalizeGroupNumber,
+    normalizeRestrictions,
+    normalizeShiftArea,
+    normalizeShiftEmployeeRole,
+    suggestIsFixedForUser,
+    suggestShiftAreaForUser,
+} = require('../services/shiftEmployeeSyncService');
 const prisma = new PrismaClient();
 
 // ── Shift definitions ────────────────────────────────────────
@@ -50,75 +65,158 @@ const getEmployees = async (req, res) => {
     }
 };
 
+// ── GET /employees/pending-users ─────────────────────────────
+const getPendingUserEmployees = async (req, res) => {
+    try {
+        const linkedEmployees = await prisma.shiftEmployee.findMany({
+            where: { userId: { not: null } },
+            select: { userId: true }
+        });
+        const linkedUserIds = linkedEmployees.map((emp) => emp.userId).filter(Boolean);
+
+        const users = await prisma.user.findMany({
+            where: {
+                active: true,
+                role: { in: SHIFT_OPERATION_USER_ROLES },
+                ...(linkedUserIds.length > 0 ? { id: { notIn: linkedUserIds } } : {})
+            },
+            select: { id: true, name: true, email: true, role: true, phone: true, lastLogin: true },
+            orderBy: [{ role: 'asc' }, { name: 'asc' }]
+        });
+
+        res.json({
+            users: users.map((user) => ({
+                ...user,
+                suggestedArea: suggestShiftAreaForUser(user),
+                suggestedRole: 'OPERARIO',
+                suggestedIsFixed: suggestIsFixedForUser(user)
+            })),
+            areas: SHIFT_OPERATION_AREAS
+        });
+    } catch (err) {
+        logger.error('getPendingUserEmployees error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ── POST /employees/migrate-users ────────────────────────────
+const migrateUsersToEmployees = async (req, res) => {
+    try {
+        const rows = Array.isArray(req.body.users) ? req.body.users : [];
+        if (rows.length === 0) {
+            return res.status(400).json({ error: 'Selecciona al menos un usuario para migrar.' });
+        }
+
+        const rowsByUserId = new Map();
+        rows.forEach((row) => {
+            if (row?.userId && !rowsByUserId.has(row.userId)) rowsByUserId.set(row.userId, row);
+        });
+
+        const userIds = [...rowsByUserId.keys()];
+        if (userIds.length === 0) {
+            return res.status(400).json({ error: 'No llegaron usuarios validos para migrar.' });
+        }
+
+        const users = await prisma.user.findMany({
+            where: { id: { in: userIds }, active: true },
+            select: { id: true, name: true, email: true, role: true, phone: true }
+        });
+        const usersById = new Map(users.map((user) => [user.id, user]));
+
+        const existingEmployees = await prisma.shiftEmployee.findMany({
+            where: { userId: { in: userIds } },
+            select: { id: true, userId: true, name: true }
+        });
+        const existingByUserId = new Map(existingEmployees.map((emp) => [emp.userId, emp]));
+
+        const created = [];
+        const skipped = [];
+        const errors = [];
+
+        for (const [userId, row] of rowsByUserId.entries()) {
+            const user = usersById.get(userId);
+            if (!user) {
+                errors.push({ userId, error: 'Usuario no encontrado o inactivo.' });
+                continue;
+            }
+
+            if (existingByUserId.has(userId)) {
+                skipped.push({ userId, reason: 'Ya estaba vinculado al cuadro de turnos.' });
+                continue;
+            }
+
+            if (!isOperationalUserRole(user.role)) {
+                skipped.push({ userId, reason: 'El rol del usuario no pertenece a Produccion o Picking/Empaque.' });
+                continue;
+            }
+
+            try {
+                const result = await createShiftEmployeeFromUser(prisma, user, {
+                    area: row.area,
+                    role: row.role,
+                    groupNumber: row.groupNumber,
+                    isFixed: row.isFixed,
+                    assignCurrentWeek: true,
+                });
+                created.push({
+                    id: result.employee.id,
+                    userId: user.id,
+                    name: result.employee.name,
+                    area: result.employee.area,
+                    role: result.employee.role,
+                    shift: result.assignment?.shift || null,
+                });
+            } catch (err) {
+                errors.push({ userId, error: err.message });
+            }
+        }
+
+        res.json({ success: true, created, skipped, errors });
+    } catch (err) {
+        logger.error('migrateUsersToEmployees error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 // ── POST /employees ──────────────────────────────────────────
 const createEmployee = async (req, res) => {
     try {
         const { name, area, role, groupNumber, isFixed, restrictions, whatsapp, userId } = req.body;
+        const cleanName = typeof name === 'string' ? name.trim() : '';
+        const cleanUserId = typeof userId === 'string' && userId.trim() ? userId.trim() : null;
+
+        if (!cleanName) {
+            return res.status(400).json({ error: 'El nombre del empleado es obligatorio.' });
+        }
+
+        if (cleanUserId) {
+            const user = await prisma.user.findUnique({ where: { id: cleanUserId }, select: { id: true } });
+            if (!user) return res.status(404).json({ error: 'Usuario ERP no encontrado.' });
+
+            const existingLink = await prisma.shiftEmployee.findUnique({ where: { userId: cleanUserId } });
+            if (existingLink) return res.status(409).json({ error: 'Ese usuario ERP ya esta vinculado a un empleado de turnos.' });
+        }
+
+        const employeeArea = normalizeShiftArea(area);
+        const employeeIsFixed = isFixed === undefined ? isFixedShiftArea(employeeArea) : Boolean(isFixed);
+
         const emp = await prisma.shiftEmployee.create({
-            data: { name, area, role: role || 'OPERARIO', groupNumber, isFixed: isFixed || false, restrictions: restrictions || [], whatsapp, userId }
+            data: {
+                name: cleanName,
+                area: employeeArea,
+                role: normalizeShiftEmployeeRole(role),
+                groupNumber: employeeIsFixed ? null : normalizeGroupNumber(groupNumber),
+                isFixed: employeeIsFixed,
+                restrictions: normalizeRestrictions(restrictions),
+                whatsapp: typeof whatsapp === 'string' && whatsapp.trim() ? whatsapp.trim() : null,
+                userId: cleanUserId,
+            }
         });
 
         // ── Auto-assign to current week's schedule ──────────────
         try {
-            const monday = getMonday(new Date());
-            const sunday = getSunday(monday);
-
-            // Find or create the current week
-            let week = await prisma.shiftWeek.findUnique({ where: { weekStart: monday } });
-            if (!week) {
-                week = await prisma.shiftWeek.create({
-                    data: {
-                        weekStart: monday, weekEnd: sunday,
-                        note: 'NOCHE: Dom 22:00 → Vie amanecer Sáb 6:00 | MAÑANA: Lun–Sáb(12PM) | TARDE: Lun–Sáb(18h)'
-                    }
-                });
-            }
-
-            // Determine the shift for this employee
-            let assignShift = 'MANANA'; // default
-
-            if (emp.isFixed) {
-                // Fixed employees (Logística, Aseo) → DIURNO
-                assignShift = 'DIURNO';
-            } else if (emp.groupNumber) {
-                // Look at what shift other employees in the same group already have this week
-                const groupMateAssignment = await prisma.shiftAssignment.findFirst({
-                    where: {
-                        weekId: week.id,
-                        employee: { groupNumber: emp.groupNumber, area: emp.area, isFixed: false }
-                    }
-                });
-                if (groupMateAssignment) {
-                    assignShift = groupMateAssignment.shift;
-                } else {
-                    // No group mates found — assign based on group number pattern
-                    // Group 1 → MANANA, Group 2 → TARDE, Group 3 → NOCHE (initial default)
-                    const groupDefaults = { 1: 'MANANA', 2: 'TARDE', 3: 'NOCHE' };
-                    assignShift = groupDefaults[emp.groupNumber] || 'MANANA';
-                }
-            }
-
-            // Respect restrictions: if the determined shift is NOT in the employee's allowed list
-            if (emp.restrictions && emp.restrictions.length > 0 && !emp.restrictions.includes(assignShift)) {
-                assignShift = emp.restrictions[0]; // Pick the first allowed shift
-            }
-
-            // Check they aren't already assigned (safety)
-            const existing = await prisma.shiftAssignment.findFirst({
-                where: { weekId: week.id, employeeId: emp.id }
-            });
-
-            if (!existing) {
-                await prisma.shiftAssignment.create({
-                    data: {
-                        weekId: week.id,
-                        employeeId: emp.id,
-                        area: emp.area,
-                        shift: assignShift
-                    }
-                });
-                logger.info(`Auto-assigned ${emp.name} to ${assignShift} shift (week ${monday.toISOString().split('T')[0]})`);
-            }
+            const assignment = await assignEmployeeToCurrentWeek(prisma, emp);
+            logger.info(`Auto-assigned ${emp.name} to ${assignment.shift} shift`);
         } catch (autoErr) {
             logger.warn('Auto-assign to schedule failed (non-blocking):', autoErr.message);
         }
@@ -133,17 +231,28 @@ const createEmployee = async (req, res) => {
 // ── PATCH /employees/:id ─────────────────────────────────────
 const updateEmployee = async (req, res) => {
     try {
+        const data = { ...req.body };
+        if (data.name !== undefined) {
+            data.name = typeof data.name === 'string' ? data.name.trim() : data.name;
+            if (!data.name) return res.status(400).json({ error: 'El nombre del empleado es obligatorio.' });
+        }
+        if (data.area !== undefined) data.area = normalizeShiftArea(data.area);
+        if (data.role !== undefined) data.role = normalizeShiftEmployeeRole(data.role);
+        if (data.groupNumber !== undefined) data.groupNumber = normalizeGroupNumber(data.groupNumber);
+        if (data.restrictions !== undefined) data.restrictions = normalizeRestrictions(data.restrictions);
+        if (data.whatsapp !== undefined) data.whatsapp = typeof data.whatsapp === 'string' && data.whatsapp.trim() ? data.whatsapp.trim() : null;
+
         const emp = await prisma.shiftEmployee.update({
             where: { id: req.params.id },
-            data: req.body
+            data
         });
 
         // If area was updated, force sync any existing assignments to match the new area
-        if (req.body.area) {
+        if (data.area) {
             try {
                 await prisma.shiftAssignment.updateMany({
                     where: { employeeId: emp.id },
-                    data: { area: req.body.area }
+                    data: { area: data.area }
                 });
             } catch (err) {
                 logger.error('Failed to sync assignment areas:', err);
@@ -296,6 +405,18 @@ const publishWeek = async (req, res) => {
             where: { id: req.params.id },
             data: { status: 'PUBLISHED', publishedAt: new Date() }
         });
+
+        // Generate shift handover records if module is enabled
+        try {
+            const handoverEnabled = await isHandoverEnabled();
+            if (handoverEnabled) {
+                const result = await generateHandoversForWeek(week.id);
+                logger.info(`[publishWeek] Handover records generated: ${result.generated}`);
+            }
+        } catch (handoverErr) {
+            logger.error('[publishWeek] Handover generation failed (non-blocking):', handoverErr);
+        }
+
         res.json(week);
     } catch (err) {
         logger.error('publishWeek error:', err);
@@ -529,7 +650,8 @@ const suggestReplacement = async (req, res) => {
 };
 
 module.exports = {
-    getEmployees, createEmployee, updateEmployee, deleteEmployee,
+    getEmployees, getPendingUserEmployees, migrateUsersToEmployees,
+    createEmployee, updateEmployee, deleteEmployee,
     getWeekSchedule, saveWeekSchedule, publishWeek, generateNextWeek,
     registerAbsence, getAbsences, deleteAbsence, suggestReplacement
 };

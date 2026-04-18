@@ -119,6 +119,8 @@ const AssemblyExecutionWizard = () => {
     const [proteccionValidated, setProteccionValidated] = useState(false);
     // { productId: true } — tracks which presentations have been labeled by packaging
     const [rotuladoStatus, setRotuladoStatus] = useState({});
+    // Extra conteo targets added by operators (sizes not in original schedule)
+    const [extraConteoTargets, setExtraConteoTargets] = useState([]);
 
     // ── Pre-load carriots, conteo, and photos from processParameters on note load (session resume) ─
     useEffect(() => {
@@ -132,6 +134,9 @@ const AssemblyExecutionWizard = () => {
         }
         if (pp.conteo_photos_draft && Object.keys(conteoPhotos).length === 0) {
             preloadPhotos(pp.conteo_photos_draft);
+        }
+        if (pp.extra_conteo_targets?.length > 0 && extraConteoTargets.length === 0) {
+            setExtraConteoTargets(pp.extra_conteo_targets);
         }
     }, [note?.id]); // eslint-disable-line
 
@@ -174,20 +179,21 @@ const AssemblyExecutionWizard = () => {
                     processParameters: {
                         ...note.processParameters,
                         conteo_draft: conteoActuals,
-                        conteo_photos_draft: conteoPhotos
+                        conteo_photos_draft: conteoPhotos,
+                        extra_conteo_targets: extraConteoTargets.length > 0 ? extraConteoTargets : undefined
                     }
                 });
-                // Keep local note in sync without triggering full re-render
                 if (note.processParameters) {
                     note.processParameters.conteo_draft = conteoActuals;
                     note.processParameters.conteo_photos_draft = conteoPhotos;
+                    if (extraConteoTargets.length > 0) note.processParameters.extra_conteo_targets = extraConteoTargets;
                 }
             } catch (e) {
                 console.warn('Error saving conteo draft:', e.message);
             }
         }, 1500); // 1.5s debounce
         return () => clearTimeout(saveConteoDraftTimeout.current);
-    }, [conteoActuals, conteoPhotos, note?.id, submitting]); // eslint-disable-line
+    }, [conteoActuals, conteoPhotos, extraConteoTargets, note?.id, submitting]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
     const handleAddCarrito = useCallback(async (productId, productName, qty) => {
@@ -392,18 +398,15 @@ const AssemblyExecutionWizard = () => {
                 if (conteoQty && conteoQty > 0) return conteoQty;
             }
 
-            // ── INTERMEDIATE SUB-TEMPLATE fallback (COMPUESTO, BASE LÍQUIDA, etc.) ──
-            // These don't have CONTEO or EMPAQUE. Their yield comes from preceding preparation steps.
-            const previousStage = allNotesRes.data
-                .sort((a, b) => b.stageOrder - a.stageOrder) // reverse to find the closest predecessor
-                .find(n => 
-                    n.stageOrder < noteData.stageOrder && 
-                    n.status === 'COMPLETED' && 
-                    n.productId === noteData.productId &&
-                    ['PESAJE', 'COCCION', 'MEZCLADO', 'PREPARACION'].includes(n.processType?.code)
-                );
-            if (previousStage?.actualQuantity && previousStage.actualQuantity > 0) {
-                return previousStage.actualQuantity;
+            // ── PREMIX / INTERMEDIATE fallback (no CONTEO, no EMPAQUE) ──
+            // For batches without CONTEO or EMPAQUE (premixes, protecciones, intermedios),
+            // targetQuantity was correctly calculated by quickStart from the formula.
+            // Using it directly avoids picking up wrong values from preceding stages
+            // (e.g. COCCION actual=1 lote instead of the real gram quantity).
+            const hasConteo = allNotesRes.data.some(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code) && n.status === 'COMPLETED');
+            const hasEmpaque = allNotesRes.data.some(n => ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code) && n.status === 'COMPLETED');
+            if (!hasConteo && !hasEmpaque && noteData.targetQuantity > 0) {
+                return noteData.targetQuantity;
             }
 
             // Last resort: output targets (planned units) — WARNING: these are programmed, not actual
@@ -574,7 +577,15 @@ const AssemblyExecutionWizard = () => {
         // Auto-ingest is now deferred to ENSAMBLE step (handleComplete)
         if (currentStep.type === 'MARCADO_CAJAS') {
             if (marcadoCajas.isValid === false) {
-                message.error('🚫 La cantidad a empacar supera la producción real. Ajuste las cajas.');
+                message.error('🚫 La distribución de cajas no es válida. Revisa destino y cantidades.');
+                return;
+            }
+            if (!marcadoCajas.printed && marcadoCajas.totalCajas > 0) {
+                Modal.warning({
+                    title: 'Debes imprimir las etiquetas',
+                    content: 'No puedes avanzar sin imprimir las etiquetas primero. Presiona el botón de imprimir antes de continuar.',
+                    okText: 'Entendido',
+                });
                 return;
             }
             try {
@@ -1053,12 +1064,16 @@ const AssemblyExecutionWizard = () => {
                 const counts = {};
                 let esferas_total = 0;
                 const conteoTargets = note.productionBatch?.outputTargets || [];
-                conteoTargets.forEach(t => {
+                const allConteoTargets = [
+                    ...conteoTargets,
+                    ...extraConteoTargets.filter(et => !conteoTargets.some(t => t.productId === et.productId))
+                ];
+                allConteoTargets.forEach(t => {
                     const rawVal = conteoActuals[t.productId];
                     const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
                     const lastActual = note.processParameters?.conteo?.[t.product?.name]?.actual;
                     const fallbackPlanned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
-                    
+
                     const defaultVal = (lastActual != null && lastActual !== 0) ? lastActual : fallbackPlanned;
                     const actualStr = rawVal !== undefined && rawVal !== '' ? rawVal : defaultVal;
                     const actual = parseInt(actualStr, 10);
@@ -1067,22 +1082,24 @@ const AssemblyExecutionWizard = () => {
                     esferas_total += esferas;
                     counts[t.product?.name || t.productId] = {
                         productId: t.productId, productName: t.product?.name,
-                        planned: fallbackPlanned, actual, esfera_factor: factor, esferas
+                        planned: fallbackPlanned, actual, esfera_factor: factor, esferas,
+                        ...(t._isExtra ? { isExtra: true } : {})
                     };
                 });
                 await api.patch(`/assembly-notes/${note.id}`, {
-                    processParameters: { 
+                    processParameters: {
                         ...note.processParameters,
                         conteo: counts,
                         conteo_draft: conteoActuals,
-                        esferas_total, 
+                        esferas_total,
                         conteo_photos: conteoPhotos,
-                        conteo_photos_draft: conteoPhotos
+                        conteo_photos_draft: conteoPhotos,
+                        extra_conteo_targets: extraConteoTargets.length > 0 ? extraConteoTargets : undefined
                     }
                 }).catch(() => { });
 
                 // Use the sum of all real counted units as the actualQuantity
-                const totalConteoUnits = conteoTargets.reduce((sum, t) => {
+                const totalConteoUnits = allConteoTargets.reduce((sum, t) => {
                     const countRaw = conteoActuals[t.productId];
                     const cPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
                     const fPlanned = t.plannedUnits > 0 ? t.plannedUnits : (cPlanned ?? t.plannedUnits);
@@ -1381,27 +1398,27 @@ const AssemblyExecutionWizard = () => {
         if (isPackaging) {
             canAdvance = false;
         } else {
-            const targets = note.productionBatch?.outputTargets || [];
-            // Products with planned > 0 MUST have an explicit count entered.
-            // Products with planned === 0 auto-count as 0 (user doesn't need to type 0).
+            const targets = [
+                ...(note.productionBatch?.outputTargets || []),
+                ...extraConteoTargets.filter(et => !(note.productionBatch?.outputTargets || []).some(t => t.productId === et.productId))
+            ];
             const allHaveCounts = targets.length > 0 && targets.every(t => {
                 const val = conteoActuals[t.productId];
                 const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
                 const planned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
-                
-                if (planned === 0 && (val === undefined || val === '')) return true; // auto-0
+
+                if (planned === 0 && (val === undefined || val === '')) return true;
                 return val !== undefined && val !== '' && !isNaN(parseInt(val, 10));
             });
             if (!allHaveCounts) canAdvance = false;
 
-            // Photo validation: every target with actual > 0 must have a photo
             if (allHaveCounts) {
                 const allHavePhotos = targets.every(t => {
                     const conteoPlanned = note.processParameters?.conteo?.[t.product?.name]?.planned;
                     const planned = t.plannedUnits > 0 ? t.plannedUnits : (conteoPlanned ?? t.plannedUnits);
                     const val = conteoActuals[t.productId];
                     const actual = (val === undefined || val === '') ? 0 : parseInt(val, 10);
-                    if (isNaN(actual) || actual <= 0) return true; // qty 0 → no photo needed
+                    if (isNaN(actual) || actual <= 0) return true;
                     return !!conteoPhotos[t.productId];
                 });
                 if (!allHavePhotos) canAdvance = false;
@@ -1589,6 +1606,12 @@ const AssemblyExecutionWizard = () => {
                     onConteoActualChange={setConteoActual}
                     conteoPhotos={conteoPhotos}
                     onConteoPhotoChange={setConteoPhoto}
+                    extraConteoTargets={extraConteoTargets}
+                    onAddExtraConteoTarget={(target) => setExtraConteoTargets(prev => [...prev, target])}
+                    onRemoveExtraConteoTarget={(productId) => {
+                        setExtraConteoTargets(prev => prev.filter(t => t.productId !== productId));
+                        setConteoActual(productId, undefined);
+                    }}
                     isPackagingRole={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)}
                     carriots={['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role) || wizardSteps[currentStepIndex]?.type === 'EMPAQUE'
                         ? empaqueCarriots

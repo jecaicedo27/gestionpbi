@@ -116,7 +116,7 @@ router.get('/production-lots/:productId', auth, async (req, res) => {
 router.get('/qr-payload/:productId', auth, async (req, res) => {
     try {
         const { productId } = req.params;
-        const { lotNumber, quantity, expiresAt, boxNumber, totalBoxes } = req.query;
+        const { lotNumber, quantity, receivedAt, expiresAt, boxNumber, totalBoxes } = req.query;
         const product = await prisma.product.findUnique({
             where: { id: productId },
             select: { name: true, sku: true, barcode: true, packSize: true },
@@ -129,7 +129,7 @@ router.get('/qr-payload/:productId', auth, async (req, res) => {
         const total = parseInt(totalBoxes) || 1;
 
         // Canonical pipe-delimited QR string — from shared qrFormat.js
-        const qrString = buildQrString({ lotNumber: lotNumber || '', sku: product.sku || '', barcode, quantity: qty, boxNumber: box, totalBoxes: total });
+        const qrString = buildQrString({ lotNumber: lotNumber || '', sku: product.sku || '', barcode, quantity: qty, receivedAt, expiresAt, boxNumber: box, totalBoxes: total });
 
         res.json({ qrString, product: { ...product, barcode } });
     } catch (err) {
@@ -275,9 +275,17 @@ router.post('/ingest', auth, async (req, res) => {
 // ── POST /transfer — Move between zones ─────────────────────────────────────
 router.post('/transfer', auth, async (req, res) => {
     try {
+        // Only ADMIN and LOGISTICA can transfer between zones
+        if (!['ADMIN', 'LOGISTICA'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Solo Logística puede realizar transferencias entre zonas' });
+        }
         const { productId, lotNumber, fromZone, toZone, quantity, reason, observations } = req.body;
         if (!productId || !lotNumber || !fromZone || !toZone || !quantity) {
             return res.status(400).json({ error: 'productId, lotNumber, fromZone, toZone y quantity son requeridos' });
+        }
+        // Block BODEGA as destination for finished products
+        if (toZone === 'BODEGA') {
+            return res.status(400).json({ error: 'No se puede transferir producto terminado a Bodega. Solo materia prima va allí.' });
         }
         const result = await finishedLotService.transferZone({
             productId,
@@ -358,7 +366,7 @@ router.get('/available-lots/:productId', auth, async (req, res) => {
 router.get('/all-active', auth, async (req, res) => {
     try {
         const lots = await prisma.finishedLotStock.findMany({
-            where: { currentQuantity: { gt: 0 }, status: { in: ['AVAILABLE', 'LOW'] } },
+            where: { currentQuantity: { gt: 0 }, status: { in: ['AVAILABLE', 'LOW'] }, zone: { not: 'PUBLICIDAD' } },
             include: {
                 product: { select: { id: true, name: true, sku: true, unit: true, currentStock: true, accountGroup: true, group: { select: { name: true } } } }
             },
@@ -397,19 +405,26 @@ router.get('/product-lots', auth, async (req, res) => {
             orderBy: [{ zone: 'asc' }, { lotNumber: 'asc' }],
             include: {
                 _count: { select: { transfers: true } },
+                product: { select: { id: true, name: true, sku: true, unit: true, barcode: true, packSize: true } },
             },
         });
         // Map to a format compatible with MaterialLot for the frontend
         const mapped = lots.map(l => ({
             id: l.id,
+            productId: l.productId,
+            product: l.product,
             lotNumber: l.lotNumber,
             zone: l.zone,
             currentQuantity: l.currentQuantity,
             initialQuantity: l.initialQuantity,
             status: l.status,
             receivedAt: l.createdAt,
+            expiresAt: l.expiresAt,
+            labelPrinted: l.labelPrinted || false,
+            labelPrintedAt: l.labelPrintedAt || null,
+            _type: 'FinishedLotStock',
             _source: 'FINISHED_LOT',
-            _count: { consumptions: l._count.transfers },
+            _count: { consumptions: l._count.transfers, transfers: l._count.transfers },
         }));
         res.json(mapped);
     } catch (err) {
@@ -489,10 +504,11 @@ router.get('/recall-report', auth, async (req, res) => {
     }
 });
 
-// ── GET /warehouse-stock — Finished products in main warehouse (MaterialLot) ─
+// ── GET /warehouse-stock — Finished products in main warehouse (MaterialLot + FinishedLotStock BODEGA) ─
 router.get('/warehouse-stock', auth, async (req, res) => {
     try {
-        const lots = await prisma.materialLot.findMany({
+        // 1. MaterialLot WAREHOUSE (legacy Siigo-synced lots)
+        const matLots = await prisma.materialLot.findMany({
             where: {
                 zone: 'WAREHOUSE',
                 currentQuantity: { gt: 0 },
@@ -503,8 +519,7 @@ router.get('/warehouse-stock', auth, async (req, res) => {
             },
             orderBy: { siigoProductName: 'asc' },
         });
-        // Map to same shape as FinishedLotStock for frontend consistency
-        const stocks = lots.map(l => ({
+        const matStocks = matLots.map(l => ({
             id: l.id,
             productId: l.productId,
             product: l.product,
@@ -516,9 +531,36 @@ router.get('/warehouse-stock', auth, async (req, res) => {
             expiresAt: l.expiresAt,
             labelPrinted: l.labelPrinted || false,
             labelPrintedAt: l.labelPrintedAt || null,
-            source: 'materialLot', // flag to distinguish from FinishedLotStock
+            source: 'materialLot',
         }));
-        res.json({ success: true, stocks });
+
+        // 2. FinishedLotStock BODEGA (transferred via zone transfer)
+        const flsLots = await prisma.finishedLotStock.findMany({
+            where: {
+                zone: 'BODEGA',
+                currentQuantity: { gt: 0 },
+            },
+            include: {
+                product: { select: { id: true, name: true, sku: true, unit: true, barcode: true, packSize: true } },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        const flsStocks = flsLots.map(f => ({
+            id: f.id,
+            productId: f.productId,
+            product: f.product,
+            lotNumber: f.lotNumber,
+            currentQuantity: f.currentQuantity,
+            initialQuantity: f.initialQuantity,
+            zone: 'BODEGA',
+            status: f.currentQuantity > 20 ? 'AVAILABLE' : f.currentQuantity > 5 ? 'LOW' : 'DEPLETED',
+            expiresAt: f.expiresAt,
+            labelPrinted: f.labelPrinted || false,
+            labelPrintedAt: f.labelPrintedAt || null,
+            source: 'finishedLotStock',
+        }));
+
+        res.json({ success: true, stocks: [...matStocks, ...flsStocks] });
     } catch (err) {
         console.error('finished-lots/warehouse-stock error:', err);
         res.status(500).json({ error: err.message });
@@ -528,6 +570,9 @@ router.get('/warehouse-stock', auth, async (req, res) => {
 // ── POST /warehouse-transfer — Transfer from Bodega (MaterialLot) to PT ─────
 router.post('/warehouse-transfer', auth, async (req, res) => {
     try {
+        if (!['ADMIN', 'LOGISTICA'].includes(req.user.role)) {
+            return res.status(403).json({ error: 'Solo Logística puede realizar transferencias entre zonas' });
+        }
         const { materialLotId, productId, lotNumber, quantity } = req.body;
         if (!materialLotId || !productId || !lotNumber || !quantity) {
             return res.status(400).json({ error: 'materialLotId, productId, lotNumber y quantity son requeridos' });

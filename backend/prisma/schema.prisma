@@ -10,65 +10,73 @@ datasource db {
 }
 
 model User {
-  id                                                  String                    @id @default(uuid())
-  email                                               String                    @unique
-  username                                            String                    @unique
-  password                                            String
-  name                                                String
-  role                                                UserRole
-  active                                              Boolean                   @default(true)
-  lastLogin                                           DateTime?
-  createdAt                                           DateTime                  @default(now())
-  updatedAt                                           DateTime                  @updatedAt
-  nit                                                 String?
-  discountPercent                                     Float?                    @default(34.8)
-  idType                                              String?                   @default("13")
-  reteFuente                                          Boolean                   @default(true)
-  pin                                                 String?
-  phone                                               String?
-  consumedItems                                       AssemblyNoteItem[]        @relation("ItemConsumer")
-  completedNotes                                      AssemblyNote[]            @relation("NoteCompleter")
-  createdNotes                                        AssemblyNote[]            @relation("NoteCreator")
-  executedNotes                                       AssemblyNote[]            @relation("NoteExecutor")
-  capturedVariables                                   AssemblyProcessVariable[] @relation("VariableCaptor")
-  qualityChecks                                       AssemblyQualityCheck[]    @relation("QualityChecker")
-  createdTemplates                                    AssemblyTemplate[]        @relation("TemplateCreator")
-  updatedTemplates                                    AssemblyTemplate[]        @relation("TemplateUpdater")
-  auditLogs                                           AuditLog[]
-  cartReservations                                    CartReservation[]         @relation("CartDistributor")
-  finishedLotTransfers                                FinishedLotTransfer[]     @relation("FinishedLotTransferUser")
-  approvedFormulas                                    Formula[]                 @relation("FormulaApprover")
-  createdFormulas                                     Formula[]                 @relation("FormulaCreator")
-  updatedFormulas                                     Formula[]                 @relation("FormulaUpdater")
-  inventoryCountSessions                              InventoryCountSession[]   @relation("InventoryCountCreator")
-  lotConsumptions                                     LotConsumption[]          @relation("LotConsumer")
-  microInternalLogs                                   MicroInternalLog[]        @relation("MicroInternalLogRecorder")
-  microSamples                                        MicroSample[]             @relation("MicroSampleTaker")
-  microScheduleEntries                                MicroScheduleEntry[]      @relation("MicroScheduleEntryCreator")
-  scannedItems                                        OrderPickingItem[]        @relation("OrderScanner")
-  approvedOrders                                      Order[]                   @relation("OrderApprover")
-  distributorOrders                                   Order[]                   @relation("DistributorOrders")
-  pickedOrders                                        Order[]                   @relation("OrderPicker")
-  physicalCounts                                      PhysicalCount[]           @relation("PhysicalCountUser")
-  managedPQRs                                         PQR[]                     @relation("PQRManager")
-  createdPQRs                                         PQR[]                     @relation("PQRCreator")
-  createdHandoffs                                     ProductHandoff[]          @relation("HandoffCreator")
-  receivedHandoffs                                    ProductHandoff[]          @relation("HandoffReceiver")
-  productionOrders                                    ProductionOrder[]
-  approvedPurchaseOrders                              PurchaseOrder[]           @relation("POApprover")
-  createdPurchaseOrders                               PurchaseOrder[]           @relation("POCreator")
-  paidPurchaseOrders                                  PurchaseOrder[]           @relation("POPayer")
-  recallLotCollections                                RecallLotCollection[]
-  validatedReceptions                                 Reception[]               @relation("ReceptionValidator")
-  receivedReceptions                                  Reception[]               @relation("ReceptionReceiver")
-  rpaExecutions                                       RpaExecution[]
-  performedSanitations                                SanitationRecord[]        @relation("PerformedSanitation")
-  verifiedSanitations                                 SanitationRecord[]        @relation("VerifiedSanitation")
-  shiftEmployee                                       ShiftEmployee?            @relation("ShiftUser")
-  approvedOutgoingHandoffs                            ShiftHandoff[]            @relation("HandoffOutgoingLeader")
-  approvedIncomingHandoffs                            ShiftHandoff[]            @relation("HandoffIncomingLeader")
-  deliveredHandoffs                                   ShiftHandoff[]            @relation("HandoffDeliverer")
-  zoneTransfers                                       ZoneTransfer[]            @relation("ZoneTransferUser")
+  id                       String                    @id @default(uuid())
+  email                    String                    @unique
+  username                 String                    @unique
+  password                 String
+  name                     String
+  role                     UserRole
+  active                   Boolean                   @default(true)
+  lastLogin                DateTime?
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  nit                      String?
+  discountPercent          Float?                    @default(34.8)
+  idType                   String?                   @default("13")
+  reteFuente               Boolean                   @default(true)
+  pin                      String?
+  phone                    String?
+  consumedItems            AssemblyNoteItem[]        @relation("ItemConsumer")
+  completedNotes           AssemblyNote[]            @relation("NoteCompleter")
+  createdNotes             AssemblyNote[]            @relation("NoteCreator")
+  executedNotes            AssemblyNote[]            @relation("NoteExecutor")
+  capturedVariables        AssemblyProcessVariable[] @relation("VariableCaptor")
+  qualityChecks            AssemblyQualityCheck[]    @relation("QualityChecker")
+  createdTemplates         AssemblyTemplate[]        @relation("TemplateCreator")
+  updatedTemplates         AssemblyTemplate[]        @relation("TemplateUpdater")
+  auditLogs                AuditLog[]
+  cartReservations         CartReservation[]         @relation("CartDistributor")
+  finishedLotTransfers     FinishedLotTransfer[]     @relation("FinishedLotTransferUser")
+  approvedFormulas         Formula[]                 @relation("FormulaApprover")
+  createdFormulas          Formula[]                 @relation("FormulaCreator")
+  updatedFormulas          Formula[]                 @relation("FormulaUpdater")
+  inventoryCountSessions   InventoryCountSession[]   @relation("InventoryCountCreator")
+  lotConsumptions          LotConsumption[]          @relation("LotConsumer")
+  microInternalLogs        MicroInternalLog[]        @relation("MicroInternalLogRecorder")
+  microSamples             MicroSample[]             @relation("MicroSampleTaker")
+  microScheduleEntries     MicroScheduleEntry[]      @relation("MicroScheduleEntryCreator")
+  scannedItems             OrderPickingItem[]        @relation("OrderScanner")
+  approvedOrders           Order[]                   @relation("OrderApprover")
+  distributorOrders        Order[]                   @relation("DistributorOrders")
+  pickedOrders             Order[]                   @relation("OrderPicker")
+  physicalCounts           PhysicalCount[]           @relation("PhysicalCountUser")
+  managedPQRs              PQR[]                     @relation("PQRManager")
+  createdPQRs              PQR[]                     @relation("PQRCreator")
+  createdHandoffs          ProductHandoff[]          @relation("HandoffCreator")
+  receivedHandoffs         ProductHandoff[]          @relation("HandoffReceiver")
+  productionOrders         ProductionOrder[]
+  approvedPurchaseOrders   PurchaseOrder[]           @relation("POApprover")
+  createdPurchaseOrders    PurchaseOrder[]           @relation("POCreator")
+  paidPurchaseOrders       PurchaseOrder[]           @relation("POPayer")
+  recallLotCollections     RecallLotCollection[]
+  validatedReceptions      Reception[]               @relation("ReceptionValidator")
+  receivedReceptions       Reception[]               @relation("ReceptionReceiver")
+  rpaExecutions            RpaExecution[]
+  performedSanitations     SanitationRecord[]        @relation("PerformedSanitation")
+  verifiedSanitations      SanitationRecord[]        @relation("VerifiedSanitation")
+  shiftEmployee            ShiftEmployee?            @relation("ShiftUser")
+  approvedOutgoingHandoffs ShiftHandoff[]            @relation("HandoffOutgoingLeader")
+  approvedIncomingHandoffs ShiftHandoff[]            @relation("HandoffIncomingLeader")
+  deliveredHandoffs        ShiftHandoff[]            @relation("HandoffDeliverer")
+  zoneTransfers            ZoneTransfer[]            @relation("ZoneTransferUser")
+  handoverOutgoingLeader   ShiftHandoverRecord[]     @relation("HandoverOutgoingLeader")
+  handoverIncomingLeader   ShiftHandoverRecord[]     @relation("HandoverIncomingLeader")
+  handoverSupervisor       ShiftHandoverRecord[]     @relation("HandoverSupervisor")
+  handoverForcedBy         ShiftHandoverRecord[]     @relation("HandoverForcedBy")
+  handoverSignatures       ShiftHandoverSignature[]  @relation("HandoverSigner")
+  packageLabelsCreated     PackageLabel[]            @relation("PackageLabelCreator")
+  packageLabelsPrinted     PackageLabel[]            @relation("PackageLabelPrinter")
+  packageLabelScans        PackageLabelScan[]        @relation("PackageLabelScanner")
 
   @@index([email])
   @@index([role, active])
@@ -140,6 +148,8 @@ model Product {
   materialLots         MaterialLot[]                @relation("LotProduct")
   movements            Movement[]
   orderItems           OrderItem[]
+  packageLabels        PackageLabel[]               @relation("PackageLabelProduct")
+  packOptions          ProductPackOption[]          @relation("ProductPackOptions")
   pendingBoxes         PendingBox[]                 @relation("PendingBoxProduct")
   physicalCountItems   PhysicalCountItem[]          @relation("PhysicalCountProduct")
   pqrItems             PQRItem[]
@@ -886,6 +896,7 @@ model RpaExecution {
   errorMessage   String?       @map("error_message")
   logs           Json?
   assemblyNoteId String?       @map("assembly_note_id")
+  productId      String?       @map("product_id")
   triggeredById  String?       @map("triggered_by_id")
   startedAt      DateTime      @default(now()) @map("started_at")
   completedAt    DateTime?     @map("completed_at")
@@ -895,7 +906,19 @@ model RpaExecution {
 
   @@index([status])
   @@index([assemblyNoteId])
+  @@index([productId])
   @@map("rpa_executions")
+}
+
+model SiigoAdjustmentType {
+  id        String  @id @default(cuid())
+  code      String  @unique
+  name      String
+  category  String  @default("Category14")
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0) @map("sort_order")
+
+  @@map("siigo_adjustment_types")
 }
 
 model MicroSamplingPoint {
@@ -1300,6 +1323,7 @@ model MaterialLot {
   labelPrintedAt      DateTime?
   inventoryCountLines InventoryCountLine[] @relation("InventoryCountLot")
   consumptions        LotConsumption[]
+  packageLabels       PackageLabel[]        @relation("PackageLabelMaterialLot")
   product             Product?             @relation("LotProduct", fields: [productId], references: [id])
   purchaseOrderItem   PurchaseOrderItem?   @relation(fields: [purchaseOrderItemId], references: [id])
   zoneTransfers       ZoneTransfer[]       @relation("ZoneTransferLot")
@@ -1479,6 +1503,7 @@ model FinishedLotStock {
   labelPrinted    Boolean               @default(false)
   labelPrintedAt  DateTime?
   batch           ProductionBatch?      @relation("FinishedLotBatch", fields: [batchId], references: [id])
+  packageLabels   PackageLabel[]        @relation("PackageLabelFinishedLot")
   product         Product               @relation("FinishedLotProduct", fields: [productId], references: [id])
   transfers       FinishedLotTransfer[] @relation("TransferFromStock")
 
@@ -1511,6 +1536,87 @@ model FinishedLotTransfer {
   @@index([orderId])
   @@index([createdAt])
   @@map("finished_lot_transfers")
+}
+
+model ProductPackOption {
+  id            String         @id @default(uuid())
+  productId     String         @map("product_id")
+  label         String
+  quantity      Int
+  unit          String         @default("gramo")
+  containerType String?        @map("container_type")
+  isDefault     Boolean        @default(false) @map("is_default")
+  active        Boolean        @default(true)
+  sortOrder     Int            @default(0) @map("sort_order")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  packageLabels PackageLabel[] @relation("PackageLabelPackOption")
+  product       Product        @relation("ProductPackOptions", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, label])
+  @@index([productId, active])
+  @@map("product_pack_options")
+}
+
+model PackageLabel {
+  id                 String             @id @default(uuid())
+  packageCode        String             @unique @map("package_code")
+  productId          String             @map("product_id")
+  materialLotId      String?            @map("material_lot_id")
+  finishedLotStockId String?            @map("finished_lot_stock_id")
+  packOptionId       String?            @map("pack_option_id")
+  lotNumber          String             @map("lot_number")
+  zone               String?
+  quantity           Int
+  unit               String             @default("gramo")
+  packLabel          String?            @map("pack_label")
+  packUnitQuantity   Int?               @map("pack_unit_quantity")
+  packContainerType  String?            @map("pack_container_type")
+  sequence           Int                @default(1)
+  totalPackages      Int                @default(1) @map("total_packages")
+  qrPayload          String?            @map("qr_payload")
+  status             PackageLabelStatus @default(ACTIVE)
+  printedAt          DateTime?          @map("printed_at")
+  receivedAt         DateTime?          @map("received_at")
+  expiresAt          DateTime?          @map("expires_at")
+  createdById        String?            @map("created_by_id")
+  printedById        String?            @map("printed_by_id")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+  createdBy          User?              @relation("PackageLabelCreator", fields: [createdById], references: [id])
+  finishedLotStock   FinishedLotStock?  @relation("PackageLabelFinishedLot", fields: [finishedLotStockId], references: [id], onDelete: Cascade)
+  materialLot        MaterialLot?       @relation("PackageLabelMaterialLot", fields: [materialLotId], references: [id], onDelete: Cascade)
+  packOption         ProductPackOption? @relation("PackageLabelPackOption", fields: [packOptionId], references: [id], onDelete: SetNull)
+  printedBy          User?              @relation("PackageLabelPrinter", fields: [printedById], references: [id])
+  product            Product            @relation("PackageLabelProduct", fields: [productId], references: [id])
+  scans              PackageLabelScan[]
+
+  @@index([productId, lotNumber])
+  @@index([materialLotId])
+  @@index([finishedLotStockId])
+  @@index([packOptionId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("package_labels")
+}
+
+model PackageLabelScan {
+  id             String       @id @default(uuid())
+  packageLabelId String       @map("package_label_id")
+  processType    String       @map("process_type")
+  processId      String       @map("process_id")
+  processKey     String       @map("process_key")
+  quantity       Int?
+  rawPayload     String?      @map("raw_payload")
+  scannedById    String?      @map("scanned_by_id")
+  scannedAt      DateTime     @default(now()) @map("scanned_at")
+  packageLabel   PackageLabel @relation(fields: [packageLabelId], references: [id], onDelete: Cascade)
+  scannedBy      User?        @relation("PackageLabelScanner", fields: [scannedById], references: [id])
+
+  @@unique([packageLabelId, processKey])
+  @@index([processType, processId])
+  @@index([scannedAt])
+  @@map("package_label_scans")
 }
 
 model ProductHandoff {
@@ -1774,34 +1880,46 @@ model LoginAudit {
 }
 
 model ShiftEmployee {
-  id           String            @id @default(uuid())
-  name         String
-  area         String
-  role         String            @default("OPERARIO")
-  groupNumber  Int?
-  isFixed      Boolean           @default(false)
-  restrictions String[]
-  active       Boolean           @default(true)
-  createdAt    DateTime          @default(now()) @map("created_at")
-  userId       String?           @unique @map("user_id")
-  whatsapp     String?
-  absences     ShiftAbsence[]
-  assignments  ShiftAssignment[]
-  user         User?             @relation("ShiftUser", fields: [userId], references: [id])
+  id                 String                   @id @default(uuid())
+  name               String
+  area               String
+  role               String                   @default("OPERARIO")
+  groupNumber        Int?
+  isFixed            Boolean                  @default(false)
+  restrictions       String[]
+  active             Boolean                  @default(true)
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  userId             String?                  @unique @map("user_id")
+  whatsapp           String?
+  // Campos de control de ingreso
+  cedula             String?                  @unique
+  faceDescriptor     Json?                    @map("face_descriptor")
+  photoUrl           String?                  @map("photo_url")
+  pin                String?
+  isInPlant          Boolean                  @default(false) @map("is_in_plant")
+  lastEntryAt        DateTime?                @map("last_entry_at")
+  absences           ShiftAbsence[]
+  assignments        ShiftAssignment[]
+  attendances        AttendanceRecord[]
+  handoverSignatures ShiftHandoverSignature[] @relation("HandoverEmployee")
+  user               User?                    @relation("ShiftUser", fields: [userId], references: [id])
 
+  @@index([cedula])
+  @@index([isInPlant])
   @@map("shift_employees")
 }
 
 model ShiftWeek {
-  id          String            @id @default(uuid())
-  weekStart   DateTime          @unique @map("week_start")
-  weekEnd     DateTime          @map("week_end")
-  status      String            @default("DRAFT")
-  note        String?
-  publishedAt DateTime?         @map("published_at")
-  createdAt   DateTime          @default(now()) @map("created_at")
-  assignments ShiftAssignment[]
-  handoffs    ShiftHandoff[]
+  id              String                @id @default(uuid())
+  weekStart       DateTime              @unique @map("week_start")
+  weekEnd         DateTime              @map("week_end")
+  status          String                @default("DRAFT")
+  note            String?
+  publishedAt     DateTime?             @map("published_at")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  assignments     ShiftAssignment[]
+  handoffs        ShiftHandoff[]
+  handoverRecords ShiftHandoverRecord[]
 
   @@map("shift_weeks")
 }
@@ -1835,33 +1953,182 @@ model ShiftAbsence {
 }
 
 model ShiftHandoff {
-  id                                         String    @id @default(uuid())
-  weekId                                     String    @map("week_id")
-  date                                       DateTime  @db.Date
-  area                                       String
-  outgoingShift                              String    @map("outgoing_shift")
-  deliveredById                              String    @map("delivered_by_id")
-  deliveredAt                                DateTime  @map("delivered_at")
-  checklist                                  Json
-  notes                                      String?
-  pendingTasks                               String?   @map("pending_tasks")
-  lotsProduced                               String?   @map("lots_produced")
-  outgoingLeaderId                           String?   @map("outgoing_leader_id")
-  outgoingLeaderAt                           DateTime? @map("outgoing_leader_at")
-  incomingLeaderId                           String?   @map("incoming_leader_id")
-  incomingLeaderAt                           DateTime? @map("incoming_leader_at")
-  rejectionReason                            String?   @map("rejection_reason")
-  status                                     String    @default("PENDING")
-  createdAt                                  DateTime  @default(now()) @map("created_at")
-  outgoingLeader                             User?     @relation("HandoffOutgoingLeader", fields: [outgoingLeaderId], references: [id])
-  incomingLeader                             User?     @relation("HandoffIncomingLeader", fields: [incomingLeaderId], references: [id])
-  deliveredBy                                User      @relation("HandoffDeliverer", fields: [deliveredById], references: [id])
-  week                                       ShiftWeek @relation(fields: [weekId], references: [id])
+  id               String    @id @default(uuid())
+  weekId           String    @map("week_id")
+  date             DateTime  @db.Date
+  area             String
+  outgoingShift    String    @map("outgoing_shift")
+  deliveredById    String    @map("delivered_by_id")
+  deliveredAt      DateTime  @map("delivered_at")
+  checklist        Json
+  notes            String?
+  pendingTasks     String?   @map("pending_tasks")
+  lotsProduced     String?   @map("lots_produced")
+  outgoingLeaderId String?   @map("outgoing_leader_id")
+  outgoingLeaderAt DateTime? @map("outgoing_leader_at")
+  incomingLeaderId String?   @map("incoming_leader_id")
+  incomingLeaderAt DateTime? @map("incoming_leader_at")
+  rejectionReason  String?   @map("rejection_reason")
+  status           String    @default("PENDING")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  outgoingLeader   User?     @relation("HandoffOutgoingLeader", fields: [outgoingLeaderId], references: [id])
+  incomingLeader   User?     @relation("HandoffIncomingLeader", fields: [incomingLeaderId], references: [id])
+  deliveredBy      User      @relation("HandoffDeliverer", fields: [deliveredById], references: [id])
+  week             ShiftWeek @relation(fields: [weekId], references: [id])
+  auditLog         Json?     @map("audit_log") // [{action, userId, name, at, ip, device}]
 
   @@unique([weekId, date, deliveredById])
   @@index([date, area])
   @@index([status])
   @@map("shift_handoffs")
+}
+
+model ShiftScheduleDefinition {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  code            String   @unique
+  weekdayStart    String   @map("weekday_start")
+  weekdayEnd      String   @map("weekday_end")
+  saturdayStart   String?  @map("saturday_start")
+  saturdayEnd     String?  @map("saturday_end")
+  sundayStart     String?  @map("sunday_start")
+  sundayEnd       String?  @map("sunday_end")
+  crossesMidnight Boolean  @default(false) @map("crosses_midnight")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("shift_schedule_definitions")
+}
+
+model AttendanceRecord {
+  id         String             @id @default(uuid())
+  employeeId String             @map("employee_id")
+  type       AttendanceType
+  subtype    AttendanceSubtype?
+  timestamp  DateTime           @default(now())
+  latitude   Float?
+  longitude  Float?
+  accuracy   Float?
+  photoPath  String?            @map("photo_path")
+  verified   Boolean            @default(false)
+  source     AttendanceSource   @default(KIOSK)
+  notes      String?
+  createdAt  DateTime           @default(now()) @map("created_at")
+  employee   ShiftEmployee      @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, timestamp])
+  @@index([timestamp])
+  @@map("attendance_records")
+}
+
+enum AttendanceType {
+  ENTRY
+  EXIT
+}
+
+enum AttendanceSubtype {
+  BREAK
+  LUNCH
+  MEDICAL
+  PERSONAL
+  FINAL
+}
+
+enum AttendanceSource {
+  KIOSK
+  MANUAL
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Shift Handover Module (Relevo de Turno)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model ShiftHandoverRecord {
+  id                   String         @id @default(uuid())
+  weekId               String         @map("week_id")
+  publishedAtSnapshot  DateTime?      @map("published_at_snapshot")
+  area                 String
+  operationalDate      DateTime       @map("operational_date") @db.Date
+  outgoingShift        String         @map("outgoing_shift")
+  incomingShift        String         @map("incoming_shift")
+  outgoingLeaderId     String?        @map("outgoing_leader_id")
+  outgoingLeaderAt     DateTime?      @map("outgoing_leader_at")
+  incomingLeaderId     String?        @map("incoming_leader_id")
+  incomingLeaderAt     DateTime?      @map("incoming_leader_at")
+  outgoingParticipants Json?          @map("outgoing_participants")
+  incomingParticipants Json?          @map("incoming_participants")
+  checklist            Json?
+  pendingTasks         String?        @map("pending_tasks")
+  incidents            String?
+  observations         String?
+  supervisorId         String?        @map("supervisor_id")
+  supervisorAt         DateTime?      @map("supervisor_at")
+  status               HandoverStatus @default(PENDING)
+  rejectionReason      String?        @map("rejection_reason")
+  graceDeadline        DateTime?      @map("grace_deadline")
+  allSignedAt          DateTime?      @map("all_signed_at")
+  forcedCompleteBy     String?        @map("forced_complete_by")
+  forcedCompleteAt     DateTime?      @map("forced_complete_at")
+  forcedReason         String?        @map("forced_reason")
+  auditLog             Json?          @map("audit_log")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  week           ShiftWeek                @relation(fields: [weekId], references: [id])
+  outgoingLeader User?                    @relation("HandoverOutgoingLeader", fields: [outgoingLeaderId], references: [id])
+  incomingLeader User?                    @relation("HandoverIncomingLeader", fields: [incomingLeaderId], references: [id])
+  supervisor     User?                    @relation("HandoverSupervisor", fields: [supervisorId], references: [id])
+  forcedByUser   User?                    @relation("HandoverForcedBy", fields: [forcedCompleteBy], references: [id])
+  signatures     ShiftHandoverSignature[]
+
+  @@unique([weekId, operationalDate, area, outgoingShift])
+  @@index([operationalDate, area])
+  @@index([status])
+  @@index([outgoingLeaderId])
+  @@index([incomingLeaderId])
+  @@map("shift_handover_records")
+}
+
+model ShiftHandoverSignature {
+  id         String   @id @default(uuid())
+  handoverId String   @map("handover_id")
+  employeeId String   @map("employee_id")
+  userId     String   @map("user_id")
+  signedAt   DateTime @default(now()) @map("signed_at")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  handover ShiftHandoverRecord @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  employee ShiftEmployee       @relation("HandoverEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  user     User                @relation("HandoverSigner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([handoverId, userId])
+  @@index([handoverId])
+  @@map("shift_handover_signatures")
+}
+
+model ShiftHandoverChecklist {
+  id        String   @id @default(uuid())
+  area      String
+  label     String
+  fieldType String   @default("boolean") @map("field_type")
+  sortOrder Int      @default(0) @map("sort_order")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([area, active])
+  @@map("shift_handover_checklists")
+}
+
+enum HandoverStatus {
+  PENDING
+  IN_PROGRESS
+  DELIVERED
+  RECEIVED
+  WITH_INCIDENT
+  VALIDATED
 }
 
 /// The underlying view does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
@@ -1932,6 +2199,7 @@ enum UserRole {
   CONTABILIDAD
   COMERCIAL
   QUIMICO
+  RECURSOS_HUMANOS
 }
 
 enum ProductType {
@@ -2050,12 +2318,20 @@ enum FinishedProductZone {
   BODEGA
   CUARENTENA
   MAQUILA
+  PUBLICIDAD
 }
 
 enum FinishedLotStatus {
   AVAILABLE
   LOW
   DEPLETED
+}
+
+enum PackageLabelStatus {
+  ACTIVE
+  VOIDED
+  CONSUMED
+  LOST
 }
 
 enum HandoffStatus {

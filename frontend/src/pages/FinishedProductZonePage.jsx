@@ -18,12 +18,14 @@ const ZONES = [
     { key: 'BODEGA', label: 'Bodega', color: '#6366f1', icon: '🏢', bg: '#eef2ff' },
     { key: 'CUARENTENA', label: 'Cuarentena', color: '#dc2626', icon: '🔒', bg: '#fef2f2' },
     { key: 'MAQUILA', label: 'Maquila', color: '#8b5cf6', icon: '🏷️', bg: '#f5f3ff' },
+    { key: 'PUBLICIDAD', label: 'Publicidad', color: '#ec4899', icon: '🎁', bg: '#fdf2f8' },
 ];
 
 // Transfer flow rules: which zones can each zone transfer TO
+// BODEGA removed as destination — only raw materials go there, not finished products
 const ZONE_DESTINATIONS = {
-    PRODUCCION: ['PRODUCTO_TERMINADO', 'NO_CONFORME', 'BODEGA'],
-    PRODUCTO_TERMINADO: ['NO_CONFORME', 'CUARENTENA', 'MAQUILA', 'BODEGA'],
+    PRODUCCION: ['PRODUCTO_TERMINADO', 'NO_CONFORME'],
+    PRODUCTO_TERMINADO: ['NO_CONFORME', 'CUARENTENA', 'MAQUILA'],
     NO_CONFORME: ['PRODUCTO_TERMINADO'],
     BODEGA: ['PRODUCTO_TERMINADO'],
     CUARENTENA: ['PRODUCTO_TERMINADO'],
@@ -41,8 +43,6 @@ const TRANSFER_REASONS = {
     CUARENTENA_TO_PRODUCTO_TERMINADO: 'Liberado de cuarentena',
     MAQUILA_TO_PRODUCTO_TERMINADO: 'Maquila completada',
     MAQUILA_TO_CUARENTENA: 'Producto dañado en maquila',
-    PRODUCCION_TO_BODEGA: 'Traslado a bodega grande',
-    PRODUCTO_TERMINADO_TO_BODEGA: 'Traslado a bodega grande',
 };
 
 const FinishedProductZonePage = () => {
@@ -240,7 +240,10 @@ const FinishedProductZonePage = () => {
                 productName: adjustmentData.product?.name || '',
                 productSku: adjustmentData.product?.sku || '',
                 quantity: parseFloat(adjustmentData.quantity),
-                accountCode: adjustmentData.accountCode.trim()
+                accountCode: adjustmentData.accountCode.trim(),
+                finishedLotStockId: adjustmentData.lot?.id || null,
+                lotNumber: adjustmentData.lot?.lotNumber || null,
+                productId: adjustmentData.lot?.productId || null,
             };
             
             const res = await api.post('/rpa/siigo-adjustment', payload);
@@ -260,6 +263,7 @@ const FinishedProductZonePage = () => {
     // ── Fetch summary periodically ──
     const loadStock = useCallback(async () => {
         setLoading(true);
+        setStocks([]); // Clear stale data immediately on zone change
         try {
             // BODEGA uses MaterialLot via a different endpoint
             const endpoint = activeZone === 'BODEGA' ? '/finished-lots/warehouse-stock' : '/finished-lots/stock';
@@ -271,7 +275,7 @@ const FinishedProductZonePage = () => {
                 data = data.filter(s => s.product?.name?.toLowerCase().includes(q) || s.lotNumber?.toLowerCase().includes(q) || s.product?.sku?.toLowerCase().includes(q));
             }
             setStocks(data);
-        } catch (e) { console.error(e); }
+        } catch (e) { console.error(e); setStocks([]); }
         finally { setLoading(false); }
     }, [activeZone, search]);
 
@@ -291,8 +295,8 @@ const FinishedProductZonePage = () => {
         finally { setMovLoading(false); }
     };
 
-    useEffect(() => { loadStock(); }, [loadStock]);
-    useEffect(() => { loadSummary(); loadMovements(); }, []);
+    useEffect(() => { loadStock(); loadSummary(); }, [loadStock]);
+    useEffect(() => { loadMovements(); }, []);
 
     // ── Product search for manual ingestion ──
     const handleIngestionSearch = async (val) => {
@@ -528,8 +532,8 @@ const FinishedProductZonePage = () => {
         if (!transferData.toZone) { message.error('Seleccione zona destino'); return; }
         setTransferring(true);
         try {
-            if (activeZone === 'BODEGA') {
-                // Warehouse transfer uses a dedicated endpoint
+            if (activeZone === 'BODEGA' && selectedStock?.source === 'materialLot') {
+                // MaterialLot warehouse transfer uses a dedicated endpoint
                 await api.post('/finished-lots/warehouse-transfer', {
                     materialLotId: selectedStock?.id,
                     productId: transferData.productId,
@@ -1349,6 +1353,7 @@ const FinishedProductZonePage = () => {
                                                                         }}>
                                                                             <Printer size={12} /> {s.labelPrinted ? '✅ Reimprimir' : 'Rótulo'}
                                                                         </button>
+                                                                        {['ADMIN', 'LOGISTICA'].includes(user?.role) && (
                                                                         <button onClick={() => openTransfer(s)} style={{
                                                                             padding: '4px 10px', border: '1.5px solid #6366f1', borderRadius: 6,
                                                                             background: '#eef2ff', color: '#4f46e5', fontWeight: 700, fontSize: '0.72rem',
@@ -1356,6 +1361,7 @@ const FinishedProductZonePage = () => {
                                                                         }}>
                                                                             <ArrowRightLeft size={12} /> Transferir
                                                                         </button>
+                                                                        )}
                                                                         {activeZone === 'NO_CONFORME' && (
                                                                             <button onClick={(e) => {
                                                                                 e.stopPropagation();
@@ -1542,8 +1548,7 @@ const FinishedProductZonePage = () => {
                     const uPerBox = parseInt(printBoxSize) || 0;
                     if (uPerBox <= 0) { message.warning('Ingrese un número válido'); return; }
                     try {
-                        // Use approved count for box distribution (not total which includes defectives)
-                        const approvedUnits = printModal.approved ?? totalUnits;
+                        const approvedUnits = (printModal.approved > 0) ? printModal.approved : totalUnits;
                         const defectiveUnits = printModal.defective || 0;
                         const fullBoxes = Math.floor(approvedUnits / uPerBox);
                         const remainder = approvedUnits % uPerBox;
@@ -1568,6 +1573,7 @@ const FinishedProductZonePage = () => {
                                     quantity: boxQty,
                                     unit: 'und',
                                     receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    expiresAt: lot?.expiresAt || '',
                                     boxNumber: i, totalBoxes: totalLabels,
                                     statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
                                 }, 1, { maquila: printMaquila });
@@ -1584,6 +1590,7 @@ const FinishedProductZonePage = () => {
                                     quantity: defectiveUnits,
                                     unit: 'und',
                                     receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    expiresAt: lot?.expiresAt || '',
                                     boxNumber: 1, totalBoxes: 1,
                                     statusText: `NC: ${causaText}`,
                                 }, 1);
@@ -1603,6 +1610,7 @@ const FinishedProductZonePage = () => {
                                     quantity: boxQty,
                                     unit: 'und',
                                     receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    expiresAt: lot?.expiresAt || '',
                                     boxNumber: i, totalBoxes: totalLabels,
                                     statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
                                 }, 1, { maquila: printMaquila });
@@ -1618,6 +1626,7 @@ const FinishedProductZonePage = () => {
                                     quantity: defectiveUnits,
                                     unit: 'und',
                                     receivedAt: lot?.createdAt || new Date().toISOString(),
+                                    expiresAt: lot?.expiresAt || '',
                                     boxNumber: 1, totalBoxes: 1,
                                     statusText: `NC: ${causaText}`,
                                 }, 1, { maquila: false });
@@ -1643,7 +1652,7 @@ const FinishedProductZonePage = () => {
                 {printModal.product && (() => {
                     const uPerBox = parseInt(printBoxSize) || 0;
                     const totalUnits = printModal.totalUnits;
-                    const approvedUnits = printModal.approved ?? totalUnits;
+                    const approvedUnits = (printModal.approved > 0) ? printModal.approved : totalUnits;
                     const fullBoxes = uPerBox > 0 ? Math.floor(approvedUnits / uPerBox) : 0;
                     const remainder = uPerBox > 0 ? approvedUnits % uPerBox : 0;
                     const totalLabels = fullBoxes + (remainder > 0 ? 1 : 0);
@@ -1661,7 +1670,7 @@ const FinishedProductZonePage = () => {
                                 </div>
                                 {printModal.defective > 0 && (
                                     <div style={{ marginTop: 6, fontSize: '0.75rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 10px', color: '#991b1b', fontWeight: 600 }}>
-                                        ✅ {printModal.approved ?? totalUnits} aprobadas · ❌ {printModal.defective} defectuosas (no se imprimen)
+                                        ✅ {(printModal.approved > 0) ? printModal.approved : totalUnits} aprobadas · ❌ {printModal.defective} defectuosas (no se imprimen)
                                     </div>
                                 )}
                             </div>

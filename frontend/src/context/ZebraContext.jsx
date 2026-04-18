@@ -16,6 +16,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import { useAuth } from './AuthContext';
 
 const ZebraContext = createContext(null);
+const ZebraRefContext = createContext(null);
 
 const POLL_INTERVAL_MS = 10_000;
 const ZEBRA_IP = '192.168.0.126';
@@ -322,12 +323,18 @@ export const ZebraProvider = ({ children }) => {
         }
     };
 
+    const contextValue = {
+        zebraStatus, isRechecking, zebraIp, printZPL, lastError, recheckNow: () => checkStatus(true),
+        configIp, relayIp, updateConfig, forceIp, setForceDirectIp
+    };
+    const stableRef = useRef(contextValue);
+    stableRef.current = contextValue;
+
     return (
-        <ZebraContext.Provider value={{ 
-            zebraStatus, isRechecking, zebraIp, printZPL, lastError, recheckNow: () => checkStatus(true),
-            configIp, relayIp, updateConfig, forceIp, setForceDirectIp
-        }}>
-            {children}
+        <ZebraContext.Provider value={contextValue}>
+            <ZebraRefContext.Provider value={stableRef}>
+                {children}
+            </ZebraRefContext.Provider>
         </ZebraContext.Provider>
     );
 };
@@ -336,4 +343,10 @@ export const useZebra = () => {
     const ctx = useContext(ZebraContext);
     if (!ctx) throw new Error('useZebra must be used inside <ZebraProvider>');
     return ctx;
+};
+
+export const useZebraRef = () => {
+    const ref = useContext(ZebraRefContext);
+    if (!ref) throw new Error('useZebraRef must be used inside <ZebraProvider>');
+    return ref;
 };

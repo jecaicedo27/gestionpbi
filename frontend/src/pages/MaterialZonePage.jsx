@@ -24,7 +24,10 @@ const C_GROUP_NAMES = {
 
 const ZONES = [
     { id: 'WAREHOUSE', name: 'Bodega Ppal.', color: 'blue', icon: Warehouse },
-    { id: 'PRODUCCION', name: 'Producción', color: 'yellow', icon: RefreshCw }
+    { id: 'PRODUCCION', name: 'Producción', color: 'yellow', icon: RefreshCw },
+    { id: 'CUARENTENA', name: 'Cuarentena', color: 'amber', icon: AlertTriangle },
+    { id: 'NO_CONFORME', name: 'No Conforme', color: 'red', icon: AlertTriangle },
+    { id: 'MAQUILA', name: 'Maquila', color: 'orange', icon: Package }
 ];
 
 export default function MaterialZonePage() {

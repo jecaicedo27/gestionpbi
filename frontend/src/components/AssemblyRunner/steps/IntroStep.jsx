@@ -2,6 +2,43 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
 
+const parseStored = (value, fallback) => {
+    if (typeof value !== 'string') return value ?? fallback;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+};
+
+const asStoredObject = (value) => {
+    const parsed = parseStored(value, {});
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+};
+
+const asStoredArray = (value) => {
+    const parsed = parseStored(value, []);
+    return Array.isArray(parsed) ? parsed : [];
+};
+
+const quantityInGrams = (quantity, unit) => {
+    const value = Number(quantity);
+    if (!Number.isFinite(value)) return 0;
+    const normalizedUnit = String(unit || '').toLowerCase();
+    if (normalizedUnit === 'kg') return value * 1000;
+    if (['g', 'gr', 'gramo', 'gramos'].includes(normalizedUnit)) return value;
+    return 0;
+};
+
+const pesajeItemsTotalGrams = (note) => {
+    const itemTotal = (note?.items || []).reduce((sum, item) => {
+        const quantity = item.actualQuantity ?? item.plannedQuantity;
+        return sum + quantityInGrams(quantity, item.unit);
+    }, 0);
+    if (itemTotal > 0) return itemTotal;
+    return quantityInGrams(note?.actualQuantity ?? note?.targetQuantity, note?.unit);
+};
+
 /**
  * IntroStep — redesigned with card + gradient header style.
  * Shows production context, batch info, materials list, and production target.
@@ -25,10 +62,12 @@ const IntroStep = ({
     const noteData = note;
     const isAlreadyStarted = noteData.status === 'EXECUTING';
 
-    const isFormacion = noteData.processType?.code === 'FORMACION';
-    const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
-    const isConteo = noteData.processType?.code === 'CONTEO';
-    const isEmpaque = noteData.processType?.code === 'EMPAQUE';
+    const processCode = noteData.processType?.code;
+    const isPesaje = ['PESAJE', 'G_PESAJE'].includes(processCode);
+    const isFormacion = ['FORMACION', 'G_FORMACION'].includes(processCode);
+    const isEnsamble = ['ENSAMBLE', 'G_ENSAMBLE'].includes(processCode);
+    const isConteo = ['CONTEO', 'G_CONTEO'].includes(processCode);
+    const isEmpaque = ['EMPAQUE', 'G_EMPAQUE'].includes(processCode);
 
     const outputTargets = noteData.productionBatch?.outputTargets || [];
 
@@ -152,16 +191,16 @@ const IntroStep = ({
 
     if (isEmpaque) {
         const empaqueNotes = allBatchNotes
-            .filter(n => n.processType?.code === 'EMPAQUE')
+            .filter(n => ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code))
             .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
 
         // Check if there's a CONTEO step in this batch (perlas have it, siropes don't)
-        const hasConteoStep = allBatchNotes.some(n => n.processType?.code === 'CONTEO');
+        const hasConteoStep = allBatchNotes.some(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
 
         // ── Geniality detection: batch uses carriots-based reception ──
         // If the CONTEO note has carriots data, this is a Geniality batch.
         // Geniality reception is handled by GConteoCarritosStep, NOT this table.
-        const conteoNoteForCheck = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+        const conteoNoteForCheck = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
         const hasCarriotsSystem = !!(conteoNoteForCheck?.processParameters?.carriots?.length > 0);
 
         // ── Detect route prefix (Geniality vs Liquipops) ──
@@ -213,7 +252,7 @@ const IntroStep = ({
             });
 
             // Get conteo photos from CONTEO note
-            const conteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+            const conteoNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
             const parsedProcessParams = typeof conteoNote?.processParameters === 'string' ? JSON.parse(conteoNote.processParameters) : (conteoNote?.processParameters || {});
             const conteoMap = typeof parsedProcessParams.conteo === 'string' ? JSON.parse(parsedProcessParams.conteo) : (parsedProcessParams.conteo || {});
             const targetCarriotsData = typeof parsedProcessParams.carriots === 'string' ? JSON.parse(parsedProcessParams.carriots) : (parsedProcessParams.carriots || []);
@@ -332,8 +371,7 @@ const IntroStep = ({
                                 const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
                                 const carritoPhoto = targetCarriots[0]?.productionPhotoUrl || null;
 
-                                // Use outputTargets.plannedUnits as source of truth (normalized values)
-                                const planned = (target.plannedUnits > 0 ? target.plannedUnits : undefined) ?? conteoEntry?.planned ?? empData.planned_qty ?? empRef.planned_qty ?? null;
+                                const planned = conteoEntry?.planned ?? empRef.planned_qty ?? empData.planned_qty ?? (target.plannedUnits > 0 ? target.plannedUnits : undefined) ?? null;
                                 const draftQty = conteoNote?.processParameters?.conteo_draft?.[target.productId];
                                 const conteo = carriotsSum !== null ? carriotsSum : ((conteoEntry?.actual > 0 ? conteoEntry.actual : (draftQty !== undefined ? parseInt(draftQty, 10) : null)) ?? empData.conteo_qty ?? empRef.conteo_qty ?? null);
                                 const manualKey = matchingEmpaque?.id || target.productId;
@@ -397,7 +435,7 @@ const IntroStep = ({
                                                                     if (isNaN(newVal) || newVal < 0) return;
                                                                     setAdminSaving(true);
                                                                     try {
-                                                                        const conteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+                                                                        const conteoNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
                                                                         if (conteoNote) {
                                                                             const currentConteo = { ...conteoNote.processParameters?.conteo };
                                                                             const matchKey = Object.keys(currentConteo).find(k => currentConteo[k].productId === target.productId);
@@ -557,7 +595,7 @@ const IntroStep = ({
                             {(() => {
                                 const allMatch = sortedReceptionTargets.every(t => {
                                     const ce = Object.values(conteoMap).find(c => c.productId === t.productId);
-                                    const pl = t.plannedUnits ?? ce?.planned;
+                                    const pl = ce?.planned ?? t.plannedUnits;
                                     const targetCarriots = (conteoNote?.processParameters?.carriots || []).filter(c => c.productId === t.productId);
                                     const carriotsSum = targetCarriots.length > 0 ? targetCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
                                     const actual = carriotsSum !== null ? carriotsSum : ce?.actual;
@@ -637,6 +675,46 @@ const IntroStep = ({
         if (empaqueNotes.length >= 1) {
             const completedCount = empaqueNotes.filter(n => n.status === 'COMPLETED').length;
             const allDone = completedCount === empaqueNotes.length;
+            const selectorConteoNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
+            const selectorConteoParams = asStoredObject(selectorConteoNote?.processParameters);
+            const fallbackCarriots = asStoredArray(selectorConteoParams.carriots);
+            const summaryCarriots = (Array.isArray(carriots) && carriots.length > 0 ? carriots : fallbackCarriots).filter(Boolean);
+            const getCarritoProductionPhoto = (carrito) => (
+                carrito?.productionPhotoUrl
+                || carrito?.dispatchPhoto
+                || carrito?.photoProductionUrl
+                || null
+            );
+            const getCarritoReceptionPhoto = (carrito) => (
+                carrito?.photoUrl
+                || carrito?.receptionPhotoUrl
+                || carrito?.receivedPhotoUrl
+                || savedReceptionPhotos?.[carrito?.id]
+                || null
+            );
+            const getTargetByProductId = (productId) => outputTargets.find(t =>
+                String(t.productId) === String(productId) || String(t.product?.id) === String(productId)
+            );
+            const carritoProductGroups = summaryCarriots.reduce((acc, carrito) => {
+                const key = String(carrito.productId || carrito.productName || 'sin_producto');
+                const target = getTargetByProductId(carrito.productId);
+                if (!acc[key]) {
+                    acc[key] = {
+                        productId: carrito.productId,
+                        productName: carrito.productName || target?.product?.name || 'Producto sin nombre',
+                        items: [],
+                    };
+                }
+                acc[key].items.push(carrito);
+                return acc;
+            }, {});
+            const sortedCarritoGroups = Object.values(carritoProductGroups)
+                .map(group => ({
+                    ...group,
+                    items: [...group.items].sort((a, b) => (a.carritoNum || 0) - (b.carritoNum || 0)),
+                }))
+                .sort((a, b) => a.productName.localeCompare(b.productName, 'es'));
+
             return (
                 <div className="flex flex-col h-full max-w-4xl mx-auto pt-8 pb-36 px-4">
                     <div className="flex items-center gap-3 mb-6">
@@ -666,6 +744,122 @@ const IntroStep = ({
                         </div>
 
                         <div className="flex-1 p-6 space-y-3">
+                            {sortedCarritoGroups.length > 0 && (
+                                <div className="bg-white border-2 border-teal-200 rounded-2xl overflow-hidden shadow-sm">
+                                    <div className="bg-teal-600 px-4 py-3 flex items-center justify-between text-white">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-widest text-teal-100">Resumen de Carritos</div>
+                                            <div className="text-sm font-extrabold">Entregas de producción para este lote</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="text-2xl font-black leading-none">{summaryCarriots.length}</div>
+                                            <div className="text-[9px] font-bold uppercase tracking-wider text-teal-100">
+                                                {summaryCarriots.length === 1 ? 'carrito' : 'carritos'}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="divide-y divide-teal-100">
+                                        {sortedCarritoGroups.map(group => {
+                                            const totalQty = group.items.reduce((sum, c) => sum + Number(c.qty || 0), 0);
+                                            const receivedCount = group.items.filter(c => c.receivedAt).length;
+                                            const target = getTargetByProductId(group.productId);
+                                            const planned = target?.plannedUnits;
+                                            const pendingQty = planned ? Math.max(0, planned - totalQty) : null;
+
+                                            return (
+                                                <div key={group.productId || group.productName} className="p-3 bg-teal-50/30">
+                                                    <div className="flex items-start justify-between gap-3 mb-2">
+                                                        <div>
+                                                            <div className="text-xs font-black text-slate-800 leading-tight">{group.productName}</div>
+                                                            <div className="text-[10px] font-bold text-slate-500 mt-0.5">
+                                                                {totalQty.toLocaleString('es-CO')} uds recibidas de producción
+                                                                {planned ? ` · ${planned.toLocaleString('es-CO')} programadas` : ''}
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-right shrink-0">
+                                                            <div className="text-[10px] font-black text-teal-700 bg-teal-100 px-2 py-1 rounded">
+                                                                {receivedCount}/{group.items.length} recibidos
+                                                            </div>
+                                                            {pendingQty !== null && pendingQty > 0 && (
+                                                                <div className="text-[9px] font-bold text-amber-600 mt-1">
+                                                                    Faltan {pendingQty.toLocaleString('es-CO')} uds
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
+                                                        {group.items.map((carrito, idx) => {
+                                                            const productionPhoto = getCarritoProductionPhoto(carrito);
+                                                            const receptionPhoto = getCarritoReceptionPhoto(carrito);
+                                                            const statusLabel = carrito.labeledAt
+                                                                ? 'Rotulado'
+                                                                : carrito.receivedAt
+                                                                    ? 'Recibido'
+                                                                    : 'Pendiente';
+                                                            const statusClass = carrito.labeledAt
+                                                                ? 'bg-indigo-100 text-indigo-700'
+                                                                : carrito.receivedAt
+                                                                    ? 'bg-emerald-100 text-emerald-700'
+                                                                    : 'bg-amber-100 text-amber-700';
+
+                                                            return (
+                                                                <div key={carrito.id || `${group.productId}-${idx}`} className="min-w-[150px] bg-white border border-teal-100 rounded-xl p-2 shadow-sm">
+                                                                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                                                                        <div className="text-[10px] font-black text-slate-700 uppercase">
+                                                                            Carrito #{carrito.carritoNum || idx + 1}
+                                                                        </div>
+                                                                        <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${statusClass}`}>
+                                                                            {statusLabel}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div className="text-xl font-black text-teal-700 leading-none">
+                                                                        {Number(carrito.qty || 0).toLocaleString('es-CO')}
+                                                                        <span className="text-[10px] font-bold text-slate-400 ml-1">uds</span>
+                                                                    </div>
+
+                                                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                                                        <div className="text-center">
+                                                                            <div className="text-[8px] font-black text-orange-500 uppercase mb-1">Prod.</div>
+                                                                            {productionPhoto ? (
+                                                                                <img
+                                                                                    src={productionPhoto}
+                                                                                    alt={`Producción carrito ${carrito.carritoNum || idx + 1}`}
+                                                                                    className="w-full h-12 rounded-lg object-cover border-2 border-orange-200 cursor-pointer"
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: productionPhoto, label: `Foto producción · Carrito #${carrito.carritoNum || idx + 1}` }); }}
+                                                                                />
+                                                                            ) : (
+                                                                                <div className="h-12 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center text-slate-300 text-xs">—</div>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="text-center">
+                                                                            <div className="text-[8px] font-black text-teal-600 uppercase mb-1">Recep.</div>
+                                                                            {receptionPhoto ? (
+                                                                                <img
+                                                                                    src={receptionPhoto}
+                                                                                    alt={`Recepción carrito ${carrito.carritoNum || idx + 1}`}
+                                                                                    className="w-full h-12 rounded-lg object-cover border-2 border-teal-300 cursor-pointer"
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: receptionPhoto, label: `Foto recepción · Carrito #${carrito.carritoNum || idx + 1}` }); }}
+                                                                                />
+                                                                            ) : carrito.receivedAt ? (
+                                                                                <div className="h-12 rounded-lg border-2 border-teal-300 bg-teal-50 flex items-center justify-center text-teal-600 font-black text-xs">OK</div>
+                                                                            ) : (
+                                                                                <div className="h-12 rounded-lg border-2 border-dashed border-amber-300 bg-amber-50 flex items-center justify-center text-amber-500 font-black text-[9px]">Pndte</div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="bg-emerald-500 rounded-2xl p-5 text-center shadow-lg">
                                 <div className="text-xs font-bold text-emerald-100 uppercase tracking-widest mb-2">🏷️ LOTE PARA ROTULAR EN TARROS</div>
                                 <div className="text-3xl font-black text-white tracking-wider">{noteData.productionBatch?.batchNumber}</div>
@@ -674,14 +868,18 @@ const IntroStep = ({
 
                             {(() => {
                                 // Pre-compute conteo & photo data once
-                                const conteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
-                                const conteoMap = conteoNote?.processParameters?.conteo || {};
+                                const conteoNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
+                                const parsedConteoParams = typeof conteoNote?.processParameters === 'string' ? JSON.parse(conteoNote.processParameters) : (conteoNote?.processParameters || {});
+                                const conteoMap = parsedConteoParams.conteo || {};
+                                const conteoDraftMap = parsedConteoParams.conteo_draft || {};
+                                const carriotsData = typeof parsedConteoParams.carriots === 'string' ? JSON.parse(parsedConteoParams.carriots) : (parsedConteoParams.carriots || []);
                                 // Search ALL empaque notes for reception_photos (may be stored on any one of them)
                                 const recPhotos = empaqueNotes.reduce((acc, en) => {
-                                    const rp = en.processParameters?.reception_photos;
+                                    const params = typeof en.processParameters === 'string' ? JSON.parse(en.processParameters) : (en.processParameters || {});
+                                    const rp = params.reception_photos;
                                     return rp ? { ...acc, ...rp } : acc;
                                 }, savedReceptionPhotos || {});
-                                const conteoPhotosMap = conteoNote?.processParameters?.conteo_photos || {};
+                                const conteoPhotosMap = typeof parsedConteoParams.conteo_photos === 'string' ? JSON.parse(parsedConteoParams.conteo_photos) : (parsedConteoParams.conteo_photos || {});
 
                                 return empaqueNotes.map(en => {
                                     const isCompleted = en.status === 'COMPLETED';
@@ -693,9 +891,19 @@ const IntroStep = ({
                                     const planned2 = target2?.plannedUnits;
 
                                     // Conteo data for this presentation
-                                    const ce = target2 ? Object.values(conteoMap).find(c => c.productId === target2.productId) : null;
-                                    const plannedConteo = planned2 ?? ce?.planned;
-                                    const actualConteo = ce?.actual;
+                                    const empData2 = en.empaqueData || {};
+                                    const empRef2 = en.processParameters?.empaqueRef || {};
+                                    const ce = target2 ? Object.values(conteoMap).find(c => String(c.productId) === String(target2.productId)) : null;
+                                    
+                                    const productCarriots = carriotsData.filter(c => String(c.productId) === String(target2?.productId || en.productId || target2?.product?.id));
+                                    const carriotsSum = productCarriots.length > 0 ? productCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
+
+                                    const plannedConteo = planned2 ?? ce?.planned ?? empData2.planned_qty ?? empRef2.planned_qty;
+                                    
+                                    // Use carriots sum (if used) -> drafted count (auto-saved) -> explicitly saved actual -> empaque fallbacks
+                                    // drafted count is stored by product ID as string
+                                    const draftValue = (target2 && conteoDraftMap[target2.productId] !== undefined) ? parseInt(conteoDraftMap[target2.productId], 10) : null;
+                                    const actualConteo = carriotsSum !== null ? carriotsSum : (draftValue !== null && !isNaN(draftValue) ? draftValue : (ce?.actual ?? empData2.conteo_qty ?? empRef2.conteo_qty));
                                     const diff = actualConteo != null && plannedConteo ? actualConteo - plannedConteo : null;
                                     const prodImg = target2 ? conteoPhotosMap[target2.productId] : null;
                                     const recImg = target2 ? recPhotos[target2.productId] : null;
@@ -773,7 +981,7 @@ const IntroStep = ({
                                                                                 if (isNaN(newVal) || newVal < 0) return;
                                                                                 setAdminSaving(true);
                                                                                 try {
-                                                                                    const cNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
+                                                                                    const cNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
                                                                                     if (cNote) {
                                                                                         const currentConteo = { ...cNote.processParameters?.conteo };
                                                                                         const matchKey = Object.keys(currentConteo).find(k => currentConteo[k].productId === target2?.productId);
@@ -857,7 +1065,7 @@ const IntroStep = ({
 
                                             {/* Detail section — Multiple Carritos if any */}
                                             {(() => {
-                                                const productCarriots = carriots?.filter?.(c => c.productId === (target2?.productId || en.productId)) || [];
+                                                const productCarriots = summaryCarriots.filter(c => String(c.productId) === String(target2?.productId || en.productId));
                                                 if (productCarriots.length === 0) return null;
                                                 return (
                                                     <div className="mt-1 mx-4 mb-3 bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -877,12 +1085,12 @@ const IntroStep = ({
                                                                     <div className="flex gap-3">
                                                                         <div className="flex flex-col items-center gap-1.5">
                                                                             <span className="text-[8px] font-black text-orange-400 uppercase leading-none tracking-wider">Prod.</span>
-                                                                            {c.dispatchPhoto ? (
+                                                                            {getCarritoProductionPhoto(c) ? (
                                                                                 <img 
-                                                                                    src={c.dispatchPhoto} 
+                                                                                    src={getCarritoProductionPhoto(c)} 
                                                                                     alt="Envío" 
                                                                                     className="w-9 h-9 rounded-lg shrink-0 object-cover border-2 border-orange-200 cursor-pointer shadow-sm hover:border-orange-400 transition-all hover:scale-105" 
-                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: c.dispatchPhoto, label: `📸 Carrito #${c.carritoNum} - Envío Producción` }); }} 
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: getCarritoProductionPhoto(c), label: `📸 Carrito #${c.carritoNum} - Envío Producción` }); }} 
                                                                                 />
                                                                             ) : (
                                                                                 <div className="w-9 h-9 rounded-lg border-2 border-dashed border-slate-200 bg-slate-50 flex items-center justify-center shrink-0">
@@ -892,12 +1100,12 @@ const IntroStep = ({
                                                                         </div>
                                                                         <div className="flex flex-col items-center gap-1.5">
                                                                             <span className="text-[8px] font-black text-teal-500 uppercase leading-none tracking-wider">Recep.</span>
-                                                                            {c.receivedAt && savedReceptionPhotos[c.id] ? (
+                                                                            {c.receivedAt && getCarritoReceptionPhoto(c) ? (
                                                                                 <img 
-                                                                                    src={savedReceptionPhotos[c.id]} 
+                                                                                    src={getCarritoReceptionPhoto(c)} 
                                                                                     alt="Recepción" 
                                                                                     className="w-9 h-9 rounded-lg shrink-0 object-cover border-2 border-teal-400 cursor-pointer shadow-sm transition-all hover:scale-105" 
-                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: savedReceptionPhotos[c.id], label: `✅ Carrito #${c.carritoNum} - Recepción Empaque` }); }} 
+                                                                                    onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: getCarritoReceptionPhoto(c), label: `✅ Carrito #${c.carritoNum} - Recepción Empaque` }); }} 
                                                                                 />
                                                                             ) : c.receivedAt ? (
                                                                                 <div className="w-9 h-9 rounded-lg border-2 border-teal-400 bg-teal-50 flex items-center justify-center shrink-0 shadow-sm" title="Recibido sin foto">
@@ -966,7 +1174,6 @@ const IntroStep = ({
     }
 
     // ── Target quantity value for display ────────────────────────────────────
-    const isPesaje = noteData.processType?.code === 'PESAJE';
     const pesajeTotalG = isPesaje && noteData.items?.length > 0
         ? noteData.items.reduce((sum, i) => sum + (i.plannedQuantity || 0), 0)
         : null;
@@ -975,15 +1182,15 @@ const IntroStep = ({
     const formulaBaseQty = noteData.product?.formulas?.[0]?.baseQuantity || null;
     const formulaBaseUnit = noteData.product?.formulas?.[0]?.baseUnit || 'g';
 
-    // For ENSAMBLE, show actual produced quantity from the LAST completed PESAJE step
-    // (each PESAJE reports cumulative output, so the last one includes everything)
+    // For aggregate recipes, PESAJE.actualQuantity can be the lot count
+    // (e.g. 2 lotes), so the displayed mass must come from the weighed items.
     const completedPesajes = isEnsamble
         ? allBatchNotes
-            .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0)
+            .filter(n => ['PESAJE', 'G_PESAJE'].includes(n.processType?.code) && n.status === 'COMPLETED' && (n.stageOrder || 0) < (noteData.stageOrder || 0))
             .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))
         : [];
     const ensambleMetaQty = completedPesajes.length > 0
-        ? completedPesajes[completedPesajes.length - 1].actualQuantity
+        ? completedPesajes.reduce((sum, n) => sum + pesajeItemsTotalGrams(n), 0)
         : null;
 
     // ── For any step after PESAJE: show actual produced from completed PESAJE steps ──
@@ -993,11 +1200,11 @@ const IntroStep = ({
     // Use the LAST completed PESAJE actual (cumulative, includes everything)
     const postPesajeCompleted = isPostPesaje
         ? allBatchNotes
-            .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0)
+            .filter(n => ['PESAJE', 'G_PESAJE'].includes(n.processType?.code) && n.status === 'COMPLETED' && (n.stageOrder || 0) < (noteData.stageOrder || 0))
             .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))
         : [];
     const actualProducedTotal = postPesajeCompleted.length > 0
-        ? postPesajeCompleted[postPesajeCompleted.length - 1].actualQuantity
+        ? postPesajeCompleted.reduce((sum, n) => sum + pesajeItemsTotalGrams(n), 0)
         : null;
 
     // ── CONTEO meta ──────────────────────────────────────────────────────────

@@ -51,4 +51,16 @@ router.get('/test-inventory', async (req, res) => {
     }
 });
 
+// Temporary: test socket emit for purchase order alerts
+router.get('/test-po-alert', (req, res) => {
+    const io = req.app.get('io');
+    if (!io) return res.json({ error: 'io not found on app' });
+    io.emit('purchase_order:new', {
+        orderNumber: 'OC-TEST-001',
+        supplierName: 'TEST SUPPLIER',
+        createdAt: new Date()
+    });
+    res.json({ success: true, message: 'Evento purchase_order:new emitido' });
+});
+
 module.exports = router;

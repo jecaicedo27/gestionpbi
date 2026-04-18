@@ -581,6 +581,16 @@ const patchOrder = async (req, res) => {
         if (Object.keys(data).length === 0) {
             return res.status(400).json({ success: false, error: 'No hay campos para actualizar' });
         }
+        const existingOrder = await prisma.order.findUnique({
+            where: { id },
+            select: { id: true, distributorId: true }
+        });
+        if (!existingOrder) {
+            return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+        }
+        if (isDistributor && existingOrder.distributorId !== req.user.id) {
+            return res.status(403).json({ success: false, error: 'No autorizado' });
+        }
         const order = await prisma.order.update({ where: { id }, data });
         res.json({ success: true, data: order });
     } catch (error) {

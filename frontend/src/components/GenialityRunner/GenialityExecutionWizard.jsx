@@ -603,7 +603,7 @@ const GenialityExecutionWizard = () => {
                 return;
             }
             // If multi-lot selections exist, verify coverage (skip for EMPAQUE — auto-assigned)
-            const isEmpaqueInput = note?.processType?.code === 'EMPAQUE';
+            const isEmpaqueInput = ['EMPAQUE', 'G_EMPAQUE'].includes(note?.processType?.code);
             const itemLotSel = lotSelections[item.id] || [];
             if (itemLotSel.length > 0 && !isEmpaqueInput) {
                 const totalCov = itemLotSel.reduce((s, sel) => s + (sel.qty || 0), 0);
@@ -1098,24 +1098,30 @@ const GenialityExecutionWizard = () => {
                     );
                     for (const esNote of ensambleSiigoNotes) {
                         try {
-                            // Calculate real qty for THIS product from carriots
+                            const isPreConteo = (esNote.stageOrder || 0) < (note.stageOrder || 0);
                             const productCarriots = receivedCarriots.filter(c => c.productId === esNote.productId);
                             const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
                             const qty = realQty > 0 ? realQty : esNote.targetQuantity;
-                            
-                            // Set skipRpa flag
-                            await api.patch(`/assembly-notes/${esNote.id}`, {
-                                processParameters: { ...(esNote.processParameters || {}), skipRpa: true }
-                            });
+
+                            if (!isPreConteo) {
+                                // Finished product — skipRpa (per-carrito already handled Siigo)
+                                await api.patch(`/assembly-notes/${esNote.id}`, {
+                                    processParameters: { ...(esNote.processParameters || {}), skipRpa: true }
+                                });
+                            }
+                            // Pre-CONTEO notes (intermediate products like SABORIZACION) keep skipRpa=false so RPA fires
+
                             if (esNote.status === 'PENDING') {
                                 await api.post(`/assembly-notes/${esNote.id}/start`, { operatorId: user?.id }).catch(() => {});
                             }
                             await api.post(`/assembly-notes/${esNote.id}/complete`, {
                                 operatorId: user?.id,
                                 actualQuantity: qty,
-                                observations: `Auto-completado post-CONTEO: ${qty} uds (RPA per-carrito). Lote: ${batchNumber}.`
+                                observations: isPreConteo
+                                    ? `Auto-completado post-CONTEO: ${qty} uds (producto intermedio, RPA pendiente). Lote: ${batchNumber}.`
+                                    : `Auto-completado post-CONTEO: ${qty} uds (RPA per-carrito). Lote: ${batchNumber}.`
                             });
-                            console.log(`[G_CONTEO handleComplete] ✅ Ensamble Siigo ${esNote.stageName} completed (qty: ${qty})`);
+                            console.log(`[G_CONTEO handleComplete] ✅ Ensamble Siigo ${esNote.stageName} completed (qty: ${qty}, preConteo: ${isPreConteo})`);
                         } catch (esErr) {
                             console.warn(`[G_CONTEO handleComplete] ⚠️ Could not auto-complete ${esNote.stageName}:`, esErr.message);
                         }
@@ -1684,12 +1690,12 @@ const GenialityExecutionWizard = () => {
         
         // PESAJE notes: photo per ingredient is OPTIONAL (final verification photo is the gate)
         // All other process types: photo remains MANDATORY per ingredient
-        const isPesajeProcess = note?.processType?.code === 'PESAJE';
+        const isPesajeProcess = ['PESAJE', 'G_PESAJE'].includes(note?.processType?.code);
         canAdvance = hasWeight && hasLot && (hasPhoto || isPesajeProcess);
 
         // Multi-lot validation: if lots exist in inventory, block until coverage >= planned
         // Skip for EMPAQUE — lots are auto-assigned with whatever is available
-        const isEmpaqueProcess = note?.processType?.code === 'EMPAQUE';
+        const isEmpaqueProcess = ['EMPAQUE', 'G_EMPAQUE'].includes(note?.processType?.code);
         const itemSelections = lotSelections[currentItemId] || [];
         if (itemSelections.length > 0 && !isEmpaqueProcess) {
             const totalCovered = itemSelections.reduce((sum, s) => sum + (s.qty || 0), 0);
@@ -1755,8 +1761,8 @@ const GenialityExecutionWizard = () => {
     if (currentStep.type === 'OUTPUT') {
         const realQty = parseFloat(outputQuantity);
         const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(note.processType?.code);
-        const isPesajeNote = note.processType?.code === 'PESAJE';
-        const isFormacionNote = note.processType?.code === 'FORMACION';
+        const isPesajeNote = ['PESAJE', 'G_PESAJE'].includes(note.processType?.code);
+        const isFormacionNote = ['FORMACION', 'G_FORMACION'].includes(note.processType?.code);
         const productNameUpper = (note.product?.name || '').toUpperCase();
         const isPesajeSimple = isEnsambleNote || isFormacionNote || (isPesajeNote && !productNameUpper.startsWith('COMPUESTO') && !productNameUpper.startsWith('PROTECCION'));
         
@@ -1774,7 +1780,7 @@ const GenialityExecutionWizard = () => {
             // Same logic as OutputStep: try to find a previous completed PESAJE step for batch total
             const previousPesajeOutput = isPesajeNote && allBatchNotes?.length > 0
                 ? allBatchNotes
-                    .filter(n => n.processType?.code === 'PESAJE' && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== note.id)
+                    .filter(n => ['PESAJE', 'G_PESAJE'].includes(n.processType?.code) && n.status === 'COMPLETED' && n.actualQuantity > 0 && n.id !== note.id)
                     .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0]?.actualQuantity
                 : null;
 

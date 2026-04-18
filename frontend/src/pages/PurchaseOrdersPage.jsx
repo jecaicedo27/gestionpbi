@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, Table, Tag, Space, Typography, Button, Modal, Form, Select, InputNumber, Input, DatePicker, message, Tabs, Descriptions, Timeline, Badge, Spin, Empty, Divider, Progress, Alert, Tooltip, Upload, Image } from 'antd';
-import { PlusOutlined, CheckOutlined, SendOutlined, StopOutlined, EyeOutlined, ShoppingCartOutlined, TruckOutlined, DollarOutlined, FilePdfOutlined, InboxOutlined, PrinterOutlined, TagsOutlined, UploadOutlined, DeleteOutlined, PaperClipOutlined, SyncOutlined } from '@ant-design/icons';
+import { PlusOutlined, CheckOutlined, SendOutlined, StopOutlined, EyeOutlined, ShoppingCartOutlined, TruckOutlined, DollarOutlined, FilePdfOutlined, InboxOutlined, PrinterOutlined, TagsOutlined, UploadOutlined, DeleteOutlined, PaperClipOutlined, SyncOutlined, EditOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -117,6 +117,7 @@ const PurchaseOrdersPage = () => {
     const [creating, setCreating] = useState(false);
     const [paymentMethod, setPaymentMethod] = useState('CONTADO');
     const [creditDays, setCreditDays] = useState(30);
+    const [editingOrderId, setEditingOrderId] = useState(null);
 
     // Detail Modal
     const [detailVisible, setDetailVisible] = useState(false);
@@ -206,9 +207,29 @@ const PurchaseOrdersPage = () => {
         } catch (err) { console.error(err); }
     };
     const openCreate = () => {
+        setEditingOrderId(null);
         setCreateVisible(true);
         setOrderItems([]); setSelectedSupplier(null); setNotes(''); setExpectedDate(null);
         setPaymentMethod('CONTADO'); setCreditDays(30);
+        loadSuppliers(); loadRawMaterials();
+    };
+    const openEdit = (order) => {
+        setEditingOrderId(order.id);
+        setCreateVisible(true);
+        setDetailVisible(false);
+        setSelectedSupplier(order.supplierDbId || null);
+        setNotes(order.notes || '');
+        setExpectedDate(order.expectedDate ? dayjs(order.expectedDate) : null);
+        setPaymentMethod(order.paymentMethod || order.payment_method || 'CONTADO');
+        setCreditDays(30);
+        setOrderItems((order.items || []).map(i => ({
+            siigoProductCode: i.siigoProductCode,
+            siigoProductName: i.siigoProductName,
+            quantityOrdered: i.quantityOrdered,
+            packagingDesc: i.packagingDesc || '',
+            packQty: i.packagingQtyGrams || null,
+            unitsPerPack: null,
+        })));
         loadSuppliers(); loadRawMaterials();
     };
     const addItem = () => setOrderItems([...orderItems, { siigoProductCode: '', siigoProductName: '', quantityOrdered: 0, packagingDesc: '', packQty: null, unitsPerPack: null }]);
@@ -266,14 +287,20 @@ const PurchaseOrdersPage = () => {
             const creditDueDate = paymentMethod === 'CREDITO'
                 ? new Date(Date.now() + creditDays * 24 * 60 * 60 * 1000).toISOString()
                 : null;
-            const res = await api.post('/procurement/purchase-orders', {
+            const payload = {
                 supplierId: String(selectedSupplier), supplierName: supplier?.name || '', supplierNit: supplier?.identification || '',
                 notes, expectedDate: expectedDate?.toISOString(), items: orderItems,
                 paymentMethod, creditDueDate
-            });
-            message.success('✅ Orden de compra creada');
-            setCreateVisible(false); loadOrders();
-        } catch (err) { message.error('Error creando orden'); }
+            };
+            if (editingOrderId) {
+                await api.put(`/procurement/purchase-orders/${editingOrderId}`, payload);
+                message.success('✅ Orden actualizada');
+            } else {
+                await api.post('/procurement/purchase-orders', payload);
+                message.success('✅ Orden de compra creada');
+            }
+            setCreateVisible(false); setEditingOrderId(null); loadOrders();
+        } catch (err) { message.error(editingOrderId ? 'Error actualizando orden' : 'Error creando orden'); }
         setCreating(false);
     };
 
@@ -886,8 +913,8 @@ const PurchaseOrdersPage = () => {
             </Card>
 
             {/* ══════ CREATE MODAL ══════ */}
-            <Modal title="Nueva Orden de Compra" open={createVisible} onCancel={() => setCreateVisible(false)}
-                onOk={createOrder} confirmLoading={creating} width={900} okText="Crear Orden">
+            <Modal title={editingOrderId ? "Editar Orden de Compra" : "Nueva Orden de Compra"} open={createVisible} onCancel={() => { setCreateVisible(false); setEditingOrderId(null); }}
+                onOk={createOrder} confirmLoading={creating} width={900} okText={editingOrderId ? "Guardar Cambios" : "Crear Orden"}>
                 <Space direction="vertical" style={{ width: '100%' }} size="middle">
                     <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -897,8 +924,21 @@ const PurchaseOrdersPage = () => {
                                 onClick={async () => {
                                     setSyncingSuppliers(true);
                                     try {
-                                        const res = await api.post('/procurement/suppliers/sync');
-                                        message.success(`✅ ${res.data.synced} proveedores sincronizados desde Siigo`);
+                                        await api.post('/procurement/suppliers/sync');
+                                        let attempts = 0;
+                                        while (attempts < 30) {
+                                            await new Promise(r => setTimeout(r, 2000));
+                                            const st = await api.get('/procurement/suppliers/sync-status');
+                                            if (!st.data.running) {
+                                                if (st.data.result?.success) {
+                                                    message.success(`✅ ${st.data.result.synced} proveedores sincronizados desde Siigo`);
+                                                } else {
+                                                    message.warning(`⚠️ ${st.data.result?.error || 'Error en sincronización'}`);
+                                                }
+                                                break;
+                                            }
+                                            attempts++;
+                                        }
                                         await loadSuppliers();
                                     } catch (err) {
                                         const msg = err.response?.data?.error || 'Error sincronizando proveedores';
@@ -1069,6 +1109,11 @@ const PurchaseOrdersPage = () => {
                                 ]} />
 
                             <Space style={{ marginTop: 16 }} wrap>
+                                {!isRestrictedRole && (
+                                    <Button icon={<EditOutlined />} onClick={() => openEdit(selectedOrder)}>
+                                        Editar
+                                    </Button>
+                                )}
                                 <Button type="primary" icon={<FilePdfOutlined />}
                                     onClick={() => { const token = localStorage.getItem('token'); window.open(`/api/procurement/purchase-orders/${selectedOrder.id}/pdf?token=${token}`, '_blank'); }}>
                                     Descargar PDF

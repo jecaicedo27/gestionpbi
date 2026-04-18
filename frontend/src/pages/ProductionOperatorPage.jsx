@@ -6,6 +6,54 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { RefreshCw, Play, RotateCcw, CheckCircle, Clock, Layers, ChevronRight, Timer, Factory, Warehouse } from 'lucide-react';
 
+// ─── Process Group Classification ────────────────────────────────────────────
+const PROCESS_GROUPS = [
+    { key: 'ALGINATO',          label: 'Alginato',          keywords: ['ALGINATO'] },
+    { key: 'SABORIZACION',      label: 'Saborización',      keywords: ['SABORIZACION', 'SABORIZACIÓN'] },
+    { key: 'PROTECCION',        label: 'Protección',        keywords: ['PROTECCION', 'PROTECCIÓN'] },
+    { key: 'AZUCAR_INVERTIDA',  label: 'Azúcar Invertida',  keywords: ['AZUCAR INVERT', 'AZÚCAR INVERT', 'FRUCTOSA'] },
+    { key: 'BASE',              label: 'Base Liquipops',    keywords: ['BASE LIQUIPOPS', 'BASE LIQD', 'BASE LIQU'] },
+    { key: 'COMPUESTO',         label: 'Compuesto',         keywords: ['COMPUESTO'] },
+    { key: 'ESFERAS',           label: 'Esferas / Perlas',  keywords: ['ESFERAS', 'PERLAS', 'LIQUIPOPS ESFERA'] },
+    { key: 'PREMEZCLA',         label: 'Premezcla',         keywords: ['PREMEZCLA', 'PROTONICO', 'FUENTE DE CALCIO', 'GOMA', 'CONSERVANTE', 'CALCIO DIO'] },
+    { key: 'SOMBRILLA',         label: 'Sombrilla',         keywords: ['SOMBRILLA', 'SOMBRELLA', 'UMBRELLA'] },
+];
+
+const getProcessGroup = (batch) => {
+    const texts = [
+        (batch.batchNumber || '').toUpperCase(),
+        (batch.productName || '').toUpperCase(),
+        ...(batch.allProductNames || []).map(p => p.toUpperCase()),
+    ];
+    for (const group of PROCESS_GROUPS) {
+        if (texts.some(txt => group.keywords.some(kw => txt.includes(kw)))) {
+            return group;
+        }
+    }
+    return { key: 'OTROS', label: 'Otros Procesos', keywords: [] };
+};
+
+const groupBatches = (batchList) => {
+    const groups = new Map();
+    for (const batch of batchList) {
+        const g = getProcessGroup(batch);
+        if (!groups.has(g.key)) groups.set(g.key, { ...g, batches: [] });
+        groups.get(g.key).batches.push(batch);
+    }
+    for (const group of groups.values()) {
+        group.batches.sort((a, b) => {
+            const aStart = a.notes?.filter(n => n.startedAt).map(n => new Date(n.startedAt)).sort((x, y) => x - y)[0] || null;
+            const bStart = b.notes?.filter(n => n.startedAt).map(n => new Date(n.startedAt)).sort((x, y) => x - y)[0] || null;
+            if (aStart && bStart) return aStart - bStart;
+            if (aStart) return -1;
+            if (bStart) return 1;
+            return 0;
+        });
+    }
+    const order = [...PROCESS_GROUPS.map(g => g.key), 'OTROS'];
+    return order.filter(k => groups.has(k)).map(k => groups.get(k));
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtDuration = (ms) => {
     if (!ms || ms <= 0) return null;
@@ -809,9 +857,19 @@ const ProductionOperatorPage = () => {
                         </div>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
-                        {visibleBatches.map(batch => (
-                            <BatchCard key={batch.id} batch={batch} onStart={handleStart} onDelete={handleDelete} isAdmin={isAdmin} userRole={user?.role} />
+                    <div className="space-y-6">
+                        {groupBatches(visibleBatches).map(group => (
+                            <div key={group.key}>
+                                <h2 className="text-xl font-extrabold text-slate-800 mb-3 px-1 border-l-4 border-blue-500 pl-3">
+                                    {group.label}
+                                    <span className="ml-2 text-sm font-medium text-slate-400">({group.batches.length})</span>
+                                </h2>
+                                <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+                                    {group.batches.map(batch => (
+                                        <BatchCard key={batch.id} batch={batch} onStart={handleStart} onDelete={handleDelete} isAdmin={isAdmin} userRole={user?.role} />
+                                    ))}
+                                </div>
+                            </div>
                         ))}
                     </div>
                 )}

@@ -81,7 +81,11 @@ export function useGlobalScanner({ onScan, enabled = true }) {
                 // Only intercept if it looks definitively like a scanner barcode,
                 // otherwise it might be Android's predictive text (e.g. "sirope")!
                 const isDefinitiveCode = insertedData.includes('LOT:') 
+                    || insertedData.includes('PKG:')
                     || insertedData.includes('SKU:') 
+                    || insertedData.includes('PKGÑ')
+                    || insertedData.includes('LOTÑ')
+                    || insertedData.includes('SKUÑ')
                     || insertedData.startsWith('{')
                     || /^\d{4,}$/.test(insertedData.trim());
 

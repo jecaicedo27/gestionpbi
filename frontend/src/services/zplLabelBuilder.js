@@ -21,7 +21,8 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
         productName = '', sku = '', lotNumber = '',
         quantity = 0, unit = 'unidad',
         receivedAt = '', expiresAt = '',
-        barcode = '', boxNumber = 1, totalBoxes = 1,
+        barcode = '', packageId = '', containerType = '',
+        boxNumber = 1, totalBoxes = 1,
         statusText = null
     } = data;
 
@@ -99,7 +100,18 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
     if (lotDisplay.length > 18) lotDisplay = lotDisplay.substring(0, 18) + '..';
 
     // QR content — canonical format from qrService (single source of truth)
-    const qrData = buildQrString({ lotNumber, sku, barcode: barcode || sku, quantity, boxNumber, totalBoxes });
+    const qrData = buildQrString({
+        packageId,
+        lotNumber,
+        sku,
+        barcode: barcode || sku,
+        quantity,
+        containerType,
+        receivedAt,
+        expiresAt,
+        boxNumber,
+        totalBoxes
+    });
 
     // ── Build label fields at xOff ──
     // Column: ~50mm = 400 dots wide, 40mm = 320 dots tall

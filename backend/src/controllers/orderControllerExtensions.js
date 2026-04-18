@@ -440,72 +440,91 @@ exports.invoiceOrder = async (req, res) => {
                 const pickedQty = (item.pickingItems || []).reduce((s, p) => s + p.scannedQty, 0);
                 
                 // ── PREVENT DOUBLE DISCOUNT ──
-                // If the item went through physical picking, its lot stock was ALREADY deducted 
-                // in completePicking(). We just update the transfer log to include the invoice number.
+                // If the item went through physical picking, check if lot stock was actually deducted.
+                // Transfer records prove the deduction happened; if none exist, picking failed silently
+                // (e.g. lot number mismatch between QR "260413-0623" and DB "BLUEBERRY-260413-0623").
                 if (pickedQty > 0) {
-                    await tx.finishedLotTransfer.updateMany({
-                        where: { orderId: order.id, reason: 'Despacho por picking', productId: item.productId },
-                        data: {
-                            reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`
-                        }
+                    const existingTransfers = await tx.finishedLotTransfer.count({
+                        where: { orderId: order.id, productId: item.productId }
                     });
+                    if (existingTransfers > 0) {
+                        // Stock was correctly deducted during picking — just update reason
+                        await tx.finishedLotTransfer.updateMany({
+                            where: { orderId: order.id, reason: 'Despacho por picking', productId: item.productId },
+                            data: {
+                                reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`
+                            }
+                        });
+                        continue;
+                    }
+                    // If no transfers exist, picking failed to deduct stock.
+                    // Use the ACTUAL picked lots instead of FIFO.
+                    console.warn(`[invoiceOrder] ⚠️ Picking existió pero sin transfer para producto ${item.productId} en orden ${order.orderNumber}. Deduciendo de lotes escaneados.`);
+
+                    const pickedLotMap = {};
+                    for (const pi of (item.pickingItems || [])) {
+                        if (pi.lotNumber) {
+                            pickedLotMap[pi.lotNumber] = (pickedLotMap[pi.lotNumber] || 0) + pi.scannedQty;
+                        }
+                    }
+
+                    let pickedRemaining = pickedQty;
+                    for (const [lotNum, lotQty] of Object.entries(pickedLotMap)) {
+                        if (pickedRemaining <= 0) break;
+                        // Search in all zones: PT first, then PRODUCCION
+                        const lot = await tx.finishedLotStock.findFirst({
+                            where: { productId: item.productId, lotNumber: lotNum, currentQuantity: { gt: 0 } },
+                            orderBy: { zone: 'asc' }
+                        }) || await tx.finishedLotStock.findFirst({
+                            where: { productId: item.productId, lotNumber: { endsWith: lotNum }, currentQuantity: { gt: 0 } }
+                        });
+
+                        if (!lot) {
+                            logger.warn(`[invoiceOrder] Lote escaneado "${lotNum}" no encontrado para ${item.product?.sku}`);
+                            continue;
+                        }
+
+                        const consume = Math.min(lotQty, lot.currentQuantity, pickedRemaining);
+                        const newQty = lot.currentQuantity - consume;
+
+                        await tx.finishedLotStock.update({
+                            where: { id: lot.id },
+                            data: {
+                                currentQuantity: newQty,
+                                status: newQty <= 0 ? 'DEPLETED' : newQty < (lot.initialQuantity || 1) * 0.1 ? 'LOW' : 'AVAILABLE'
+                            }
+                        });
+
+                        await tx.finishedLotTransfer.create({
+                            data: {
+                                finishedLotStockId: lot.id,
+                                productId: item.productId,
+                                lotNumber: lot.lotNumber,
+                                fromZone: lot.zone,
+                                toZone: 'BODEGA',
+                                quantity: consume,
+                                reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`,
+                                orderId: order.id,
+                                transferredById: req.user.id,
+                                observations: `${consume} uds → ${order.distributor?.name || 'distribuidor'} (lote escaneado)`
+                            }
+                        });
+
+                        pickedRemaining -= consume;
+                        logger.info(`  📤 ${item.product?.sku} lote ${lot.lotNumber} [${lot.zone}]: -${consume} uds (queda: ${newQty})`);
+                    }
+
+                    if (pickedRemaining > 0) {
+                        logger.warn(`[invoiceOrder] ⚠️ ${item.product?.sku}: ${pickedRemaining} uds escaneadas sin lote disponible`);
+                    }
                     continue;
                 }
 
-                // ── FIFO FALLBACK FOR QUICK ORDERS ──
-                // Quick Orders bypass picking, so they have 0 pickedQty. 
-                // We deduct them here using FIFO.
-                const qtyToDeduct = item.allocatedQty || 0;
-
-                if (qtyToDeduct <= 0 || !item.productId) continue;
-
-                let remaining = qtyToDeduct;
-                const lots = await tx.finishedLotStock.findMany({
-                    where: {
-                        productId: item.productId,
-                        zone: 'PRODUCTO_TERMINADO',
-                        currentQuantity: { gt: 0 },
-                        status: { not: 'DEPLETED' }
-                    },
-                    orderBy: { createdAt: 'asc' }  // FIFO
-                });
-
-                for (const lot of lots) {
-                    if (remaining <= 0) break;
-                    const consume = Math.min(remaining, lot.currentQuantity);
-                    const newQty = lot.currentQuantity - consume;
-
-                    await tx.finishedLotStock.update({
-                        where: { id: lot.id },
-                        data: {
-                            currentQuantity: newQty,
-                            status: newQty <= 0 ? 'DEPLETED'
-                                : newQty < (lot.initialQuantity || 1) * 0.1 ? 'LOW'
-                                : 'AVAILABLE'
-                        }
-                    });
-
-                    await tx.finishedLotTransfer.create({
-                        data: {
-                            finishedLotStockId: lot.id,
-                            productId: item.productId,
-                            lotNumber: lot.lotNumber,
-                            fromZone: 'PRODUCTO_TERMINADO',
-                            toZone: 'BODEGA',
-                            quantity: consume,
-                            reason: `Salida · Factura ${invoiceRef} · Pedido ${order.orderNumber}`,
-                            orderId: order.id,
-                            transferredById: req.user.id,
-                            observations: `${consume} uds → ${order.distributor?.name || 'distribuidor'}`
-                        }
-                    });
-
-                    remaining -= consume;
-                    logger.info(`  📤 ${item.product?.sku} lote ${lot.lotNumber}: -${consume} uds (queda: ${newQty})`);
-                }
-
-                if (remaining > 0) {
-                    logger.warn(`[invoiceOrder] ⚠️ ${item.product?.sku}: ${remaining} uds sin lote PT — sincronizar con Siigo`);
+                // ── NO FIFO: pedidos sin picking no descuentan lotes automáticamente ──
+                // Los lotes solo se descuentan cuando hay datos de picking (lotes escaneados explícitamente).
+                const qtyNoLot = item.allocatedQty || 0;
+                if (qtyNoLot > 0) {
+                    logger.warn(`[invoiceOrder] ⚠️ ${item.product?.sku}: ${qtyNoLot} uds facturadas SIN lote escaneado (pedido rápido sin picking). Lotes NO descontados.`);
                 }
             }
 
@@ -1399,6 +1418,7 @@ exports.getPendingDeliverySummary = async (req, res) => {
                                 flavor: true,
                                 size: true,
                                 accountGroup: true,
+                                packSize: true,
                             }
                         },
                         pickingItems: {
