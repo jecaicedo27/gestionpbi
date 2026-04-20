@@ -3,6 +3,7 @@ const { PrismaClient } = require('@prisma/client');
 const cacheService = require('../services/cacheService');
 const logger = require('../utils/logger');
 const dataMiningService = require('../services/dataMiningService');
+const { upsertDefaultProductPackOption } = require('../services/productPackOptionService');
 
 const prisma = new PrismaClient();
 
@@ -42,6 +43,9 @@ exports.getAllProducts = async (req, res) => {
                 flavor: p.flavor,
                 size: p.size,
                 warehouses: p.warehouses,
+                productionZoneStock: p.productionZoneStock || 0,
+                classification: p.classification || null,
+                accountGroup: p.accountGroup || null,
                 dailyVelocity: rData.velocity || p.dailyVelocity || 0, // Prefer cached calculation
                 daysOfStock: rData.daysOfStock || p.daysOfStock || 0,
                 minimumStock: p.minimumStock || rData.minimumStock || 0, // Prefer DB
@@ -213,6 +217,9 @@ exports.syncFromSiigo = async (req, res) => {
                 flavor: p.flavor,
                 size: p.size,
                 warehouses: p.warehouses,
+                productionZoneStock: p.productionZoneStock || 0,
+                classification: p.classification || null,
+                accountGroup: p.accountGroup || null,
                 dailyVelocity: rData.velocity || p.dailyVelocity || 0,
                 daysOfStock: rData.daysOfStock || p.daysOfStock || 0,
                 minimumStock: p.minimumStock || rData.minimumStock || 0, // Prefer DB config
@@ -245,13 +252,27 @@ exports.updateProductConfig = async (req, res) => {
         const { id } = req.params;
         const { minimumStock, packSize, costPrice } = req.body;
 
-        const product = await prisma.product.update({
-            where: { id },
-            data: {
-                minimumStock: minimumStock !== undefined ? parseFloat(minimumStock) : undefined,
-                packSize: packSize !== undefined ? parseFloat(packSize) : undefined,
-                costPrice: costPrice !== undefined ? parseFloat(costPrice) : undefined,
+        const product = await prisma.$transaction(async (tx) => {
+            const updated = await tx.product.update({
+                where: { id },
+                data: {
+                    minimumStock: minimumStock !== undefined ? parseFloat(minimumStock) : undefined,
+                    packSize: packSize !== undefined ? parseFloat(packSize) : undefined,
+                    costPrice: costPrice !== undefined ? parseFloat(costPrice) : undefined,
+                }
+            });
+
+            const normalizedPackSize = packSize !== undefined ? parseFloat(packSize) : null;
+            if (normalizedPackSize && normalizedPackSize > 1) {
+                await upsertDefaultProductPackOption(tx, {
+                    productId: id,
+                    quantity: Math.round(normalizedPackSize),
+                    unit: updated.unit,
+                    updateProductPackSize: false
+                });
             }
+
+            return updated;
         });
 
         res.json(product);

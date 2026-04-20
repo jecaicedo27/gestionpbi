@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList, Microscope } from 'lucide-react';
 
+// ── Tabs by role ────────────────────────────────────────────────────────────
 const tabsByRole = {
     PRODUCCION: [
         { icon: LayoutDashboard, label: 'Inicio', path: '/' },
@@ -59,22 +60,25 @@ const tabsByRole = {
 
 const getTabs = (role) => tabsByRole[role] || tabsByRole.PRODUCCION;
 
-const BottomNavBar = ({ userRole }) => (
-    <nav className="btm-nav">
-        {getTabs(userRole).map((tab) => (
-            <NavLink
-                key={tab.path}
-                to={tab.path}
-                end={tab.path === '/'}
-                className={({ isActive }) =>
-                    `btm-nav__tab ${isActive ? 'btm-nav__tab--active' : ''}`
-                }
-            >
-                <tab.icon size={20} strokeWidth={1.8} />
-                <span className="btm-nav__label">{tab.label}</span>
-            </NavLink>
-        ))}
-    </nav>
-);
+const BottomNavBar = ({ userRole }) => {
+    return (
+        <nav className="btm-nav">
+            {getTabs(userRole).map((tab) => (
+                <NavLink
+                    key={tab.path}
+                    to={tab.path}
+                    end={tab.path === '/'}
+                    className={({ isActive }) =>
+                        `btm-nav__tab ${isActive ? 'btm-nav__tab--active' : ''}`
+                    }
+                >
+                    <tab.icon size={20} strokeWidth={1.8} />
+                    <span className="btm-nav__label">{tab.label}</span>
+                </NavLink>
+            ))}
+        </nav>
+    );
+};
 
 export default BottomNavBar;
+

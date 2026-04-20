@@ -1,10 +1,10 @@
-import React, { useMemo, useState, useRef } from 'react';
-import { Package, Warehouse } from 'lucide-react';
+import React, { useState } from 'react';
+import { Package, ShieldCheck, Warehouse } from 'lucide-react';
 
 // Detect touch device — disable tooltip on touch
 const isTouchDevice = () => 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
-const InventoryMatrix = ({ products, onProductClick }) => {
+const InventoryMatrix = ({ products, onProductClick, onBulkValidationOpen }) => {
     // Groups that benefit from matrix view (flavors x sizes)
     const MATRIX_GROUPS = ['LIQUIPOPS', 'GENIALITY'];
 
@@ -21,6 +21,38 @@ const InventoryMatrix = ({ products, onProductClick }) => {
         const p = pack || 1;
         return Math.ceil(val / p) * p;
     };
+
+    const canOpenBulkValidation = (groupName, warehouseName) => (
+        ['LIQUIPOPS', 'GENIALITY'].includes(String(groupName || '').toUpperCase()) &&
+        String(warehouseName || '').toUpperCase().includes('SIN ASIGNAR') &&
+        typeof onBulkValidationOpen === 'function'
+    );
+
+    const renderSectionHeader = (groupName, warehouseName) => (
+        <div className="text-xs font-bold text-gray-700 bg-gray-50 p-2 flex items-center justify-between gap-2 border-b">
+            <div className="flex items-center min-w-0">
+                <Package className="w-3 h-3 mr-1 flex-shrink-0" />
+                <span className="truncate">{groupName}</span>
+                <Warehouse className="w-3 h-3 ml-3 mr-1 flex-shrink-0" />
+                <span className="text-blue-600 truncate">{warehouseName}</span>
+            </div>
+
+            {canOpenBulkValidation(groupName, warehouseName) && (
+                <button
+                    type="button"
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        onBulkValidationOpen({ groupName, warehouseName });
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100 transition-colors flex-shrink-0"
+                    title="Validar e ingresar por escaneo"
+                >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Validar
+                </button>
+            )}
+        </div>
+    );
 
     const processMatrix = (groupName, warehouseName) => {
         const groupProducts = products.filter(p => p.group === groupName);
@@ -61,6 +93,8 @@ const InventoryMatrix = ({ products, onProductClick }) => {
         return { sizes, flavors, productMap, hasData: true };
     };
 
+    const HIDDEN_WAREHOUSES = new Set(['MAQUILAS']);
+
     // 4. Get unique warehouses for a group
     const getWarehousesForGroup = (groupName) => {
         const groupProducts = products.filter(p => p.group === groupName);
@@ -69,10 +103,11 @@ const InventoryMatrix = ({ products, onProductClick }) => {
         groupProducts.forEach(p => {
             if (Array.isArray(p.warehouses) && p.warehouses.length > 0) {
                 p.warehouses.forEach(w => {
-                    warehouseNames.add(w.name);
+                    if (!HIDDEN_WAREHOUSES.has(w.name?.trim().toUpperCase())) {
+                        warehouseNames.add(w.name);
+                    }
                 });
             } else {
-                // Products without warehouse assignment — show under 'Sin asignar'
                 warehouseNames.add('Sin asignar');
             }
         });
@@ -92,12 +127,7 @@ const InventoryMatrix = ({ products, onProductClick }) => {
 
         return (
             <div key={`${groupName}-${warehouseName}`} className="mb-4 overflow-x-auto border rounded-lg shadow-sm bg-white">
-                <h3 className="text-xs font-bold text-gray-700 bg-gray-50 p-2 flex items-center border-b">
-                    <Package className="w-3 h-3 mr-1" />
-                    {groupName}
-                    <Warehouse className="w-3 h-3 ml-3 mr-1" />
-                    <span className="text-blue-600">{warehouseName}</span>
-                </h3>
+                {renderSectionHeader(groupName, warehouseName)}
 
                 <table className="min-w-full text-[10px] border-collapse">
                     <thead>
@@ -241,12 +271,7 @@ const InventoryMatrix = ({ products, onProductClick }) => {
 
         return (
             <div key={`${groupName}-${warehouseName}`} className="mb-4 border rounded-lg shadow-sm bg-white">
-                <h3 className="text-xs font-bold text-gray-700 bg-gray-50 p-2 flex items-center border-b">
-                    <Package className="w-3 h-3 mr-1" />
-                    {groupName}
-                    <Warehouse className="w-3 h-3 ml-3 mr-1" />
-                    <span className="text-blue-600">{warehouseName}</span>
-                </h3>
+                {renderSectionHeader(groupName, warehouseName)}
 
                 {sortedLines.map(line => (
                     <div key={line} className="p-2 border-b last:border-b-0 overflow-x-auto">

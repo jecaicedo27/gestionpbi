@@ -4,7 +4,7 @@ import axios from 'axios';
 import { CheckCircle, XCircle, Package, Truck, ScanLine, ClipboardList, BarChart3, Box, ChevronDown, ChevronUp, FileText, Upload, Printer, RotateCcw, Camera, Trash2, ShoppingCart, Barcode } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { parseScanInput } from '../services/scannerParser';
-import { playSuccess, playError, playAlreadyDone, playItemComplete } from '../services/scannerSounds';
+import { playSuccess, playError, playAlreadyDone, playItemComplete, playZoneWarning } from '../services/scannerSounds';
 
 const API_URL = `${import.meta.env.VITE_API_URL}/api` || '/api';
 const AUTH = () => ({ Authorization: `Bearer ${localStorage.getItem('token')}` });
@@ -56,6 +56,7 @@ export default function OrderManagement() {
     const [packingModeModal, setPackingModeModal] = useState(null); // { order } — pending packing mode selection
     const [pendingSummaryModal, setPendingSummaryModal] = useState(false);
     const [pendingCellDetail, setPendingCellDetail] = useState(null); // { brand, presentation, flavor }
+    const [pendingDistributorFilter, setPendingDistributorFilter] = useState('ALL');
     
     // Edit notes
     const [editingNoteId, setEditingNoteId] = useState(null);
@@ -192,8 +193,14 @@ export default function OrderManagement() {
             setTimeout(() => setLastScan(prev => prev?.status === 'success' ? null : prev), 3000);
         },
         onError: (error) => {
-            playError();
-            setLastScan(prev => prev ? { ...prev, status: 'error', message: error.response?.data?.error || 'Error al escanear' } : null);
+            const data = error.response?.data;
+            if (data?.zoneWarning) {
+                playZoneWarning();
+                setLastScan(prev => prev ? { ...prev, status: 'zone-warning', message: data.error } : null);
+            } else {
+                playError();
+                setLastScan(prev => prev ? { ...prev, status: 'error', message: data?.error || 'Error al escanear' } : null);
+            }
         }
     });
 
@@ -482,6 +489,8 @@ export default function OrderManagement() {
             playAlreadyDone();
             const matchedProduct = pickingOrder.items?.find(oi => oi.id === targetItemId)?.product;
             setLastScan({ productName: matchedProduct?.name || qrData.productCode, lotNumber: qrData.lotNumber, status: 'warning', message: `Ya completo (${alreadyScanned}/${requested} uds) — no se necesitan más`, timestamp: Date.now() });
+            setExpandItemId(targetItemId);
+            setTimeout(() => { itemRefs.current[targetItemId]?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 100);
             return;
         }
 
@@ -492,9 +501,13 @@ export default function OrderManagement() {
             return;
         }
 
-        // Show scanning feedback
+        // Show scanning feedback and scroll to matched item
         const matchedProduct = pickingOrder.items?.find(oi => oi.id === targetItemId)?.product;
         setLastScan({ productName: matchedProduct?.name || qrData.productCode, lotNumber: qrData.lotNumber, status: 'scanning', timestamp: Date.now() });
+        setExpandItemId(targetItemId);
+        setTimeout(() => {
+            itemRefs.current[targetItemId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 100);
 
         scanMutation.mutate({
             orderId: pickingOrder.id,
@@ -506,6 +519,7 @@ export default function OrderManagement() {
 
     // ─── Scanner input ref (hidden auto-focus input captures all scanner reads) ───
     const scannerInputRef = useRef(null);
+    const itemRefs = useRef({});
 
     // Auto-focus scanner input when picking modal opens
     useEffect(() => {
@@ -592,6 +606,33 @@ export default function OrderManagement() {
             } else {
                 playError();
                 setLastScan({ productName: scan.sku, status: 'error', message: `Producto (SKU: ${scan.sku}) no encontrado en este pedido`, timestamp: Date.now() });
+            }
+            return;
+        }
+
+        // ── 2b. PKG package label QR (new format: PKG:|LOT:|SKU:|BAR:|QTY:|…) ──
+        if (scan.type === 'qr_package_label' && (scan.barcode || scan.sku)) {
+            const matchedOrderItem = pickingOrder.items?.find(oi =>
+                scan.barcode && oi.product?.barcode === scan.barcode
+            ) || pickingOrder.items?.find(oi => oi.product?.sku === scan.sku);
+
+            const matchedIp = matchedOrderItem && pickingProgress?.itemsProgress?.find(ip => ip.itemId === matchedOrderItem.id && !ip.completed);
+
+            if (matchedOrderItem && matchedIp) {
+                handleQrScan({
+                    productCode: matchedOrderItem.product?.sku || scan.sku,
+                    barcode: scan.barcode || matchedOrderItem.product?.barcode || scan.sku,
+                    name: matchedOrderItem.product?.name || '',
+                    lotNumber: scan.lotNumber || '',
+                    unitsPerBox: scan.quantity || matchedOrderItem.product?.packSize || 1,
+                    expirationDate: scan.expirationDate || ''
+                });
+            } else if (matchedOrderItem) {
+                playAlreadyDone();
+                setLastScan({ productName: matchedOrderItem.product?.name || scan.sku, status: 'warning', message: 'Ya completado — no se necesitan más unidades', timestamp: Date.now() });
+            } else {
+                playError();
+                setLastScan({ productName: scan.sku || scan.barcode, status: 'error', message: `Producto (${scan.barcode || scan.sku}) no encontrado en este pedido`, timestamp: Date.now() });
             }
             return;
         }
@@ -705,6 +746,54 @@ export default function OrderManagement() {
         return 'OTROS';
     };
 
+    const getUnitsPerBox = (order, item) => {
+        const dbPackSize = item?.product?.packSize || 1;
+        return order?.packingMode === 'EVEREST' ? 6 : dbPackSize;
+    };
+
+    const getPackingBreakdown = (units, unitsPerBox) => {
+        const safeUnits = Math.max(0, Number(units) || 0);
+        const safePack = Math.max(1, Number(unitsPerBox) || 1);
+
+        if (safePack <= 1) {
+            return {
+                units: safeUnits,
+                unitsPerBox: safePack,
+                boxCount: safeUnits,
+                isPartial: false,
+                shortLabel: `${safeUnits} uds`,
+                detailLabel: `${safeUnits} uds`,
+                compactLabel: `${safeUnits} uds`
+            };
+        }
+
+        const boxCount = Math.ceil(safeUnits / safePack);
+        const fullBoxes = Math.floor(safeUnits / safePack);
+        const remainder = safeUnits % safePack;
+        const isPartial = safeUnits > 0 && remainder !== 0;
+        const noun = boxCount === 1 ? 'caja' : 'cajas';
+
+        let shortLabel = `${boxCount} ${noun}`;
+        let detailLabel = `${boxCount} ${noun} · ${safeUnits} uds`;
+
+        if (isPartial) {
+            shortLabel = `${boxCount} ${noun}${boxCount === 1 ? ' parcial' : ' parciales'}`;
+            detailLabel = fullBoxes > 0
+                ? `${boxCount} ${noun} eq. · ${fullBoxes} completa${fullBoxes === 1 ? '' : 's'} + 1 parcial (${safeUnits} uds, x${safePack}/caja)`
+                : `${shortLabel} · ${safeUnits}/${safePack} uds`;
+        }
+
+        return {
+            units: safeUnits,
+            unitsPerBox: safePack,
+            boxCount,
+            isPartial,
+            shortLabel,
+            detailLabel,
+            compactLabel: `${safeUnits} uds · ${shortLabel}`
+        };
+    };
+
     const getEffectiveQty = (orderStatus, item) => {
         const allocated = item.allocatedQty ?? null;
         const requested = item.requestedQty ?? 0;
@@ -738,7 +827,19 @@ export default function OrderManagement() {
                 const qty = getEffectiveQty(order.status, item);
                 return sum + qty;
             }, 0);
-            return { id: order.id, number: order.orderNumber, total, status: order.status, distributor: order.distributor?.name || 'Venta Directa' };
+            const boxesEq = (order.items || []).reduce((sum, item) => {
+                const qty = getEffectiveQty(order.status, item);
+                if (qty <= 0) return sum;
+                return sum + getPackingBreakdown(qty, getUnitsPerBox(order, item)).boxCount;
+            }, 0);
+            return {
+                id: order.id,
+                number: order.orderNumber,
+                total,
+                boxesEq,
+                status: order.status,
+                distributor: order.distributor?.name || 'Venta Directa'
+            };
         });
 
         ordersList.forEach(order => {
@@ -750,6 +851,11 @@ export default function OrderManagement() {
                 const presentation = normalizePresentation(product.name, product.size);
                 const qty = getEffectiveQty(order.status, item);
                 if (qty <= 0) return;
+                const unitsPerBox = getUnitsPerBox(order, item);
+                const pendingPack = getPackingBreakdown(qty, unitsPerBox);
+                const requestedPack = getPackingBreakdown(item.requestedQty || 0, unitsPerBox);
+                const pickedQty = (item.pickingItems || []).reduce((acc, p) => acc + (p.scannedQty || 0), 0);
+                const pickedPack = getPackingBreakdown(pickedQty, unitsPerBox);
 
                 if (!matrix[brand]) matrix[brand] = {};
                 if (!matrix[brand][presentation]) matrix[brand][presentation] = {};
@@ -763,7 +869,19 @@ export default function OrderManagement() {
                     orderNumber: order.orderNumber,
                     status: order.status,
                     qty,
-                    distributor: order.distributor?.name || 'Venta Directa'
+                    distributor: order.distributor?.name || 'Venta Directa',
+                    requestedQty: item.requestedQty || 0,
+                    allocatedQty: item.allocatedQty ?? 0,
+                    pendingQty: item.pendingQty ?? 0,
+                    unitsPerBox,
+                    boxCount: pendingPack.boxCount,
+                    boxLabel: pendingPack.shortLabel,
+                    boxDetail: pendingPack.detailLabel,
+                    requestedBoxLabel: requestedPack.shortLabel,
+                    pickedQty,
+                    pickedBoxLabel: pickedPack.shortLabel,
+                    isBackorder: order.orderNumber?.includes('-BKO'),
+                    packingMode: order.packingMode || 'STANDARD'
                 });
             });
         });
@@ -829,7 +947,11 @@ export default function OrderManagement() {
                             </button>
                         )}
                         <button
-                            onClick={() => setPendingSummaryModal(true)}
+                            onClick={() => {
+                                setPendingSummaryModal(true);
+                                setPendingDistributorFilter('ALL');
+                                setPendingCellDetail(null);
+                            }}
                             className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-medium text-sm"
                             title="Consolidado de pedidos por entregar"
                         >
@@ -965,9 +1087,8 @@ export default function OrderManagement() {
                                             >
                                                 <span className="text-sm text-gray-600 font-medium">
                                                     {completedItems}/{totalItems} productos separados • {order.items?.reduce((sum, i) => {
-                                                        const ps = order.packingMode === 'EVEREST' ? 6 : (i.product?.packSize || 1);
-                                                        return sum + Math.ceil(i.requestedQty / ps);
-                                                    }, 0)} cajas
+                                                        return sum + getPackingBreakdown(i.requestedQty, getUnitsPerBox(order, i)).boxCount;
+                                                    }, 0)} cajas eq.
                                                 </span>
                                                 <div className="flex items-center gap-1">
                                                     <span className="text-xs text-purple-500">{expandedOrderId === order.id ? 'Ocultar' : 'Ver productos'}</span>
@@ -980,12 +1101,12 @@ export default function OrderManagement() {
                                         <div className="px-6 pb-6">
                                             <div className="space-y-2">
                                                 {order.items?.map(item => {
-                                                    const packSize = item.product?.packSize || 1;
+                                                    const packSize = getUnitsPerBox(order, item);
                                                     const scanned = item.pickingItems?.reduce((s, p) => s + p.scannedQty, 0) || 0;
                                                     const itemPct = Math.min(100, Math.round((scanned / item.requestedQty) * 100));
                                                     const done = scanned >= item.requestedQty;
-                                                    const boxes = Math.ceil(item.requestedQty / packSize);
-                                                    const scannedBoxes = Math.floor(scanned / packSize);
+                                                    const requestedPack = getPackingBreakdown(item.requestedQty, packSize);
+                                                    const scannedPack = getPackingBreakdown(scanned, packSize);
                                                     return (
                                                         <div key={item.id} className={`p-3 rounded-xl transition-all duration-500 ${done ? 'bg-green-50 border border-green-200' : 'bg-white border border-gray-100'}`}>
                                                             <div className="flex items-start gap-2 mb-1.5">
@@ -1000,9 +1121,19 @@ export default function OrderManagement() {
                                                                     <div className="text-sm font-medium text-gray-800 leading-snug">
                                                                         {item.product?.name || item.product?.sku}
                                                                     </div>
-                                                                    <span className={`text-xs font-bold ${done ? 'text-green-600' : 'text-purple-600'}`}>
-                                                                        {scannedBoxes}/{boxes} cajas
-                                                                    </span>
+                                                                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                                        <span className={`text-xs font-bold ${done ? 'text-green-600' : 'text-purple-600'}`}>
+                                                                            {scanned}/{item.requestedQty} uds
+                                                                        </span>
+                                                                        <span className="text-[11px] text-gray-500">
+                                                                            {requestedPack.detailLabel}
+                                                                        </span>
+                                                                        {scanned > 0 && (
+                                                                            <span className="text-[11px] text-gray-400">
+                                                                                Alistado: {scannedPack.detailLabel}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                             <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -1116,9 +1247,8 @@ export default function OrderManagement() {
                                         <span className="font-medium">{order.items?.length} productos</span>
                                         <span className="text-gray-400">•</span>
                                         <span>{order.items?.reduce((sum, i) => {
-                                            const ps = order.packingMode === 'EVEREST' ? 6 : (i.product?.packSize || 1);
-                                            return sum + Math.ceil((i.allocatedQty || i.requestedQty) / ps);
-                                        }, 0)} cajas total</span>
+                                            return sum + getPackingBreakdown((i.allocatedQty || i.requestedQty), getUnitsPerBox(order, i)).boxCount;
+                                        }, 0)} cajas eq.</span>
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <span className="text-xs text-gray-400">{expandedOrderId === order.id ? 'Ocultar' : 'Ver detalle'}</span>
@@ -1131,10 +1261,8 @@ export default function OrderManagement() {
                                 <div className="mb-4">
                                     <div className="space-y-1.5">
                                         {order.items?.map(item => {
-                                            const dbPackSize = item.product?.packSize || 1;
-                                            // Everest (maquila) = cajas de 6, Normal = packSize del producto
-                                            const packSize = order.packingMode === 'EVEREST' ? 6 : dbPackSize;
-                                            const boxes = Math.ceil(item.requestedQty / packSize);
+                                            const packSize = getUnitsPerBox(order, item);
+                                            const requestedPack = getPackingBreakdown(item.requestedQty, packSize);
                                             const name = item.product?.name || item.product?.sku || '?';
                                             const stock = item.product?.currentStock || 0;
                                             // Group picking items by lot number
@@ -1144,7 +1272,7 @@ export default function OrderManagement() {
                                             });
                                             const lots = Object.entries(lotMap);
                                             const totalPicked = lots.reduce((s, [, q]) => s + q, 0);
-                                            const pickedBoxes = Math.floor(totalPicked / packSize);
+                                            const pickedPack = getPackingBreakdown(totalPicked, packSize);
                                             // After picking starts: show Pedido vs Alistado; before: show stock
                                             const showPickedView = ['IN_PICKING', 'READY', 'INVOICED', 'DISPATCHED', 'DELIVERED'].includes(order.status);
                                             const sufficient = !showPickedView ? stock >= item.requestedQty : totalPicked >= item.requestedQty;
@@ -1156,11 +1284,11 @@ export default function OrderManagement() {
                                                             {showPickedView ? (
                                                                 <>
                                                                     <span className="text-gray-500">
-                                                                        Pedido: <strong>{boxes} {boxes === 1 ? 'caja' : 'cajas'}</strong> ({item.requestedQty} uds)
+                                                                        Pedido: <strong>{item.requestedQty} uds</strong> <span className="text-gray-400">({requestedPack.shortLabel})</span>
                                                                     </span>
                                                                     <span className="text-gray-300">|</span>
                                                                     <span className={`font-semibold ${sufficient ? 'text-green-600' : 'text-amber-600'}`}>
-                                                                        Alistado: {pickedBoxes} {pickedBoxes === 1 ? 'caja' : 'cajas'} ({totalPicked} uds)
+                                                                        Alistado: {totalPicked} uds <span className="text-gray-400">({pickedPack.shortLabel})</span>
                                                                     </span>
                                                                 </>
                                                             ) : (
@@ -1171,7 +1299,7 @@ export default function OrderManagement() {
                                                                         </span>
                                                                     )}
                                                                     <span className="text-gray-600 font-medium">
-                                                                        {boxes} {boxes === 1 ? 'caja' : 'cajas'}
+                                                                        {requestedPack.shortLabel}
                                                                         <span className="text-gray-400 ml-1">({item.requestedQty} uds)</span>
                                                                     </span>
                                                                 </>
@@ -2045,6 +2173,7 @@ export default function OrderManagement() {
                         <div className={`px-5 py-3 border-b transition-all duration-300 ${
                             lastScan?.status === 'success' ? 'bg-green-50 border-green-200' :
                             lastScan?.status === 'error'   ? 'bg-red-50 border-red-200' :
+                            lastScan?.status === 'zone-warning' ? 'bg-amber-100 border-amber-400 border-2' :
                             lastScan?.status === 'warning' ? 'bg-orange-50 border-orange-300' :
                             lastScan?.status === 'scanning' ? 'bg-blue-50 border-blue-200' :
                             'bg-purple-50 border-purple-100'
@@ -2054,20 +2183,23 @@ export default function OrderManagement() {
                                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm ${
                                         lastScan.status === 'success' ? 'bg-green-500 animate-bounce' :
                                         lastScan.status === 'error'   ? 'bg-red-500' :
+                                        lastScan.status === 'zone-warning' ? 'bg-amber-500 animate-pulse' :
                                         lastScan.status === 'warning' ? 'bg-orange-500' :
                                         'bg-blue-500 animate-pulse'
                                     }`}>
-                                        {lastScan.status === 'success' ? '✓' : lastScan.status === 'error' ? '✗' : lastScan.status === 'warning' ? '⚠' : '⟳'}
+                                        {lastScan.status === 'success' ? '✓' : lastScan.status === 'error' ? '✗' : lastScan.status === 'zone-warning' ? '⚠' : lastScan.status === 'warning' ? '⚠' : '⟳'}
                                     </div>
                                     <div className="flex-1">
                                         <p className={`text-sm font-bold ${
                                             lastScan.status === 'success' ? 'text-green-800' :
                                             lastScan.status === 'error'   ? 'text-red-800' :
+                                            lastScan.status === 'zone-warning' ? 'text-amber-800' :
                                             lastScan.status === 'warning' ? 'text-orange-800' :
                                             'text-blue-800'
                                         }`}>
                                             {lastScan.status === 'success' ? '✅ Escaneado' :
                                              lastScan.status === 'error'   ? '❌ Error' :
+                                             lastScan.status === 'zone-warning' ? '⚠️ Sin stock en Producto Terminado' :
                                              lastScan.status === 'warning' ? '⛔ Ya completo' :
                                              '🔄 Procesando...'}
                                         </p>
@@ -2076,6 +2208,7 @@ export default function OrderManagement() {
                                             {lastScan.lotNumber && <span className="ml-2 text-gray-400">Lote: {lastScan.lotNumber}</span>}
                                             {lastScan.message && <span className={`ml-2 ${
                                                 lastScan.status === 'error'   ? 'text-red-500' :
+                                                lastScan.status === 'zone-warning' ? 'text-amber-700 font-bold' :
                                                 lastScan.status === 'warning' ? 'text-orange-600 font-medium' :
                                                 'text-blue-500'
                                             }`}>{lastScan.message}</span>}
@@ -2261,7 +2394,7 @@ export default function OrderManagement() {
                                 const isLastScanned = lastScan?.productName === ip.productName;
 
                                 return (
-                                    <div key={ip.itemId} className="flex flex-col gap-0 border-2 rounded-xl transition-all duration-300" style={{ borderColor: ip.completed ? '#bcf0da' : '#f3f4f6' }}>
+                                    <div key={ip.itemId} ref={el => { itemRefs.current[ip.itemId] = el; }} className="flex flex-col gap-0 border-2 rounded-xl transition-all duration-300" style={{ borderColor: ip.completed ? '#bcf0da' : '#f3f4f6' }}>
                                         <div
                                             onClick={() => setExpandItemId(expandItemId === ip.itemId ? null : ip.itemId)}
                                             className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all duration-500 ${
@@ -3266,9 +3399,16 @@ export default function OrderManagement() {
         {/* ── Pending Summary Modal ──────────────────────────── */}
         {pendingSummaryModal && (() => {
             const ordersList = pendingSummary?.data || [];
-            const { matrix, matrixDetails, orderTotals } = buildPendingMatrix(ordersList);
+            const distributorOptions = Array.from(new Set(
+                ordersList.map(order => order.distributor?.name || 'Venta Directa')
+            )).sort((a, b) => a.localeCompare(b, 'es'));
+            const filteredOrdersList = pendingDistributorFilter === 'ALL'
+                ? ordersList
+                : ordersList.filter(order => (order.distributor?.name || 'Venta Directa') === pendingDistributorFilter);
+            const { matrix, matrixDetails, orderTotals } = buildPendingMatrix(filteredOrdersList);
             const totalOrders = orderTotals.length;
             const totalUnits = orderTotals.reduce((sum, o) => sum + o.total, 0);
+            const totalBoxesEq = orderTotals.reduce((sum, o) => sum + (o.boxesEq || 0), 0);
 
             const renderMatrixTable = (brand, data) => {
                 const detailData = matrixDetails?.[brand] || {};
@@ -3336,6 +3476,9 @@ export default function OrderManagement() {
             const detailList = pendingCellDetail
                 ? (matrixDetails?.[pendingCellDetail.brand]?.[pendingCellDetail.presentation]?.[pendingCellDetail.flavor] || [])
                 : [];
+            const detailUnits = detailList.reduce((sum, row) => sum + (row.qty || 0), 0);
+            const detailBoxesEq = detailList.reduce((sum, row) => sum + (row.boxCount || 0), 0);
+            const detailUnitsPerBox = detailList[0]?.unitsPerBox || 1;
 
             return (
                 <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" style={{ background: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(4px)' }}>
@@ -3343,7 +3486,11 @@ export default function OrderManagement() {
                         <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
                             <div>
                                 <div className="text-lg font-bold">Consolidado de Pedidos por Entregar</div>
-                                <div className="text-xs text-slate-300">Incluye pedidos no entregados</div>
+                                <div className="text-xs text-slate-300">
+                                    {pendingDistributorFilter === 'ALL'
+                                        ? 'Incluye pedidos no entregados de todos los distribuidores'
+                                        : `Incluye pedidos no entregados de ${pendingDistributorFilter}`}
+                                </div>
                             </div>
                             <button onClick={() => { setPendingSummaryModal(false); setPendingCellDetail(null); }} className="text-white text-2xl">&times;</button>
                         </div>
@@ -3353,7 +3500,43 @@ export default function OrderManagement() {
                                 <div className="text-sm text-gray-500">Cargando consolidado...</div>
                             ) : (
                                 <>
-                                    <div className="grid grid-cols-3 gap-3 mb-4">
+                                    <div className="mb-4 rounded-xl border bg-white p-4">
+                                        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                                            <div>
+                                                <div className="text-sm font-semibold text-gray-800">Distribuidor</div>
+                                                <div className="text-xs text-gray-500">Los calculos del consolidado se recalculan sobre el distribuidor seleccionado.</div>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setPendingDistributorFilter('ALL'); setPendingCellDetail(null); }}
+                                                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${
+                                                        pendingDistributorFilter === 'ALL'
+                                                            ? 'bg-slate-800 text-white border-slate-800'
+                                                            : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                                                    }`}
+                                                >
+                                                    Todos
+                                                </button>
+                                                {distributorOptions.map(distributor => (
+                                                    <button
+                                                        key={distributor}
+                                                        type="button"
+                                                        onClick={() => { setPendingDistributorFilter(distributor); setPendingCellDetail(null); }}
+                                                        className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition ${
+                                                            pendingDistributorFilter === distributor
+                                                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                                                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                                                        }`}
+                                                    >
+                                                        {distributor}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                                         <div className="p-3 rounded-lg bg-gray-50 border">
                                             <div className="text-xs text-gray-500">Pedidos</div>
                                             <div className="text-lg font-bold text-gray-900">{totalOrders}</div>
@@ -3363,6 +3546,10 @@ export default function OrderManagement() {
                                             <div className="text-lg font-bold text-gray-900">{totalUnits}</div>
                                         </div>
                                         <div className="p-3 rounded-lg bg-gray-50 border">
+                                            <div className="text-xs text-gray-500">Cajas Eq.</div>
+                                            <div className="text-lg font-bold text-gray-900">{totalBoxesEq}</div>
+                                        </div>
+                                        <div className="p-3 rounded-lg bg-gray-50 border">
                                             <div className="text-xs text-gray-500">Estados</div>
                                             <div className="text-sm text-gray-700">
                                                 {(pendingSummary?.meta?.statuses || []).join(', ')}
@@ -3370,35 +3557,59 @@ export default function OrderManagement() {
                                         </div>
                                     </div>
 
+                                    {pendingDistributorFilter !== 'ALL' && (
+                                        <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                                            Mostrando solo el saldo pendiente de <strong>{pendingDistributorFilter}</strong>. Los totales de unidades, cajas equivalentes, matriz y detalle por pedido ya no mezclan otros distribuidores.
+                                        </div>
+                                    )}
+
                                     <div className="mb-4 border rounded-xl bg-white">
                                         <div className="px-4 py-2 bg-gray-50 border-b text-sm font-semibold text-gray-700">Pedidos incluidos</div>
-                                        <table className="min-w-full text-xs">
-                                            <thead>
-                                                <tr>
-                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
-                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Distribuidor</th>
-                                                    <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
-                                                    <th className="p-2 border-b text-right font-bold text-gray-500">Unidades</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {orderTotals.map(o => (
-                                                    <tr key={o.id} className="border-b last:border-b-0">
-                                                        <td className="p-2 text-gray-700 font-semibold">{o.number}</td>
-                                                        <td className="p-2 text-gray-600 font-medium truncate max-w-[150px]" title={o.distributor}>{o.distributor}</td>
-                                                        <td className="p-2 text-gray-500">{statusLabels[o.status] || o.status}</td>
-                                                        <td className="p-2 text-right font-bold text-gray-900">{o.total}</td>
+                                        {orderTotals.length === 0 ? (
+                                            <div className="px-4 py-6 text-sm text-gray-500">No hay pedidos pendientes para este distribuidor con los estados actuales.</div>
+                                        ) : (
+                                            <table className="min-w-full text-xs">
+                                                <thead>
+                                                    <tr>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Distribuidor</th>
+                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
+                                                        <th className="p-2 border-b text-right font-bold text-gray-500">Unidades</th>
+                                                        <th className="p-2 border-b text-right font-bold text-gray-500">Cajas Eq.</th>
                                                     </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
+                                                </thead>
+                                                <tbody>
+                                                    {orderTotals.map(o => (
+                                                        <tr key={o.id} className="border-b last:border-b-0">
+                                                            <td className="p-2 text-gray-700 font-semibold">{o.number}</td>
+                                                            <td className="p-2 text-gray-600 font-medium truncate max-w-[150px]" title={o.distributor}>{o.distributor}</td>
+                                                            <td className="p-2">
+                                                                <span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-semibold border ${getStatusColor(o.status)}`}>
+                                                                    {statusLabels[o.status] || o.status}
+                                                                </span>
+                                                            </td>
+                                                            <td className="p-2 text-right font-bold text-gray-900">{o.total}</td>
+                                                            <td className="p-2 text-right text-gray-600 font-semibold">{o.boxesEq || 0}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        )}
                                     </div>
 
                                     {pendingCellDetail && detailList.length > 0 && (
                                         <div className="mb-4 border rounded-xl bg-white">
                                             <div className="px-4 py-2 bg-emerald-50 border-b text-sm font-semibold text-emerald-800 flex items-center justify-between">
-                                                <div>
-                                                    Detalle por pedido · {pendingCellDetail.brand} · {pendingCellDetail.presentation} · {pendingCellDetail.flavor}
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span>Detalle por pedido · {pendingCellDetail.brand} · {pendingCellDetail.presentation} · {pendingCellDetail.flavor}</span>
+                                                    <span className="inline-flex px-2 py-0.5 rounded-full bg-white text-emerald-800 border border-emerald-200 text-[11px] font-semibold">
+                                                        {detailUnits} uds pendientes
+                                                    </span>
+                                                    {detailUnitsPerBox > 1 && (
+                                                        <span className="inline-flex px-2 py-0.5 rounded-full bg-white text-emerald-800 border border-emerald-200 text-[11px] font-semibold">
+                                                            {detailBoxesEq} cajas eq. · x{detailUnitsPerBox}/caja
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <button
                                                     type="button"
@@ -3408,26 +3619,62 @@ export default function OrderManagement() {
                                                     &times;
                                                 </button>
                                             </div>
-                                            <table className="min-w-full text-xs">
-                                                <thead>
-                                                    <tr>
-                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Orden</th>
-                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Distribuidor</th>
-                                                        <th className="p-2 border-b text-left font-bold text-gray-500">Estado</th>
-                                                        <th className="p-2 border-b text-right font-bold text-gray-500">Cantidad</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {detailList.map((row, idx) => (
-                                                        <tr key={`${row.orderNumber}-${idx}`} className="border-b last:border-b-0">
-                                                            <td className="p-2 text-gray-700 font-semibold">{row.orderNumber}</td>
-                                                            <td className="p-2 text-gray-600 font-medium truncate max-w-[150px]" title={row.distributor}>{row.distributor}</td>
-                                                            <td className="p-2 text-gray-500">{statusLabels[row.status] || row.status}</td>
-                                                            <td className="p-2 text-right font-bold text-gray-900">{row.qty}</td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
+                                            <div className="p-4 space-y-3">
+                                                {detailList.map((row, idx) => (
+                                                    <div key={`${row.orderNumber}-${idx}`} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+                                                        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="flex flex-wrap items-center gap-2">
+                                                                    <span className="font-semibold text-gray-900">{row.orderNumber}</span>
+                                                                    {row.isBackorder && (
+                                                                        <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+                                                                            Backorder
+                                                                        </span>
+                                                                    )}
+                                                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-semibold border ${getStatusColor(row.status)}`}>
+                                                                        {statusLabels[row.status] || row.status}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="text-xs text-gray-500 mt-1">{row.distributor}</div>
+                                                            </div>
+                                                            <div className="text-left lg:text-right">
+                                                                <div className="text-lg font-bold text-gray-900">{row.qty} uds</div>
+                                                                <div className="text-xs text-gray-500">{row.boxDetail}</div>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
+                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
+                                                                <div className="text-[11px] text-gray-500">Pendiente actual</div>
+                                                                <div className="text-sm font-bold text-gray-900">{row.qty} uds</div>
+                                                            </div>
+                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
+                                                                <div className="text-[11px] text-gray-500">Equivalencia</div>
+                                                                <div className="text-sm font-bold text-gray-900">{row.boxLabel}</div>
+                                                            </div>
+                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
+                                                                <div className="text-[11px] text-gray-500">Pedido original</div>
+                                                                <div className="text-sm font-bold text-gray-900">{row.requestedQty} uds</div>
+                                                                <div className="text-[11px] text-gray-500">{row.requestedBoxLabel}</div>
+                                                            </div>
+                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
+                                                                <div className="text-[11px] text-gray-500">Empaque</div>
+                                                                <div className="text-sm font-bold text-gray-900">x{row.unitsPerBox} uds/caja</div>
+                                                                {row.pickedQty > 0 && (
+                                                                    <div className="text-[11px] text-gray-500">Separado: {row.pickedQty} uds</div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {row.unitsPerBox > 1 && row.qty > 0 && row.qty < row.unitsPerBox && (
+                                                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                                                Este saldo sigue apareciendo como <strong>{row.boxLabel}</strong> porque el producto maneja <strong>x{row.unitsPerBox} uds por caja</strong>.
+                                                                En este caso, la deuda real son <strong>{row.qty} unidades</strong>, no una caja completa.
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
                                     )}
 

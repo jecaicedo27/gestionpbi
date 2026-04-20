@@ -1,6 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const browserManager = require('./siigoBrowserManager');
+const finishedLotService = require('./finishedLotService');
 
 // Strip accents for flavor-insensitive matching (CAFE ↔ CAFÉ)
 const stripAccents = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -1237,6 +1238,19 @@ class AssemblyService {
                 }
             }
 
+            // ── Normalize Geniality process codes (defensive, matches assemblyService.js) ──
+            // G_ENSAMBLE → ENSAMBLE, G_EMPAQUE → EMPAQUE so all downstream logic
+            // (stock injection, RPA, MaterialLot) works identically.
+            const normalizeCode = (code) => {
+                if (!code) return code;
+                if (code === 'G_ENSAMBLE') return 'ENSAMBLE';
+                if (code === 'G_EMPAQUE') return 'EMPAQUE';
+                return code;
+            };
+            if (note.processType) {
+                note.processType = { ...note.processType, code: normalizeCode(note.processType.code) };
+            }
+
             // ── DECOUPLED STOCK INJECTION (App-First, Siigo-Second) ──
             // Stock injection now happens at the ENSAMBLE step, which has the correct
             // scaled actualQuantity. PRE-ENSAMBLE (Pesaje) defers to ENSAMBLE.
@@ -1262,7 +1276,7 @@ class AssemblyService {
                 if (myIdx >= 0) {
                     for (let i = myIdx + 1; i < batchNotes.length; i++) {
                         if (batchNotes[i].productId === note.productId) {
-                            nextEnsambleForProduct = batchNotes[i].processType?.code === 'ENSAMBLE';
+                            nextEnsambleForProduct = normalizeCode(batchNotes[i].processType?.code) === 'ENSAMBLE';
                             break;
                         }
                     }
@@ -1317,12 +1331,33 @@ class AssemblyService {
                     });
                     console.log(`[completeNote] ✅ MaterialLot created for ${note.product?.name} — lot: ${lotNumber} (${qty} uds)`);
                 } else {
-                    // ── FINISHED PRODUCTS: stock ingestion handled by EMPAQUE wizard ──
-                    // Finished products (LIQUIPOPS, SIROPES, etc.) are tracked in
-                    // FinishedLotStock via the operator's empaque/rotulado flow which
-                    // calls finishedLotService.ingestFromProduction(). We do NOT
-                    // auto-ingest here to avoid double-counting.
-                    console.log(`[completeNote] ℹ️ Finished product ${note.product?.name} — stock ingestion deferred to EMPAQUE wizard (lot: ${lotNumber}, ${qty} uds)`);
+                    // ── FINISHED PRODUCTS: create finishedLotStock per carrito ──
+                    // So logistics can receive carts via handoffs without waiting
+                    // for the entire lot to finish (which can take days).
+                    const carritoNum = note.processParameters?.carritoNumber || null;
+                    const reason = carritoNum
+                        ? `Ensamble carrito #${carritoNum} — ${note.product?.name}`
+                        : `Ensamble automático — ${note.product?.name}`;
+                    try {
+                        await finishedLotService.ingestFromProduction({
+                            productId: note.productId,
+                            lotNumber,
+                            quantity: qty,
+                            batchId: note.productionBatchId,
+                            expiresAt: null,
+                            userId: operatorId,
+                            zone: 'PRODUCCION',
+                            reason,
+                            perCarrito: true,
+                        });
+                        console.log(`[completeNote] ✅ FinishedLotStock created for ${note.product?.name} — lot: ${lotNumber}, ${qty} uds in PRODUCCION`);
+                    } catch (ingErr) {
+                        if (ingErr.message?.startsWith('DUPLICATE_INGESTION')) {
+                            console.warn(`[completeNote] ⚠️ Duplicate ingestion blocked for ${lotNumber}: ${ingErr.message}`);
+                        } else {
+                            throw ingErr;
+                        }
+                    }
                 }
                 createdLotNumber = lotNumber;
             } // end if (producesOutput)

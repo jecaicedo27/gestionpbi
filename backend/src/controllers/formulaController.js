@@ -514,11 +514,26 @@ async function calculateFormulaCost(req, res) {
     }
 }
 
+async function getNextCode(req, res) {
+    try {
+        const allFormulas = await prisma.formula.findMany({ select: { formulaCode: true } });
+        const nums = allFormulas
+            .map(f => { const m = f.formulaCode?.match(/^FORM(\d+)$/i); return m ? parseInt(m[1], 10) : 0; })
+            .filter(n => n > 0);
+        const maxNum = nums.length > 0 ? Math.max(...nums) : 0;
+        res.json({ nextCode: `FORM${String(maxNum + 1).padStart(3, '0')}` });
+    } catch (error) {
+        console.error('Error generating next formula code:', error);
+        res.status(500).json({ error: 'Failed to generate next code' });
+    }
+}
+
 module.exports = {
     listFormulas,
     getFormula,
     createFormula,
     updateFormula,
     approveFormula,
-    calculateFormulaCost
+    calculateFormulaCost,
+    getNextCode
 };

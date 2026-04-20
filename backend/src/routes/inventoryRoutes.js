@@ -10,6 +10,13 @@ router.get('/list', auth, inventoryController.getAllProducts);
 router.get('/products', auth, inventoryController.getProductsSimple);
 router.post('/sync', auth, inventoryController.syncFromSiigo);
 router.post('/product/:id/config', auth, inventoryController.updateProductConfig);
+router.get('/products/:productId/lot-context', auth, lotController.getProductLotContext);
+router.get('/products/:productId/pack-options', auth, lotController.getProductPackOptions);
+router.get('/unassigned-bulk-ingress/availability', auth, lotController.getBulkIngressAvailability);
+router.post('/products/:productId/pack-options', auth, lotController.createProductPackOption);
+router.patch('/pack-options/:packOptionId', auth, lotController.updateProductPackOption);
+router.delete('/pack-options/:packOptionId', auth, lotController.deleteProductPackOption);
+router.post('/unassigned-bulk-ingress', auth, lotController.bulkIngressUnassigned);
 
 // ── Lot Management ──
 router.get('/lots', auth, lotController.getLots);
@@ -18,8 +25,14 @@ router.get('/lots/products-without-lots', auth, lotController.getProductsWithout
 router.get('/lots/traceability', auth, lotController.getTraceability);
 router.get('/lots/:id/history', auth, lotController.getLotHistory);
 router.post('/lots', auth, lotController.createLot);
+router.post('/lots/:id/package-labels', auth, lotController.preparePackageLabels);
+router.post('/lots/:id/print-label', auth, lotController.markLabelPrinted);
 router.post('/lots/:id/consume', auth, lotController.consumeLot);
+router.post('/package-labels/validate-scan', auth, lotController.validatePackageScan);
+router.delete('/package-labels/:packageCode', auth, lotController.voidPackageLabel);
 router.delete('/lots/:id', auth, lotController.deleteLot);
+router.delete('/finished-lots/:id', auth, lotController.deleteLot);
 router.patch('/lots/:id/link', auth, lotController.linkLot);
+router.post('/lots/transfer-zone', auth, lotController.transferZone);
 
 module.exports = router;

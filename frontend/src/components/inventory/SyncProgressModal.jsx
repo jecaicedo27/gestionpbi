@@ -13,8 +13,8 @@ const SyncProgressModal = ({ isOpen, onClose, progressData }) => {
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 p-6">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200 p-0 sm:p-4">
+            <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 p-5 sm:p-6 max-h-[100dvh] sm:max-h-[calc(100dvh-2rem)] overflow-y-auto">
 
                 {/* Header */}
                 <div className="flex justify-between items-center mb-6">
@@ -93,7 +93,7 @@ const SyncProgressModal = ({ isOpen, onClose, progressData }) => {
                     <div className="mt-8">
                         <button
                             onClick={onClose}
-                            className="w-full py-2.5 px-4 bg-gray-900 hover:bg-black text-white rounded-xl font-medium transition-colors shadow-lg shadow-gray-200"
+                            className="w-full min-h-[44px] py-2.5 px-4 bg-gray-900 hover:bg-black text-white rounded-lg font-medium transition-colors shadow-lg shadow-gray-200"
                         >
                             Cerrar y Recargar
                         </button>
@@ -104,13 +104,13 @@ const SyncProgressModal = ({ isOpen, onClose, progressData }) => {
                     <div className="mt-8 flex gap-3">
                         <button
                             onClick={onClose}
-                            className="flex-1 py-2.5 px-4 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 rounded-xl font-medium transition-colors"
+                            className="flex-1 min-h-[44px] py-2.5 px-4 bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 rounded-lg font-medium transition-colors"
                         >
                             Cancelar
                         </button>
                         <button
                             onClick={handleConfirm}
-                            className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-200"
+                            className="flex-1 min-h-[44px] py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors shadow-lg shadow-blue-200"
                         >
                             Confirmar
                         </button>

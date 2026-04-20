@@ -697,14 +697,22 @@ class SiigoService {
             const dueDate = new Date();
             dueDate.setDate(dueDate.getDate() + PAYMENT_DAYS);
 
-            // ─── Build lot traceability for invoice observations ───
-            const lotLines = order.items.map(item => {
+            // ─── Build invoice observations: notes + flavor/qty/lot detail ───
+            const orderNotes = order.notes ? order.notes.trim() : '';
+            const lines = [];
+            if (orderNotes) lines.push(orderNotes);
+            for (const item of order.items) {
+                const name = item.product?.name || '';
+                const saborM = name.match(/SABOR A\s+(.+?)\s+X\s+/i);
+                const flavor = saborM ? saborM[1].trim() : (item.product?.sku || '?');
+                const sizeM = name.match(/X\s+(\d+)\s*(GR?|ML|KG)/i);
+                const sizeLabel = sizeM ? `${sizeM[1]}${sizeM[2].toUpperCase()}` : '';
+                const qty = item.pickingItems?.reduce((s, pi) => s + (pi.scannedQty || 0), 0) || 0;
+                if (qty <= 0) continue;
                 const lots = [...new Set((item.pickingItems || []).map(pi => pi.lotNumber).filter(Boolean))];
-                if (!lots.length) return null;
-                return `${item.product?.sku}: ${lots.join('/')}`;
-            }).filter(Boolean);
-            const lotsText = lotLines.length ? ` | Lotes: ${lotLines.join(' | ')}` : '';
-            const observations = `Pedido: ${order.orderNumber}${lotsText}`.substring(0, 250);
+                lines.push(`${flavor} ${sizeLabel}: ${qty} uds - Lote: ${lots.join(', ') || 'S/L'}`);
+            }
+            const observations = lines.join('\n').substring(0, 5000);
 
             // ─── Build Payload ───
             const payload = {

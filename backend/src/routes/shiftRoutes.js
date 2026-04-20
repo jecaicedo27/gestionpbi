@@ -6,6 +6,8 @@ const hc = require('../controllers/shiftHandoffController');
 
 // Employees
 router.get('/employees',     auth, sc.getEmployees);
+router.get('/employees/pending-users', auth, sc.getPendingUserEmployees);
+router.post('/employees/migrate-users', auth, sc.migrateUsersToEmployees);
 router.post('/employees',    auth, sc.createEmployee);
 router.patch('/employees/:id', auth, sc.updateEmployee);
 router.delete('/employees/:id', auth, sc.deleteEmployee);
@@ -35,4 +37,3 @@ router.post('/handoff/:id/reject',             auth, hc.rejectHandoff);
 router.get('/handoff/:id',                     auth, hc.getHandoffDetail);
 
 module.exports = router;
-

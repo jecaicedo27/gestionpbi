@@ -7,6 +7,8 @@ const AREA_ICONS = { PRODUCCION: '⚙️', SIROPES: '🧪', EMPAQUE: '📦' };
 
 export default function ShiftBlockScreen({ userRole }) {
     const [blocked, setBlocked] = useState(false);
+    const [preHandoffBlock, setPreHandoffBlock] = useState(false);
+    const [minutesToEnd, setMinutesToEnd] = useState(null);
     const [pending, setPending] = useState([]);
     const [checking, setChecking] = useState(true);
     const [outgoingShift, setOutgoingShift] = useState('');
@@ -36,6 +38,8 @@ export default function ShiftBlockScreen({ userRole }) {
             try {
                 const res = await api.get('/shifts/handoff/block-status');
                 setBlocked(res.data.blocked);
+                setPreHandoffBlock(res.data.preHandoffBlock || false);
+                setMinutesToEnd(res.data.minutesToEnd || null);
                 setPending(res.data.pending || []);
                 setOutgoingShift(res.data.outgoingShift || '');
                 if (res.data.blocked) {
@@ -198,6 +202,105 @@ export default function ShiftBlockScreen({ userRole }) {
 
     if (checking) return null;
     if (!blocked) return null;
+
+    // ── PRE-HANDOFF BLOCK: 10 min before shift end → only allow going to handoff page ──
+    if (preHandoffBlock && !showEntregaMode) {
+        const isUrgent = minutesToEnd !== null && minutesToEnd <= 3;
+        return (
+            <div style={{
+                position: 'fixed', inset: 0, zIndex: 9999,
+                background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif"
+            }}>
+                <div style={{
+                    maxWidth: 480, width: '92%', textAlign: 'center',
+                    padding: '48px 32px', borderRadius: 28,
+                    background: 'rgba(255,255,255,0.05)',
+                    backdropFilter: 'blur(20px)',
+                    border: `2px solid ${isUrgent ? 'rgba(220,38,38,0.4)' : 'rgba(245,158,11,0.3)'}`,
+                    boxShadow: `0 24px 60px ${isUrgent ? 'rgba(220,38,38,0.3)' : 'rgba(245,158,11,0.2)'}`
+                }}>
+                    {/* Animated icon */}
+                    <div style={{
+                        width: 88, height: 88, borderRadius: '50%', margin: '0 auto 24px',
+                        background: isUrgent
+                            ? 'linear-gradient(135deg, #dc2626, #b91c1c)'
+                            : 'linear-gradient(135deg, #f59e0b, #d97706)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 44,
+                        boxShadow: `0 10px 40px ${isUrgent ? 'rgba(220,38,38,0.5)' : 'rgba(245,158,11,0.4)'}`,
+                        animation: isUrgent ? 'preBlockShake 0.6s ease-in-out infinite' : 'preBlockPulse 2s ease-in-out infinite'
+                    }}>
+                        {isUrgent ? '🚨' : '⏰'}
+                    </div>
+
+                    <h2 style={{
+                        fontSize: 26, fontWeight: 800, color: '#fff',
+                        margin: '0 0 8px', letterSpacing: '-0.5px'
+                    }}>
+                        {isUrgent ? '¡ENTREGA TU TURNO AHORA!' : 'Hora de Entregar el Turno'}
+                    </h2>
+
+                    <p style={{
+                        fontSize: 15, color: '#94a3b8', margin: '0 0 8px',
+                        lineHeight: 1.5, fontWeight: 500
+                    }}>
+                        Turno <strong style={{ color: '#fff' }}>{outgoingShift}</strong> finaliza en:
+                    </p>
+
+                    {/* Countdown */}
+                    <div style={{
+                        fontSize: 48, fontWeight: 900, letterSpacing: '-2px',
+                        color: isUrgent ? '#ef4444' : '#fbbf24',
+                        margin: '8px 0 24px',
+                        textShadow: `0 0 20px ${isUrgent ? 'rgba(239,68,68,0.5)' : 'rgba(251,191,36,0.4)'}`
+                    }}>
+                        {minutesToEnd || '?'} min
+                    </div>
+
+                    <p style={{
+                        fontSize: 13, color: '#64748b', margin: '0 0 28px',
+                        lineHeight: 1.6, fontWeight: 500
+                    }}>
+                        🔒 El sistema está bloqueado hasta que completes la entrega de turno.
+                        Todos los operarios deben firmar con su PIN personal.
+                    </p>
+
+                    {/* Main action button */}
+                    <button
+                        onClick={() => { window.location.href = '/shift-schedule'; }}
+                        style={{
+                            width: '100%', padding: '18px 24px', borderRadius: 16,
+                            background: isUrgent
+                                ? 'linear-gradient(135deg, #dc2626, #b91c1c)'
+                                : 'linear-gradient(135deg, #f59e0b, #d97706)',
+                            border: 'none', color: '#fff', cursor: 'pointer',
+                            fontWeight: 800, fontSize: 18, letterSpacing: '-0.3px',
+                            boxShadow: `0 8px 32px ${isUrgent ? 'rgba(220,38,38,0.5)' : 'rgba(245,158,11,0.4)'}`,
+                            transition: 'transform 0.2s, box-shadow 0.2s'
+                        }}
+                        onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)'; }}
+                        onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+                    >
+                        🔄 Ir a Entregar Turno
+                    </button>
+                </div>
+
+                <style>{`
+                    @keyframes preBlockPulse {
+                        0%, 100% { transform: scale(1); }
+                        50% { transform: scale(1.06); }
+                    }
+                    @keyframes preBlockShake {
+                        0%, 100% { transform: translateX(0) scale(1); }
+                        25% { transform: translateX(-3px) scale(1.02); }
+                        75% { transform: translateX(3px) scale(1.02); }
+                    }
+                `}</style>
+            </div>
+        );
+    }
 
     // ── If authenticated user is in: show handoff form + approval panel ──
     if (showEntregaMode && authenticatedUser) {

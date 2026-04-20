@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import ShiftHandoffForm from '../components/ShiftHandoffForm';
 import ShiftHandoffApproval from '../components/ShiftHandoffApproval';
+import ShiftHandoverTab from '../components/ShiftHandover/ShiftHandoverTab';
 
 // ── Shift definitions ────────────────────────────────────────────────────────
 const SHIFTS = {
@@ -32,6 +34,8 @@ const SHIFTS = {
 };
 
 const AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'];
+const MIGRATION_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'];
+const FIXED_AREAS = ['LOGISTICA', 'ASEO'];
 const AREA_LABELS = {
     PRODUCCION: 'Producción', SIROPES: 'Siropes', EMPAQUE: 'Empaque',
     LOGISTICA: 'Logística', ASEO: 'Servicios Generales'
@@ -100,10 +104,17 @@ function timeAgo(date) {
 }
 
 export default function ShiftSchedulePage() {
-    const [tab, setTab] = useState('schedule');
+    const { user } = useAuth();
+    const isAdmin = user?.role === 'ADMIN';
+    // Production roles go straight to handoff tab
+    const isProductionRole = ['PRODUCCION', 'OPERARIO_PICKING'].includes(user?.role);
+    const [tab, setTab] = useState(isProductionRole ? 'handover' : 'schedule');
     const [weekStart, setWeekStart] = useState(getMonday(new Date()).toISOString().split('T')[0]);
     const [week, setWeek] = useState(null);
     const [employees, setEmployees] = useState([]);
+    const [pendingUsers, setPendingUsers] = useState([]);
+    const [migrationRows, setMigrationRows] = useState({});
+    const [migrationLoading, setMigrationLoading] = useState(false);
     const [absences, setAbsences] = useState([]);
     const [absentMap, setAbsentMap] = useState({});
     const [partialAbsentMap, setPartialAbsentMap] = useState({});
@@ -144,6 +155,25 @@ export default function ShiftSchedulePage() {
         } catch (e) { console.error(e); }
     }, []);
 
+    const fetchPendingUsers = useCallback(async () => {
+        if (!isAdmin) return;
+        try {
+            const res = await api.get('/shifts/employees/pending-users');
+            const users = res.data.users || [];
+            setPendingUsers(users);
+            setMigrationRows(Object.fromEntries(users.map(u => [
+                u.id,
+                {
+                    selected: false,
+                    area: u.suggestedArea || 'PRODUCCION',
+                    role: u.suggestedRole || 'OPERARIO',
+                    groupNumber: '',
+                    isFixed: Boolean(u.suggestedIsFixed)
+                }
+            ])));
+        } catch (e) { console.error(e); }
+    }, [isAdmin]);
+
     const fetchAbsences = useCallback(async () => {
         try {
             const month = weekStart.substring(0, 7);
@@ -162,7 +192,7 @@ export default function ShiftSchedulePage() {
         setHandoffLoading(false);
     }, []);
 
-    useEffect(() => { fetchWeek(); fetchEmployees(); fetchAbsences(); fetchHandoffs(); }, [fetchWeek, fetchEmployees, fetchAbsences, fetchHandoffs]);
+    useEffect(() => { fetchWeek(); fetchEmployees(); fetchPendingUsers(); fetchAbsences(); fetchHandoffs(); }, [fetchWeek, fetchEmployees, fetchPendingUsers, fetchAbsences, fetchHandoffs]);
 
     const handleApproveHandoff = async (handoffId, pin) => {
         try {
@@ -440,6 +470,45 @@ export default function ShiftSchedulePage() {
         } catch (err) { showMsg('❌ Error: ' + err.message); }
     };
 
+    const updateMigrationRow = (userId, patch) => {
+        setMigrationRows(prev => ({
+            ...prev,
+            [userId]: { ...(prev[userId] || {}), ...patch }
+        }));
+    };
+
+    const handleMigrateUsers = async () => {
+        const selected = pendingUsers
+            .filter(user => migrationRows[user.id]?.selected)
+            .map(user => ({
+                userId: user.id,
+                area: migrationRows[user.id]?.area || user.suggestedArea || 'PRODUCCION',
+                role: migrationRows[user.id]?.role || 'OPERARIO',
+                groupNumber: migrationRows[user.id]?.groupNumber || null,
+                isFixed: Boolean(migrationRows[user.id]?.isFixed)
+            }));
+
+        if (selected.length === 0) {
+            showMsg('❌ Selecciona al menos un usuario para migrar');
+            return;
+        }
+
+        setMigrationLoading(true);
+        try {
+            const res = await api.post('/shifts/employees/migrate-users', { users: selected });
+            const created = res.data.created?.length || 0;
+            const skipped = res.data.skipped?.length || 0;
+            const errors = res.data.errors?.length || 0;
+            showMsg(`✅ ${created} usuario(s) migrado(s) al cuadro${skipped ? ` · ${skipped} ya vinculados` : ''}${errors ? ` · ${errors} con alerta` : ''}`);
+            fetchEmployees();
+            fetchPendingUsers();
+            fetchWeek();
+        } catch (err) {
+            showMsg('❌ ' + (err.response?.data?.error || err.message));
+        }
+        setMigrationLoading(false);
+    };
+
     // ── Build grid ───────────────────────────────────────────────────────────
     const getGrid = () => {
         if (!week?.assignments) return {};
@@ -485,10 +554,13 @@ export default function ShiftSchedulePage() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
                 <div>
                     <h1 style={{ fontSize: 28, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.5px' }}>
-                        📋 Cuadro de Turnos
+                        {isAdmin ? '📋 Cuadro de Turnos' : '🔄 Entrega de Turno'}
                     </h1>
                     <p style={{ fontSize: 15, color: '#64748b', margin: '4px 0 0', fontWeight: 500 }}>
-                        Gestión de rotación semanal — Popping Boba International
+                        {isAdmin
+                            ? 'Gestión de rotación semanal — Popping Boba International'
+                            : 'Valida y entrega tu turno con PIN de seguridad'
+                        }
                     </p>
                 </div>
                 {msg && (
@@ -505,7 +577,11 @@ export default function ShiftSchedulePage() {
 
             {/* ── Tabs ────────────────────────────────────────────────────────── */}
             <div style={{ display: 'flex', gap: 4, marginBottom: 24, background: '#f1f5f9', borderRadius: 12, padding: 4 }}>
-                {[['schedule', '📅 Cuadro Semanal'], ['handoffs', '🔄 Entregas'], ['absences', '🤒 Ausencias'], ['employees', '👥 Empleados']].map(([key, label]) => (
+                {(
+                    isAdmin
+                        ? [['schedule', '📅 Cuadro Semanal'], ['handover', '🔄 Relevo'], ['handoffs', '📝 Entregas (Legacy)'], ['absences', '🤒 Ausencias'], ['employees', '👥 Empleados']]
+                        : [['handover', '🔄 Relevo de Turno'], ['handoffs', '📝 Entrega (Legacy)']]
+                ).map(([key, label]) => (
                     <button key={key} onClick={() => setTab(key)} style={{
                         flex: 1, padding: '12px 20px', border: 'none', borderRadius: 10,
                         background: tab === key ? '#fff' : 'transparent',
@@ -867,11 +943,14 @@ export default function ShiftSchedulePage() {
                             <input placeholder="Nombre completo" value={empForm.name} onChange={e => setEmpForm({ ...empForm, name: e.target.value })} required style={inputStyle} />
                             <div>
                                 <label style={labelStyle}>Línea / Área de trabajo</label>
-                                <select value={empForm.area} onChange={e => setEmpForm({ ...empForm, area: e.target.value })} style={inputStyle}>
+                                <select value={empForm.area} onChange={e => {
+                                    const nextArea = e.target.value;
+                                    setEmpForm({ ...empForm, area: nextArea, isFixed: FIXED_AREAS.includes(nextArea) ? true : empForm.isFixed });
+                                }} style={inputStyle}>
                                     {AREAS.map(a => <option key={a} value={a}>{AREA_ICONS[a]} {AREA_LABELS[a]}</option>)}
                                 </select>
                                 <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-                                    ⚙️ Producción = Línea de Perlas  •  🧪 Siropes = Línea de Siropes
+                                    Producción, Siropes y Empaque rotan. Logística y Servicios Generales quedan fijos 8:00 a 17:00.
                                 </div>
                             </div>
                             <select value={empForm.role} onChange={e => setEmpForm({ ...empForm, role: e.target.value })} style={inputStyle}>
@@ -879,7 +958,8 @@ export default function ShiftSchedulePage() {
                                 <option value="LIDER">Líder</option>
                             </select>
                             <input placeholder="# Grupo (1, 2 o 3)" type="number" min="1" max="3" value={empForm.groupNumber}
-                                onChange={e => setEmpForm({ ...empForm, groupNumber: e.target.value })} style={inputStyle} />
+                                disabled={empForm.isFixed}
+                                onChange={e => setEmpForm({ ...empForm, groupNumber: e.target.value })} style={{ ...inputStyle, opacity: empForm.isFixed ? 0.6 : 1 }} />
                             <input placeholder="WhatsApp (ej: 573001234567)" value={empForm.whatsapp}
                                 onChange={e => setEmpForm({ ...empForm, whatsapp: e.target.value })} style={inputStyle} />
                             <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 15, color: '#334155', cursor: 'pointer' }}>
@@ -919,6 +999,132 @@ export default function ShiftSchedulePage() {
                     </div>
 
                     <div style={cardStyle}>
+                        {pendingUsers.length > 0 && (
+                            <div style={{
+                                marginBottom: 18,
+                                padding: 14,
+                                border: '1px solid #bfdbfe',
+                                borderRadius: 10,
+                                background: '#eff6ff'
+                            }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
+                                    <div>
+                                        <div style={{ fontSize: 15, fontWeight: 800, color: '#1e3a8a' }}>
+                                            Migrar usuarios ERP al cuadro de turnos
+                                        </div>
+                                        <div style={{ fontSize: 12, color: '#475569', marginTop: 3, lineHeight: 1.4 }}>
+                                            Producción, Siropes y Empaque rotan por grupos. Logística y Servicios Generales quedan fijos 8:00 a 17:00.
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setMigrationRows(prev => Object.fromEntries(
+                                                pendingUsers.map(u => [u.id, { ...(prev[u.id] || {}), selected: true }])
+                                            ))}
+                                            style={{ ...actionBtnStyle, background: '#64748b', padding: '8px 10px', fontSize: 12 }}
+                                        >
+                                            Todos
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setMigrationRows(prev => Object.fromEntries(
+                                                pendingUsers.map(u => [u.id, { ...(prev[u.id] || {}), selected: false }])
+                                            ))}
+                                            style={{ ...actionBtnStyle, background: '#94a3b8', padding: '8px 10px', fontSize: 12 }}
+                                        >
+                                            Ninguno
+                                        </button>
+                                        <button
+                                            onClick={handleMigrateUsers}
+                                            disabled={migrationLoading}
+                                            style={{
+                                                ...actionBtnStyle,
+                                                background: migrationLoading ? '#94a3b8' : '#2563eb',
+                                                padding: '9px 14px',
+                                                fontSize: 13,
+                                                whiteSpace: 'nowrap'
+                                            }}
+                                        >
+                                            {migrationLoading ? 'Migrando...' : 'Migrar seleccionados'}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
+                                    {pendingUsers.map(user => {
+                                        const row = migrationRows[user.id] || {};
+                                        return (
+                                            <div key={user.id} style={{
+                                                display: 'grid',
+                                                gridTemplateColumns: '24px 1.4fr 135px 115px 90px 76px',
+                                                gap: 8,
+                                                alignItems: 'center',
+                                                padding: '8px 10px',
+                                                borderRadius: 8,
+                                                background: '#fff',
+                                                border: '1px solid #dbeafe'
+                                            }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={row.selected === true}
+                                                    onChange={e => updateMigrationRow(user.id, { selected: e.target.checked })}
+                                                    style={{ width: 16, height: 16 }}
+                                                />
+                                                <div style={{ minWidth: 0 }}>
+                                                    <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {user.name}
+                                                    </div>
+                                                    <div style={{ fontSize: 11, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {user.email} · {user.role}
+                                                    </div>
+                                                </div>
+                                                <select
+                                                    value={row.area || user.suggestedArea || 'PRODUCCION'}
+                                                    onChange={e => {
+                                                        const nextArea = e.target.value;
+                                                        updateMigrationRow(user.id, {
+                                                            area: nextArea,
+                                                            isFixed: FIXED_AREAS.includes(nextArea),
+                                                            groupNumber: FIXED_AREAS.includes(nextArea) ? '' : row.groupNumber
+                                                        });
+                                                    }}
+                                                    style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }}
+                                                >
+                                                    {MIGRATION_AREAS.map(area => (
+                                                        <option key={area} value={area}>{AREA_LABELS[area]}</option>
+                                                    ))}
+                                                </select>
+                                                <select value={row.role || 'OPERARIO'} onChange={e => updateMigrationRow(user.id, { role: e.target.value })} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }}>
+                                                    <option value="OPERARIO">Operario</option>
+                                                    <option value="LIDER">Líder</option>
+                                                </select>
+                                                <input
+                                                    placeholder="Grupo"
+                                                    type="number"
+                                                    min="1"
+                                                    max="3"
+                                                    disabled={row.isFixed}
+                                                    value={row.groupNumber || ''}
+                                                    onChange={e => updateMigrationRow(user.id, { groupNumber: e.target.value })}
+                                                    style={{ ...inputStyle, padding: '7px 8px', fontSize: 12, opacity: row.isFixed ? 0.6 : 1 }}
+                                                />
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: '#475569' }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={Boolean(row.isFixed)}
+                                                        onChange={e => updateMigrationRow(user.id, {
+                                                            isFixed: e.target.checked,
+                                                            groupNumber: e.target.checked ? '' : row.groupNumber
+                                                        })}
+                                                    />
+                                                    Fijo
+                                                </label>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
                         <h3 style={cardTitleStyle}>👥 Equipo de Producción ({employees.length})</h3>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                             <thead>
@@ -1014,7 +1220,12 @@ export default function ShiftSchedulePage() {
                 </div>
             )}
 
-            {/* ═══════ TAB 4: HANDOFFS (Entregas de Turno) ═══════════════════════ */}
+            {/* ═══════ TAB: HANDOVER (Relevo de Turno) ═══════════════════════════ */}
+            {tab === 'handover' && (
+                <ShiftHandoverTab />
+            )}
+
+            {/* ═══════ TAB 4: HANDOFFS (Entregas de Turno - Legacy) ═════════════ */}
             {tab === 'handoffs' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                     {/* Status summary */}

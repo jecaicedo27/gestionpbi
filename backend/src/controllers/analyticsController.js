@@ -139,7 +139,7 @@ exports.getRoleDashboardKpis = async (req, res) => {
         } else if (role === 'LOGISTICA') {
             // LOGISTICA KPIs
             const pendientesAlistar = await prisma.order.count({
-                where: { status: { in: ['PENDING', 'PROCESSING'] } }
+                where: { status: { in: ['PENDING', 'IN_PICKING'] } }
             });
             
             // Actas de Entrega sin firmar
@@ -152,7 +152,7 @@ exports.getRoleDashboardKpis = async (req, res) => {
             });
 
             const ordenesDespachadas = await prisma.order.count({
-                 where: { status: 'COMPLETED', updatedAt: { gte: today } }
+                 where: { status: 'DELIVERED', updatedAt: { gte: today } }
             });
 
             data = {

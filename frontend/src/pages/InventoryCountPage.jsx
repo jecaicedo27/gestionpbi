@@ -517,22 +517,65 @@ export default function InventoryCountPage() {
     // ── Handle Scanner Input ──────────────────────────────────────────────────
     const handleScannerInput = useCallback(async (rawValue) => {
         if (!rawValue || rawValue.length < 4) return;
-        const scan = parseScanInput(rawValue);
-        
-        let productMatch = systemProducts.find(p => p.sku === scan.sku || p.barcode === scan.barcode || p.sku === scan.barcode);
+        let scan = parseScanInput(rawValue);
+        let packageLabel = null;
+
+        if (scan.packageId && activeSession?.id) {
+            try {
+                const { data } = await api.post('/inventory/package-labels/validate-scan', {
+                    packageCode: scan.packageId,
+                    processType: 'INVENTORY_COUNT',
+                    processId: activeSession.id,
+                    rawPayload: rawValue
+                });
+
+                packageLabel = data.packageLabel || null;
+                if (packageLabel) {
+                    scan = {
+                        ...scan,
+                        sku: packageLabel.sku || scan.sku,
+                        barcode: packageLabel.barcode || scan.barcode,
+                        lotNumber: packageLabel.lotNumber || scan.lotNumber,
+                        unitsPerBox: packageLabel.quantity || scan.unitsPerBox,
+                        quantity: packageLabel.quantity || scan.quantity,
+                        expirationDate: packageLabel.expiresAt || scan.expirationDate,
+                        receivedAt: packageLabel.receivedAt || scan.receivedAt,
+                    };
+                }
+            } catch (error) {
+                if (error.response?.status === 409) {
+                    playError();
+                    setLastScan({ status: 'error', message: `Rotulo ${scan.packageId} ya escaneado en esta sesion` });
+                    return;
+                }
+                playError();
+                setLastScan({ status: 'error', message: error.response?.data?.error || 'Rotulo no valido' });
+                return;
+            }
+        }
+
+        let productMatch = packageLabel?.productId
+            ? systemProducts.find(p => p.id === packageLabel.productId)
+            : systemProducts.find(p => p.sku === scan.sku || p.barcode === scan.barcode || p.sku === scan.barcode);
         if (!productMatch && scan.barcode) {
              productMatch = systemProducts.find(p => p.sku === scan.barcode);
         }
 
         if (!productMatch) {
             playError();
-            setLastScan({ status: 'error', message: `Producto no encontrado (${scan.barcode || scan.sku})` });
+            setLastScan({ status: 'error', message: `Producto no encontrado (${scan.packageId || scan.barcode || scan.sku})` });
             return;
         }
 
         let targetRow = null;
         let isProductOnly = false;
         let targetItem = null;
+
+        if (packageLabel?.materialLotId || packageLabel?.finishedLotStockId) {
+            const lotId = packageLabel.materialLotId || packageLabel.finishedLotStockId;
+            targetRow = allLotRows.find(r => r.isActive && r.lot.id === lotId);
+            if (targetRow) targetItem = targetRow.lot;
+        }
 
         if (scan.lotNumber) {
             // 1. Exact match: productId + lotNumber
@@ -565,7 +608,7 @@ export default function InventoryCountPage() {
                 }
             }
 
-            if (targetRow) targetItem = targetRow.lot;
+            if (targetRow && !targetItem) targetItem = targetRow.lot;
         }
 
         if (!targetItem) {
@@ -584,7 +627,7 @@ export default function InventoryCountPage() {
         }
 
         const key = isProductOnly ? `nolot-${targetItem.productId}` : targetItem.id;
-        const qtyToAdd = scan.unitsPerBox || 1;
+        const qtyToAdd = packageLabel?.quantity || scan.quantity || scan.unitsPerBox || 1;
 
         setInputMap(m => {
              const startVal = parseFloat(m[key]?.physicalGrams);
@@ -609,8 +652,13 @@ export default function InventoryCountPage() {
         }, 100);
 
         playSuccess();
-        setLastScan({ status: 'success', message: `+${qtyToAdd} ${productMatch.name}` });
-    }, [systemProducts, allLotRows, inputMap, saveLotCount]);
+        setLastScan({
+            status: 'success',
+            message: packageLabel
+                ? `${packageLabel.packageCode} -> +${qtyToAdd} ${productMatch.name}`
+                : `+${qtyToAdd} ${productMatch.name}`
+        });
+    }, [activeSession, systemProducts, allLotRows, inputMap, saveLotCount]);
 
     // Keep the ref in sync so useGlobalScanner always calls the latest version
     scanHandlerRef.current = handleScannerInput;

@@ -240,7 +240,31 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
             });
         }
 
-        // 4. Log transfer
+        // 4. Update productionZoneStock on Product when moving from/to PRODUCCION
+        if (fromZone === 'PRODUCCION' || toZone === 'PRODUCCION') {
+            const product = await tx.product.findUnique({
+                where: { id: productId },
+                select: { productionZoneStock: true },
+            });
+            const currentZone = product?.productionZoneStock || 0;
+
+            if (fromZone === 'PRODUCCION') {
+                const safeDec = Math.min(quantity, Math.max(0, currentZone));
+                if (safeDec > 0) {
+                    await tx.product.update({
+                        where: { id: productId },
+                        data: { productionZoneStock: { decrement: safeDec } },
+                    });
+                }
+            } else if (toZone === 'PRODUCCION') {
+                await tx.product.update({
+                    where: { id: productId },
+                    data: { productionZoneStock: { increment: quantity } },
+                });
+            }
+        }
+
+        // 5. Log transfer
         await tx.finishedLotTransfer.create({
             data: {
                 finishedLotStockId: isMaterialLot ? dest.id : source.id, // Use destination if source is MaterialLot (to avoid FK error)
@@ -266,18 +290,43 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
  * Only PRODUCTO_TERMINADO is valid for dispatch.
  */
 async function consumeForOrder({ productId, lotNumber, quantity, orderId, userId }) {
-    const zone = 'PRODUCTO_TERMINADO';
+    const ZONES_PRIORITY = ['PRODUCTO_TERMINADO', 'PRODUCCION'];
 
     return prisma.$transaction(async (tx) => {
-        const stock = await tx.finishedLotStock.findUnique({
-            where: {
-                productId_lotNumber_zone: { productId, lotNumber, zone },
-            },
-        });
+        let stock = null;
+
+        for (const zone of ZONES_PRIORITY) {
+            if (stock) break;
+
+            // 1. Exact match
+            stock = await tx.finishedLotStock.findUnique({
+                where: { productId_lotNumber_zone: { productId, lotNumber, zone } },
+            });
+            if (stock && stock.currentQuantity <= 0) stock = null;
+
+            // 2. Suffix match: QR "260413-0623", DB "BLUEBERRY-260413-0623"
+            if (!stock) {
+                const candidates = await tx.finishedLotStock.findMany({
+                    where: { productId, zone, lotNumber: { endsWith: lotNumber }, currentQuantity: { gt: 0 } },
+                });
+                stock = candidates.length === 1 ? candidates[0]
+                    : candidates.length > 1 ? candidates.sort((a, b) => b.currentQuantity - a.currentQuantity)[0]
+                    : null;
+            }
+
+            // 3. Reverse suffix: DB "260413-0623", scanned "BLUEBERRY-260413-0623"
+            if (!stock) {
+                const candidates = await tx.finishedLotStock.findMany({
+                    where: { productId, zone, currentQuantity: { gt: 0 } },
+                });
+                stock = candidates.find(c => lotNumber.endsWith(c.lotNumber)) || null;
+            }
+        }
 
         if (!stock || stock.currentQuantity < quantity) {
             const available = stock?.currentQuantity || 0;
-            throw new Error(`Stock insuficiente en PRODUCTO_TERMINADO para lote ${lotNumber}: disponible ${available}, solicitado ${quantity}`);
+            const foundZone = stock?.zone || 'NINGUNA';
+            throw new Error(`Stock insuficiente para lote ${lotNumber} (zona: ${foundZone}): disponible ${available}, solicitado ${quantity}`);
         }
 
         const newQty = stock.currentQuantity - quantity;
@@ -289,14 +338,14 @@ async function consumeForOrder({ productId, lotNumber, quantity, orderId, userId
             },
         });
 
-        // Log as transfer out (PRODUCTO_TERMINADO → dispatch/consumed)
+        // Log as transfer out (consumed for order)
         await tx.finishedLotTransfer.create({
             data: {
                 finishedLotStockId: stock.id,
                 productId,
-                lotNumber,
-                fromZone: zone,
-                toZone: zone, // stays in PT but consumed
+                lotNumber: stock.lotNumber,
+                fromZone: stock.zone,
+                toZone: stock.zone,
                 quantity,
                 reason: 'Despacho por picking',
                 orderId: orderId || null,
@@ -335,11 +384,13 @@ async function getStockByZone(zone, productId) {
         orderBy: [{ product: { name: 'asc' } }, { lotNumber: 'asc' }],
     });
 
-    // Also fetch from MaterialLot
-    let matZone = zone;
-    if (zone === 'PRODUCCION') matZone = 'PRODUCTION';
-    if (zone === 'BODEGA') matZone = 'WAREHOUSE';
+    // Also fetch from MaterialLot (only for zones that exist in MaterialLot)
+    const MAT_ZONE_MAP = { PRODUCCION: 'PRODUCTION', BODEGA: 'WAREHOUSE' };
+    const matZone = MAT_ZONE_MAP[zone];
 
+    // Skip MaterialLot query for zones that don't exist there (PUBLICIDAD, CUARENTENA, MAQUILA, etc.)
+    const matLots = [];
+    if (matZone) {
     const matWhere = {
         zone: matZone,
         currentQuantity: { gt: 0 },
@@ -350,13 +401,15 @@ async function getStockByZone(zone, productId) {
     };
     if (productId) matWhere.productId = productId;
 
-    const matLots = await prisma.materialLot.findMany({
+    const fetched = await prisma.materialLot.findMany({
         where: matWhere,
         include: {
             product: { select: { id: true, name: true, sku: true, barcode: true, flavor: true, size: true, packSize: true, currentStock: true } }
         },
         orderBy: [{ siigoProductName: 'asc' }, { lotNumber: 'asc' }]
     });
+    matLots.push(...fetched);
+    }
 
     const mappedMat = matLots.map(l => ({
         id: l.id,
@@ -454,7 +507,7 @@ async function getAvailableLots(productId) {
  * Get stock summary per zone (for dashboard).
  */
 async function getStockSummary() {
-    const zones = ['PRODUCCION', 'PRODUCTO_TERMINADO', 'NO_CONFORME', 'CUARENTENA', 'MAQUILA'];
+    const zones = ['PRODUCCION', 'PRODUCTO_TERMINADO', 'NO_CONFORME', 'CUARENTENA', 'MAQUILA', 'PUBLICIDAD'];
     const result = {};
 
     for (const zone of zones) {
@@ -538,10 +591,29 @@ async function getStockSummary() {
         bodegaByProduct[key].totalUnits += l.currentQuantity;
         bodegaByProduct[key].lotCount += 1;
     }
+    // Also include FinishedLotStock entries in BODEGA zone (from zone transfers)
+    const flsBodega = await prisma.finishedLotStock.findMany({
+        where: { zone: 'BODEGA', currentQuantity: { gt: 0 } },
+        include: { product: { select: { id: true, name: true, sku: true } } },
+    });
+    for (const f of flsBodega) {
+        const key = f.productId;
+        if (!bodegaByProduct[key]) {
+            bodegaByProduct[key] = {
+                productId: f.productId,
+                productName: f.product?.name,
+                sku: f.product?.sku,
+                totalUnits: 0,
+                lotCount: 0,
+            };
+        }
+        bodegaByProduct[key].totalUnits += f.currentQuantity;
+        bodegaByProduct[key].lotCount += 1;
+    }
     result.BODEGA = {
         products: Object.values(bodegaByProduct),
-        totalLots: bodegaLots.length,
-        totalUnits: bodegaLots.reduce((sum, l) => sum + l.currentQuantity, 0),
+        totalLots: bodegaLots.length + flsBodega.length,
+        totalUnits: bodegaLots.reduce((sum, l) => sum + l.currentQuantity, 0) + flsBodega.reduce((sum, f) => sum + f.currentQuantity, 0),
     };
 
     return result;

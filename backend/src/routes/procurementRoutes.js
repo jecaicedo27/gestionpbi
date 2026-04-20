@@ -45,6 +45,7 @@ router.get('/purchase-orders', auth, purchaseOrderController.list);
 router.get('/purchase-orders/:id', auth, purchaseOrderController.getById);
 router.get('/purchase-orders/:id/pdf', auth, generatePDF);
 router.post('/purchase-orders', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.create);
+router.put('/purchase-orders/:id', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.update);
 router.put('/purchase-orders/:id/approve', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.approve);
 router.put('/purchase-orders/:id/send', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.markSent);
 router.put('/purchase-orders/:id/send-to-cartera', auth, roles('ADMIN', 'PRODUCCION', 'QUIMICO'), purchaseOrderController.sendToCartera);

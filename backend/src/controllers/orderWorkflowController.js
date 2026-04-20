@@ -308,6 +308,75 @@ exports.scanItem = async (req, res) => {
             });
         }
 
+        // ── LOT VALIDATION: lot must exist in FinishedLotStock for this product ──
+        const scannedLot = (qrData.lotNumber || qrData.lot || '').trim();
+        if (!scannedLot) {
+            return res.status(400).json({
+                success: false,
+                error: 'Se requiere número de lote para registrar el escaneo'
+            });
+        }
+        let lotExists = await prisma.finishedLotStock.findFirst({
+            where: {
+                productId: targetItem.productId,
+                lotNumber: scannedLot,
+                currentQuantity: { gt: 0 }
+            },
+            select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+        });
+        // Fallback: strip flavor prefix (e.g. "MARACUYA-260331-0722" → "260331-0722")
+        if (!lotExists) {
+            const strippedLot = scannedLot.replace(/^[A-Z-]+?(\d{6}-\d+)$/i, '$1');
+            if (strippedLot !== scannedLot) {
+                lotExists = await prisma.finishedLotStock.findFirst({
+                    where: { productId: targetItem.productId, lotNumber: strippedLot, currentQuantity: { gt: 0 } },
+                    select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+                });
+                if (lotExists) {
+                    qrData.lotNumber = strippedLot;
+                }
+            }
+        }
+        // Fallback: try with flavor prefix if lot was stored with it
+        if (!lotExists) {
+            lotExists = await prisma.finishedLotStock.findFirst({
+                where: { productId: targetItem.productId, lotNumber: { endsWith: scannedLot }, currentQuantity: { gt: 0 } },
+                select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+            });
+            if (lotExists) {
+                qrData.lotNumber = lotExists.lotNumber;
+            }
+        }
+        if (!lotExists) {
+            console.warn(`[SCAN BLOCKED] Lot not found: "${scannedLot}" for product ${targetProduct?.sku} (${targetProduct?.name})`);
+            return res.status(400).json({
+                success: false,
+                error: `Lote "${scannedLot}" no existe para ${targetProduct?.name || targetProduct?.sku}. Verifica el número de lote.`
+            });
+        }
+
+        // Zone validation: lot must be in PRODUCTO_TERMINADO for picking
+        if (lotExists.zone !== 'PRODUCTO_TERMINADO') {
+            const ptStock = await prisma.finishedLotStock.findFirst({
+                where: { productId: targetItem.productId, zone: 'PRODUCTO_TERMINADO', currentQuantity: { gt: 0 } },
+                select: { currentQuantity: true }
+            });
+            const prodStock = await prisma.finishedLotStock.aggregate({
+                where: { productId: targetItem.productId, zone: 'PRODUCCION', currentQuantity: { gt: 0 } },
+                _sum: { currentQuantity: true }
+            });
+            const prodQty = prodStock._sum.currentQuantity || 0;
+            console.warn(`[SCAN BLOCKED] Lot "${scannedLot}" is in ${lotExists.zone}, not PRODUCTO_TERMINADO. Product: ${targetProduct?.sku}`);
+            return res.status(400).json({
+                success: false,
+                zoneWarning: true,
+                lotZone: lotExists.zone,
+                produccionStock: prodQty,
+                ptStock: ptStock?.currentQuantity || 0,
+                error: `No hay stock en PRODUCTO TERMINADO. Hay ${prodQty} und en PRODUCCIÓN. Transfiere el lote antes de pickear.`
+            });
+        }
+
         // Create picking item record
         await prisma.orderPickingItem.create({
             data: {
@@ -873,17 +942,6 @@ exports.unscanItem = async (req, res) => {
 
         // Delete the picking record
         await prisma.orderPickingItem.delete({ where: { id: pickingItemId } });
-
-        // Recalculate allocatedQty for the parent order item
-        const remainingPicks = await prisma.orderPickingItem.findMany({
-            where: { orderItemId: pickingItem.orderItemId }
-        });
-        const newScannedTotal = remainingPicks.reduce((s, pi) => s + pi.scannedQty, 0);
-
-        await prisma.orderItem.update({
-            where: { id: pickingItem.orderItemId },
-            data: { allocatedQty: newScannedTotal }
-        });
 
         // Recalculate order picking progress
         const order = await prisma.order.findUnique({

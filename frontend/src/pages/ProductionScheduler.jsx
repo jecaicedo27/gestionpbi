@@ -93,7 +93,11 @@ const ProductionScheduler = ({ readOnly = false }) => {
             const flavorKey = (flavor || title || '').toUpperCase().replace('SABOR A ', '').trim(); // e.g. "MANGO BICHE"
 
             // Each line has its own BATCH template
-            const batchTemplateCode = activeLine === 'geniality' ? 'BATCH-GENIALITY' : 'BATCH-LIQUIPOPS';
+            // ESCARCHADOR has its own umbrella template (no saborización step)
+            const isEscarchador = flavorKey.includes('ESCARCHADOR');
+            const batchTemplateCode = activeLine === 'geniality'
+                ? (isEscarchador ? 'BATCH-ESCARCHADOR' : 'BATCH-GENIALITY')
+                : 'BATCH-LIQUIPOPS';
             const batchTemplate = allTemplates.find(t => t.templateCode === batchTemplateCode);
 
             if (batchTemplate && flavorKey) {
@@ -354,6 +358,53 @@ const ProductionScheduler = ({ readOnly = false }) => {
             const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
             const DURATION = config.batchDuration || (activeLine === 'geniality' ? 160 : 140);
 
+            // === LIQUIPOPS: Use pre-calculated batch suggestions (skip scaling) ===
+            if (res.data.suggestedBatches && res.data.suggestedBatches.length > 0) {
+                const totalBatches = res.data.suggestedBatches.length;
+                const totalDuration = totalBatches * DURATION;
+                const calculatedEndDate = new Date(start.getTime() + totalDuration * 60000);
+
+                let demandData = {};
+                const sugBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+                try {
+                    const sugRes = await api.get(`${sugBase}/suggestions?line=${activeLine}`);
+                    const sug = (sugRes.data || []).find(s => s.flavor?.toUpperCase() === flavor.toUpperCase());
+                    if (sug) {
+                        demandData = {
+                            demandOrderDeficitUnits: sug.orderDeficitUnits || 0,
+                            demandBackorderKg: sug.totalBackorderKg || 0,
+                            demandInProgressKg: sug.inProgressKg || 0,
+                            demandCurrentStockKg: sug.currentStockKg || 0,
+                            demandEffectiveStockKg: sug.effectiveStockKg || 0,
+                            demandDaysRemaining: sug.daysRemaining || 0,
+                            demandStockDetails: sug.stockDetails || [],
+                        };
+                    }
+                } catch (e) { console.warn('Could not fetch suggestions for demand', e); }
+                try {
+                    const demandRes = await api.get(`${sugBase}/demand?flavor=${encodeURIComponent(flavor)}&line=${activeLine}`);
+                    const demand = demandRes.data || {};
+                    demandData = { ...demandData, demandDistributors: demand.distributors || [], demandSizeTotals: demand.sizeTotals || {}, demandSafetyStock: demand.safetyStock || [] };
+                } catch (e) { console.warn('Could not fetch demand details', e); }
+
+                const scheduledPendingKg = events
+                    .filter(e => e.flavor && e.flavor.toUpperCase() === flavor.toUpperCase() && e.status === 'PENDING')
+                    .reduce((acc, e) => acc + (e.baseWeight || 0), 0);
+
+                setModalData({
+                    ...res.data,
+                    suggestedBatches: res.data.suggestedBatches,
+                    scheduledStart: start,
+                    scheduledEnd: calculatedEndDate,
+                    baseWeight: totalBatches * BATCH_SIZE,
+                    targetBatchCount: totalBatches,
+                    readOnly: false,
+                    ...demandData,
+                    demandScheduledPendingKg: scheduledPendingKg,
+                });
+                return;
+            }
+
             // For Geniality: calculate how many lots are needed (capped at 7, large kettle)
             // For Liquipops: always 1 batch at a time
             const totalSyrupKg = res.data.totalSyrupKg || res.data.totalPlannedKg || 0;
@@ -605,12 +656,25 @@ const ProductionScheduler = ({ readOnly = false }) => {
             }
 
             // ═══════════════════════════════════════════════════════
-            // LIQUIPOPS: N separate batches (small kettle, 1 lot each)
+            // LIQUIPOPS: Batch creation
             // ═══════════════════════════════════════════════════════
             const eventsToAdd = [];
             let currentStartDate = new Date(modalData.scheduledStart);
 
-            for (let i = 0; i < numBatches; i++) {
+            // Use suggestedBatches if available (labeling-optimized batches)
+            const batchPlan = modalData.suggestedBatches && modalData.suggestedBatches.length > 0
+                ? modalData.suggestedBatches.map((b, i) => ({ mix: b.mix, label: b.label, index: i + 1, total: modalData.suggestedBatches.length }))
+                : Array.from({ length: numBatches }, (_, i) => {
+                    const ratio = 1 / numBatches;
+                    return {
+                        mix: modalData.mix.map(item => ({ ...item, plannedUnits: Math.round(item.plannedUnits * ratio), plannedWeightKg: item.plannedWeightKg ? (item.plannedWeightKg * ratio) : 0 })),
+                        label: '',
+                        index: i + 1,
+                        total: numBatches
+                    };
+                });
+
+            for (const batch of batchPlan) {
                 let currentEndDate = new Date(currentStartDate.getTime() + DURATION * 60000);
 
                 // Collision Detection & Auto-Resolution
@@ -632,31 +696,25 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     continue;
                 }
 
-                const ratio = 1 / numBatches;
-                const scaledMix = modalData.mix.map(item => ({
-                    ...item,
-                    plannedUnits: Math.round(item.plannedUnits * ratio),
-                    plannedWeightKg: item.plannedWeightKg ? (item.plannedWeightKg * ratio) : 0
-                }));
-
                 const liqBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
                 const res = await api.post(`${liqBase}/schedule`, {
                     flavor: modalData.flavor,
                     scheduledStart: currentStartDate,
                     scheduledEnd: currentEndDate,
                     baseWeight: BATCH_SIZE,
-                    mix: scaledMix,
-                    batchIndex: i + 1,
-                    totalBatches: numBatches
+                    mix: batch.mix,
+                    batchIndex: batch.index,
+                    totalBatches: batch.total
                 });
 
+                const batchLabel = batch.label ? ` ${batch.label}` : '';
                 eventsToAdd.push({
                     id: res.data.id,
-                    title: `${modalData.flavor} [${i + 1}/${numBatches}] (${BATCH_SIZE}kg)`,
+                    title: `${modalData.flavor} [${batch.index}/${batch.total}]${batchLabel} (${BATCH_SIZE}kg)`,
                     start: new Date(currentStartDate),
                     end: new Date(currentEndDate),
                     flavor: modalData.flavor,
-                    mix: scaledMix,
+                    mix: batch.mix,
                     status: 'PENDING',
                     baseWeight: BATCH_SIZE
                 });
@@ -1071,7 +1129,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                     <th className="text-center py-0.5 font-semibold">Stock</th>
                                                     <th className="text-center py-0.5 font-semibold text-blue-600">Prog.</th>
                                                     <th className="text-center py-0.5 font-semibold">Pedidos</th>
-                                                    <th className="text-right py-0.5 font-semibold">Estado</th>
+                                                    <th className="text-center py-0.5 font-semibold">Estado</th>
+                                                    <th className="text-right py-0.5 font-semibold">Seg.</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -1079,6 +1138,9 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                     const effective = d.units + (d.scheduledUnits || 0);
                                                     const pending = d.deficitUnits || 0;
                                                     const covered = effective >= pending;
+                                                    const safetyRemaining = effective - pending;
+                                                    const vel = d.dailyVelocity || 0;
+                                                    const safetyDays = vel > 0 ? Math.round((safetyRemaining / vel) * 10) / 10 : (safetyRemaining > 0 ? 999 : 0);
                                                     return (
                                                         <tr key={i} className="border-t border-gray-100">
                                                             <td className="py-0.5 font-bold text-gray-700">{d.label}</td>
@@ -1089,12 +1151,20 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                             <td className={`text-center py-0.5 font-bold ${pending > 0 ? 'text-orange-600' : 'text-gray-300'}`}>
                                                                 {pending > 0 ? pending : '-'}
                                                             </td>
-                                                            <td className="text-right py-0.5">
+                                                            <td className="text-center py-0.5">
                                                                 {covered ? (
                                                                     <span className="text-green-600 font-bold">✓</span>
                                                                 ) : (
                                                                     <span className="text-red-600 font-bold">-{pending - effective}</span>
                                                                 )}
+                                                            </td>
+                                                            <td className={`text-right py-0.5 ${safetyDays >= 7 ? 'text-green-600' : safetyDays >= 0 ? 'text-orange-500' : 'text-red-600'}`}>
+                                                                {vel > 0 ? (
+                                                                    <div className="leading-tight">
+                                                                        <div className="font-bold">{safetyRemaining}</div>
+                                                                        <div className="text-[8px]">{safetyDays}d</div>
+                                                                    </div>
+                                                                ) : '-'}
                                                             </td>
                                                         </tr>
                                                     );
@@ -1568,7 +1638,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                         {activeLine === 'geniality' ? 'Peso Total Marmita' : 'Jarabe Necesario'}
                                                     </div>
                                                     <div className="text-2xl font-bold text-blue-700">{Math.round(modalData.totalSyrupKg || modalData.totalPlannedKg)} Kg</div>
-                                                    {!modalData.readOnly && (
+                                                    {!modalData.readOnly && !modalData.suggestedBatches && (
                                                         <div className="flex items-center gap-2 mt-2">
                                                             <span className="text-xs text-blue-500 font-bold">
                                                                 {activeLine === 'geniality' ? 'Lotes en Marmita:' : 'Baches a Generar:'}
@@ -1642,6 +1712,13 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                             )}
                                                         </div>
                                                     )}
+                                                    {!modalData.readOnly && modalData.suggestedBatches && (
+                                                        <div className="flex items-center gap-2 mt-2">
+                                                            <span className="text-xs text-blue-500 font-bold">Baches Sugeridos:</span>
+                                                            <span className="text-sm font-bold text-blue-700">{modalData.suggestedBatches.length}</span>
+                                                            <span className="text-[10px] text-blue-400">(optimizado por rotulado)</span>
+                                                        </div>
+                                                    )}
                                                     {/* Geniality: Capacity bar */}
                                                     {activeLine === 'geniality' && !modalData.readOnly && (
                                                         <div className="mt-2">
@@ -1700,18 +1777,86 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                 </div>
                                             </div>
 
+                                            {modalData.suggestedBatches && modalData.suggestedBatches.length > 0 ? (
+                                                /* ═══ BATCH GROUPS VIEW (Liquipops labeling-optimized) ═══ */
+                                                <div>
+                                                    <h4 className="text-sm font-bold text-gray-700 mb-3">
+                                                        Plan de Baches por Rotulado
+                                                        <span className="ml-2 text-[10px] font-normal text-purple-500">📦 {modalData.suggestedBatches.length} baches · pack cerrado · 1 contramuestra/bache</span>
+                                                    </h4>
+                                                    {(() => {
+                                                        const BATCH_SIZE_DISPLAY = activeLine === 'geniality' ? 100 : 120;
+                                                        const groups = [];
+                                                        modalData.suggestedBatches.forEach(batch => {
+                                                            const key = batch.mix.map(m => `${m.productId}:${m.plannedUnits}`).join('|');
+                                                            const existing = groups.find(g => g.key === key);
+                                                            if (existing) { existing.count++; existing.indices.push(batch.batchIndex); }
+                                                            else groups.push({ key, batch, count: 1, indices: [batch.batchIndex] });
+                                                        });
+                                                        return groups.map((group, gi) => (
+                                                            <div key={gi} className="bg-gray-50 rounded-lg p-3 border border-gray-200 mb-3">
+                                                                <div className="flex items-center justify-between mb-2">
+                                                                    <div className="text-sm font-bold text-gray-700">
+                                                                        {group.count > 1
+                                                                            ? `Baches ${group.indices[0]}-${group.indices[group.indices.length - 1]}`
+                                                                            : `Bache ${group.indices[0]}`
+                                                                        }: {group.batch.label}
+                                                                    </div>
+                                                                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">
+                                                                        {group.count}&times; {BATCH_SIZE_DISPLAY}kg
+                                                                    </span>
+                                                                </div>
+                                                                <div className="space-y-1">
+                                                                    {group.batch.mix.map(item => (
+                                                                        <div key={item.productId} className="flex items-center justify-between py-1.5 px-2 bg-white rounded border border-gray-100">
+                                                                            <div>
+                                                                                <div className="text-sm font-medium text-gray-800">{item.sizeLabel}</div>
+                                                                                <div className="text-[10px] text-gray-500">{item.sku}</div>
+                                                                            </div>
+                                                                            <div className="text-right">
+                                                                                <div className="text-sm font-bold text-gray-800">{item.plannedUnits} uds</div>
+                                                                                {item.packSize > 1 && (
+                                                                                    <div className="text-[10px] text-purple-600">
+                                                                                        {item.boxes} cajas &times; {item.packSize}
+                                                                                        {item.contramuestra > 0 && <span className="text-emerald-600 ml-1">+ {item.contramuestra} CM</span>}
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        ));
+                                                    })()}
+                                                    {/* Totals summary */}
+                                                    <div className="bg-blue-50 rounded-lg p-3 border border-blue-100 mt-2">
+                                                        <div className="text-xs font-bold text-blue-700 uppercase mb-1">Totales</div>
+                                                        {(modalData.mix || []).map(item => (
+                                                            <div key={item.productId} className="flex justify-between text-sm text-blue-800 py-0.5">
+                                                                <span>{item.name}</span>
+                                                                <span className="font-bold">
+                                                                    {item.plannedUnits} uds
+                                                                    {item.packSize > 1 && ` (${item.boxes} cajas)`}
+                                                                    {item.contramuestra > 0 && ` + ${item.contramuestra} CM`}
+                                                                </span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                /* ═══ EXISTING SINGLE-MIX VIEW (Geniality / fallback) ═══ */
+                                                <>
                                             {/* Manufacturing Mix Bar */}
                                             <div>
-                                                <h4 className="text-sm font-bold text-gray-700 mb-2">Mix de Fabricación Sugerido</h4>
+                                                <h4 className="text-sm font-bold text-gray-700 mb-2">Mix de Fabricación Sugerido
+                                                    <span className="ml-2 text-[10px] font-normal text-purple-500">📦 Cantidades por pack cerrado</span>
+                                                </h4>
                                                 <div className="flex h-10 w-full rounded-lg overflow-hidden border border-gray-200 shadow-sm">
                                                     {modalData.mix.map((item, idx) => {
-                                                        // Robust Weight Calculation: Prefer calculated kg, fallback to Units * Factor
                                                         const getWeight = (m) => parseFloat(m.plannedWeightKg) || (parseFloat(m.plannedUnits || 0) * (parseFloat(m.kgFactor || parseFloat(m.sizeLabel)) || 0));
-
                                                         const totalWeight = modalData.mix.reduce((acc, m) => acc + getWeight(m), 0) || 1;
                                                         const itemWeight = getWeight(item);
                                                         const percentage = (itemWeight / totalWeight) * 100;
-                                                        // Colors
                                                         const colors = ['bg-blue-500', 'bg-pink-500', 'bg-purple-500', 'bg-yellow-500'];
                                                         return (
                                                             <div
@@ -1723,8 +1868,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                 {percentage > 5 && item.sizeLabel}
                                                             </div>
                                                         )
-                                                    })
-                                                    }
+                                                    })}
                                                 </div>
                                             </div>
 
@@ -1744,6 +1888,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                     {item.packSize > 1 && (
                                                                         <div className="text-xs mt-0.5" style={{ color: '#7c3aed' }}>
                                                                             📦 {item.boxes || Math.ceil(item.plannedUnits / item.packSize)} cajas × {item.packSize} uds
+                                                                            {item.contramuestra > 0 && <span className="ml-1 text-emerald-600">+ {item.contramuestra} contramuestra</span>}
                                                                             {item.orderDemandUnits > 0 && <span className="ml-2 text-orange-600">🔥 Pedidos: {item.orderDemandUnits}</span>}
                                                                         </div>
                                                                     )}
@@ -1751,38 +1896,32 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                 <div className="flex items-center gap-2">
                                                                     <input
                                                                         type="number"
+                                                                        step={item.packSize > 1 ? item.packSize : 1}
+                                                                        min={0}
                                                                         className={`w-20 p-2 text-right border rounded-md font-mono font-bold ${modalData.readOnly && modalData.status !== 'PENDING' ? 'bg-gray-100 text-gray-500' : 'bg-white text-gray-800 border-blue-200'}`}
                                                                         value={item.plannedUnits}
                                                                         onChange={(e) => {
-                                                                            const newUnits = parseInt(e.target.value) || 0;
+                                                                            const rawUnits = parseInt(e.target.value) || 0;
+                                                                            const ps = item.packSize || 1;
+                                                                            const newUnits = ps > 1 ? Math.round(rawUnits / ps) * ps : rawUnits;
                                                                             setModalData(prev => {
                                                                                 const updatedMix = prev.mix.map(m => {
                                                                                     if (m.productId === item.productId) {
-                                                                                        // Derive kgFactor: stored value > compute from weight/units > parse label
                                                                                         const factor = m.kgFactor
                                                                                             || (m.plannedUnits > 0 ? Math.round((m.plannedWeightKg / m.plannedUnits) * 1000) / 1000 : 0)
                                                                                             || parseFloat(m.sizeLabel) || 0;
-                                                                                        return {
-                                                                                            ...m,
-                                                                                            plannedUnits: newUnits,
-                                                                                            plannedWeightKg: Math.round(newUnits * factor * 100) / 100,
-                                                                                            kgFactor: factor // persist for future edits
-                                                                                        };
+                                                                                        return { ...m, plannedUnits: newUnits, plannedWeightKg: Math.round(newUnits * factor * 100) / 100, boxes: ps > 1 ? Math.floor(newUnits / ps) : null, kgFactor: factor };
                                                                                     }
                                                                                     return m;
                                                                                 });
-
                                                                                 const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                                const ratio = activeLine === 'geniality' ? 1.0 : (config.syrupRatio || 0.70);
-                                                                                const newTotalSyrupKg = newTotalPlannedKg * ratio;
-
-                                                                                return {
-                                                                                    ...prev,
-                                                                                    mix: updatedMix,
-                                                                                    totalPlannedKg: newTotalPlannedKg,
-                                                                                    totalSyrupKg: Math.round(newTotalSyrupKg),
-                                                                                    _edited: true
-                                                                                };
+                                                                                if (activeLine === 'geniality') {
+                                                                                    const currentLots = prev.targetBatchCount || ((prev.totalSyrupKg || 0) / 100) || 1;
+                                                                                    const targetSyrupKg = Math.round(currentLots * 100);
+                                                                                    return { ...prev, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: targetSyrupKg, baseWeight: targetSyrupKg, _edited: true };
+                                                                                }
+                                                                                const ratio = config.syrupRatio || 0.70;
+                                                                                return { ...prev, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: Math.round(newTotalPlannedKg * ratio), _edited: true };
                                                                             });
                                                                         }}
                                                                         disabled={modalData.readOnly && modalData.status !== 'PENDING'}
@@ -1801,6 +1940,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                     })}
                                                 </div>
                                             </div>
+                                                </>
+                                            )}
 
                                         </>
                                     )}

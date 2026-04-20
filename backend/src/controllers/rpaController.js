@@ -126,7 +126,7 @@ const createSiigoAssemblyNote = async (req, res) => {
  */
 const createSiigoAdjustment = async (req, res) => {
     try {
-        const { productName, productSku, quantity, accountCode, triggerSourceId } = req.body;
+        const { productName, productSku, quantity, accountCode, triggerSourceId, finishedLotStockId, lotNumber, productId } = req.body;
 
         if (!productName || !quantity) {
             return res.status(400).json({
@@ -143,6 +143,7 @@ const createSiigoAdjustment = async (req, res) => {
                 productName,
                 quantity: Number(quantity),
                 observations: `Ajuste contable: ${accountCode}`,
+                productId: productId || null,
                 triggeredById: req.user?.id || null
             }
         });
@@ -158,10 +159,13 @@ const createSiigoAdjustment = async (req, res) => {
 
         // Enqueue task
         const startTime = Date.now();
+        const userId = req.user?.id || null;
         const params = {
             productName: productSku || productName,
             quantity: Number(quantity),
-            accountCode: accountCode || '71050504'
+            accountCode: accountCode || '71050503',
+            triggeredBy: req.user?.name || req.user?.email || 'Sistema',
+            lotNumber: lotNumber || null
         };
 
         browserManager.enqueue({
@@ -184,6 +188,29 @@ const createSiigoAdjustment = async (req, res) => {
                     }
                 });
                 console.log(`🤖 RPA Ajuste [${execution.id}] ${result.success ? '✅' : '❌'} ${result.siigoNoteCode || 'sin doc'} (${(durationMs / 1000).toFixed(1)}s)`);
+
+                // Auto-transfer from NO_CONFORME → PUBLICIDAD after successful Siigo write-off
+                if (result.success && finishedLotStockId) {
+                    try {
+                        const lot = await prisma.finishedLotStock.findUnique({ where: { id: finishedLotStockId } });
+                        if (lot && lot.zone === 'NO_CONFORME' && lot.currentQuantity > 0) {
+                            const transferQty = Math.min(Number(quantity), lot.currentQuantity);
+                            const finishedLotService = require('../services/finishedLotService');
+                            await finishedLotService.transferZone({
+                                productId: lot.productId,
+                                lotNumber: lot.lotNumber,
+                                fromZone: 'NO_CONFORME',
+                                toZone: 'PUBLICIDAD',
+                                quantity: transferQty,
+                                userId,
+                                reason: `Baja Siigo completada (Doc: ${result.siigoNoteCode || 'N/A'}) — disponible para publicidad`,
+                            });
+                            console.log(`🎁 Auto-transfer: ${transferQty} uds de ${lot.lotNumber} NO_CONFORME → PUBLICIDAD`);
+                        }
+                    } catch (transferErr) {
+                        console.error(`⚠️ Auto-transfer a PUBLICIDAD falló para lote ${finishedLotStockId}:`, transferErr.message);
+                    }
+                }
             },
             reject: async (err) => {
                 const durationMs = Date.now() - startTime;
@@ -282,7 +309,7 @@ const retryExecution = async (req, res) => {
         const retrySku = prod?.sku || null;
 
         const isAdjustment = original.executionType === 'SIIGO_ADJUSTMENT';
-        let accountCode = '71050504';
+        let accountCode = '71050503';
         if (isAdjustment && original.observations) {
             const match = original.observations.match(/Ajuste contable:?\\s*(\\d+)/i);
             if (match) accountCode = match[1];

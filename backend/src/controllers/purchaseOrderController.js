@@ -164,6 +164,60 @@ exports.create = async (req, res) => {
 };
 
 /**
+ * PUT /procurement/purchase-orders/:id — Update order details (supplier, items, notes)
+ */
+exports.update = async (req, res) => {
+    try {
+        const order = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id }, include: { items: true } });
+        if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+
+        const { supplierId, supplierName, supplierNit, notes, expectedDate, items, paymentMethod, creditDueDate } = req.body;
+
+        const data = {};
+        if (supplierId !== undefined) data.supplierId = supplierId;
+        if (supplierName !== undefined) data.supplierName = supplierName;
+        if (supplierNit !== undefined) data.supplierNit = supplierNit || null;
+        if (notes !== undefined) data.notes = notes || null;
+        if (expectedDate !== undefined) data.expectedDate = expectedDate ? new Date(expectedDate) : null;
+        if (paymentMethod !== undefined) data.paymentMethod = paymentMethod.toUpperCase();
+
+        if (supplierId) {
+            const supplier = await prisma.supplier.findFirst({ where: { siigoId: supplierId } });
+            if (supplier) data.supplierDbId = supplier.id;
+        }
+
+        if (items && items.length > 0) {
+            await prisma.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: order.id } });
+            await prisma.purchaseOrderItem.createMany({
+                data: items.map(item => ({
+                    id: require('crypto').randomUUID(),
+                    purchaseOrderId: order.id,
+                    siigoProductCode: item.siigoProductCode,
+                    siigoProductName: item.siigoProductName,
+                    quantityOrdered: item.quantityOrdered,
+                    packagingQtyGrams: item.packagingQtyGrams || null,
+                    packagingDesc: item.packagingDesc || null,
+                    unitCost: item.unitCost || null,
+                    productId: item.productId || null,
+                }))
+            });
+        }
+
+        const updated = await prisma.purchaseOrder.update({
+            where: { id: req.params.id },
+            data,
+            include: { items: true }
+        });
+
+        logger.info(`✏️ OC ${order.orderNumber} editada por ${req.user.name}`);
+        res.json(updated);
+    } catch (error) {
+        logger.error('Error updating purchase order:', error.message);
+        res.status(500).json({ error: 'Error actualizando orden de compra' });
+    }
+};
+
+/**
  * PUT /procurement/purchase-orders/:id/approve
  */
 exports.approve = async (req, res) => {

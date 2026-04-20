@@ -148,8 +148,11 @@ const GlobalTimerAlert = () => {
             audioCtxRef.current.close().catch(() => {});
             audioCtxRef.current = null;
         }
-        if (vibRef.current) { clearInterval(vibRef.current); vibRef.current = null; }
-        if ('vibrate' in navigator) navigator.vibrate(0);
+        if (vibRef.current) { 
+            clearInterval(vibRef.current); 
+            vibRef.current = null; 
+            if ('vibrate' in navigator) navigator.vibrate(0);
+        }
     };
 
     const handleAck = (noteId) => {

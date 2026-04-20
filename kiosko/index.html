@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kiosko de Ingreso | PBI</title>
+    <meta name="description" content="Registro de ingreso y salida de planta PBI">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        /* ── Design System (mismo que controlingreso) ── */
+        :root {
+            --primary: #6366f1;
+            --primary-light: #818cf8;
+            --primary-dark: #4f46e5;
+            --primary-glow: rgba(99,102,241,0.3);
+            --secondary: #06b6d4;
+            --success: #10b981;
+            --success-light: #34d399;
+            --success-bg: rgba(16,185,129,0.1);
+            --warning: #f59e0b;
+            --warning-bg: rgba(245,158,11,0.1);
+            --danger: #ef4444;
+            --danger-bg: rgba(239,68,68,0.1);
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: #1e293b;
+            --bg-card-hover: #334155;
+            --bg-input: #0f172a;
+            --border-color: #334155;
+            --border-light: #475569;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --gradient-primary: linear-gradient(135deg,#6366f1,#8b5cf6);
+            --gradient-success: linear-gradient(135deg,#10b981,#06b6d4);
+            --gradient-danger: linear-gradient(135deg,#ef4444,#f97316);
+            --gradient-hero: linear-gradient(135deg,#0f172a 0%,#1e1b4b 50%,#0f172a 100%);
+            --radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-xl: 24px;
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+            --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+            --shadow-glow: 0 0 20px var(--primary-glow);
+        }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Inter',sans-serif;background:var(--bg-primary);color:var(--text-primary);min-height:100vh;background:var(--gradient-hero)}
+
+        /* ── Kiosko layout ── */
+        .kiosk-container{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;position:relative}
+        .kiosk-container::before{content:'';position:fixed;inset:0;background:radial-gradient(circle at 30% 20%,rgba(99,102,241,0.15),transparent 50%),radial-gradient(circle at 70% 80%,rgba(6,182,212,0.1),transparent 50%);pointer-events:none}
+        .kiosk-card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--radius-xl);padding:32px;width:100%;max-width:500px;box-shadow:var(--shadow-lg);position:relative;display:flex;flex-direction:column;gap:20px}
+
+        /* ── Header ── */
+        .kiosk-header{text-align:center}
+        .kiosk-header .logo{font-size:2.5rem;margin-bottom:8px}
+        .kiosk-header h1{font-size:1.5rem;font-weight:800;background:var(--gradient-primary);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+        .kiosk-header p{color:var(--text-secondary);font-size:0.85rem;margin-top:4px}
+
+        /* ── Clock ── */
+        .clock-display{background:rgba(15,23,42,0.6);border:1px solid var(--border-color);border-radius:var(--radius-md);padding:14px 20px;text-align:center}
+        .clock-time{font-size:2.2rem;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text-primary)}
+        .clock-date{font-size:0.8rem;color:var(--text-secondary);text-transform:capitalize;margin-top:2px}
+
+        /* ── Steps ── */
+        .steps-indicator{display:flex;justify-content:center;gap:8px;align-items:center}
+        .step-dot{width:8px;height:8px;border-radius:50%;background:var(--border-color);transition:all 0.3s}
+        .step-dot.active{width:24px;border-radius:4px;background:var(--gradient-primary)}
+        .step-dot.done{background:var(--success)}
+
+        /* ── Forms ── */
+        .form-group{display:flex;flex-direction:column;gap:8px}
+        .form-group label{font-size:0.85rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em}
+        .form-input{background:var(--bg-input);border:2px solid var(--border-color);border-radius:var(--radius-md);padding:14px 16px;color:var(--text-primary);font-size:1rem;font-family:inherit;width:100%;transition:border-color 0.2s,box-shadow 0.2s;outline:none}
+        .form-input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow)}
+        .form-input.large{font-size:1.4rem;padding:18px 20px;text-align:center;letter-spacing:4px;font-weight:700}
+
+        /* ── Numpad ── */
+        .numpad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px;background:rgba(30,41,59,0.6);border-radius:var(--radius-lg);border:1px solid rgba(99,102,241,0.15)}
+        .numpad-btn{padding:18px 8px;font-size:1.4rem;font-weight:700;border:1px solid rgba(99,102,241,0.2);border-radius:var(--radius-md);background:rgba(49,50,68,0.8);color:var(--text-primary);cursor:pointer;transition:all 0.15s;-webkit-tap-highlight-color:transparent;user-select:none}
+        .numpad-btn:active{background:rgba(99,102,241,0.4);transform:scale(0.95)}
+        .numpad-clear{background:rgba(239,68,68,0.15);color:#f87171;border-color:rgba(239,68,68,0.3)}
+        .numpad-clear:active{background:rgba(239,68,68,0.4)}
+        .numpad-delete{background:rgba(245,158,11,0.1);color:#fbbf24;border-color:rgba(245,158,11,0.2)}
+        .numpad-enter{background:rgba(16,185,129,0.2);color:#34d399;border-color:rgba(16,185,129,0.3);font-size:1rem;padding:14px 8px}
+        .numpad-enter:active{background:rgba(16,185,129,0.5)}
+
+        /* ── Buttons ── */
+        .btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 20px;border-radius:var(--radius-md);font-size:0.95rem;font-weight:600;font-family:inherit;cursor:pointer;border:none;transition:all 0.2s;-webkit-tap-highlight-color:transparent}
+        .btn-full{width:100%}
+        .btn-lg{padding:18px 20px;font-size:1.05rem}
+        .btn-primary{background:var(--gradient-primary);color:#fff;box-shadow:var(--shadow-glow)}
+        .btn-primary:hover{opacity:0.9;transform:translateY(-1px)}
+        .btn-success{background:var(--gradient-success);color:#fff}
+        .btn-warning{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff}
+        .btn-danger{background:var(--gradient-danger);color:#fff}
+        .btn-outline{background:transparent;border:1px solid var(--border-color);color:var(--text-secondary)}
+        .btn-outline:hover{border-color:var(--primary);color:var(--primary)}
+        .btn:active{transform:scale(0.98)}
+
+        /* ── Camera ── */
+        .camera-container{position:relative;border-radius:var(--radius-lg);overflow:hidden;background:#000;aspect-ratio:4/3;width:100%}
+        .camera-container video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+        .camera-container canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+        .camera-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+        .face-guide{width:180px;height:220px;border:3px solid rgba(99,102,241,0.7);border-radius:50%;box-shadow:0 0 0 2000px rgba(0,0,0,0.35)}
+        .camera-status{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);color:#fff;padding:6px 14px;border-radius:20px;font-size:0.8rem;white-space:nowrap;max-width:90%;text-align:center}
+        .liveness-challenge{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(99,102,241,0.85);color:#fff;padding:6px 14px;border-radius:20px;font-size:0.85rem;text-align:center}
+
+        /* ── Employee card ── */
+        .employee-card{display:flex;align-items:center;gap:16px;padding:16px;background:rgba(15,23,42,0.5);border:1px solid var(--border-color);border-radius:var(--radius-lg)}
+        .employee-avatar{width:64px;height:64px;border-radius:50%;object-fit:cover;border:2px solid var(--primary);flex-shrink:0;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;font-size:1.8rem}
+        .employee-avatar img{width:100%;height:100%;border-radius:50%;object-fit:cover}
+        .employee-info h3{font-size:1.1rem;font-weight:700;color:var(--text-primary)}
+        .employee-info p{font-size:0.8rem;color:var(--text-secondary);margin-top:2px}
+        .presence-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:600;margin-top:4px}
+        .presence-in{background:var(--success-bg);color:var(--success-light)}
+        .presence-out{background:var(--danger-bg);color:#f87171}
+        .presence-break{background:var(--warning-bg);color:#fbbf24}
+
+        /* ── Status box ── */
+        .status-box{padding:14px;border-radius:var(--radius-md);background:rgba(255,255,255,0.04);border:1px solid var(--border-color);text-align:center;font-size:0.95rem;line-height:1.5}
+
+        /* ── Modals ── */
+        .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px;backdrop-filter:blur(4px)}
+        .modal-content{background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--radius-xl);padding:32px;max-width:400px;width:100%;text-align:center;box-shadow:var(--shadow-lg)}
+        .modal-icon{width:64px;height:64px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2rem;margin:0 auto 16px}
+        .modal-icon.success{background:var(--success-bg);border:2px solid var(--success)}
+        .modal-icon.error{background:var(--danger-bg);border:2px solid var(--danger)}
+        .modal-icon.warning{background:var(--warning-bg);border:2px solid var(--warning)}
+        .modal-content h2{font-size:1.3rem;font-weight:700;margin-bottom:8px}
+        .modal-content p{color:var(--text-secondary);margin-bottom:16px}
+        .modal-info{text-align:left;background:rgba(15,23,42,0.5);border-radius:var(--radius-md);padding:12px;margin:12px 0}
+        .info-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border-color);font-size:0.85rem}
+        .info-row:last-child{border:none}
+        .info-label{color:var(--text-muted)}
+        .info-value{font-weight:600}
+
+        .hidden{display:none!important}
+
+        /* ── PIN mode ── */
+        .pin-dots{display:flex;gap:10px;justify-content:center;margin:8px 0}
+        .pin-dot{width:14px;height:14px;border-radius:50%;background:var(--border-color);transition:background 0.2s}
+        .pin-dot.filled{background:var(--primary)}
+
+        /* ── Mobile tablet fullscreen ── */
+        @media (max-width:1024px) and (pointer:coarse){
+            .kiosk-container{padding:0;background:#1e293b}
+            .kiosk-container::before{display:none}
+            .kiosk-card{max-width:100%;width:100%;min-height:100vh;min-height:100dvh;border-radius:0;border:none;box-shadow:none;padding:12px 16px;justify-content:center;gap:10px}
+            .kiosk-header .logo{display:none}
+            .kiosk-header h1{font-size:1.2rem}
+            .clock-time{font-size:2rem}
+            .numpad-btn{padding:36px 8px;font-size:1.6rem;font-weight:800}
+            .numpad-enter{padding:36px 8px;font-size:1.1rem}
+            .form-input.large{font-size:1.5rem;padding:20px}
+            #actionButtons .btn{padding:26px 16px;font-size:1.2rem;font-weight:700}
+        }
+    </style>
+</head>
+<body>
+<div class="kiosk-container" id="kiosk">
+    <div class="kiosk-card">
+
+        <!-- Indicador vigilancia (esquina) -->
+        <div id="monitorBadge" style="position:absolute;top:10px;right:12px;display:flex;align-items:center;gap:5px;font-size:11px;color:#64748b;opacity:0.7;pointer-events:none;z-index:10;">
+            <span id="monitorDot" style="width:7px;height:7px;border-radius:50%;background:#64748b;display:inline-block;"></span>
+            <span id="monitorLabel">Vigilancia inactiva</span>
+        </div>
+
+        <!-- Header -->
+        <div class="kiosk-header">
+            <div class="logo">🏭</div>
+            <h1>Control de Ingreso</h1>
+            <p>Registro de asistencia — PBI</p>
+        </div>
+
+        <!-- Clock -->
+        <div class="clock-display">
+            <div class="clock-time" id="clockTime">--:--:--</div>
+            <div class="clock-date" id="clockDate">Cargando...</div>
+        </div>
+
+        <!-- Steps -->
+        <div class="steps-indicator" id="stepsIndicator">
+            <div class="step-dot active" data-step="1"></div>
+            <div class="step-dot" data-step="2"></div>
+            <div class="step-dot" data-step="3"></div>
+        </div>
+
+        <!-- ══ Step 1: Cédula ══ -->
+        <div id="step1">
+            <div class="form-group">
+                <label>Número de Cédula</label>
+                <input type="text" class="form-input large" id="cedulaInput"
+                    placeholder="Ingrese su cédula" readonly autocomplete="off">
+            </div>
+            <div class="numpad">
+                <button class="numpad-btn" onclick="numpadPress('1')">1</button>
+                <button class="numpad-btn" onclick="numpadPress('2')">2</button>
+                <button class="numpad-btn" onclick="numpadPress('3')">3</button>
+                <button class="numpad-btn" onclick="numpadPress('4')">4</button>
+                <button class="numpad-btn" onclick="numpadPress('5')">5</button>
+                <button class="numpad-btn" onclick="numpadPress('6')">6</button>
+                <button class="numpad-btn" onclick="numpadPress('7')">7</button>
+                <button class="numpad-btn" onclick="numpadPress('8')">8</button>
+                <button class="numpad-btn" onclick="numpadPress('9')">9</button>
+                <button class="numpad-btn numpad-clear" onclick="numpadClear()">C</button>
+                <button class="numpad-btn" onclick="numpadPress('0')">0</button>
+                <button class="numpad-btn numpad-delete" onclick="numpadDelete()">⌫</button>
+                <button class="numpad-btn numpad-enter" id="btnVerifyCedula"
+                    onclick="verifyCedula()" style="grid-column:1/-1">Verificar ✓</button>
+            </div>
+        </div>
+
+        <!-- ══ Step 2: Verificación facial ══ -->
+        <div id="step2" class="hidden">
+            <div id="employeeCard" class="employee-card" style="display:none">
+                <div class="employee-avatar" id="avatarWrap">
+                    <span id="avatarEmoji">👤</span>
+                </div>
+                <div class="employee-info">
+                    <h3 id="empName">—</h3>
+                    <p id="empArea">—</p>
+                    <span class="presence-badge presence-out" id="empBadge">Fuera de planta</span>
+                </div>
+            </div>
+            <div class="camera-container" id="cameraContainer">
+                <video id="cameraVideo" autoplay playsinline muted></video>
+                <canvas id="faceCanvas"></canvas>
+                <div class="camera-overlay">
+                    <div class="face-guide"></div>
+                </div>
+                <div class="liveness-challenge hidden" id="livenessChallenge">
+                    <span id="livenessText">Mantenga la mirada a la cámara 👤</span>
+                </div>
+                <div class="camera-status" id="cameraStatus">Iniciando cámara...</div>
+            </div>
+            <button class="btn btn-outline btn-full" onclick="goToStep(1)">← Cancelar</button>
+        </div>
+
+        <!-- ══ Step 3: Selección de acción ══ -->
+        <div id="step3" class="hidden">
+            <div id="empCardConfirmed" class="employee-card"></div>
+            <div class="status-box" id="statusMessage">Consultando estado...</div>
+            <div id="actionButtons" style="display:flex;flex-direction:column;gap:10px"></div>
+            <button class="btn btn-outline btn-full" style="margin-top:4px" onclick="goToStep(1)">Cancelar</button>
+        </div>
+
+    </div><!-- /kiosk-card -->
+</div><!-- /kiosk-container -->
+
+<!-- ══ Modal: Éxito ══ -->
+<div class="modal-overlay hidden" id="modalSuccess">
+    <div class="modal-content">
+        <div class="modal-icon success" id="successIcon">✅</div>
+        <h2 id="successTitle">Registro exitoso</h2>
+        <p id="successMessage"></p>
+        <div class="modal-info" id="successInfo"></div>
+        <button class="btn btn-primary btn-full" onclick="closeModal('modalSuccess')" style="margin-top:16px">Aceptar</button>
+    </div>
+</div>
+
+<!-- ══ Modal: Error ══ -->
+<div class="modal-overlay hidden" id="modalError">
+    <div class="modal-content">
+        <div class="modal-icon error">❌</div>
+        <h2>No se pudo registrar</h2>
+        <p id="errorMessage">Ha ocurrido un error</p>
+        <button class="btn btn-danger btn-full" onclick="closeModal('modalError')" style="margin-top:16px">Intentar de nuevo</button>
+    </div>
+</div>
+
+<!-- ══ Modal: Tardanza ══ -->
+<div class="modal-overlay hidden" id="modalLate">
+    <div class="modal-content">
+        <div class="modal-icon warning">⏰</div>
+        <h2>Llegada tarde</h2>
+        <p id="lateMessage"></p>
+        <div class="modal-info" id="lateInfo"></div>
+        <button class="btn btn-primary btn-full" onclick="closeModal('modalLate')" style="margin-top:16px">Entendido</button>
+    </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  CONFIGURACIÓN
+// ══════════════════════════════════════════════════════
+const API = '/api/attendance';
+let FACE_THRESHOLD = 0.52;   // ajustable desde SystemSettings
+
+// Estado global
+let currentEmployee  = null;  // objeto del empleado actual
+let currentState     = 'OUT'; // IN | OUT | BREAK
+let currentStep      = 1;
+let gpsCoords        = null;
+let videoStream      = null;
+let faceModelsLoaded = false;
+let livenessOk       = false;
+let faceOk           = false;
+let faceDetInterval  = null;
+
+// ── Cargar threshold desde backend ──────────────────────────────
+(async () => {
+    try {
+        const r = await fetch(`${API}/shift-definitions`); // endpoint público fácil de probar
+        // threshold viene de SystemSettings, no de este endpoint
+    } catch(_){}
+})();
+
+// ══════════════════════════════════════════════════════
+//  RELOJ
+// ══════════════════════════════════════════════════════
+function updateClock() {
+    const now = new Date();
+    const tz  = { timeZone: 'America/Bogota' };
+    document.getElementById('clockTime').textContent =
+        now.toLocaleTimeString('es-CO', { ...tz, hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
+    document.getElementById('clockDate').textContent =
+        now.toLocaleDateString('es-CO', { ...tz, weekday:'long', year:'numeric', month:'long', day:'numeric' });
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ══════════════════════════════════════════════════════
+//  NAVEGACIÓN POR PASOS
+// ══════════════════════════════════════════════════════
+function goToStep(step) {
+    currentStep = step;
+    ['step1','step2','step3'].forEach((id,i) =>
+        document.getElementById(id).classList.toggle('hidden', i+1 !== step));
+    document.querySelectorAll('.step-dot').forEach(d => {
+        const s = parseInt(d.dataset.step);
+        d.classList.toggle('active', s === step);
+        d.classList.toggle('done', s < step);
+    });
+    if (step === 1) {
+        stopCamera();
+        currentEmployee = null;
+        livenessOk = false; faceOk = false;
+        document.getElementById('cedulaInput').value = '';
+    }
+    if (step === 2) startCamera();
+    if (step === 3) { fetchGPS(); renderStep3(); }
+}
+
+// ══════════════════════════════════════════════════════
+//  NUMPAD
+// ══════════════════════════════════════════════════════
+function numpadPress(d) {
+    const el = document.getElementById('cedulaInput');
+    if (el.value.length < 15) el.value += d;
+}
+function numpadDelete() {
+    const el = document.getElementById('cedulaInput');
+    el.value = el.value.slice(0,-1);
+}
+function numpadClear() { document.getElementById('cedulaInput').value = ''; }
+
+// ══════════════════════════════════════════════════════
+//  PASO 1: VERIFICAR CÉDULA
+// ══════════════════════════════════════════════════════
+async function verifyCedula() {
+    const cedula = document.getElementById('cedulaInput').value.trim();
+    if (!cedula) { showError('Ingrese su número de cédula'); return; }
+
+    const btn = document.getElementById('btnVerifyCedula');
+    btn.disabled = true; btn.textContent = 'Verificando...';
+
+    try {
+        const res  = await fetch(`${API}/find-by-cedula/${cedula}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Empleado no encontrado');
+
+        if (!data.faceDescriptor) {
+            showError('Su rostro no ha sido registrado. Contacte al administrador.');
+            return;
+        }
+
+        currentEmployee = data;
+        currentState    = data.currentState; // IN | OUT | BREAK
+
+        // Mostrar tarjeta en step2
+        renderEmployeeCard('employeeCard', data);
+        document.getElementById('employeeCard').style.display = 'flex';
+        goToStep(2);
+    } catch(err) {
+        showError(err.message);
+    } finally {
+        btn.disabled = false; btn.textContent = 'Verificar ✓';
+    }
+}
+document.getElementById('cedulaInput').addEventListener('keypress', e => {
+    if (e.key === 'Enter') verifyCedula();
+});
+
+// ══════════════════════════════════════════════════════
+//  TARJETA DE EMPLEADO
+// ══════════════════════════════════════════════════════
+function renderEmployeeCard(containerId, emp) {
+    const badgeClass = emp.currentState === 'IN' ? 'presence-in'
+                     : emp.currentState === 'BREAK' ? 'presence-break'
+                     : 'presence-out';
+    const badgeText  = emp.currentState === 'IN' ? '● En planta'
+                     : emp.currentState === 'BREAK' ? '◉ En descanso'
+                     : '○ Fuera de planta';
+
+    const el = document.getElementById(containerId);
+    el.innerHTML = `
+        <div class="employee-avatar">
+            ${emp.photoUrl
+                ? `<img src="${emp.photoUrl}" alt="${emp.name}" onerror="this.parentNode.innerHTML='👤'">`
+                : '👤'}
+        </div>
+        <div class="employee-info">
+            <h3>${emp.name}</h3>
+            <p>${emp.area} · ${emp.role}</p>
+            <span class="presence-badge ${badgeClass}">${badgeText}</span>
+        </div>`;
+    el.style.display = 'flex';
+}
+
+// ══════════════════════════════════════════════════════
+//  FACE API
+// ══════════════════════════════════════════════════════
+async function loadFaceModels() {
+    if (faceModelsLoaded) return;
+    const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
+    const FALLBACK = 'https://raw.githubusercontent.com/nicolo-ribaudo/face-api.js-models/refs/heads/master/';
+    try {
+        await Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(CDN),
+            faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN),
+            faceapi.nets.faceRecognitionNet.loadFromUri(CDN),
+        ]);
+    } catch(_) {
+        await Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(FALLBACK),
+            faceapi.nets.faceLandmark68TinyNet.loadFromUri(FALLBACK),
+            faceapi.nets.faceRecognitionNet.loadFromUri(FALLBACK),
+        ]);
+    }
+    faceModelsLoaded = true;
+}
+loadFaceModels(); // pre-cargar al abrir la página
+
+// ══════════════════════════════════════════════════════
+//  CÁMARA — stream compartido entre vigilancia y face
+// ══════════════════════════════════════════════════════
+
+// Stream global reutilizado por vigilancia Y reconocimiento facial
+let sharedStream = null;
+let sharedStreamReady = false;
+
+// Intenta obtener el stream en el orden dado; devuelve el primero que funcione
+async function acquireStream() {
+    if (sharedStream && sharedStream.active) return sharedStream;
+    const attempts = [
+        { video: { facingMode: { exact: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } } },
+        { video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } },
+        { video: { width: { ideal: 640 }, height: { ideal: 480 } } },
+        { video: true },
+    ];
+    for (const c of attempts) {
+        try { sharedStream = await navigator.mediaDevices.getUserMedia(c); return sharedStream; }
+        catch(_) {}
+    }
+    throw new Error('No se pudo acceder a la cámara');
+}
+
+async function startCamera() {
+    const video  = document.getElementById('cameraVideo');
+    const status = document.getElementById('cameraStatus');
+    status.textContent = 'Cargando modelos de IA...';
+
+    try {
+        await loadFaceModels();
+
+        // Reutiliza el stream de vigilancia si ya está activo
+        const stream = await acquireStream();
+        videoStream  = stream;  // variable global que usa el resto del kiosko
+
+        video.srcObject = stream;
+        await new Promise(resolve => {
+            video.onloadedmetadata = () => video.play().then(resolve).catch(resolve);
+            setTimeout(resolve, 4000);
+        });
+        if (video.paused) {
+            video.srcObject = null;
+            await new Promise(r => setTimeout(r, 300));
+            video.srcObject = stream;
+            await video.play().catch(() => {});
+        }
+        status.textContent = 'Buscando rostro...';
+        startFaceDetection();
+    } catch(err) {
+        status.textContent = 'Error: No se pudo acceder a la cámara';
+        showError('Verifique los permisos de cámara');
+    }
+}
+
+function stopCamera() {
+    // Solo detiene la detección facial; NO cierra el stream (lo sigue usando la vigilancia)
+    if (faceDetInterval) { clearInterval(faceDetInterval); faceDetInterval = null; }
+    const video = document.getElementById('cameraVideo');
+    if (video) { video.srcObject = null; }
+    videoStream = null;
+    // sharedStream se mantiene activo para el monitor de fondo
+}
+
+// Detección de pantallas/fotos (bordes)
+const screenCanvas = document.createElement('canvas');
+const screenCtx    = screenCanvas.getContext('2d', { willReadFrequently:true });
+
+function detectScreenEdges(video, box) {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return 0;
+    screenCanvas.width = w; screenCanvas.height = h;
+    screenCtx.drawImage(video, 0, 0, w, h);
+    const exp = 0.5;
+    const ex = Math.max(0, Math.floor(box.x - box.width*exp));
+    const ey = Math.max(0, Math.floor(box.y - box.height*exp));
+    const ew = Math.min(w, Math.ceil(box.x + box.width*(1+exp)));
+    const eh = Math.min(h, Math.ceil(box.y + box.height*(1+exp)));
+    let edges = 0;
+    const THR = 25, REQ = 0.3;
+    edges += scanLine(ex,ew,ey,ey,'h',w,h,THR,REQ);
+    edges += scanLine(ex,ew,eh,eh,'h',w,h,THR,REQ);
+    edges += scanLine(ex,ex,ey,eh,'v',w,h,THR,REQ);
+    edges += scanLine(ew,ew,ey,eh,'v',w,h,THR,REQ);
+    return edges;
+}
+function scanLine(x1,x2,y1,y2,dir,mw,mh,thr,req){
+    let hi=0,tot=0;
+    if(dir==='h'){
+        const y=Math.min(y1,mh-2), sx=Math.max(0,Math.floor(x1)), ex=Math.min(mw-1,Math.ceil(x2));
+        if(sx>=ex) return 0;
+        const d=screenCtx.getImageData(sx,Math.max(0,y-3),ex-sx+1,7).data;
+        const bw=ex-sx+1;
+        for(let x=x1;x<=x2;x+=3){
+            const a=brt(d,bw,x-sx,0), b=brt(d,bw,x-sx,3), c=brt(d,bw,x-sx,6);
+            if(Math.max(Math.abs(a-b),Math.abs(b-c))>thr) hi++;
+            tot++;
+        }
+    } else {
+        const x=Math.min(x1,mw-2), sy=Math.max(0,Math.floor(y1)), ey=Math.min(mh-1,Math.ceil(y2));
+        if(sy>=ey) return 0;
+        const d=screenCtx.getImageData(Math.max(0,x-3),sy,7,ey-sy+1).data;
+        const bw=7;
+        for(let y=y1;y<=y2;y+=3){
+            const a=brt(d,bw,0,y-sy), b=brt(d,bw,3,y-sy), c=brt(d,bw,6,y-sy);
+            if(Math.max(Math.abs(a-b),Math.abs(b-c))>thr) hi++;
+            tot++;
+        }
+    }
+    return tot>0 && (hi/tot)>=req ? 1 : 0;
+}
+function brt(d,w,x,y){ const i=(Math.floor(y)*w+Math.floor(x))*4; return d[i]*.299+d[i+1]*.587+d[i+2]*.114; }
+
+// ── Detección facial con liveness ───────────────────────────────
+function startFaceDetection() {
+    const video   = document.getElementById('cameraVideo');
+    const status  = document.getElementById('cameraStatus');
+    const chal    = document.getElementById('livenessChallenge');
+    const chalTxt = document.getElementById('livenessText');
+
+    livenessOk = false; faceOk = false;
+    let faceDetectedOnce = false;
+    let screenCount = 0, screenOk = false;
+    let positions = [], chalStep = 0;
+    let detecting = false;
+    const FRAMES = 8, MOTION_THR = 1.5;
+
+    if (faceDetInterval) clearInterval(faceDetInterval);
+
+    faceDetInterval = setInterval(async () => {
+        if (detecting || currentStep !== 2 || !videoStream) return;
+        detecting = true;
+        try {
+            const det = await faceapi
+                .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize:224, scoreThreshold:0.45 }))
+                .withFaceLandmarks(true)
+                .withFaceDescriptor();
+
+            if (!det) { status.textContent = 'No se detecta rostro. Mire a la cámara.'; return; }
+
+            const box = det.detection.box;
+            const ratio = (box.width*box.height) / (video.videoWidth*video.videoHeight);
+            if (ratio < 0.08) { status.textContent = '⚠️ Acérquese más a la cámara'; return; }
+
+            // Anti-spoofing: pantalla
+            if (!screenOk) {
+                const sc = detectScreenEdges(video, box);
+                if (sc >= 2) { screenCount++; if(screenCount>3){ status.textContent='🚫 Pantalla detectada — use su rostro real'; return; } }
+                else { screenCount = Math.max(0, screenCount-1); if(screenCount===0) screenOk=true; }
+            }
+
+            // Paso 0: rostro detectado → iniciar liveness
+            if (chalStep===0 && !faceDetectedOnce) {
+                faceDetectedOnce=true; chalStep=1; positions=[];
+                chal.classList.remove('hidden');
+                chalTxt.innerHTML = 'Mantenga la mirada a la cámara 👤';
+                status.textContent = 'Verificando vida real...';
+            }
+
+            // Paso 1: recolectar posiciones para liveness
+            if (chalStep===1) {
+                positions.push({ x: box.x+box.width/2, y: box.y+box.height/2 });
+                status.textContent = `Verificando... (${positions.length}/${FRAMES})`;
+                if (positions.length >= FRAMES) {
+                    const ax=positions.reduce((s,p)=>s+p.x,0)/FRAMES;
+                    const ay=positions.reduce((s,p)=>s+p.y,0)/FRAMES;
+                    const std=Math.sqrt(positions.reduce((s,p)=>s+(p.x-ax)**2+(p.y-ay)**2,0)/FRAMES);
+                    if (std > MOTION_THR) {
+                        livenessOk=true; chalStep=2;
+                        chalTxt.innerHTML='✅ Vida real confirmada';
+                        status.textContent='Verificando identidad...';
+                    } else {
+                        positions=[];
+                        chalTxt.innerHTML='📸 Mueva ligeramente la cabeza';
+                        status.textContent=`Imagen estática detectada (${std.toFixed(1)}px)`;
+                    }
+                }
+            }
+
+            // Paso 2: comparar descriptor
+            if (chalStep===2 && livenessOk && !faceOk) {
+                const stored = new Float32Array(currentEmployee.faceDescriptor);
+                const dist   = faceapi.euclideanDistance(det.descriptor, stored);
+                if (dist < FACE_THRESHOLD) {
+                    faceOk=true;
+                    clearInterval(faceDetInterval);
+                    chal.classList.add('hidden');
+                    status.textContent='✅ Identidad verificada';
+                    setTimeout(()=>goToStep(3), 800);
+                } else {
+                    status.textContent=`Rostro no coincide (${Math.round((1-dist)*100)}% similitud)`;
+                    chalTxt.innerHTML='❌ No coincide. Intente de nuevo.';
+                }
+            }
+        } catch(err){ console.error('Detection:', err); }
+        finally { detecting=false; }
+    }, 300);
+}
+
+// ══════════════════════════════════════════════════════
+//  PASO 3: ACCIONES SEGÚN ESTADO
+// ══════════════════════════════════════════════════════
+async function renderStep3() {
+    const card   = document.getElementById('empCardConfirmed');
+    const msgEl  = document.getElementById('statusMessage');
+    const btnsEl = document.getElementById('actionButtons');
+
+    renderEmployeeCard('empCardConfirmed', { ...currentEmployee, currentState });
+
+    msgEl.textContent = 'Consultando estado actual...';
+    btnsEl.innerHTML  = '';
+
+    try {
+        const res  = await fetch(`${API}/status/${currentEmployee.id}`);
+        const data = await res.json();
+        currentState = data.currentState; // actualizar con estado fresco del servidor
+
+        // Actualizar badge en la tarjeta
+        renderEmployeeCard('empCardConfirmed', { ...currentEmployee, currentState });
+
+        const stateConfig = {
+            OUT:   {
+                msg: `👋 <strong>${currentEmployee.name.split(' ')[0]}</strong>, aún no ha registrado entrada hoy.`,
+                btns:[{ label:'🟢 Registrar Entrada', type:'ENTRY', sub:null, cls:'btn-success' }]
+            },
+            IN:    {
+                msg: `💼 <strong>${currentEmployee.name.split(' ')[0]}</strong>, está trabajando actualmente.`,
+                btns:[
+                    { label:'☕ Descanso (15 min)',  type:'EXIT', sub:'BREAK',    cls:'btn-warning' },
+                    { label:'🍽️ Almuerzo',           type:'EXIT', sub:'LUNCH',    cls:'btn-warning' },
+                    { label:'🏥 Médico / Personal',  type:'EXIT', sub:'MEDICAL',  cls:'btn-outline' },
+                    { label:'🔴 Salida Final',        type:'EXIT', sub:'FINAL',    cls:'btn-danger' },
+                ]
+            },
+            BREAK: {
+                msg: `☕ <strong>${currentEmployee.name.split(' ')[0]}</strong>, está en descanso / almuerzo.`,
+                btns:[{ label:'🔄 Regresar a Trabajo', type:'ENTRY', sub:null, cls:'btn-success' }]
+            },
+        };
+
+        const cfg = stateConfig[currentState] || stateConfig['OUT'];
+        msgEl.innerHTML = cfg.msg;
+        btnsEl.innerHTML = cfg.btns.map(b =>
+            `<button class="btn ${b.cls} btn-full btn-lg"
+                onclick="submitAction('${b.type}','${b.sub || ''}')">${b.label}</button>`
+        ).join('');
+
+        // Auto-submit si solo hay una acción (regreso de descanso / primera entrada)
+        if (cfg.btns.length === 1) {
+            const b = cfg.btns[0];
+            msgEl.innerHTML += '<br><small style="opacity:0.6">Registrando automáticamente...</small>';
+            setTimeout(()=>submitAction(b.type, b.sub||''), 1500);
+        }
+    } catch(err) {
+        msgEl.innerHTML = '<span style="color:var(--danger)">Error al consultar estado</span>';
+    }
+}
+
+// ══════════════════════════════════════════════════════
+//  SUBMIT ACCIÓN
+// ══════════════════════════════════════════════════════
+async function submitAction(type, subtype) {
+    document.querySelectorAll('#actionButtons button').forEach(b=>{b.disabled=true;b.style.opacity='0.6';});
+
+    const endpoint = type === 'ENTRY' ? `${API}/checkin` : `${API}/checkout`;
+    const body = {
+        employeeId: currentEmployee.id,
+        verified:   faceOk,
+        source:     'KIOSK',
+        latitude:   gpsCoords?.latitude  ?? null,
+        longitude:  gpsCoords?.longitude ?? null,
+        accuracy:   gpsCoords?.accuracy  ?? null,
+    };
+    if (type === 'EXIT' && subtype) body.subtype = subtype;
+
+    try {
+        const res  = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Error al registrar');
+
+        stopCamera();
+
+        // Determinar icono y mensaje del modal
+        const now = new Date().toLocaleTimeString('es-CO', { timeZone:'America/Bogota', hour:'2-digit', minute:'2-digit', hour12:true });
+        const nombre = currentEmployee.name.split(' ')[0];
+
+        let icon='✅', title='Registro exitoso', msg='', info='';
+        if (type==='ENTRY' && currentState==='OUT') {
+            title='✅ Entrada Registrada';
+            msg=`Bienvenido/a, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Hora de entrada</span><span class="info-value">${now}</span></div>
+                  <div class="info-row"><span class="info-label">Área</span><span class="info-value">${currentEmployee.area}</span></div>`;
+        } else if (type==='ENTRY' && currentState==='BREAK') {
+            title='🔄 Regreso de Descanso';
+            msg=`Bienvenido de vuelta, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Hora de regreso</span><span class="info-value">${now}</span></div>`;
+        } else if (subtype==='BREAK') {
+            icon='☕'; title='☕ Descanso Registrado';
+            msg=`Buen descanso, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Inicio descanso</span><span class="info-value">${now}</span></div>`;
+        } else if (subtype==='LUNCH') {
+            icon='🍽️'; title='🍽️ Almuerzo Registrado';
+            msg=`Buen provecho, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Inicio almuerzo</span><span class="info-value">${now}</span></div>`;
+        } else if (subtype==='MEDICAL') {
+            icon='🏥'; title='Salida registrada';
+            msg=`Salida médica/personal, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Hora</span><span class="info-value">${now}</span></div>`;
+        } else if (subtype==='FINAL') {
+            icon='👋'; title='Hasta luego';
+            msg=`Salida final registrada, ${nombre}`;
+            info=`<div class="info-row"><span class="info-label">Hora de salida</span><span class="info-value">${now}</span></div>`;
+        }
+
+        document.getElementById('successIcon').textContent = icon;
+        document.getElementById('successTitle').textContent = title;
+        document.getElementById('successMessage').textContent = msg;
+        document.getElementById('successInfo').innerHTML = info;
+        document.getElementById('modalSuccess').classList.remove('hidden');
+
+    } catch(err) {
+        document.getElementById('errorMessage').textContent = err.message;
+        document.getElementById('modalError').classList.remove('hidden');
+    }
+}
+
+// ══════════════════════════════════════════════════════
+//  GPS
+// ══════════════════════════════════════════════════════
+function fetchGPS() {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+        pos => { gpsCoords = { latitude:pos.coords.latitude, longitude:pos.coords.longitude, accuracy:pos.coords.accuracy }; },
+        ()  => {},
+        { enableHighAccuracy:true, timeout:8000 }
+    );
+}
+
+// ══════════════════════════════════════════════════════
+//  MODALES
+// ══════════════════════════════════════════════════════
+function closeModal(id) {
+    document.getElementById(id).classList.add('hidden');
+    goToStep(1);
+}
+function showError(msg) {
+    document.getElementById('errorMessage').textContent = msg;
+    document.getElementById('modalError').classList.remove('hidden');
+}
+
+// Auto-cierre del modal de éxito en 8 segundos
+document.getElementById('modalSuccess').addEventListener('click', e=>{
+    if(e.target === document.getElementById('modalSuccess')) closeModal('modalSuccess');
+});
+
+// ══════════════════════════════════════════════════════
+//  VIGILANCIA DE FONDO (YOLOv8 door monitor)
+//  Captura un frame cada 2 s y lo envía al servicio Python.
+//  Opera de forma silenciosa — no afecta el flujo del kiosko.
+// ══════════════════════════════════════════════════════
+(function initDoorMonitor() {
+    const MONITOR_URL    = '/door-monitor/process-frame';
+    const CAPTURE_MS     = 1000;   // cada 1 segundo
+    // source_id configurable via ?source=nombre_tablet en la URL
+    const SOURCE_ID      = new URLSearchParams(location.search).get('source') || 'tablet_kiosk';
+    const JPEG_QUALITY   = 0.60;   // reducir para ahorrar ancho de banda
+    const CAPTURE_WIDTH  = 480;    // ancho del frame enviado (px)
+
+    let monStream   = null;  // MediaStream dedicado al monitor
+    let monVideo    = null;  // <video> oculto
+    let monCanvas   = null;  // <canvas> para captura
+    let monInterval = null;
+    let monActive   = false;
+    let monFails    = 0;
+
+    const badge     = document.getElementById('monitorBadge');
+    const dot       = document.getElementById('monitorDot');
+    const label     = document.getElementById('monitorLabel');
+
+    function setBadge(state) {
+        const styles = {
+            active:   { color:'#10b981', text:'Vigilancia activa' },
+            sending:  { color:'#6366f1', text:'Analizando...'     },
+            error:    { color:'#ef4444', text:'Sin cámara'        },
+            inactive: { color:'#64748b', text:'Vigilancia inactiva'},
+        };
+        const s = styles[state] || styles.inactive;
+        dot.style.background   = s.color;
+        label.style.color      = s.color;
+        label.textContent      = s.text;
+        badge.style.opacity    = state === 'inactive' ? '0.5' : '0.85';
+    }
+
+    async function startMonitor() {
+        if (monActive) return;
+        try {
+            monVideo  = document.createElement('video');
+            monVideo.setAttribute('playsinline', '');
+            monVideo.setAttribute('muted', '');
+            monVideo.style.display = 'none';
+            document.body.appendChild(monVideo);
+
+            monCanvas = document.createElement('canvas');
+
+            // Reutilizar el stream compartido (evita abrir una segunda cámara)
+            monStream = await acquireStream();
+            sharedStreamReady = true;
+
+            monVideo.srcObject = monStream;
+            await new Promise(r => {
+                monVideo.onloadedmetadata = () => monVideo.play().then(r).catch(r);
+                setTimeout(r, 5000);
+            });
+
+            monActive = true;
+            setBadge('active');
+            monFails  = 0;
+
+            monInterval = setInterval(captureAndSend, CAPTURE_MS);
+        } catch(e) {
+            setBadge('error');
+            console.warn('[door-monitor] No se pudo iniciar cámara de vigilancia:', e.message);
+            // Reintentar en 30 segundos
+            setTimeout(startMonitor, 30000);
+        }
+    }
+
+    async function captureAndSend() {
+        if (!monVideo || monVideo.readyState < 2) return;
+        try {
+            const vw = monVideo.videoWidth  || CAPTURE_WIDTH;
+            const vh = monVideo.videoHeight || Math.round(CAPTURE_WIDTH * 9 / 16);
+            const scale = CAPTURE_WIDTH / vw;
+            monCanvas.width  = CAPTURE_WIDTH;
+            monCanvas.height = Math.round(vh * scale);
+
+            const ctx = monCanvas.getContext('2d');
+            ctx.drawImage(monVideo, 0, 0, monCanvas.width, monCanvas.height);
+
+            setBadge('sending');
+
+            monCanvas.toBlob(async (blob) => {
+                if (!blob) return;
+                try {
+                    const fd = new FormData();
+                    fd.append('file', blob, 'frame.jpg');
+                    fd.append('source_id', SOURCE_ID);
+
+                    const resp = await fetch(`${MONITOR_URL}?source_id=${SOURCE_ID}`, {
+                        method: 'POST',
+                        body: fd,
+                        signal: AbortSignal.timeout(5000),
+                    });
+
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        if (data.crossings && data.crossings.length > 0) {
+                            console.info(`[door-monitor] ${data.crossings.length} cruce(s) detectado(s):`, data.crossings);
+                        }
+                        monFails = 0;
+                        setBadge('active');
+                    } else {
+                        throw new Error(`HTTP ${resp.status}`);
+                    }
+                } catch(e) {
+                    monFails++;
+                    if (monFails > 5) setBadge('error');
+                    console.warn('[door-monitor] Error enviando frame:', e.message);
+                }
+            }, 'image/jpeg', JPEG_QUALITY);
+        } catch(e) {
+            console.warn('[door-monitor] Error capturando frame:', e.message);
+        }
+    }
+
+    // Iniciar cuando el DOM esté listo (da 3s para que el kiosko cargue primero)
+    setTimeout(startMonitor, 3000);
+})();
+</script>
+</body>
+</html>

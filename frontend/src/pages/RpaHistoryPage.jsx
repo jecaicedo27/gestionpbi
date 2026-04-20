@@ -312,9 +312,19 @@ const RpaHistoryPage = () => {
                                             </td>
                                             <td style={{ padding: '10px 16px' }}>
                                                 {exec.siigoNoteCode ? (
-                                                    <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
-                                                        NE {exec.siigoNoteCode}
-                                                    </span>
+                                                    /^(AJ|NE|IE|CE)-/.test(exec.siigoNoteCode) ? (
+                                                        <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
+                                                            {exec.siigoNoteCode}
+                                                        </span>
+                                                    ) : /Guardado|Exitoso/i.test(exec.siigoNoteCode) ? (
+                                                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4, background: '#fef9c3', color: '#854d0e', fontWeight: 600 }}>
+                                                            Guardado (sin # capturado)
+                                                        </span>
+                                                    ) : (
+                                                        <span style={{ fontSize: '0.75rem', padding: '2px 8px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 700 }}>
+                                                            {exec.siigoNoteCode}
+                                                        </span>
+                                                    )
                                                 ) : <span style={{ color: '#cbd5e1' }}>—</span>}
                                             </td>
                                             <td style={{ padding: '10px 16px', fontSize: '0.8rem', color: '#64748b' }}>
@@ -547,8 +557,8 @@ const RpaHistoryPage = () => {
                                         {exec.quantity || '—'}
                                     </div>
                                     {exec.siigoNoteCode && (
-                                        <div style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 600, marginTop: 1 }}>
-                                            NE {exec.siigoNoteCode}
+                                        <div style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: 4, background: /Guardado|Exitoso/i.test(exec.siigoNoteCode) ? '#fef9c3' : '#dcfce7', color: /Guardado|Exitoso/i.test(exec.siigoNoteCode) ? '#854d0e' : '#166534', fontWeight: 600, marginTop: 1 }}>
+                                            {/^(AJ|NE|IE|CE)-/.test(exec.siigoNoteCode) ? exec.siigoNoteCode : /Guardado|Exitoso/i.test(exec.siigoNoteCode) ? 'Sin #' : exec.siigoNoteCode}
                                         </div>
                                     )}
                                 </div>
@@ -569,8 +579,8 @@ const RpaHistoryPage = () => {
                                         <span style={{ fontWeight: 600, color: '#1e293b' }}>{exec.durationMs ? `${(exec.durationMs / 1000).toFixed(1)}s` : '—'}</span>
                                         <span>Usuario:</span>
                                         <span style={{ fontWeight: 600, color: '#1e293b' }}>{exec.triggeredBy?.name || '—'}</span>
-                                        {exec.siigoNoteCode && <>
-                                            <span>Nota Ensamble:</span>
+                                        {exec.siigoNoteCode && !/Guardado|Exitoso/i.test(exec.siigoNoteCode) && <>
+                                            <span>Documento Siigo:</span>
                                             <span style={{ fontWeight: 700, color: '#16a34a' }}>{exec.siigoNoteCode}</span>
                                         </>}
                                         {exec.errorMessage && <>

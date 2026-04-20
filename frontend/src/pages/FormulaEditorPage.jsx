@@ -63,14 +63,8 @@ function FormulaEditorPage() {
                 setCostData(data.cost);
                 form.setFieldsValue(data);
             } else {
-                // Auto-generate formula code based on highest existing number
-                const existingCodes = formulasRes.data?.map(f => {
-                    const match = f.formulaCode?.match(/FORM(\d+)/i);
-                    return match ? parseInt(match[1], 10) : 0;
-                }) || [];
-                const maxNum = existingCodes.length > 0 ? Math.max(...existingCodes) : 0;
-                const nextNum = maxNum + 1;
-                const autoCode = `FORM${String(nextNum).padStart(3, '0')}`;
+                const nextCodeRes = await api.get('/formulas/next-code');
+                const autoCode = nextCodeRes.data.nextCode;
                 setFormula(prev => ({ ...prev, formulaCode: autoCode }));
                 form.setFieldsValue({ formulaCode: autoCode });
             }

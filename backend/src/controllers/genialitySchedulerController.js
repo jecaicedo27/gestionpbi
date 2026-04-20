@@ -179,7 +179,8 @@ exports.getSuggestions = async (req, res) => {
                 const sizeInfo = parseSize(p.name, DENSITY);
                 const kgFactor = sizeInfo.kgFactor || 0;
 
-                const stockKg = p.currentStock * kgFactor;
+                const totalProductStock = p.currentStock + (p.productionZoneStock || 0);
+                const stockKg = totalProductStock * kgFactor;
                 totalStockKg += stockKg;
 
                 // CALCULATE ORDER DEFICIT (real remaining from orders)
@@ -195,7 +196,7 @@ exports.getSuggestions = async (req, res) => {
                 let label = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit === 'KG' ? 'kg' : sizeInfo.unit}`;
                 stockDetails.push({
                     label,
-                    units: p.currentStock,
+                    units: totalProductStock,
                     kg: stockKg,
                     sizeWeight: kgFactor,
                     deficitUnits
@@ -234,7 +235,7 @@ exports.getSuggestions = async (req, res) => {
 
 
             // User Request: "amarillo si al menos uno de los tamaños esta en riesgo"
-            const hasMissingSize = items.some(p => p.currentStock <= 0);
+            const hasMissingSize = items.some(p => (p.currentStock + (p.productionZoneStock || 0)) <= 0);
             if (hasMissingSize && status === 'GREEN') {
                 status = 'YELLOW';
             }
@@ -410,12 +411,13 @@ exports.calculateBatchMix = async (req, res) => {
 
             const velocity = p.dailyVelocity || 0;
             const targetStock = velocity * TARGET_DAYS;
-            const deficit = Math.max(0, targetStock - p.currentStock);
+            const totalStock = p.currentStock + (p.productionZoneStock || 0);
+            const deficit = Math.max(0, targetStock - totalStock);
             const deficitKg = deficit * sizeInfo.kgFactor * SYRUP_RATIO;
 
             const orderDemand = orderDemandMap[p.id] || 0;
             const inProgress = inProgressMap[p.id] || 0;
-            const netOrderNeed = Math.max(0, orderDemand - Math.max(0, p.currentStock) - inProgress);
+            const netOrderNeed = Math.max(0, orderDemand - Math.max(0, totalStock) - inProgress);
 
             productNeeds.push({
                 product: p,
@@ -441,7 +443,7 @@ exports.calculateBatchMix = async (req, res) => {
         let totalFlavorStock = 0;
         products.forEach(p => {
             const sizeInfo = parseSize(p.name, DENSITY);
-            if (sizeInfo.kgFactor) totalFlavorStock += (p.currentStock * sizeInfo.kgFactor);
+            if (sizeInfo.kgFactor) totalFlavorStock += ((p.currentStock + (p.productionZoneStock || 0)) * sizeInfo.kgFactor);
         });
 
         let boostedNeedKg = totalNeedKg;
@@ -449,67 +451,66 @@ exports.calculateBatchMix = async (req, res) => {
             boostedNeedKg += Math.abs(totalFlavorStock) * SYRUP_RATIO;
         }
 
-        let targetTotalKg = boostedNeedKg; // Disable rigid ceiling for precision batching
-
-        console.log('DEBUG MIX:', { flavor, totalNeedKg, boostedNeedKg, totalFlavorStock, targetTotalKg });
-
-        let strategy = 'FILL_TO_BATCH';
-
-        const finalMix = [];
+        // === STEP 1: Pack-aligned minimum units per size ===
+        const rawAllocations = [];
         productNeeds.forEach(item => {
-            let allocatedKg = 0;
-            const remainder = targetTotalKg - totalNeedKg;
-            let extraKg = 0;
-            if (useFallback) {
-                let sizeKey = '350';
-                if (item.kgFactor > 3) sizeKey = '3400';
-                else if (item.kgFactor > 1) sizeKey = '1150';
-                extraKg = remainder * (DEFAULT_DISTRIBUTION[sizeKey] || 0.33);
-            } else {
-                const share = item.dailyVolumeKg / totalDailyVolumeKg;
-                extraKg = remainder * share;
-            }
-            allocatedKg = item.deficitKg + extraKg;
-
-            const syrupNeededPerUnit = item.kgFactor * SYRUP_RATIO;
-            const rawUnits = Math.max(0, Math.round(allocatedKg / syrupNeededPerUnit));
-
-            // Ensure minimum covers net order demand
-            const effectiveUnits = Math.max(rawUnits, item.netOrderNeedUnits);
-
-            // Exact unit targeting, skip complete boxes constraint for scaling flexibility
-            const ps = item.packSize;
-            const boxRoundedUnits = effectiveUnits; // Box rounding disabled to allow exact batch tracking
-
-            finalMix.push({
-                productId: item.product.id,
-                sku: item.product.sku,
-                name: item.product.name,
-                sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
-                kgFactor: Math.round(item.kgFactor * 1000) / 1000,
-                packSize: ps,
-                plannedUnits: boxRoundedUnits,
-                plannedWeightKg: Math.round(boxRoundedUnits * item.kgFactor * 100) / 100,
-                orderDemandUnits: item.orderDemandUnits,
-                boxes: ps > 1 ? Math.round(boxRoundedUnits / ps) : null
-            });
+            const ps = item.packSize || 1;
+            let minUnits = ps > 1 ? Math.ceil(item.netOrderNeedUnits / ps) * ps : item.netOrderNeedUnits;
+            rawAllocations.push({ ...item, minUnits, allocatedUnits: minUnits });
         });
 
-        const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
+        // === STEP 2: Calculate batch count (capped at 7 for Geniality pot) ===
+        let totalMinBaseKg = rawAllocations.reduce((s, i) => s + (i.allocatedUnits * i.kgFactor * SYRUP_RATIO), 0);
+        let batchesNeeded = Math.max(1, Math.ceil(totalMinBaseKg / BATCH_SIZE));
+        let velocityBatches = Math.ceil(boostedNeedKg / BATCH_SIZE);
+        batchesNeeded = Math.max(batchesNeeded, velocityBatches);
+        batchesNeeded = Math.min(7, batchesNeeded);
+        let targetTotalKg = batchesNeeded * BATCH_SIZE;
 
-        // Keep exact targetTotalKg without ceiling roundup
-        if (totalPlannedKg > targetTotalKg) {
-            targetTotalKg = totalPlannedKg;
+        console.log('DEBUG MIX:', { flavor, totalNeedKg, boostedNeedKg, totalFlavorStock, targetTotalKg, batchesNeeded });
+
+        // === STEP 3: Fill remaining capacity with pack-aligned increments ===
+        let currentBaseKg = totalMinBaseKg;
+        const capacityKg = targetTotalKg;
+        const sortedForFill = [...rawAllocations].sort((a, b) => (b.dailyVolumeKg || 0) - (a.dailyVolumeKg || 0));
+        let filled = true;
+        while (currentBaseKg < capacityKg - 0.5 && filled) {
+            filled = false;
+            for (const item of sortedForFill) {
+                const ps = item.packSize || 1;
+                const packBaseKg = ps * item.kgFactor * SYRUP_RATIO;
+                if (currentBaseKg + packBaseKg <= capacityKg + 0.5) {
+                    item.allocatedUnits += ps;
+                    currentBaseKg += packBaseKg;
+                    filled = true;
+                }
+            }
         }
 
-        const syrupBatchesNeeded = Math.ceil(targetTotalKg / BATCH_SIZE);
+        const buildEntry = (item, units) => ({
+            productId: item.product.id,
+            sku: item.product.sku,
+            name: item.product.name,
+            sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
+            kgFactor: Math.round(item.kgFactor * 1000) / 1000,
+            packSize: item.packSize,
+            plannedUnits: units,
+            plannedWeightKg: Math.round(units * item.kgFactor * 100) / 100,
+            orderDemandUnits: item.orderDemandUnits,
+            boxes: item.packSize > 1 ? Math.floor(units / item.packSize) : null,
+            contramuestra: 0
+        });
+
+        const finalMix = rawAllocations.map(item => buildEntry(item, item.allocatedUnits));
+        const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
 
         res.json({
             flavor,
-            strategy,
+            strategy: 'FILL_TO_BATCH',
             totalPlannedKg,
+            totalBaseKg: Math.round(currentBaseKg),
             totalSyrupKg: targetTotalKg,
-            targetBatchCount: syrupBatchesNeeded,
+            targetBatchCount: batchesNeeded,
             targetTotalKg,
             mix: finalMix
         });
@@ -857,7 +858,7 @@ exports.getFlavorDemand = async (req, res) => {
             const label = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit}`;
             const velocity = p.dailyVelocity || 0;
             const need7d = Math.round(velocity * 7);
-            const stock = p.currentStock || 0;
+            const stock = (p.currentStock || 0) + (p.productionZoneStock || 0);
             return {
                 sizeLabel: label,
                 dailyVelocity: Math.round(velocity * 10) / 10,

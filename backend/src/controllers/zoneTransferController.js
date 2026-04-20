@@ -86,7 +86,21 @@ exports.getZoneStock = async (req, res) => {
             orderBy: { name: 'asc' }
         });
 
-        res.json(products);
+        const productsWithLotTotals = products.map(product => {
+            const lotZoneStock = (product.materialLots || []).reduce(
+                (sum, lot) => sum + Number(lot.currentQuantity || 0),
+                0
+            );
+
+            return {
+                ...product,
+                productionZoneStock: lotZoneStock > 0
+                    ? lotZoneStock
+                    : Number(product.productionZoneStock || 0)
+            };
+        });
+
+        res.json(productsWithLotTotals);
     } catch (error) {
         console.error('Error getting zone stock:', error);
         res.status(500).json({ error: error.message });

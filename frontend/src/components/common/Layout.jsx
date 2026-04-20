@@ -4,9 +4,12 @@ import Sidebar from './Sidebar';
 import BottomNavBar from './BottomNavBar';
 import GlobalTimerAlert from './GlobalTimerAlert';
 import PinLockScreen from './PinLockScreen';
-import ShiftBlockScreen from '../ShiftBlockScreen';
-import ShiftEndAlert from '../ShiftEndAlert';
-import ShiftAlarm from '../ShiftAlarm';
+// DISABLED — Old shift handoff system paused (interfería con entrega de producto)
+// import ShiftBlockScreen from '../ShiftBlockScreen';
+// import ShiftEndAlert from '../ShiftEndAlert';
+// import ShiftAlarm from '../ShiftAlarm';
+import HandoverAlarm from '../ShiftHandover/HandoverAlarm';
+import HandoverBlockScreen from '../ShiftHandover/HandoverBlockScreen';
 import PurchaseOrderAlert from './PurchaseOrderAlert';
 import { Bell, LogOut, Printer, Wifi, LockKeyhole } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -79,6 +82,8 @@ const Layout = () => {
         if (path === '/admin/config') return 'Configuración';
         if (path === '/admin/reports') return 'Reportes';
         if (path === '/shift-schedule') return 'Cuadro de Turnos';
+        if (path === '/attendance') return 'Control de Ingreso';
+        if (path === '/recovery/forensic') return 'Validacion de Recuperacion';
         if (path.includes('analytics')) return 'Análisis';
         return 'Dashboard';
     };
@@ -86,7 +91,9 @@ const Layout = () => {
     return (
         <div className={`flex min-h-screen bg-neutral-50 text-neutral-900 font-sans ${isTabletMode ? 'layout--tablet' : ''}`}>
             <GlobalTimerAlert />
-            <ShiftAlarm />
+            {/* <ShiftAlarm /> — DISABLED (old system) */}
+            <HandoverAlarm />
+            <HandoverBlockScreen />
             <PurchaseOrderAlert />
             {!isTabletMode && !isDistributorWelcome && <Sidebar />}
 
@@ -215,11 +222,9 @@ const Layout = () => {
 
             {isTabletMode && <BottomNavBar userRole={user?.role} />}
 
-            {/* Shift Handoff Block Screen — blocks incoming shift if previous shift didn't deliver */}
-            <ShiftBlockScreen userRole={user?.role} />
-
-            {/* Shift End Alert — reminder 10 min before shift ends */}
-            <ShiftEndAlert userRole={user?.role} />
+            {/* DISABLED — Shift handoff system paused */}
+            {/* <ShiftBlockScreen userRole={user?.role} /> */}
+            {/* <ShiftEndAlert userRole={user?.role} /> */}
 
             {/* PIN Lock Screen Overlay */}
             {isLocked && (

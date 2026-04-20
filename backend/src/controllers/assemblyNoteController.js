@@ -91,7 +91,8 @@ const assemblyNoteController = {
             // If the note is pending AND we know the template stage, recalculate
             // plannedQuantity from the current template inputs so template changes
             // propagate automatically to all scheduled (not yet started) batches.
-            const isFormacionNote = note.processType?.code === 'FORMACION';
+            const processCode = note.processType?.code;
+            const isFormacionNote = ['FORMACION', 'G_FORMACION'].includes(processCode);
             if (note.status === 'PENDING' && note.stageId && note.targetQuantity && !isFormacionNote) {
                 const templateInputs = await prisma.assemblyTemplateStageInput.findMany({
                     where: { stageId: note.stageId },
@@ -112,8 +113,8 @@ const assemblyNoteController = {
                     // absolute grams (already scaled), NOT per-unit ratios. Multiplying
                     // again by targetQuantity would produce wildly inflated values.
                     // Live recalc would lose the scaling and show raw template values.
-                    const isPesajeNote = note.processType?.code === 'PESAJE';
-                    const isEnsambleNote = note.processType?.code === 'ENSAMBLE';
+                    const isPesajeNote = ['PESAJE', 'G_PESAJE'].includes(processCode);
+                    const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(processCode);
                     if (isPesajeNote || isEnsambleNote) {
                         // Keep stored DB values — they are already correct
                         // Just re-sort items to match template order (below)
@@ -1470,6 +1471,10 @@ const assemblyNoteController = {
                             unit: input.unit || 'gramo',
                             notes: null
                         }));
+                        const aggTargetQuantity = aggItems.reduce((sum, item) => {
+                            const unit = String(item.unit || '').toLowerCase();
+                            return sum + (unit === 'kg' ? item.plannedQuantity * 1000 : item.plannedQuantity);
+                        }, 0);
 
                         const aggNote = await prisma.assemblyNote.create({
                             data: {
@@ -1480,7 +1485,7 @@ const assemblyNoteController = {
                                 stageId: stage._fromSubTemplate ? null : stage.id,
                                 stageOrder: globalStageOrder,
                                 stageName: `${stage.stageName} — Total ${baseQty} lotes`,
-                                targetQuantity: baseQty,
+                                targetQuantity: aggTargetQuantity,
                                 unit: noteUnit,
                                 status: 'PENDING',
                                 processTypeId: stage.processTypeId,

@@ -77,27 +77,26 @@ exports.getSuggestions = async (req, res) => {
             safetyStockDays: globalConfig.safetyStockDays || 2
         };
 
-        // 1c. Fetch Order Deficit (real remaining = requestedQty - scannedQty)
-        // Note: pendingQty is unreliable because approveOrder sets it to 0
+        // 1c. Fetch Order Deficit (full requestedQty, not remaining)
+        // Siigo stock only decrements on invoice (DELIVERED), so picked-but-not-invoiced
+        // items still count in currentStock. We must use full requestedQty as demand
+        // to keep both sides of the equation consistent with Siigo.
         const productIds = products.map(p => p.id);
         const orderItemsForDeficit = await prisma.orderItem.findMany({
             where: {
                 productId: { in: productIds },
-                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] } }
             },
             select: {
                 productId: true,
                 requestedQty: true,
-                pickingItems: { select: { scannedQty: true } }
             }
         });
-        // Map: productId -> deficit units (requested - scanned)
+        // Map: productId -> total demand units (full requestedQty)
         const orderDeficitMap = {};
         for (const item of orderItemsForDeficit) {
-            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
-            const remaining = Math.max(0, item.requestedQty - scanned);
-            if (remaining > 0) {
-                orderDeficitMap[item.productId] = (orderDeficitMap[item.productId] || 0) + remaining;
+            if (item.requestedQty > 0) {
+                orderDeficitMap[item.productId] = (orderDeficitMap[item.productId] || 0) + item.requestedQty;
             }
         }
 
@@ -154,8 +153,9 @@ exports.getSuggestions = async (req, res) => {
                 const sizeInfo = parseSize(p.name, DENSITY);
                 const kgFactor = sizeInfo.kgFactor || 0;
 
-                // USE GLOBAL STOCK (Include Maquilas)
-                const stockKg = p.currentStock * kgFactor;
+                // USE GLOBAL STOCK (Include Maquilas + Production Zone)
+                const totalProductStock = p.currentStock + (p.productionZoneStock || 0);
+                const stockKg = totalProductStock * kgFactor;
                 totalStockKg += stockKg;
 
                 // Order deficit for this product
@@ -169,13 +169,17 @@ exports.getSuggestions = async (req, res) => {
                 totalInProgressKg += inProgressUnits * kgFactor;
 
                 let label = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit === 'KG' ? 'kg' : sizeInfo.unit}`;
+                const velocity = p.dailyVelocity || 0;
+                const need7d = Math.round(velocity * 7);
                 stockDetails.push({
                     label,
-                    units: p.currentStock,
+                    units: totalProductStock,
                     kg: stockKg,
                     sizeWeight: kgFactor,
-                    deficitUnits, // per-size deficit for display
-                    scheduledUnits: scheduledMap[p.id] || 0
+                    deficitUnits,
+                    scheduledUnits: scheduledMap[p.id] || 0,
+                    need7d,
+                    dailyVelocity: Math.round(velocity * 10) / 10
                 });
             });
 
@@ -203,7 +207,7 @@ exports.getSuggestions = async (req, res) => {
             if (effectiveStockKg < 0) status = 'RED';
 
             // "amarillo si al menos uno de los tamaños esta en riesgo"
-            const hasMissingSize = items.some(p => p.currentStock <= 0);
+            const hasMissingSize = items.some(p => (p.currentStock + (p.productionZoneStock || 0)) <= 0);
             if (hasMissingSize && status === 'GREEN') status = 'YELLOW';
 
             // Available Sizes String
@@ -321,35 +325,39 @@ exports.calculateBatchMix = async (req, res) => {
 
         const config = line === 'geniality' ? {
             targetDays: globalConfig.geniality_targetDays || globalConfig.targetDays || 8,
+            safetyStockDays: globalConfig.geniality_safetyStockDays || globalConfig.safetyStockDays || 2,
             syrupRatio: 1.0
         } : {
             targetDays: globalConfig.targetDays || 8,
+            safetyStockDays: globalConfig.safetyStockDays || 2,
             syrupRatio: globalConfig.syrupRatio || 0.70
         };
 
         const TARGET_DAYS = config.targetDays;
+        const SAFETY_DAYS = config.safetyStockDays;
         const SYRUP_RATIO = config.syrupRatio;
         const BATCH_SIZE = line === 'geniality' ? 100 : 120;
         const DENSITY = line === 'geniality' ? 1.35 : 1.0;
 
-        // Fetch real order demand per product
+        // Fetch real order demand per product (full requestedQty)
+        // Siigo stock includes picked-but-not-invoiced items, so demand must
+        // use full requestedQty to stay consistent. Includes READY orders too.
         const productIds = products.map(p => p.id);
         const orderItemsRaw = await prisma.orderItem.findMany({
             where: {
                 productId: { in: productIds },
-                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] } }
             },
             select: {
                 productId: true,
                 requestedQty: true,
-                pickingItems: { select: { scannedQty: true } }
             }
         });
         const orderDemandMap = {};
         orderItemsRaw.forEach(item => {
-            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
-            const remaining = Math.max(0, item.requestedQty - scanned);
-            if (remaining > 0) orderDemandMap[item.productId] = (orderDemandMap[item.productId] || 0) + remaining;
+            if (item.requestedQty > 0) {
+                orderDemandMap[item.productId] = (orderDemandMap[item.productId] || 0) + item.requestedQty;
+            }
         });
 
         // Fetch in-progress production per product
@@ -374,13 +382,14 @@ exports.calculateBatchMix = async (req, res) => {
             if (sizeInfo.kgFactor === 0) return;
 
             const velocity = p.dailyVelocity || 0;
-            const targetStock = velocity * TARGET_DAYS;
-            const deficit = Math.max(0, targetStock - p.currentStock);
+            const targetStock = velocity * (TARGET_DAYS + SAFETY_DAYS);
+            const totalStock = p.currentStock + (p.productionZoneStock || 0);
+            const deficit = Math.max(0, targetStock - totalStock);
             const deficitKg = deficit * sizeInfo.kgFactor * SYRUP_RATIO;
 
             const orderDemand = orderDemandMap[p.id] || 0;
             const inProgress = inProgressMap[p.id] || 0;
-            const netOrderNeed = Math.max(0, orderDemand - Math.max(0, p.currentStock) - inProgress);
+            const netOrderNeed = Math.max(0, orderDemand - Math.max(0, totalStock) - inProgress);
 
             productNeeds.push({
                 product: p,
@@ -407,7 +416,7 @@ exports.calculateBatchMix = async (req, res) => {
         let totalFlavorStock = 0;
         products.forEach(p => {
             const sizeInfo = parseSize(p.name, DENSITY);
-            if (sizeInfo.kgFactor) totalFlavorStock += (p.currentStock * sizeInfo.kgFactor);
+            if (sizeInfo.kgFactor) totalFlavorStock += ((p.currentStock + (p.productionZoneStock || 0)) * sizeInfo.kgFactor);
         });
 
         let boostedNeedKg = totalNeedKg;
@@ -417,81 +426,217 @@ exports.calculateBatchMix = async (req, res) => {
 
         let targetTotalKg = Math.ceil(boostedNeedKg / BATCH_SIZE) * BATCH_SIZE;
 
-        console.log('DEBUG MIX:', { flavor, totalNeedKg, boostedNeedKg, totalFlavorStock, targetTotalKg });
-
-        let strategy = 'FILL_TO_BATCH';
-
-        // === FIRST PASS: allocate raw units ===
+        // === STEP 1: Calculate MINIMUM units per size (from order demand, pack-rounded) ===
         const rawAllocations = [];
         productNeeds.forEach(item => {
-            const remainder = targetTotalKg - totalNeedKg;
-            let extraKg = 0;
-            if (useFallback) {
-                let sizeKey = '350';
-                if (item.kgFactor > 3) sizeKey = '3400';
-                else if (item.kgFactor > 1) sizeKey = '1150';
-                extraKg = remainder * (DEFAULT_DISTRIBUTION[sizeKey] || 0.33);
-            } else {
-                const share = item.dailyVolumeKg / totalDailyVolumeKg;
-                extraKg = remainder * share;
-            }
-            const allocatedKg = item.deficitKg + extraKg;
-
-            const syrupNeededPerUnit = item.kgFactor * SYRUP_RATIO;
-            const rawUnits = Math.max(0, Math.round(allocatedKg / syrupNeededPerUnit));
-
-            // Ensure minimum covers net order demand
-            const effectiveUnits = Math.max(rawUnits, item.netOrderNeedUnits);
-
-            // Round UP to complete boxes (packSize)
             const ps = item.packSize;
-            let boxRoundedUnits = ps > 1 ? Math.ceil(effectiveUnits / ps) * ps : effectiveUnits;
-
-            // For 350GR Liquipops: add 1 contramuestra per box-rounded batch
             const is350 = item.sizeValue <= 400 && item.sizeValue >= 300;
-            if (is350 && boxRoundedUnits > 0) {
-                boxRoundedUnits += 1; // contramuestra
-            }
-
-            rawAllocations.push({
-                ...item,
-                rawUnits,
-                boxRoundedUnits,
-                is350
-            });
+            let minUnits = ps > 1 ? Math.ceil(item.netOrderNeedUnits / ps) * ps : item.netOrderNeedUnits;
+            if (is350 && line !== 'geniality') minUnits += 1; // contramuestra only for Liquipops
+            rawAllocations.push({ ...item, minUnits, allocatedUnits: minUnits, is350 });
         });
 
-        // === Build final mix ===
-        const finalMix = rawAllocations.map(item => ({
+        // === STEP 2: Calculate batch count ===
+        let totalMinBaseKg = rawAllocations.reduce((s, i) => s + (i.allocatedUnits * i.kgFactor * SYRUP_RATIO), 0);
+        let batchesNeeded = Math.max(1, Math.ceil(totalMinBaseKg / BATCH_SIZE));
+        let velocityBatches = Math.ceil(boostedNeedKg / BATCH_SIZE);
+        batchesNeeded = Math.max(batchesNeeded, velocityBatches);
+        if (line === 'geniality') batchesNeeded = Math.min(7, batchesNeeded);
+        targetTotalKg = batchesNeeded * BATCH_SIZE;
+
+        // Helper: build a mix entry object
+        const buildEntry = (item, units, cm) => ({
             productId: item.product.id,
             sku: item.product.sku,
             name: item.product.name,
             sizeLabel: `${Math.round(item.kgFactor * 1000) / 1000} Kg`,
             kgFactor: Math.round(item.kgFactor * 1000) / 1000,
             packSize: item.packSize,
-            plannedUnits: item.boxRoundedUnits,
-            plannedWeightKg: Math.round(item.boxRoundedUnits * item.kgFactor * 100) / 100,
+            plannedUnits: units,
+            plannedWeightKg: Math.round(units * item.kgFactor * 100) / 100,
             orderDemandUnits: item.orderDemandUnits,
-            boxes: item.packSize > 1 ? Math.floor(item.boxRoundedUnits / item.packSize) : null,
-            contramuestra: item.is350 ? 1 : 0
-        }));
-
-        const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
-
-        // Note: totalPlannedKg is PRODUCT weight, targetTotalKg is SYRUP weight.
-        // Product weight naturally exceeds syrup weight (syrupRatio < 1). Don't inflate targetTotalKg.
-
-        const syrupBatchesNeeded = Math.ceil(targetTotalKg / BATCH_SIZE);
-
-        res.json({
-            flavor,
-            strategy,
-            totalPlannedKg,
-            totalSyrupKg: targetTotalKg,
-            targetBatchCount: syrupBatchesNeeded,
-            targetTotalKg,
-            mix: finalMix
+            boxes: item.packSize > 1 ? Math.round((units - cm) / item.packSize) : null,
+            contramuestra: cm
         });
+
+        if (line !== 'geniality') {
+            // ═══════════════════════════════════════════════════════════════
+            // LIQUIPOPS: Split batches by labeling group for efficiency
+            // Group A: medium sizes (1150g) → own batches
+            // Group B: large sizes (3400g) + small (350g) → combined batches
+            // Each batch ALWAYS gets 1 contramuestra (350g)
+            // ═══════════════════════════════════════════════════════════════
+            const smallItem = rawAllocations.find(i => i.is350);
+            const mediumItems = rawAllocations.filter(i => !i.is350 && i.sizeValue >= 500 && i.sizeValue < 2000);
+            const largeItems = rawAllocations.filter(i => !i.is350 && i.sizeValue >= 2000);
+
+            // If no large sizes, medium+small go together (no labeling split needed)
+            const groupA = largeItems.length > 0 ? mediumItems : [];
+            const groupB_nonSmall = largeItems.length > 0 ? largeItems : mediumItems;
+
+            // Batch count per group based on demand
+            const groupABaseKg = groupA.reduce((s, i) => s + i.minUnits * i.kgFactor * SYRUP_RATIO, 0);
+            let groupABatches = groupABaseKg > 0 ? Math.max(1, Math.ceil(groupABaseKg / BATCH_SIZE)) : 0;
+
+            const groupBLargeKg = groupB_nonSmall.reduce((s, i) => s + i.minUnits * i.kgFactor * SYRUP_RATIO, 0);
+            const small350DemandPacks = smallItem ? Math.floor((smallItem.minUnits - 1) / smallItem.packSize) : 0;
+            const small350DemandKg = small350DemandPacks * (smallItem?.packSize || 0) * (smallItem?.kgFactor || 0) * SYRUP_RATIO;
+            let groupBBatches = Math.max(groupBLargeKg + small350DemandKg > 0 ? 1 : 0, Math.ceil((groupBLargeKg + small350DemandKg) / BATCH_SIZE));
+
+            // Ensure total meets velocity target
+            if (groupABatches + groupBBatches < batchesNeeded) {
+                groupBBatches += batchesNeeded - groupABatches - groupBBatches;
+            }
+
+            const suggestedBatches = [];
+
+            // --- GROUP A: Medium-size batches (e.g. 1150g + contramuestra) ---
+            for (let b = 0; b < groupABatches; b++) {
+                const mix = [];
+                let baseKg = 0;
+                const cmReserve = smallItem ? smallItem.kgFactor * SYRUP_RATIO : 0;
+                const cap = BATCH_SIZE - cmReserve;
+
+                for (const item of groupA) {
+                    const packKg = item.packSize * item.kgFactor * SYRUP_RATIO;
+                    let units = 0;
+                    while (baseKg + packKg <= cap + 0.5) { units += item.packSize; baseKg += packKg; }
+                    if (units > 0) mix.push(buildEntry(item, units, 0));
+                }
+                if (smallItem) mix.push(buildEntry(smallItem, 1, 1));
+
+                suggestedBatches.push({
+                    batchIndex: suggestedBatches.length + 1,
+                    type: 'MEDIUM',
+                    label: groupA.map(i => `${Math.round(i.sizeValue)}g`).join(' + '),
+                    baseWeightKg: BATCH_SIZE,
+                    mix
+                });
+            }
+
+            // --- GROUP B: Large + Small batches (e.g. 3400g + 350g) ---
+            const packsPerBatch = groupBBatches > 0 ? Math.floor(small350DemandPacks / groupBBatches) : 0;
+            let remainPacks = small350DemandPacks - packsPerBatch * groupBBatches;
+
+            for (let b = 0; b < groupBBatches; b++) {
+                const mix = [];
+                let baseKg = 0;
+
+                // Allocate 350g: demand packs (distributed evenly) + 1 contramuestra
+                if (smallItem) {
+                    let packs = packsPerBatch;
+                    if (remainPacks > 0) { packs++; remainPacks--; }
+                    const smallUnits = packs * smallItem.packSize + 1; // +1 contramuestra
+                    baseKg += smallUnits * smallItem.kgFactor * SYRUP_RATIO;
+                    mix.push(buildEntry(smallItem, smallUnits, 1));
+                }
+
+                // Fill remaining capacity with large sizes (pack-aligned)
+                const sorted = [...groupB_nonSmall].sort((a, b2) => (b2.dailyVolumeKg || 0) - (a.dailyVolumeKg || 0));
+                const unitCounts = {};
+                sorted.forEach(i => { unitCounts[i.product.id] = 0; });
+                let filled = true;
+                while (filled) {
+                    filled = false;
+                    for (const item of sorted) {
+                        const packKg = item.packSize * item.kgFactor * SYRUP_RATIO;
+                        if (baseKg + packKg <= BATCH_SIZE + 0.5) {
+                            unitCounts[item.product.id] += item.packSize;
+                            baseKg += packKg;
+                            filled = true;
+                        }
+                    }
+                }
+                for (const item of sorted) {
+                    if (unitCounts[item.product.id] > 0) {
+                        mix.push(buildEntry(item, unitCounts[item.product.id], 0));
+                    }
+                }
+
+                const bLabel = [...sorted.filter(i => unitCounts[i.product.id] > 0).map(i => `${Math.round(i.sizeValue)}g`), smallItem ? '350g' : ''].filter(Boolean).join(' + ');
+                suggestedBatches.push({
+                    batchIndex: suggestedBatches.length + 1,
+                    type: 'LARGE_SMALL',
+                    label: bLabel,
+                    baseWeightKg: BATCH_SIZE,
+                    mix
+                });
+            }
+
+            // Build aggregate mix from all suggested batches
+            const aggMap = {};
+            suggestedBatches.forEach(batch => {
+                batch.mix.forEach(item => {
+                    if (!aggMap[item.productId]) {
+                        aggMap[item.productId] = { ...item };
+                    } else {
+                        aggMap[item.productId].plannedUnits += item.plannedUnits;
+                        aggMap[item.productId].plannedWeightKg += item.plannedWeightKg;
+                        aggMap[item.productId].contramuestra += item.contramuestra;
+                    }
+                });
+            });
+            const finalMix = Object.values(aggMap).map(m => ({
+                ...m,
+                plannedWeightKg: Math.round(m.plannedWeightKg * 100) / 100,
+                boxes: m.packSize > 1 ? Math.round((m.plannedUnits - m.contramuestra) / m.packSize) : null
+            }));
+
+            const totalPlannedKg = finalMix.reduce((a, m) => a + m.plannedWeightKg, 0);
+            const totalBaseKg = Math.round(suggestedBatches.reduce((a, batch) =>
+                a + batch.mix.reduce((s, m) => s + m.plannedUnits * m.kgFactor * SYRUP_RATIO, 0), 0));
+
+            res.json({
+                flavor,
+                strategy: 'SPLIT_BY_LABELING',
+                totalPlannedKg,
+                totalBaseKg,
+                totalSyrupKg: suggestedBatches.length * BATCH_SIZE,
+                targetBatchCount: suggestedBatches.length,
+                targetTotalKg: suggestedBatches.length * BATCH_SIZE,
+                mix: finalMix,
+                suggestedBatches
+            });
+
+        } else {
+            // ═══════════════════════════════════════════════════════════════
+            // GENIALITY: All sizes in one mix (old fill-to-batch logic)
+            // ═══════════════════════════════════════════════════════════════
+            let currentBaseKg = totalMinBaseKg;
+            const capacityKg = targetTotalKg;
+            const sortedForFill = [...rawAllocations].sort((a, b2) => (b2.dailyVolumeKg || 0) - (a.dailyVolumeKg || 0));
+            let filled = true;
+            while (currentBaseKg < capacityKg - 0.5 && filled) {
+                filled = false;
+                for (const item of sortedForFill) {
+                    const ps = item.packSize || 1;
+                    const packBaseKg = ps * item.kgFactor * SYRUP_RATIO;
+                    if (currentBaseKg + packBaseKg <= capacityKg + 0.5) {
+                        item.allocatedUnits += ps;
+                        currentBaseKg += packBaseKg;
+                        filled = true;
+                    }
+                }
+            }
+
+            const finalMix = rawAllocations.map(item => {
+                return buildEntry(item, item.allocatedUnits, 0);
+            });
+
+            const totalPlannedKg = finalMix.reduce((acc, curr) => acc + curr.plannedWeightKg, 0);
+            const totalBaseKg = Math.round(currentBaseKg);
+
+            res.json({
+                flavor,
+                strategy: 'FILL_TO_BATCH',
+                totalPlannedKg,
+                totalBaseKg,
+                totalSyrupKg: targetTotalKg,
+                targetBatchCount: batchesNeeded,
+                targetTotalKg,
+                mix: finalMix
+            });
+        }
 
     } catch (error) {
         console.error(error);
@@ -782,12 +927,11 @@ exports.getFlavorDemand = async (req, res) => {
             productMap[p.id] = { ...p, sizeInfo };
         });
 
-        // Pending order items with distributor info
-        // Note: APPROVED orders set pendingQty=0 on approval, so we also check requestedQty > scanned
+        // Order items with distributor info (includes READY - picked but not invoiced)
         const orderItems = await prisma.orderItem.findMany({
             where: {
                 productId: { in: productIds },
-                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING'] } }
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] } }
             },
             include: {
                 order: {
@@ -803,12 +947,8 @@ exports.getFlavorDemand = async (req, res) => {
             }
         });
 
-        // Filter to only items that still need fulfillment
-        const pendingItems = orderItems.filter(item => {
-            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
-            const remaining = item.requestedQty - scanned;
-            return remaining > 0;
-        });
+        // All items from active orders count as demand (full requestedQty)
+        const pendingItems = orderItems.filter(item => item.requestedQty > 0);
 
         // Group by distributor
         const distMap = {};
@@ -820,11 +960,9 @@ exports.getFlavorDemand = async (req, res) => {
             }
             const prod = productMap[item.productId];
             const sizeLabel = prod ? `${prod.sizeInfo.value}${prod.sizeInfo.unit === 'ML' ? 'ml' : prod.sizeInfo.unit}` : '?';
-            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
-            const remaining = item.requestedQty - scanned;
             distMap[distKey].items.push({
                 sizeLabel,
-                qty: remaining
+                qty: item.requestedQty
             });
         });
 
@@ -842,15 +980,13 @@ exports.getFlavorDemand = async (req, res) => {
             };
         }).sort((a, b) => b.totalUnits - a.totalUnits);
 
-        // Per-size totals
+        // Per-size totals (full requestedQty to stay consistent with Siigo stock)
         const sizeTotals = {};
         pendingItems.forEach(item => {
             const prod = productMap[item.productId];
             const sizeLabel = prod ? `${prod.sizeInfo.value}${prod.sizeInfo.unit === 'ML' ? 'ml' : prod.sizeInfo.unit}` : '?';
-            const scanned = item.pickingItems?.reduce((s, pi) => s + pi.scannedQty, 0) || 0;
-            const remaining = item.requestedQty - scanned;
             if (!sizeTotals[sizeLabel]) sizeTotals[sizeLabel] = 0;
-            sizeTotals[sizeLabel] += remaining;
+            sizeTotals[sizeLabel] += item.requestedQty;
         });
 
         // Safety stock: 7 days per size — includes scheduled production
@@ -872,7 +1008,7 @@ exports.getFlavorDemand = async (req, res) => {
             const sizeLabel = `${sizeInfo.value}${sizeInfo.unit === 'ML' ? 'ml' : sizeInfo.unit}`;
             const dailyVelocity = p.dailyVelocity || 0;
             const need7d = Math.ceil(dailyVelocity * 7);
-            const current = p.currentStock || 0;
+            const current = (p.currentStock || 0) + (p.productionZoneStock || 0);
             const scheduled = scheduledByProduct[p.id] || 0;
             const effectiveStock = current + scheduled;
             const deficit = Math.max(0, need7d - effectiveStock);

@@ -160,6 +160,11 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     })();
 
     // ── Local state ──────────────────────────────────────────────────────────
+
+    // ── Destino obligatorio ──
+    const [destino, setDestino] = useState(null); // null | 'liquipops' | 'maquila' | 'mixto'
+    const MAQUILA_UNITS_PER_BOX = 6;
+
     const [unitsPerBox, setUnitsPerBox] = useState(defaultUnitsPerBox);
 
     // ── Contramuestra: solo para LIQUIPOPS 350g (cualquier sabor) ──
@@ -169,22 +174,60 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     // ── Maquila / Marca Blanca ──
     const [maquilaQty, setMaquilaQty] = useState(0);
 
-    // packableUnits = aprobados - contramuestra - maquila
-    const packableUnits = Math.max(0, approvedTarros - contramuestraQty - Number(maquilaQty || 0));
+    // When destino changes, auto-set maquila qty, box sizes, and reset pending box answer
+    useEffect(() => {
+        if (destino === 'liquipops') {
+            setMaquilaQty(0);
+            setUnitsPerBox(defaultUnitsPerBox);
+        } else if (destino === 'maquila') {
+            setMaquilaQty(approvedTarros - contramuestraQty);
+            setUnitsPerBox(MAQUILA_UNITS_PER_BOX);
+        } else if (destino === 'mixto') {
+            setUnitsPerBox(defaultUnitsPerBox);
+        }
+        setPendingAnswer(null);
+        setPendingCurrentUnits('');
+        setPendingConfirmed(false);
+    }, [destino]); // eslint-disable-line
 
-    // Maquila box distribution (separate labels)
+    // packableUnits = units for regular Liquipops line (excludes contramuestra and maquila)
     const maquilaNum = Number(maquilaQty) || 0;
-    const maquilaFullBoxes = maquilaNum > 0 && unitsPerBox > 0 ? Math.floor(maquilaNum / unitsPerBox) : 0;
-    const maquilaPartialUnits = maquilaNum > 0 && unitsPerBox > 0 ? Math.round(maquilaNum % unitsPerBox) : 0;
+    const packableUnits = Math.max(0, approvedTarros - contramuestraQty - maquilaNum);
+
+    // ── Pending Box (Caja Pendiente) ──────────────────────────────────────
+    const [pendingBox, setPendingBox] = useState(null);  // from DB
+    const [pendingBoxLoading, setPendingBoxLoading] = useState(false);
+    const [pendingAnswer, setPendingAnswer] = useState(null); // null | 'yes' | 'no'
+    const [pendingCurrentUnits, setPendingCurrentUnits] = useState(''); // uds found in the box
+    const [pendingConfirmed, setPendingConfirmed] = useState(false);
+
+    // Box size for pending box follows destino
+    const pendingBoxSize = destino === 'maquila' ? MAQUILA_UNITS_PER_BOX : defaultUnitsPerBox;
+    const pendingNeeds = (pendingAnswer === 'yes' && pendingConfirmed && pendingCurrentUnits !== '')
+        ? Math.max(0, pendingBoxSize - Number(pendingCurrentUnits)) : 0;
+    const pendingFillQty = (!isWeightBased && destino && pendingNeeds > 0)
+        ? Math.min(pendingNeeds, destino === 'maquila' ? maquilaNum : packableUnits) : 0;
+    // Remaining units for NEW boxes after filling pending
+    const newBoxUnits = packableUnits - pendingFillQty;
+    // Auto-calc new boxes from remaining
+    const autoFullBoxes = unitsPerBox > 0 ? Math.floor(newBoxUnits / unitsPerBox) : 0;
+    const autoPartialUnits = unitsPerBox > 0 ? Math.round(newBoxUnits % unitsPerBox) : 0;
+
+    // Maquila box distribution (uses its own box size, subtract pending fill for maquila)
+    const maquilaBoxSize = destino === 'maquila' ? unitsPerBox : MAQUILA_UNITS_PER_BOX;
+    const maquilaNewUnits = destino === 'maquila' ? Math.max(0, maquilaNum - pendingFillQty) : maquilaNum;
+    const maquilaFullBoxes = maquilaNewUnits > 0 && maquilaBoxSize > 0 ? Math.floor(maquilaNewUnits / maquilaBoxSize) : 0;
+    const maquilaPartialUnits = maquilaNewUnits > 0 && maquilaBoxSize > 0 ? Math.round(maquilaNewUnits % maquilaBoxSize) : 0;
     const maquilaLabelCount = maquilaFullBoxes + (maquilaPartialUnits > 0 ? 1 : 0);
 
-    // Calculate defaults based on PACKABLE production (excludes contramuestra)
-    const defaultFullBoxes = defaultUnitsPerBox > 0 ? Math.floor(packableUnits / defaultUnitsPerBox) : 0;
-    const defaultPartialUnits = defaultUnitsPerBox > 0 ? Math.round(packableUnits % defaultUnitsPerBox) : 0;
-    
+    // Regular Liquipops box distribution
+    const regularBoxSize = destino === 'maquila' ? 0 : (unitsPerBox || defaultUnitsPerBox);
+    const defaultFullBoxes = regularBoxSize > 0 ? Math.floor(packableUnits / regularBoxSize) : 0;
+    const defaultPartialUnits = regularBoxSize > 0 ? Math.round(packableUnits % regularBoxSize) : 0;
+
     const [fullBoxes, setFullBoxes] = useState(defaultFullBoxes);
     const [partialUnits, setPartialUnits] = useState(defaultPartialUnits);
-    
+
     // Defective labels: default = 1 label per defective unit (each unit needs its own NO CONFORME sticker)
     const [defectiveBoxes, setDefectiveBoxes] = useState(defectiveTarros > 0 ? defectiveTarros : 0);
 
@@ -192,21 +235,6 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     const [printed, setPrinted] = useState(false);
     const [printing, setPrinting] = useState(false);
     const [labelCopies, setLabelCopies] = useState(1);
-
-    // ── Pending Box (Caja Pendiente) ──────────────────────────────────────
-    const [pendingBox, setPendingBox] = useState(null);  // from DB
-    const [pendingBoxLoading, setPendingBoxLoading] = useState(false);
-    const [pendingBoxDiscarded, setPendingBoxDiscarded] = useState(false);
-
-    // How many units go to fill the pending box?
-    const pendingFillQty = (pendingBox && !pendingBoxDiscarded && !isWeightBased)
-        ? Math.max(0, Math.min(pendingBox.boxSize - pendingBox.currentQty, packableUnits))
-        : 0;
-    // Remaining units for NEW boxes after filling pending
-    const newBoxUnits = packableUnits - pendingFillQty;
-    // Auto-calc new boxes from remaining
-    const autoFullBoxes = unitsPerBox > 0 ? Math.floor(newBoxUnits / unitsPerBox) : 0;
-    const autoPartialUnits = unitsPerBox > 0 ? Math.round(newBoxUnits % unitsPerBox) : 0;
 
     // Printer mode: 'bluetooth' (SAT) or 'network' (Zebra)
     const [mode, setMode] = useState(() => localStorage.getItem('label_printer_mode') || 'bluetooth');
@@ -220,15 +248,25 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     const { zebraStatus, zebraIp, printZPL } = useZebra();
 
 
-    const totalIngested = isWeightBased 
-        ? packableUnits 
-        : (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
-    // Valid if: regular packing is correct, OR there's nothing to pack but special labels exist
+    const totalIngested = isWeightBased
+        ? packableUnits
+        : destino === 'maquila'
+            ? maquilaNum
+            : (Number(fullBoxes) * Number(unitsPerBox)) + Number(partialUnits) + pendingFillQty;
+    // Valid if: destino selected AND (regular packing is correct, OR nothing to pack but special labels exist)
     const hasSpecialLabels = Number(contramuestraQty) > 0 || Number(defectiveBoxes) > 0 || maquilaLabelCount > 0;
     const isCarritoDone = hasCarriots && receivedQtyFromCarriots === 0 && packableUnits === 0;
-    const isValid = (totalIngested > 0 && totalIngested <= packableUnits)
+    const destinoSelected = destino !== null || isWeightBased || isCarritoDone;
+    const pendingBoxResolved = isWeightBased
+        || !destino
+        || pendingAnswer === 'no'
+        || (pendingAnswer === 'yes' && pendingConfirmed);
+    const distributionValid = destinoSelected && (
+        (totalIngested > 0 && (destino === 'maquila' ? true : totalIngested <= packableUnits))
         || (totalIngested === 0 && packableUnits === 0 && hasSpecialLabels)
-        || isCarritoDone;
+        || isCarritoDone
+    );
+    const isValid = distributionValid && pendingBoxResolved;
     // Total labels = new full + partial + defective + contramuestra + pending + maquila
     const totalBoxesToPrint = (isWeightBased
         ? Number(labelCopies) + Number(defectiveBoxes)
@@ -252,22 +290,26 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
 
     // Notify wizard whenever boxes data changes
     useEffect(() => {
-        onMarcadoChange?.({ 
-            unidadesPorCaja: Number(unitsPerBox), 
+        onMarcadoChange?.({
+            unidadesPorCaja: Number(unitsPerBox),
             cajasLlenas: Number(fullBoxes),
             unidadesSueltas: Number(partialUnits),
             totalCajas: totalBoxesToPrint,
-            ingestTotal: totalIngested,
+            ingestTotal: destino === 'maquila' ? maquilaNum : totalIngested,
             contramuestraQty: Number(contramuestraQty),
             maquilaQty: maquilaNum,
+            maquilaBoxSize,
+            destino,
             pendingBoxFill: pendingFillQty,
-            pendingBox: pendingBox && !pendingBoxDiscarded ? pendingBox : null,
+            pendingBox: pendingAnswer === 'yes' && pendingConfirmed
+                ? (pendingBox || { id: null, boxSize: pendingBoxSize, currentQty: Number(pendingCurrentUnits) || 0 })
+                : null,
             pendingBoxOriginal: pendingBox,
-            pendingBoxDiscarded: pendingBoxDiscarded,
             newPartialUnits: Number(partialUnits),
-            isValid
+            isValid,
+            printed
         });
-    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, isValid, contramuestraQty, maquilaNum, pendingFillQty, pendingBox, pendingBoxDiscarded, onMarcadoChange]);
+    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, isValid, contramuestraQty, maquilaNum, maquilaBoxSize, destino, pendingFillQty, pendingAnswer, pendingConfirmed, pendingBox, printed, onMarcadoChange]);
 
     // ── Fix: recalculate when freshEmpaque arrives (async fetch corrects stale initial state) ──
     // On first mount, approvedTarros/defectiveTarros come from stale processParameters (or fallback to totalTarros).
@@ -280,8 +322,8 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
         const newApproved  = approvedTarros;
         const newDefective = defectiveTarros;
         const newPackable  = Math.max(0, newApproved - (isLiquipops350 ? 1 : 0));
-        const fill = pendingBox && !pendingBoxDiscarded
-            ? Math.max(0, Math.min(pendingBox.boxSize - pendingBox.currentQty, newPackable)) : 0;
+        const fill = (pendingAnswer === 'yes' && pendingConfirmed && destino && destino !== 'maquila')
+            ? Math.max(0, Math.min(pendingNeeds, newPackable)) : 0;
         const rem  = newPackable - fill;
         if (defaultUnitsPerBox > 0) {
             setFullBoxes(Math.floor(rem / defaultUnitsPerBox));
@@ -319,26 +361,23 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
             .then(res => {
                 if (res.data && res.data.currentQty > 0) {
                     setPendingBox(res.data);
-                    // Auto-recalculate boxes: subtract pending fill from available
-                    const fill = Math.max(0, Math.min(res.data.boxSize - res.data.currentQty, packableUnits));
-                    const remaining = packableUnits - fill;
-                    if (remaining >= 0 && defaultUnitsPerBox > 0) {
-                        setFullBoxes(Math.floor(remaining / defaultUnitsPerBox));
-                        setPartialUnits(Math.round(remaining % defaultUnitsPerBox));
-                    }
                 }
             })
             .catch(err => console.warn('[MarcadoCajas] No pending box:', err.message))
             .finally(() => setPendingBoxLoading(false));
     }, [product.id, defaultUnitsPerBox]);
 
-    // When pending box is discarded, recalculate to use full packableUnits
+    // Recalculate box distribution when pending answer changes
     useEffect(() => {
-        if (pendingBoxDiscarded && !isWeightBased && defaultUnitsPerBox > 0) {
-            setFullBoxes(Math.floor(packableUnits / defaultUnitsPerBox));
-            setPartialUnits(Math.round(packableUnits % defaultUnitsPerBox));
-        }
-    }, [pendingBoxDiscarded]);
+        if (isWeightBased || (destino !== 'liquipops' && destino !== 'mixto')) return;
+        const boxSz = unitsPerBox || defaultUnitsPerBox;
+        if (boxSz <= 0) return;
+        const fill = (pendingAnswer === 'yes' && pendingConfirmed && pendingCurrentUnits !== '')
+            ? Math.min(Math.max(0, pendingBoxSize - Number(pendingCurrentUnits)), packableUnits) : 0;
+        const rem = Math.max(0, packableUnits - fill);
+        setFullBoxes(Math.floor(rem / boxSz));
+        setPartialUnits(Math.round(rem % boxSz));
+    }, [pendingAnswer, pendingConfirmed, pendingCurrentUnits]); // eslint-disable-line
 
 
     // ── QR generation (centralized via qrService) ────────────────────────────────────────
@@ -414,7 +453,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
 
             if (mode === 'bluetooth') {
                 // ── PENDING BOX label (completing previous partial box) ──
-                if (pendingFillQty > 0 && pendingBox) {
+                if (pendingFillQty > 0) {
                     // Use pendingFillQty (units FROM THIS LOT) not boxSize (total box).
                     // This ensures label quantities = exact production output.
                     const label = buildLotLabel({ ...baseData, quantity: pendingFillQty, statusText: 'CAJA COMPLETADA' }, 1);
@@ -445,12 +484,12 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 }
                 // ── MAQUILA labels ──
                 for (let i = 0; i < maquilaFullBoxes; i++) {
-                    const label = buildLotLabel({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, 1, { maquila: true });
+                    const label = buildLotLabel({ ...baseData, quantity: maquilaBoxSize, statusText: '' }, 1, { maquila: true });
                     await printer.sendTSPL(label);
                     if (i < maquilaFullBoxes - 1 || maquilaPartialUnits > 0) await new Promise(r => setTimeout(r, delay));
                 }
                 if (maquilaPartialUnits > 0) {
-                    const label = buildLotLabel({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1, { maquila: true });
+                    const label = buildLotLabel({ ...baseData, quantity: maquilaPartialUnits, statusText: '' }, 1, { maquila: true });
                     await printer.sendTSPL(label);
                 }
             } else {
@@ -459,7 +498,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 // Sending separate jobs causes backfeed/reposition cycles that skip labels.
 
                 // ── PENDING BOX label (completing previous partial box) ──
-                if (pendingFillQty > 0 && pendingBox) {
+                if (pendingFillQty > 0) {
                     // Use pendingFillQty (units FROM THIS LOT) not boxSize (total box).
                     // This ensures label quantities = exact production output.
                     const label = buildLotLabelZPL({ ...baseData, quantity: pendingFillQty, statusText: 'CAJA COMPLETADA' }, 1);
@@ -492,12 +531,12 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 }
                 // ── MAQUILA labels: batch full boxes ──
                 if (maquilaFullBoxes > 0) {
-                    const label = buildLotLabelZPL({ ...baseData, quantity: Number(unitsPerBox), statusText: 'MAQUILA' }, maquilaFullBoxes, { maquila: true });
+                    const label = buildLotLabelZPL({ ...baseData, quantity: maquilaBoxSize, statusText: '' }, maquilaFullBoxes, { maquila: true });
                     await sendToZebra(label);
                     if (maquilaPartialUnits > 0) await new Promise(r => setTimeout(r, delay));
                 }
                 if (maquilaPartialUnits > 0) {
-                    const label = buildLotLabelZPL({ ...baseData, quantity: maquilaPartialUnits, statusText: 'MAQUILA' }, 1, { maquila: true });
+                    const label = buildLotLabelZPL({ ...baseData, quantity: maquilaPartialUnits, statusText: '' }, 1, { maquila: true });
                     await sendToZebra(label);
                 }
             }
@@ -607,163 +646,66 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                             </div>
                         )}
 
-                        {/* Pending Box Banner */}
-                        {pendingBox && !pendingBoxDiscarded && !isWeightBased && (
-                            <div className="bg-blue-50 rounded-2xl p-4 border-2 border-blue-300 mb-3 animate-in fade-in">
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="flex-1">
-                                        <div className="flex items-center gap-2 mb-1.5">
-                                            <PackagePlus size={16} className="text-blue-600" />
-                                            <span className="text-xs font-bold text-blue-700 uppercase tracking-wider">
-                                                📦 Caja Pendiente — Lote Anterior
-                                            </span>
-                                        </div>
-                                        <div className="text-sm text-blue-800 font-semibold mb-1">
-                                            {pendingBox.currentQty}/{pendingBox.boxSize} uds
-                                            {pendingBox.currentQty >= pendingBox.boxSize
-                                                ? <span className="text-amber-600"> — ⚠️ Caja ya completa/sobre-llena</span>
-                                                : <> — Faltan <strong className="text-blue-900">{pendingBox.boxSize - pendingBox.currentQty} uds</strong> para completar</>}
-                                        </div>
-                                        {(pendingBox.entries || []).length > 0 && (
-                                            <div className="text-[10px] text-blue-500 mb-1">
-                                                {pendingBox.entries.map((e, i) => (
-                                                    <span key={i}>{i > 0 ? ' + ' : ''}Lote {e.lot}: {e.qty} uds</span>
-                                                ))}
-                                            </div>
-                                        )}
-                                        {pendingFillQty > 0 ? (
-                                            <div className="text-xs text-blue-600 font-bold mt-1">
-                                                ✅ Se tomarán <strong>{pendingFillQty} uds</strong> de este lote para completar la caja
-                                            </div>
-                                        ) : (
-                                            <div className="text-xs text-amber-600 font-bold mt-1">
-                                                ⚠️ La caja ya está llena — no se toman unidades de este lote
-                                            </div>
-                                        )}
-                                    </div>
+                        {/* ── SELECTOR DE DESTINO (obligatorio) ── */}
+                        {!isWeightBased && !isCarritoDone && (
+                            <div className={`rounded-2xl p-4 mb-3 border-2 ${!destino ? 'bg-amber-50 border-amber-400 animate-pulse' : 'bg-slate-50 border-slate-200'}`}>
+                                <div className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-3">
+                                    {!destino ? '👇 Selecciona el destino de esta producción' : 'Destino de producción'}
+                                </div>
+                                <div className="grid grid-cols-3 gap-2">
                                     <button
-                                        onClick={() => setPendingBoxDiscarded(true)}
-                                        className="flex items-center gap-1 px-3 py-1.5 bg-white border border-blue-200 rounded-xl text-xs text-blue-500 hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-all whitespace-nowrap"
-                                        title="La caja parcial ya se vendió o se descartó"
+                                        onClick={() => setDestino('liquipops')}
+                                        className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all font-bold text-sm ${destino === 'liquipops' ? 'bg-orange-500 text-white border-orange-500 shadow-lg scale-105' : 'bg-white text-slate-600 border-slate-200 hover:border-orange-300 hover:bg-orange-50'}`}
                                     >
-                                        <Trash2 size={12} />
-                                        Ya se vendió
+                                        <Package size={20} />
+                                        <span>Liquipops</span>
+                                        <span className={`text-[10px] font-normal ${destino === 'liquipops' ? 'text-orange-100' : 'text-slate-400'}`}>Cajas de {defaultUnitsPerBox}</span>
+                                    </button>
+                                    <button
+                                        onClick={() => setDestino('maquila')}
+                                        className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all font-bold text-sm ${destino === 'maquila' ? 'bg-teal-500 text-white border-teal-500 shadow-lg scale-105' : 'bg-white text-slate-600 border-slate-200 hover:border-teal-300 hover:bg-teal-50'}`}
+                                    >
+                                        <Factory size={20} />
+                                        <span>Maquila</span>
+                                        <span className={`text-[10px] font-normal ${destino === 'maquila' ? 'text-teal-100' : 'text-slate-400'}`}>Cajas de {MAQUILA_UNITS_PER_BOX}</span>
+                                    </button>
+                                    <button
+                                        onClick={() => setDestino('mixto')}
+                                        className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all font-bold text-sm ${destino === 'mixto' ? 'bg-violet-500 text-white border-violet-500 shadow-lg scale-105' : 'bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:bg-violet-50'}`}
+                                    >
+                                        <Package size={20} />
+                                        <span>Mixto</span>
+                                        <span className={`text-[10px] font-normal ${destino === 'mixto' ? 'text-violet-100' : 'text-slate-400'}`}>Ambas líneas</span>
                                     </button>
                                 </div>
                             </div>
                         )}
-                        {pendingBoxDiscarded && pendingBox && (
-                            <div className="bg-slate-100 rounded-xl px-3 py-2 mb-3 flex items-center justify-between text-xs text-slate-500">
-                                <span>📦 Caja pendiente descartada — todas las unidades van a cajas nuevas</span>
-                                <button onClick={() => setPendingBoxDiscarded(false)} className="text-blue-500 hover:text-blue-700 font-bold underline">Deshacer</button>
-                            </div>
-                        )}
 
-                        {/* Cant. a Empacar — inline row */}
-                        <div className={`rounded-2xl px-4 py-2.5 mb-3 flex items-center justify-between border-2 ${isValid ? 'bg-emerald-50 border-emerald-300' : 'bg-red-50 border-red-300'}`}>
-                            <div className={`text-xs font-bold uppercase tracking-wider ${isValid ? 'text-emerald-600' : 'text-red-500'}`}>Cant. a Empacar (en etiquetas)</div>
-                            <div className="flex items-baseline gap-1.5">
-                                <span className={`text-2xl font-black ${isValid ? 'text-emerald-700' : 'text-red-600'}`}>{totalIngested}</span>
-                                <span className={`text-xs ${isValid ? 'text-emerald-500' : 'text-red-400'}`}>
-                                    {totalIngested > packableUnits ? '⚠️ Supera empacado' : `→ ${totalBoxesToPrint} etiqueta${totalBoxesToPrint !== 1 ? 's' : ''}`}
-                                </span>
-                            </div>
-                        </div>
-
-                        {/* Box Config (Editable for Non-Weight) */}
-                        {!isWeightBased && (
-                            <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 mb-2">
-                                <div className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Distribución de Empaque (Aprobadas)</div>
-                                <div className="flex gap-3">
-                                    <div className="flex-1">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Cajas Completas</label>
-                                        <input type="number" min="0" 
-                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-slate-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
-                                            value={fullBoxes === '' ? '' : fullBoxes} 
-                                            onChange={e => setFullBoxes(e.target.value === '' ? '' : Number(e.target.value))} />
-                                    </div>
-                                    <div className="flex-1">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds por Caja</label>
-                                        <input type="number" min="1" 
-                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-slate-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
-                                            value={unitsPerBox === '' ? '' : unitsPerBox} 
-                                            onChange={e => setUnitsPerBox(e.target.value === '' ? '' : Number(e.target.value))} />
-                                    </div>
-                                    <div className="flex-1">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds Sueltas</label>
-                                        <input type="number" min="0" 
-                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-slate-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
-                                            value={partialUnits === '' ? '' : partialUnits} 
-                                            onChange={e => setPartialUnits(e.target.value === '' ? '' : Number(e.target.value))} />
-                                    </div>
-                                </div>
-                                {totalIngested > packableUnits && (
-                                    <div className="mt-3 text-xs font-bold text-red-500 bg-red-50 p-2.5 rounded-xl border border-red-100 flex items-center gap-2">
-                                        <span className="text-base">⚠️</span> Bloqueo: El empaque ({totalIngested}) no puede superar lo disponible ({packableUnits}). Modifique las cajas para continuar.
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* Defective Box Config */}
-                        {defectiveTarros > 0 && (
-                            <div className="bg-red-50 rounded-2xl p-4 border border-red-200 mb-4 flex items-center gap-4">
-                                <div className="flex-1">
-                                    <div className="text-xs font-bold text-red-600 uppercase tracking-wider mb-1">Rotulado Outlet / Publicidad</div>
-                                    <div className="text-[10px] text-red-500">Se imprimirán etiquetas exclusivas de merma.</div>
-                                </div>
-                                <div className="w-32">
-                                    <label className="text-[10px] font-bold text-red-400 uppercase">Cant. Etiquetas</label>
-                                    <input type="number" min="0" 
-                                        className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-red-200 bg-white font-bold text-center text-red-600 focus:outline-none focus:border-red-400 transition-colors"
-                                        value={defectiveBoxes === '' ? '' : defectiveBoxes} 
-                                        onChange={e => setDefectiveBoxes(e.target.value === '' ? '' : Number(e.target.value))} />
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Contramuestra Config (solo LIQUIPOPS 350g) */}
-                        {isLiquipops350 && (
-                            <div className="bg-purple-50 rounded-2xl p-4 border border-purple-200 mb-4 flex items-center gap-4">
-                                <div className="flex-1">
-                                    <div className="text-xs font-bold text-purple-600 uppercase tracking-wider mb-1">🧪 Contramuestra — Seguimiento Vida Útil</div>
-                                    <div className="text-[10px] text-purple-500">Se imprimirá 1 etiqueta marcada "CONTRAMUESTRA" para retención de calidad.</div>
-                                </div>
-                                <div className="w-32">
-                                    <label className="text-[10px] font-bold text-purple-400 uppercase">Cant. Etiquetas</label>
-                                    <input type="number" min="0" max="3"
-                                        className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-purple-200 bg-white font-bold text-center text-purple-600 focus:outline-none focus:border-purple-400 transition-colors"
-                                        value={contramuestraQty === '' ? '' : contramuestraQty} 
-                                        onChange={e => setContramuestraQty(e.target.value === '' ? '' : Number(e.target.value))} />
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Maquila / Marca Blanca Config */}
-                        {!isWeightBased && (
-                            <div className="bg-teal-50 rounded-2xl p-4 border border-teal-200 mb-4">
+                        {/* ── MIXTO: input de maquila qty ── */}
+                        {destino === 'mixto' && (
+                            <div className="bg-violet-50 rounded-2xl p-4 border-2 border-violet-300 mb-3">
                                 <div className="flex items-center gap-4">
                                     <div className="flex-1">
                                         <div className="flex items-center gap-2 mb-1">
-                                            <Factory size={14} className="text-teal-600" />
-                                            <span className="text-xs font-bold text-teal-600 uppercase tracking-wider">Maquila / Marca Blanca</span>
+                                            <Factory size={14} className="text-violet-600" />
+                                            <span className="text-xs font-bold text-violet-600 uppercase tracking-wider">Unidades para Maquila</span>
                                         </div>
-                                        <div className="text-[10px] text-teal-500">
-                                            Unidades separadas para cliente de marca blanca. Se imprimen etiquetas aparte con "MAQUILA".
+                                        <div className="text-[10px] text-violet-500">
+                                            Cajas de {MAQUILA_UNITS_PER_BOX} uds. El resto ({packableUnits} uds) va a Liquipops en cajas de {defaultUnitsPerBox}.
                                         </div>
                                     </div>
                                     <div className="w-32">
-                                        <label className="text-[10px] font-bold text-teal-400 uppercase">Cant. Unidades</label>
-                                        <input type="number" min="0" max={approvedTarros}
-                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-teal-200 bg-white font-bold text-center text-teal-600 focus:outline-none focus:border-teal-400 transition-colors"
+                                        <label className="text-[10px] font-bold text-violet-400 uppercase">Cant. Uds</label>
+                                        <input type="number" min="0" max={approvedTarros - contramuestraQty}
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-violet-300 bg-white font-bold text-center text-violet-700 text-lg focus:outline-none focus:border-violet-500 transition-colors"
                                             value={maquilaQty === '' ? '' : maquilaQty}
                                             onChange={e => {
-                                                const val = e.target.value === '' ? '' : Number(e.target.value);
+                                                const val = e.target.value === '' ? '' : Math.min(Number(e.target.value), approvedTarros - contramuestraQty);
                                                 setMaquilaQty(val);
-                                                // Recalculate regular boxes when maquila changes
                                                 if (val !== '' && defaultUnitsPerBox > 0) {
                                                     const newPack = Math.max(0, approvedTarros - contramuestraQty - Number(val));
-                                                    const fill = pendingBox && !pendingBoxDiscarded ? Math.max(0, Math.min(pendingBox.boxSize - pendingBox.currentQty, newPack)) : 0;
+                                                    const fill = (pendingAnswer === 'yes' && pendingConfirmed)
+                                                        ? Math.max(0, Math.min(pendingNeeds, newPack)) : 0;
                                                     const rem = newPack - fill;
                                                     setFullBoxes(Math.floor(rem / defaultUnitsPerBox));
                                                     setPartialUnits(Math.round(rem % defaultUnitsPerBox));
@@ -772,13 +714,235 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                                     </div>
                                 </div>
                                 {maquilaNum > 0 && (
-                                    <div className="mt-2 pt-2 border-t border-teal-200 text-[10px] text-teal-600 font-semibold">
-                                        📦 Distribución maquila: {maquilaFullBoxes > 0 ? `${maquilaFullBoxes} caja${maquilaFullBoxes > 1 ? 's' : ''} × ${unitsPerBox} uds` : ''}
-                                        {maquilaFullBoxes > 0 && maquilaPartialUnits > 0 ? ' + ' : ''}
-                                        {maquilaPartialUnits > 0 ? `${maquilaPartialUnits} sueltas` : ''}
-                                        {' '}= <strong>{maquilaLabelCount} etiqueta{maquilaLabelCount > 1 ? 's' : ''}</strong> MAQUILA
+                                    <div className="mt-2 pt-2 border-t border-violet-200 grid grid-cols-2 gap-3 text-[11px]">
+                                        <div className="bg-teal-50 rounded-xl p-2 border border-teal-200">
+                                            <span className="font-bold text-teal-700">MAQUILA:</span>{' '}
+                                            <span className="text-teal-600">
+                                                {maquilaFullBoxes > 0 ? `${maquilaFullBoxes} caja${maquilaFullBoxes > 1 ? 's' : ''} x ${MAQUILA_UNITS_PER_BOX}` : ''}
+                                                {maquilaFullBoxes > 0 && maquilaPartialUnits > 0 ? ' + ' : ''}
+                                                {maquilaPartialUnits > 0 ? `${maquilaPartialUnits} sueltas` : ''}
+                                                {' '}= <strong>{maquilaLabelCount} etiq.</strong>
+                                            </span>
+                                        </div>
+                                        <div className="bg-orange-50 rounded-xl p-2 border border-orange-200">
+                                            <span className="font-bold text-orange-700">LIQUIPOPS:</span>{' '}
+                                            <span className="text-orange-600">
+                                                {fullBoxes > 0 ? `${fullBoxes} caja${fullBoxes > 1 ? 's' : ''} x ${defaultUnitsPerBox}` : ''}
+                                                {fullBoxes > 0 && partialUnits > 0 ? ' + ' : ''}
+                                                {partialUnits > 0 ? `${partialUnits} sueltas` : ''}
+                                                {pendingFillQty > 0 ? ` + ${pendingFillQty} caja pend.` : ''}
+                                            </span>
+                                        </div>
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* Cant. a Empacar — inline row */}
+                        {destino && (
+                        <div className={`rounded-2xl px-4 py-2.5 mb-3 flex items-center justify-between border-2 ${isValid ? 'bg-emerald-50 border-emerald-300' : 'bg-red-50 border-red-300'}`}>
+                            <div className={`text-xs font-bold uppercase tracking-wider ${isValid ? 'text-emerald-600' : 'text-red-500'}`}>Cant. a Empacar (en etiquetas)</div>
+                            <div className="flex items-baseline gap-1.5">
+                                <span className={`text-2xl font-black ${isValid ? 'text-emerald-700' : 'text-red-600'}`}>
+                                    {destino === 'maquila' ? maquilaNum : totalIngested}
+                                    {destino === 'mixto' && maquilaNum > 0 ? ` + ${maquilaNum}` : ''}
+                                </span>
+                                <span className={`text-xs ${isValid ? 'text-emerald-500' : 'text-red-400'}`}>
+                                    → {totalBoxesToPrint} etiqueta{totalBoxesToPrint !== 1 ? 's' : ''}
+                                </span>
+                            </div>
+                        </div>
+                        )}
+
+                        {/* ── PREGUNTA CAJA PENDIENTE (obligatoria antes de imprimir) ── */}
+                        {!isWeightBased && destino && pendingAnswer === null && (
+                            <div className="rounded-2xl p-4 mb-3 border-2 bg-amber-50 border-amber-400 animate-in fade-in">
+                                <div className="text-sm font-bold text-amber-800 text-center mb-1">
+                                    ¿Hay alguna caja abierta pendiente por llenar?
+                                </div>
+                                {pendingBox && (
+                                    <div className="text-[10px] text-amber-600 text-center mb-3">
+                                        El sistema registra una caja del lote {pendingBox.entries?.[0]?.lot || '—'} con {pendingBox.currentQty} uds
+                                    </div>
+                                )}
+                                {!pendingBox && (
+                                    <div className="text-[10px] text-amber-500 text-center mb-3">
+                                        El sistema no registra cajas pendientes, pero verifica físicamente
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button
+                                        onClick={() => setPendingAnswer('yes')}
+                                        className="flex flex-col items-center gap-1 p-3 rounded-xl border-2 border-amber-300 bg-white hover:bg-blue-50 hover:border-blue-400 transition-all font-bold text-sm text-slate-700"
+                                    >
+                                        <PackagePlus size={22} className="text-blue-500" />
+                                        <span>Sí, hay una caja</span>
+                                    </button>
+                                    <button
+                                        onClick={() => setPendingAnswer('no')}
+                                        className="flex flex-col items-center gap-1 p-3 rounded-xl border-2 border-amber-300 bg-white hover:bg-green-50 hover:border-green-400 transition-all font-bold text-sm text-slate-700"
+                                    >
+                                        <Package size={22} className="text-green-500" />
+                                        <span>No, todas cerradas</span>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Si respondió SÍ — pedir cuántas uds tiene la caja */}
+                        {!isWeightBased && destino && pendingAnswer === 'yes' && !pendingConfirmed && (
+                            <div className="rounded-2xl p-4 mb-3 border-2 bg-blue-50 border-blue-400 animate-in fade-in">
+                                <div className="text-sm font-bold text-blue-800 text-center mb-3">
+                                    ¿Cuántas uds tiene la caja actualmente?
+                                </div>
+                                <div className="flex items-center justify-center gap-3 mb-3">
+                                    <input
+                                        type="number" min="0" max={pendingBoxSize - 1}
+                                        placeholder="Ej: 18"
+                                        autoFocus
+                                        className="w-32 px-3 py-3 rounded-xl border-2 border-blue-400 bg-white font-black text-center text-2xl text-blue-700 focus:outline-none focus:border-blue-600 transition-colors"
+                                        value={pendingCurrentUnits}
+                                        onFocus={e => e.target.select()}
+                                        onChange={e => {
+                                            const raw = e.target.value;
+                                            if (raw === '') { setPendingCurrentUnits(''); return; }
+                                            setPendingCurrentUnits(Math.min(Math.max(0, parseInt(raw, 10) || 0), pendingBoxSize - 1));
+                                        }}
+                                    />
+                                    <span className="text-lg text-blue-400 font-bold">/ {pendingBoxSize}</span>
+                                </div>
+                                {pendingCurrentUnits !== '' && (
+                                    <div className="text-center text-sm text-blue-700 font-semibold mb-3">
+                                        Faltan <strong className="text-blue-900">{pendingBoxSize - Number(pendingCurrentUnits)}</strong> uds para completar la caja
+                                    </div>
+                                )}
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => { setPendingAnswer(null); setPendingCurrentUnits(''); }}
+                                        className="flex-1 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-50 transition-all"
+                                    >
+                                        Volver
+                                    </button>
+                                    <button
+                                        onClick={() => setPendingConfirmed(true)}
+                                        disabled={pendingCurrentUnits === ''}
+                                        className={`flex-[2] py-2.5 text-white text-sm font-bold rounded-xl transition-all ${pendingCurrentUnits === '' ? 'bg-slate-300 cursor-not-allowed' : 'bg-blue-500 hover:bg-blue-600'}`}
+                                    >
+                                        {pendingCurrentUnits === '' ? 'Ingresa la cantidad' : `Confirmar: se tomarán ${Math.min(pendingBoxSize - Number(pendingCurrentUnits), packableUnits)} uds`}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Resumen confirmado de caja pendiente */}
+                        {!isWeightBased && destino && pendingAnswer === 'yes' && pendingConfirmed && (
+                            <div className="rounded-xl px-3 py-2 mb-2 bg-blue-50 border border-blue-200 flex items-center justify-between animate-in fade-in">
+                                <span className="text-xs text-blue-700 font-semibold">
+                                    📦 Caja pendiente: {pendingCurrentUnits}/{pendingBoxSize} uds — se tomarán <strong>{pendingFillQty}</strong> de este lote
+                                </span>
+                                <button onClick={() => { setPendingConfirmed(false); setPendingAnswer(null); setPendingCurrentUnits(''); }} className="text-blue-500 hover:text-blue-700 text-[10px] font-bold underline">Cambiar</button>
+                            </div>
+                        )}
+
+                        {/* Resumen: no hay cajas pendientes */}
+                        {!isWeightBased && destino && pendingAnswer === 'no' && (
+                            <div className="rounded-xl px-3 py-2 mb-2 bg-green-50 border border-green-200 flex items-center justify-between">
+                                <span className="text-xs text-green-700 font-semibold">✅ Sin cajas pendientes — todas las unidades van a cajas nuevas</span>
+                                <button onClick={() => setPendingAnswer(null)} className="text-green-500 hover:text-green-700 text-[10px] font-bold underline">Cambiar</button>
+                            </div>
+                        )}
+
+                        {/* Box Config — only for liquipops or mixto (regular portion) */}
+                        {!isWeightBased && (destino === 'liquipops' || destino === 'mixto') && (
+                            <div className="bg-orange-50 rounded-xl p-3 border border-orange-200 mb-2">
+                                <div className="text-xs font-bold text-orange-600 uppercase tracking-wider mb-3">
+                                    Distribución Liquipops — Cajas de {defaultUnitsPerBox}
+                                </div>
+                                <div className="flex gap-3">
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Cajas Completas</label>
+                                        <input type="number" min="0"
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-orange-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
+                                            value={fullBoxes === '' ? '' : fullBoxes}
+                                            onChange={e => setFullBoxes(e.target.value === '' ? '' : Number(e.target.value))} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds por Caja</label>
+                                        <input type="number" min="1"
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-orange-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
+                                            value={unitsPerBox === '' ? '' : unitsPerBox}
+                                            onChange={e => setUnitsPerBox(e.target.value === '' ? '' : Number(e.target.value))} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds Sueltas</label>
+                                        <input type="number" min="0"
+                                            className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-orange-200 font-bold text-center focus:outline-none focus:border-orange-400 transition-colors"
+                                            value={partialUnits === '' ? '' : partialUnits}
+                                            onChange={e => setPartialUnits(e.target.value === '' ? '' : Number(e.target.value))} />
+                                    </div>
+                                </div>
+                                {totalIngested > packableUnits && (
+                                    <div className="mt-3 text-xs font-bold text-red-500 bg-red-50 p-2.5 rounded-xl border border-red-100 flex items-center gap-2">
+                                        <span className="text-base">⚠️</span> Bloqueo: El empaque ({totalIngested}) no puede superar lo disponible ({packableUnits}).
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Box Config — maquila full (all units) */}
+                        {!isWeightBased && destino === 'maquila' && (
+                            <div className="bg-teal-50 rounded-xl p-3 border border-teal-200 mb-2">
+                                <div className="text-xs font-bold text-teal-600 uppercase tracking-wider mb-3">
+                                    Distribución Maquila — Cajas de {MAQUILA_UNITS_PER_BOX}
+                                </div>
+                                <div className="flex gap-3">
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Cajas Completas</label>
+                                        <div className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-teal-200 bg-teal-100 font-bold text-center text-teal-700">{maquilaFullBoxes}</div>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds por Caja</label>
+                                        <div className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-teal-200 bg-teal-100 font-bold text-center text-teal-700">{MAQUILA_UNITS_PER_BOX}</div>
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase">Uds Sueltas</label>
+                                        <div className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-teal-200 bg-teal-100 font-bold text-center text-teal-700">{maquilaPartialUnits}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Defective Box Config */}
+                        {defectiveTarros > 0 && destino && (
+                            <div className="bg-red-50 rounded-2xl p-4 border border-red-200 mb-4 flex items-center gap-4">
+                                <div className="flex-1">
+                                    <div className="text-xs font-bold text-red-600 uppercase tracking-wider mb-1">Rotulado Outlet / Publicidad</div>
+                                    <div className="text-[10px] text-red-500">Se imprimirán etiquetas exclusivas de merma.</div>
+                                </div>
+                                <div className="w-32">
+                                    <label className="text-[10px] font-bold text-red-400 uppercase">Cant. Etiquetas</label>
+                                    <input type="number" min="0"
+                                        className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-red-200 bg-white font-bold text-center text-red-600 focus:outline-none focus:border-red-400 transition-colors"
+                                        value={defectiveBoxes === '' ? '' : defectiveBoxes}
+                                        onChange={e => setDefectiveBoxes(e.target.value === '' ? '' : Number(e.target.value))} />
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Contramuestra Config (solo LIQUIPOPS 350g) */}
+                        {isLiquipops350 && destino && (
+                            <div className="bg-purple-50 rounded-2xl p-4 border border-purple-200 mb-4 flex items-center gap-4">
+                                <div className="flex-1">
+                                    <div className="text-xs font-bold text-purple-600 uppercase tracking-wider mb-1">Contramuestra</div>
+                                    <div className="text-[10px] text-purple-500">Etiqueta marcada "CONTRAMUESTRA" para retención de calidad.</div>
+                                </div>
+                                <div className="w-32">
+                                    <label className="text-[10px] font-bold text-purple-400 uppercase">Cant. Etiquetas</label>
+                                    <input type="number" min="0" max="3"
+                                        className="w-full mt-1 px-3 py-2 rounded-xl border-2 border-purple-200 bg-white font-bold text-center text-purple-600 focus:outline-none focus:border-purple-400 transition-colors"
+                                        value={contramuestraQty === '' ? '' : contramuestraQty}
+                                        onChange={e => setContramuestraQty(e.target.value === '' ? '' : Number(e.target.value))} />
+                                </div>
                             </div>
                         )}
 
@@ -828,7 +992,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                         )}
 
                         {/* Resumen de lo que se va a imprimir — espeja exactamente handlePrint */}
-                        {isValid && (() => {
+                        {distributionValid && (() => {
                             // Replicar la misma lógica de handlePrint para que los chips
                             // muestren exactamente lo que saldrá de la impresora
                             const nFull = isWeightBased ? Number(labelCopies) : (Number(fullBoxes) || 0);
@@ -843,7 +1007,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                                     </div>
                                     <div className="flex flex-col gap-1.5 mb-2">
                                         {/* Caja completada (pending box from previous lot) */}
-                                        {pendingFillQty > 0 && pendingBox && (
+                                        {pendingFillQty > 0 && pendingAnswer === 'yes' && (
                                             <div className="flex items-center gap-2">
                                                 <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-bold min-w-[80px] text-center">
                                                     1 etiqueta
@@ -853,7 +1017,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                                                     <span className="font-black text-blue-600">CANT: {pendingFillQty}</span>
                                                     <span className="text-slate-400 font-normal ml-1">
                                                         uds — 📦 CAJA COMPLETADA
-                                                        <span className="text-blue-400 ml-1">(+{pendingBox.currentQty} lote ant. = {pendingBox.boxSize} total)</span>
+                                                        <span className="text-blue-400 ml-1">(+{pendingCurrentUnits} lote ant. = {pendingBoxSize} total)</span>
                                                     </span>
                                                 </span>
                                             </div>
@@ -921,7 +1085,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                                                 <span className="text-xs text-slate-500">→</span>
                                                 <span className="text-xs font-bold text-slate-700">
                                                     <span className="font-black text-teal-600">
-                                                        CANT: {maquilaFullBoxes > 0 ? `${maquilaFullBoxes}×${unitsPerBox}` : ''}{maquilaFullBoxes > 0 && maquilaPartialUnits > 0 ? '+' : ''}{maquilaPartialUnits > 0 ? maquilaPartialUnits : ''}
+                                                        CANT: {maquilaFullBoxes > 0 ? `${maquilaFullBoxes}×${maquilaBoxSize}` : ''}{maquilaFullBoxes > 0 && maquilaPartialUnits > 0 ? '+' : ''}{maquilaPartialUnits > 0 ? maquilaPartialUnits : ''}
                                                     </span>
                                                     <span className="text-slate-400 font-normal ml-1">uds — 🏭 MAQUILA</span>
                                                 </span>
