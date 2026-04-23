@@ -2,9 +2,14 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const configController = require('./configController');
 
+const WATER_DENSITY_FLAVORS = ['LIQUIMON'];
+
 // Helper: Parse size to Kg
 // density: g/cm³ (= g/mL). Default 1.0 for water-like. Siropes use 1.35.
 const parseSize = (name, density = 1.0) => {
+    if (density > 1.0 && WATER_DENSITY_FLAVORS.some(f => name.toUpperCase().includes(f))) {
+        density = 1.0;
+    }
     const regex = /X\s*(\d+)\s*(ML|GR|G|L|KG)/i;
     const match = name.match(regex);
     if (!match) return { value: 0, unit: 'N/A', kgFactor: 0 };
@@ -384,11 +389,12 @@ exports.calculateBatchMix = async (req, res) => {
             const velocity = p.dailyVelocity || 0;
             const targetStock = velocity * (TARGET_DAYS + SAFETY_DAYS);
             const totalStock = p.currentStock + (p.productionZoneStock || 0);
-            const deficit = Math.max(0, targetStock - totalStock);
-            const deficitKg = deficit * sizeInfo.kgFactor * SYRUP_RATIO;
-
             const orderDemand = orderDemandMap[p.id] || 0;
             const inProgress = inProgressMap[p.id] || 0;
+            const effectiveStock = totalStock - orderDemand + inProgress;
+            const deficit = Math.max(0, targetStock - effectiveStock);
+            const deficitKg = deficit * sizeInfo.kgFactor * SYRUP_RATIO;
+
             const netOrderNeed = Math.max(0, orderDemand - Math.max(0, totalStock) - inProgress);
 
             productNeeds.push({
@@ -442,6 +448,8 @@ exports.calculateBatchMix = async (req, res) => {
         let velocityBatches = Math.ceil(boostedNeedKg / BATCH_SIZE);
         batchesNeeded = Math.max(batchesNeeded, velocityBatches);
         if (line === 'geniality') batchesNeeded = Math.min(7, batchesNeeded);
+        // Round up to even — optimize water change cycles (2 batches per water change)
+        if (batchesNeeded > 1 && batchesNeeded % 2 !== 0) batchesNeeded++;
         targetTotalKg = batchesNeeded * BATCH_SIZE;
 
         // Helper: build a mix entry object
@@ -474,23 +482,36 @@ exports.calculateBatchMix = async (req, res) => {
             const groupA = largeItems.length > 0 ? mediumItems : [];
             const groupB_nonSmall = largeItems.length > 0 ? largeItems : mediumItems;
 
-            // Batch count per group based on demand
-            const groupABaseKg = groupA.reduce((s, i) => s + i.minUnits * i.kgFactor * SYRUP_RATIO, 0);
-            let groupABatches = groupABaseKg > 0 ? Math.max(1, Math.ceil(groupABaseKg / BATCH_SIZE)) : 0;
+            // Batch count per group based on DEFICIT (not just order demand)
+            const groupADeficitKg = groupA.reduce((s, i) => s + i.deficitKg, 0);
+            let groupABatches = groupADeficitKg > 0 ? Math.max(1, Math.ceil(groupADeficitKg / BATCH_SIZE)) : 0;
 
-            const groupBLargeKg = groupB_nonSmall.reduce((s, i) => s + i.minUnits * i.kgFactor * SYRUP_RATIO, 0);
-            const small350DemandPacks = smallItem ? Math.floor((smallItem.minUnits - 1) / smallItem.packSize) : 0;
-            const small350DemandKg = small350DemandPacks * (smallItem?.packSize || 0) * (smallItem?.kgFactor || 0) * SYRUP_RATIO;
-            let groupBBatches = Math.max(groupBLargeKg + small350DemandKg > 0 ? 1 : 0, Math.ceil((groupBLargeKg + small350DemandKg) / BATCH_SIZE));
+            const groupBLargeDeficitKg = groupB_nonSmall.reduce((s, i) => s + i.deficitKg, 0);
+            const groupBSmallDeficitKg = smallItem ? smallItem.deficitKg : 0;
+            const groupBDeficitKg = groupBLargeDeficitKg + groupBSmallDeficitKg;
+            let groupBBatches = groupBDeficitKg > 0 ? Math.max(1, Math.ceil(groupBDeficitKg / BATCH_SIZE)) : 0;
 
-            // Ensure total meets velocity target
+            // Distribute extra batches PROPORTIONALLY between groups (not all to B)
             if (groupABatches + groupBBatches < batchesNeeded) {
-                groupBBatches += batchesNeeded - groupABatches - groupBBatches;
+                const extra = batchesNeeded - groupABatches - groupBBatches;
+                const totalDef = groupADeficitKg + groupBDeficitKg;
+                if (totalDef > 0) {
+                    const extraA = Math.round(extra * groupADeficitKg / totalDef);
+                    groupABatches += extraA;
+                    groupBBatches += extra - extraA;
+                } else {
+                    groupABatches += Math.floor(extra / 2);
+                    groupBBatches += Math.ceil(extra / 2);
+                }
             }
 
             const suggestedBatches = [];
 
             // --- GROUP A: Medium-size batches (e.g. 1150g + contramuestra) ---
+            // Track remaining deficit across batches
+            const mediumDeficitLeft = {};
+            groupA.forEach(item => { mediumDeficitLeft[item.product.id] = item.deficitUnits; });
+
             for (let b = 0; b < groupABatches; b++) {
                 const mix = [];
                 let baseKg = 0;
@@ -500,7 +521,12 @@ exports.calculateBatchMix = async (req, res) => {
                 for (const item of groupA) {
                     const packKg = item.packSize * item.kgFactor * SYRUP_RATIO;
                     let units = 0;
-                    while (baseKg + packKg <= cap + 0.5) { units += item.packSize; baseKg += packKg; }
+                    const maxUnits = Math.max(mediumDeficitLeft[item.product.id], item.minUnits);
+                    while (baseKg + packKg <= cap + 0.5 && units < maxUnits) {
+                        units += item.packSize;
+                        baseKg += packKg;
+                    }
+                    mediumDeficitLeft[item.product.id] -= units;
                     if (units > 0) mix.push(buildEntry(item, units, 0));
                 }
                 if (smallItem) mix.push(buildEntry(smallItem, 1, 1));
@@ -515,23 +541,22 @@ exports.calculateBatchMix = async (req, res) => {
             }
 
             // --- GROUP B: Large + Small batches (e.g. 3400g + 350g) ---
-            const packsPerBatch = groupBBatches > 0 ? Math.floor(small350DemandPacks / groupBBatches) : 0;
-            let remainPacks = small350DemandPacks - packsPerBatch * groupBBatches;
+            // Track remaining deficit for large sizes across batches
+            const largeDeficitLeft = {};
+            groupB_nonSmall.forEach(item => { largeDeficitLeft[item.product.id] = item.deficitUnits; });
 
             for (let b = 0; b < groupBBatches; b++) {
                 const mix = [];
                 let baseKg = 0;
 
-                // Allocate 350g: demand packs (distributed evenly) + 1 contramuestra
+                // 1. Reserve contramuestra (1 unit of 350g)
+                let smallUnits = 0;
                 if (smallItem) {
-                    let packs = packsPerBatch;
-                    if (remainPacks > 0) { packs++; remainPacks--; }
-                    const smallUnits = packs * smallItem.packSize + 1; // +1 contramuestra
-                    baseKg += smallUnits * smallItem.kgFactor * SYRUP_RATIO;
-                    mix.push(buildEntry(smallItem, smallUnits, 1));
+                    smallUnits = 1; // contramuestra
+                    baseKg += 1 * smallItem.kgFactor * SYRUP_RATIO;
                 }
 
-                // Fill remaining capacity with large sizes (pack-aligned)
+                // 2. Fill large sizes CAPPED at their remaining deficit
                 const sorted = [...groupB_nonSmall].sort((a, b2) => (b2.dailyVolumeKg || 0) - (a.dailyVolumeKg || 0));
                 const unitCounts = {};
                 sorted.forEach(i => { unitCounts[i.product.id] = 0; });
@@ -539,6 +564,8 @@ exports.calculateBatchMix = async (req, res) => {
                 while (filled) {
                     filled = false;
                     for (const item of sorted) {
+                        const remaining = largeDeficitLeft[item.product.id] - unitCounts[item.product.id];
+                        if (remaining <= 0) continue;
                         const packKg = item.packSize * item.kgFactor * SYRUP_RATIO;
                         if (baseKg + packKg <= BATCH_SIZE + 0.5) {
                             unitCounts[item.product.id] += item.packSize;
@@ -547,9 +574,44 @@ exports.calculateBatchMix = async (req, res) => {
                         }
                     }
                 }
+                sorted.forEach(i => { largeDeficitLeft[i.product.id] -= unitCounts[i.product.id]; });
                 for (const item of sorted) {
                     if (unitCounts[item.product.id] > 0) {
                         mix.push(buildEntry(item, unitCounts[item.product.id], 0));
+                    }
+                }
+
+                // 3. Fill remaining capacity with 350g in full packs (max 81 = 2 cajas + 1 CM)
+                const MAX_SMALL_PER_BATCH = 81;
+                if (smallItem && baseKg < BATCH_SIZE - 0.5) {
+                    const packKg = smallItem.packSize * smallItem.kgFactor * SYRUP_RATIO;
+                    while (baseKg + packKg <= BATCH_SIZE + 0.5 && smallUnits + smallItem.packSize <= MAX_SMALL_PER_BATCH) {
+                        smallUnits += smallItem.packSize;
+                        baseKg += packKg;
+                    }
+                }
+                if (smallItem) mix.push(buildEntry(smallItem, smallUnits, 1));
+
+                // 4. If 350g hit its cap and there's still capacity, fill with large sizes (beyond deficit)
+                if (baseKg < BATCH_SIZE - 0.5) {
+                    let extraFilled = true;
+                    while (extraFilled) {
+                        extraFilled = false;
+                        for (const item of sorted) {
+                            const packKg = item.packSize * item.kgFactor * SYRUP_RATIO;
+                            if (baseKg + packKg <= BATCH_SIZE + 0.5) {
+                                unitCounts[item.product.id] += item.packSize;
+                                baseKg += packKg;
+                                extraFilled = true;
+                                const existing = mix.find(m => m.productId === item.product.id);
+                                if (existing) {
+                                    existing.plannedUnits += item.packSize;
+                                    existing.boxes = Math.floor(existing.plannedUnits / (item.packSize || 1));
+                                } else {
+                                    mix.push(buildEntry(item, item.packSize, 0));
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -563,7 +625,17 @@ exports.calculateBatchMix = async (req, res) => {
                 });
             }
 
-            // Build aggregate mix from all suggested batches
+            // Ensure ALL sizes appear in every batch (with 0 units if not allocated)
+            suggestedBatches.forEach(batch => {
+                const presentIds = new Set(batch.mix.map(m => m.productId));
+                rawAllocations.forEach(item => {
+                    if (!presentIds.has(item.product.id)) {
+                        batch.mix.push(buildEntry(item, 0, 0));
+                    }
+                });
+            });
+
+            // Also ensure aggregate mix includes all sizes
             const aggMap = {};
             suggestedBatches.forEach(batch => {
                 batch.mix.forEach(item => {
@@ -648,6 +720,37 @@ exports.createBatch = async (req, res) => {
     console.log("DEBUG: createBatch called", req.body);
     const { flavor, scheduledStart, scheduledEnd, mix, baseWeight, batchIndex, totalBatches, notes } = req.body;
     try {
+        // Auto-adjust: shift batch forward if it overlaps with existing production batches on the SAME line
+        let adjStart = new Date(scheduledStart);
+        let adjEnd = new Date(scheduledEnd);
+        const isGeniality = req.baseUrl?.includes('geniality') || req.path?.includes('geniality');
+        const lineGroup = isGeniality ? 'GENIALITY' : 'LIQUIPOPS';
+        const duration = adjEnd - adjStart;
+        let searching = true;
+        while (searching) {
+            // For production batches: check against ALL batches on the same line (including AUX)
+            // For AUX batches: no overlap check (they can overlap freely)
+            if (AUX_FLAVORS.includes(flavor)) { searching = false; break; }
+            const conflict = await prisma.productionBatch.findFirst({
+                where: {
+                    status: { notIn: ['COMPLETED', 'FAILED'] },
+                    scheduledStart: { lt: adjEnd },
+                    scheduledEnd: { gt: adjStart },
+                    OR: [
+                        { outputTargets: { some: { product: { group: { name: lineGroup } } } } },
+                        { flavor: { in: AUX_FLAVORS } }
+                    ]
+                },
+                orderBy: { scheduledEnd: 'desc' }
+            });
+            if (conflict) {
+                adjStart = new Date(conflict.scheduledEnd);
+                adjEnd = new Date(adjStart.getTime() + duration);
+            } else {
+                searching = false;
+            }
+        }
+
         // Generate batch number: FLAVOR-AAMMDD-HHMM (Colombia TZ)
         const now = new Date();
         const co = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
@@ -666,8 +769,10 @@ exports.createBatch = async (req, res) => {
             data: {
                 batchNumber,
                 flavor,
-                scheduledStart: new Date(scheduledStart),
-                scheduledEnd: new Date(scheduledEnd),
+                scheduledStart: adjStart,
+                scheduledEnd: adjEnd,
+                originalScheduledStart: adjStart,
+                originalScheduledEnd: adjEnd,
                 baseWeight: Number(baseWeight),
                 projectedTotalWeight: totalOutput,
                 status: 'PENDING',
@@ -731,16 +836,26 @@ exports.getSchedule = async (req, res) => {
         const line = req.query.line || 'liquipops';
         const groupName = line === 'geniality' ? 'GENIALITY' : 'LIQUIPOPS';
 
+        // Only show COMPLETED batches from the last 48h; active/pending have no time limit
+        const recentCutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
         const batches = await prisma.productionBatch.findMany({
             where: {
-                status: {
-                    in: ['PENDING', 'STAGE_1_BASE', 'STAGE_2_JARABE', 'STAGE_3_ESFERIFICACION', 'STAGE_4_PRODUCTO_FINAL', 'LABELING', 'COMPLETED']
-                },
                 OR: [
-                    // Production batches for the active line
-                    { outputTargets: { some: { product: { group: { name: groupName } } } } },
-                    // Auxiliary events (LAVADO, PAUSA, etc.)
-                    { flavor: { in: ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION'] } }
+                    {
+                        status: { in: ['PENDING', 'STAGE_1_BASE', 'STAGE_2_JARABE', 'STAGE_3_ESFERIFICACION', 'STAGE_4_PRODUCTO_FINAL', 'LABELING'] },
+                        OR: [
+                            { outputTargets: { some: { product: { group: { name: groupName } } } } },
+                            { flavor: { in: ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'] } }
+                        ]
+                    },
+                    {
+                        status: 'COMPLETED',
+                        completedAt: { gte: recentCutoff },
+                        OR: [
+                            { outputTargets: { some: { product: { group: { name: groupName } } } } },
+                            { flavor: { in: ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'] } }
+                        ]
+                    }
                 ]
             },
             include: {
@@ -750,16 +865,31 @@ exports.getSchedule = async (req, res) => {
             }
         });
 
+        // Number batches per flavor (e.g. MANGO BICHE 1/7, 2/7...)
+        const flavorCounts = {};
+        const sortedBatches = [...batches]
+            .filter(b => !AUX_FLAVORS.includes(b.flavor))
+            .sort((a, b) => new Date(a.scheduledStart) - new Date(b.scheduledStart));
+        for (const b of sortedBatches) {
+            if (!flavorCounts[b.flavor]) flavorCounts[b.flavor] = { total: 0, items: [] };
+            flavorCounts[b.flavor].total++;
+            flavorCounts[b.flavor].items.push(b.id);
+        }
+        const batchIndex = {};
+        for (const [flav, info] of Object.entries(flavorCounts)) {
+            info.items.forEach((id, i) => { batchIndex[id] = `${i + 1}/${info.total}`; });
+        }
+
         const events = batches.map(b => {
-            const parts = b.batchNumber.split('-');
-            const seq = (parts.length >= 4) ? ` [${parts[2]}/${parts[3] || '?'}]` : '';
             // Detect line from group: if any output target is in GENIALITY group, use sirope density
             const isGenialityBatch = b.outputTargets.some(t => t.product?.group?.name === 'GENIALITY' || t.product?.name?.includes('SIROPE'));
             const batchDensity = isGenialityBatch ? 1.35 : 1.0;
+            const idx = batchIndex[b.id];
+            const titleNum = idx ? ` ${idx}` : '';
 
             return {
                 id: b.id,
-                title: `${b.flavor}${seq} (${Math.round(b.baseWeight || 0)}kg)`,
+                title: `${b.flavor}${titleNum} (${Math.round(b.baseWeight || 0)}kg)`,
                 start: b.scheduledStart,
                 end: b.scheduledEnd,
                 flavor: b.flavor,
@@ -775,7 +905,9 @@ exports.getSchedule = async (req, res) => {
                         sku: t.product.sku,
                         plannedUnits: t.plannedUnits,
                         plannedWeightKg: t.plannedWeightKg,
-                        sizeLabel: `${sizeInfo.value}${sizeInfo.unit}`
+                        packSize: t.product.packSize || 1,
+                        sizeLabel: `${Math.round(sizeInfo.kgFactor * 1000) / 1000} Kg`,
+                        kgFactor: Math.round(sizeInfo.kgFactor * 1000) / 1000
                     };
                 })
             };
@@ -1019,5 +1151,356 @@ exports.getFlavorDemand = async (req, res) => {
     } catch (error) {
         console.error('Error fetching flavor demand:', error);
         res.status(500).json({ error: 'Error fetching demand' });
+    }
+};
+
+// ── Reschedule pending batches at shift change ──────────────────────────────
+const SHIFT_HOURS = [6, 14, 22]; // Colombia hours
+const COLOMBIA_OFFSET = -5;
+
+const reschedulePendingForShift = async (line, shiftStartHour) => {
+    const now = new Date();
+    const colombiaHour = (now.getUTCHours() + COLOMBIA_OFFSET + 24) % 24;
+
+    if (!shiftStartHour) {
+        shiftStartHour = SHIFT_HOURS.reduce((closest, h) =>
+            Math.abs(colombiaHour - h) < Math.abs(colombiaHour - closest) ? h : closest
+        , SHIFT_HOURS[0]);
+    }
+
+    const shiftStartUTC = new Date(now);
+    shiftStartUTC.setUTCHours(shiftStartHour - COLOMBIA_OFFSET, 0, 0, 0);
+    if (shiftStartUTC > new Date(now.getTime() + 60 * 60000)) {
+        shiftStartUTC.setUTCDate(shiftStartUTC.getUTCDate() - 1);
+    }
+
+    const guardKey = `LAST_SHIFT_RESCHEDULE_${line}`;
+    const lastRun = await prisma.systemSettings.findUnique({ where: { key: guardKey } });
+    if (lastRun?.value?.shiftStart === shiftStartUTC.toISOString()) {
+        return { rescheduled: 0, message: 'Already rescheduled for this shift' };
+    }
+
+    const config = await prisma.systemSettings.findUnique({ where: { key: 'PRODUCTION_CONFIG' } });
+    const cfg = config?.value || {};
+    const standardDurationMin = line === 'geniality'
+        ? (cfg.geniality_batchDuration || 240)
+        : (cfg.batchDuration || 90);
+
+    const AUX_DURATIONS = { 'CAMBIO DE AGUA': 30, 'LAVADO': 60, 'PAUSA ACTIVA': 15, 'MANTENIMIENTO': 60, 'REUNIÓN': 30, 'REUNION': 30 };
+
+    const groupName = line === 'geniality' ? 'GENIALITY' : 'LIQUIPOPS';
+    const auxFlavors = ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'];
+
+    const lineBatches = await prisma.productionBatch.findMany({
+        where: {
+            status: { notIn: ['COMPLETED', 'FAILED'] },
+            outputTargets: { some: { product: { group: { name: groupName } } } }
+        },
+        select: { scheduledStart: true, scheduledEnd: true },
+        orderBy: { scheduledStart: 'asc' }
+    });
+    const lineStart = lineBatches.length > 0 ? lineBatches[0].scheduledStart : null;
+    const lineEnd = lineBatches.length > 0 ? lineBatches[lineBatches.length - 1].scheduledEnd : null;
+
+    const allBatches = await prisma.productionBatch.findMany({
+        where: {
+            status: { notIn: ['COMPLETED', 'FAILED'] },
+            OR: [
+                { outputTargets: { some: { product: { group: { name: groupName } } } } },
+                ...(lineStart && lineEnd ? [{
+                    flavor: { in: auxFlavors },
+                    scheduledStart: { gte: lineStart },
+                    scheduledEnd: { lte: new Date(new Date(lineEnd).getTime() + 24 * 60 * 60000) }
+                }] : [])
+            ]
+        },
+        include: {
+            assemblyNotes: { select: { startedAt: true, status: true } }
+        },
+        orderBy: { scheduledStart: 'asc' }
+    });
+
+    const runningBatches = allBatches.filter(b =>
+        b.assemblyNotes.some(n => n.startedAt || n.status === 'EXECUTING')
+    );
+    const pendingBatches = allBatches.filter(b =>
+        !b.assemblyNotes.some(n => n.startedAt || n.status === 'EXECUTING') &&
+        b.scheduledStart
+    );
+
+    if (pendingBatches.length === 0) {
+        return { rescheduled: 0, message: 'No pending batches to reschedule' };
+    }
+
+    let effectiveStart = new Date(shiftStartUTC);
+
+    if (runningBatches.length > 0) {
+        const latestEnd = runningBatches.reduce((max, b) => {
+            const realStartedAt = b.assemblyNotes.find(n => n.startedAt)?.startedAt || b.startedAt;
+            const isAux = auxFlavors.includes(b.flavor);
+            const batchDurMs = isAux ? (AUX_DURATIONS[b.flavor] || 30) * 60000 : standardDurationMin * 60000;
+            const end = realStartedAt
+                ? new Date(new Date(realStartedAt).getTime() + batchDurMs)
+                : (b.scheduledEnd ? new Date(b.scheduledEnd) : new Date(now.getTime() + batchDurMs));
+            return end > max ? end : max;
+        }, new Date(0));
+        if (latestEnd > effectiveStart) {
+            effectiveStart = new Date(latestEnd);
+        }
+    }
+
+    const results = [];
+    let cursor = new Date(effectiveStart);
+
+    for (const batch of pendingBatches) {
+        const oldStart = batch.scheduledStart;
+        const oldEnd = batch.scheduledEnd;
+        const isAux = auxFlavors.includes(batch.flavor);
+        const durationMs = isAux
+            ? (AUX_DURATIONS[batch.flavor] || 30) * 60000
+            : standardDurationMin * 60000;
+
+        const newStart = new Date(cursor);
+        const newEnd = new Date(cursor.getTime() + durationMs);
+
+        await prisma.productionBatch.update({
+            where: { id: batch.id },
+            data: { scheduledStart: newStart, scheduledEnd: newEnd }
+        });
+
+        results.push({
+            id: batch.id,
+            batchNumber: batch.batchNumber,
+            flavor: batch.flavor,
+            oldStart,
+            newStart,
+            newEnd
+        });
+
+        cursor = new Date(newEnd);
+    }
+
+    await prisma.systemSettings.upsert({
+        where: { key: guardKey },
+        create: { key: guardKey, value: { line, shiftStart: shiftStartUTC.toISOString(), rescheduledAt: now.toISOString(), batchesMoved: results.length } },
+        update: { value: { line, shiftStart: shiftStartUTC.toISOString(), rescheduledAt: now.toISOString(), batchesMoved: results.length } }
+    });
+
+    const runningInfo = runningBatches.length > 0 ? runningBatches[0].batchNumber : null;
+
+    return {
+        rescheduled: results.length,
+        shiftStart: shiftStartUTC,
+        effectiveStart,
+        runningBatch: runningInfo,
+        batches: results
+    };
+};
+
+exports.rescheduleShift = async (req, res) => {
+    try {
+        const line = req.params.line || 'liquipops';
+        const { shiftStartHour } = req.body || {};
+        const result = await reschedulePendingForShift(line, shiftStartHour);
+        res.json(result);
+    } catch (error) {
+        console.error('Error rescheduling shift:', error);
+        res.status(500).json({ error: 'Error rescheduling', detail: error.message });
+    }
+};
+
+exports._reschedulePendingForShift = reschedulePendingForShift;
+
+// ── Reschedule pending batches after a batch is started ──────────────────────
+const AUX_FLAVORS = ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'];
+const AUX_DUR = { 'CAMBIO DE AGUA': 30, 'LAVADO': 60, 'PAUSA ACTIVA': 15, 'MANTENIMIENTO': 60, 'REUNIÓN': 30, 'REUNION': 30 };
+
+const rescheduleAfterBatchStart = async (batchId, line) => {
+    const config = await prisma.systemSettings.findUnique({ where: { key: 'PRODUCTION_CONFIG' } });
+    const cfg = config?.value || {};
+    const standardDurationMin = line === 'geniality'
+        ? (cfg.geniality_batchDuration || 240)
+        : (cfg.batchDuration || 90);
+
+    const startedBatch = await prisma.productionBatch.findUnique({
+        where: { id: batchId },
+        select: { id: true, startedAt: true, flavor: true, scheduledStart: true }
+    });
+    if (!startedBatch?.startedAt) return { rescheduled: 0 };
+
+    const isAuxStarted = AUX_FLAVORS.includes(startedBatch.flavor);
+    const startedDurMs = isAuxStarted
+        ? (AUX_DUR[startedBatch.flavor] || 30) * 60000
+        : standardDurationMin * 60000;
+    const realStart = new Date(startedBatch.startedAt);
+    const estimatedEnd = new Date(realStart.getTime() + startedDurMs);
+
+    await prisma.productionBatch.update({
+        where: { id: batchId },
+        data: {
+            scheduledStart: realStart,
+            scheduledEnd: estimatedEnd,
+        }
+    });
+
+    const groupName = line === 'geniality' ? 'GENIALITY' : 'LIQUIPOPS';
+    const INGREDIENT_SKUS = ['PROCELIQUIPOPS26', 'PROCELIQUIPOPS43'];
+
+    const groupFilter = line === 'geniality'
+        ? { OR: [
+            { outputTargets: { some: { product: { group: { name: groupName } } } } },
+            { outputTargets: { some: { product: { sku: { in: INGREDIENT_SKUS } } } } }
+          ] }
+        : { outputTargets: { some: { product: { group: { name: groupName } } } } };
+
+    const lineBatches = await prisma.productionBatch.findMany({
+        where: {
+            status: { notIn: ['COMPLETED', 'FAILED'] },
+            ...groupFilter
+        },
+        select: { scheduledStart: true, scheduledEnd: true },
+        orderBy: { scheduledStart: 'asc' }
+    });
+    const lineStart = lineBatches[0]?.scheduledStart || null;
+    const lineEnd = lineBatches[lineBatches.length - 1]?.scheduledEnd || null;
+
+    const allBatches = await prisma.productionBatch.findMany({
+        where: {
+            status: { notIn: ['COMPLETED', 'FAILED'] },
+            OR: [
+                ...(line === 'geniality'
+                    ? [
+                        { outputTargets: { some: { product: { group: { name: groupName } } } } },
+                        { outputTargets: { some: { product: { sku: { in: INGREDIENT_SKUS } } } } }
+                      ]
+                    : [{ outputTargets: { some: { product: { group: { name: groupName } } } } }]
+                ),
+                { flavor: { in: AUX_FLAVORS }, scheduledStart: { gte: lineStart || new Date() } }
+            ]
+        },
+        include: { assemblyNotes: { select: { startedAt: true, status: true } } },
+        orderBy: { scheduledStart: 'asc' }
+    });
+
+    // Find the latest scheduledEnd among all ACTIVE (non-pending, non-completed, non-aux) batches
+    const activeBatches = allBatches.filter(b =>
+        !AUX_FLAVORS.includes(b.flavor) &&
+        b.scheduledEnd &&
+        (b.startedAt || b.assemblyNotes.some(n => n.startedAt || n.status === 'EXECUTING')) &&
+        !b.completedAt
+    );
+    const latestActiveEnd = activeBatches.reduce((max, b) => {
+        const end = new Date(b.scheduledEnd);
+        return end > max ? end : max;
+    }, estimatedEnd);
+
+    // Include ALL pending batches that overlap with active batches or come after them
+    const earliestActiveStart = activeBatches.reduce((min, b) => {
+        const s = new Date(b.scheduledStart);
+        return s < min ? s : min;
+    }, new Date(realStart));
+
+    const pendingBatches = allBatches.filter(b =>
+        b.id !== batchId &&
+        !b.startedAt &&
+        !b.completedAt &&
+        !b.assemblyNotes.some(n => n.startedAt || n.status === 'EXECUTING') &&
+        b.scheduledStart &&
+        new Date(b.scheduledStart) >= earliestActiveStart
+    );
+
+    if (pendingBatches.length === 0) return { rescheduled: 0 };
+
+    let cursor = new Date(latestActiveEnd);
+    const results = [];
+
+    for (const batch of pendingBatches) {
+        const isAux = AUX_FLAVORS.includes(batch.flavor);
+        const durationMs = isAux
+            ? (AUX_DUR[batch.flavor] || 30) * 60000
+            : standardDurationMin * 60000;
+
+        let newStart = new Date(cursor);
+        let newEnd = new Date(cursor.getTime() + durationMs);
+
+        // Skip over any active batch that occupies this slot
+        let shifted = true;
+        while (shifted) {
+            shifted = false;
+            for (const a of activeBatches) {
+                if (newStart < new Date(a.scheduledEnd) && newEnd > new Date(a.scheduledStart)) {
+                    newStart = new Date(a.scheduledEnd);
+                    newEnd = new Date(newStart.getTime() + durationMs);
+                    shifted = true;
+                    break;
+                }
+            }
+        }
+
+        if (newStart.getTime() === new Date(batch.scheduledStart).getTime()) {
+            cursor = new Date(newEnd);
+            continue;
+        }
+
+        await prisma.productionBatch.update({
+            where: { id: batch.id },
+            data: { scheduledStart: newStart, scheduledEnd: newEnd }
+        });
+
+        results.push({ id: batch.id, flavor: batch.flavor, newStart, newEnd });
+        cursor = new Date(newEnd);
+    }
+
+    return { rescheduled: results.length, estimatedEnd, batches: results };
+};
+
+exports.rescheduleAfterBatchStart = rescheduleAfterBatchStart;
+
+// ── Start/Finish auxiliary event (CAMBIO DE AGUA, etc.) ──────────────────────
+exports.auxAction = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { action } = req.body; // 'start' or 'finish'
+        const userId = req.user?.id;
+        const userName = req.user?.name || req.user?.email || 'Operario';
+
+        const batch = await prisma.productionBatch.findUnique({ where: { id } });
+        if (!batch) return res.status(404).json({ error: 'Bache no encontrado' });
+
+        if (action === 'start') {
+            const now = new Date();
+            const auxDuration = (AUX_DUR[batch.flavor] || 30) * 60000;
+            const updated = await prisma.productionBatch.update({
+                where: { id },
+                data: {
+                    startedAt: now,
+                    scheduledStart: now,
+                    scheduledEnd: new Date(now.getTime() + auxDuration),
+                    status: 'STAGE_1_BASE',
+                    notes: `Iniciado por: ${userName}`,
+                }
+            });
+
+            return res.json({ ...updated, action: 'started' });
+        }
+
+        if (action === 'finish') {
+            const updated = await prisma.productionBatch.update({
+                where: { id },
+                data: {
+                    completedAt: new Date(),
+                    status: 'COMPLETED',
+                    notes: batch.notes
+                        ? `${batch.notes} | Finalizado por: ${userName}`
+                        : `Finalizado por: ${userName}`,
+                }
+            });
+            return res.json({ ...updated, action: 'finished' });
+        }
+
+        return res.status(400).json({ error: 'Acción inválida. Use "start" o "finish"' });
+    } catch (error) {
+        console.error('Error in auxAction:', error);
+        res.status(500).json({ error: 'Error procesando acción auxiliar' });
     }
 };

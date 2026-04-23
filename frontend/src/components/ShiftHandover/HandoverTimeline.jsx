@@ -1,59 +1,90 @@
-import { CheckCircle, Circle, ArrowRight } from 'lucide-react';
+import { CheckCircle } from 'lucide-react';
 
 const STEPS = [
-    { key: 'PENDING', label: 'Inicio', icon: '🕐' },
-    { key: 'IN_PROGRESS', label: 'Firmas', icon: '✍️' },
-    { key: 'DELIVERED', label: 'Entregado', icon: '📋' },
-    { key: 'RECEIVED', label: 'Recibido', icon: '🤝' },
+    { label: 'Inicio', icon: '🕐' },
+    { label: 'Firman Salientes', icon: '📤' },
+    { label: 'Entrega Líder Saliente', icon: '📋' },
+    { label: 'Firman Entrantes', icon: '📥' },
+    { label: 'Acepta Líder Entrante', icon: '🤝' }
 ];
 
-const STATUS_ORDER = { PENDING: 0, IN_PROGRESS: 1, DELIVERED: 2, RECEIVED: 3, WITH_INCIDENT: 3, VALIDATED: 4 };
+function getSignatureState(handover) {
+    const signatures = handover?.signatures || [];
+    const outgoingOps = (handover?.outgoingParticipants || []).filter(participant => participant.role !== 'LIDER');
+    const incomingOps = (handover?.incomingParticipants || []).filter(participant => participant.role !== 'LIDER');
+    const outgoingSignedIds = new Set(signatures.filter(signature => signature.participantGroup === 'OUTGOING').map(signature => signature.userId));
+    const incomingSignedIds = new Set(signatures.filter(signature => signature.participantGroup === 'INCOMING').map(signature => signature.userId));
 
-export default function HandoverTimeline({ status }) {
-    const currentIndex = STATUS_ORDER[status] ?? 0;
+    return {
+        outgoingAllSigned: outgoingOps.length === 0 || outgoingOps.every(operator => outgoingSignedIds.has(operator.userId)),
+        incomingAllSigned: incomingOps.length === 0 || incomingOps.every(operator => incomingSignedIds.has(operator.userId))
+    };
+}
+
+function getCurrentStepIndex(handover) {
+    if (!handover) return 0;
+    const { outgoingAllSigned, incomingAllSigned } = getSignatureState(handover);
+
+    if (['RECEIVED', 'WITH_INCIDENT', 'VALIDATED'].includes(handover.status)) return STEPS.length;
+    if (handover.status === 'DELIVERED') return incomingAllSigned ? 4 : 3;
+    if (handover.status === 'IN_PROGRESS') return outgoingAllSigned ? 2 : 1;
+    return 0;
+}
+
+export default function HandoverTimeline({ handover }) {
+    const currentIndex = getCurrentStepIndex(handover);
+    const isIncident = handover?.status === 'WITH_INCIDENT';
 
     return (
         <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            gap: 0, padding: '12px 16px', overflowX: 'auto'
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 0,
+            padding: '12px 16px',
+            overflowX: 'auto'
         }}>
-            {STEPS.map((step, i) => {
-                const done = i < currentIndex;
-                const active = i === currentIndex;
-                const isIncident = active && status === 'WITH_INCIDENT';
+            {STEPS.map((step, index) => {
+                const done = index < currentIndex;
+                const active = index === currentIndex && currentIndex < STEPS.length;
 
                 return (
-                    <div key={step.key} style={{ display: 'flex', alignItems: 'center' }}>
+                    <div key={step.label} style={{ display: 'flex', alignItems: 'center' }}>
                         <div style={{
-                            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-                            minWidth: 64
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            gap: 4,
+                            minWidth: 84
                         }}>
                             <div style={{
-                                width: 32, height: 32, borderRadius: '50%',
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                width: 34,
+                                height: 34,
+                                borderRadius: '50%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
                                 background: done ? '#dcfce7' : active ? (isIncident ? '#fef2f2' : '#eff6ff') : '#f1f5f9',
-                                border: `2px solid ${done ? '#16a34a' : active ? (isIncident ? '#dc2626' : '#2563eb') : '#e2e8f0'}`,
-                                transition: 'all 0.3s ease'
+                                border: `2px solid ${done ? '#16a34a' : active ? (isIncident ? '#dc2626' : '#2563eb') : '#e2e8f0'}`
                             }}>
-                                {done ? (
-                                    <CheckCircle size={16} color="#16a34a" />
-                                ) : (
-                                    <span style={{ fontSize: 14 }}>{isIncident ? '⚠️' : step.icon}</span>
-                                )}
+                                {done ? <CheckCircle size={16} color="#16a34a" /> : <span style={{ fontSize: 14 }}>{isIncident && active ? '⚠️' : step.icon}</span>}
                             </div>
                             <span style={{
-                                fontSize: 10, fontWeight: active ? 800 : 600,
+                                fontSize: 10,
+                                fontWeight: active ? 800 : 600,
                                 color: done ? '#16a34a' : active ? (isIncident ? '#dc2626' : '#2563eb') : '#94a3b8',
-                                textAlign: 'center', whiteSpace: 'nowrap'
+                                textAlign: 'center',
+                                whiteSpace: 'nowrap'
                             }}>
-                                {isIncident ? 'Novedad' : step.label}
+                                {isIncident && active ? 'Novedad' : step.label}
                             </span>
                         </div>
-                        {i < STEPS.length - 1 && (
+                        {index < STEPS.length - 1 && (
                             <div style={{
-                                width: 24, height: 2, margin: '0 2px',
-                                background: i < currentIndex ? '#16a34a' : '#e2e8f0',
-                                marginBottom: 18, transition: 'background 0.3s ease'
+                                width: 26,
+                                height: 2,
+                                margin: '0 2px 18px',
+                                background: index < currentIndex ? '#16a34a' : '#e2e8f0'
                             }} />
                         )}
                     </div>

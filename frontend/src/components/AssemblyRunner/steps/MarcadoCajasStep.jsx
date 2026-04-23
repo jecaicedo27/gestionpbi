@@ -58,7 +58,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     ) || (outputTargets.length === 1 ? outputTargets[0] : null);
 
     // Detect if this is a weight-based intermediate product (BASE, COMPUESTO, etc.)
-    const isWeightBasedOverride = activeCarritoId ? false : !matchedTarget?.plannedUnits;
+    const isWeightBasedOverride = activeCarritoId ? false : !(matchedTarget?.plannedUnits || matchedTarget?.actualUnits);
     const isWeightBased = isWeightBasedOverride;
     const isEnsamble = noteData.processType?.code === 'ENSAMBLE';
     const totalTarros = (() => {
@@ -126,16 +126,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
         receivedTarros = empaqueData.conteo_qty ?? empaqueData.received_qty ?? totalTarros;
     }
 
-    let approvedTarros = relationalApproved;
-    if (hasCarriots) {
-        approvedTarros = Math.max(0, receivedQtyFromCarriots - defectiveTarros);
-    } else if (approvedTarros == null) {
-        if (empaqueData.approved_qty != null && empaqueData.approved_qty > 0) {
-            approvedTarros = empaqueData.approved_qty;
-        } else {
-            approvedTarros = Math.max(0, receivedTarros - defectiveTarros);
-        }
-    }
+    const approvedTarros = Math.max(0, receivedTarros - defectiveTarros);
 
     // Programadas
     const anyConteoNote = allBatchNotes.find(n => n.processType?.code === 'CONTEO');
@@ -159,20 +150,48 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
         return fabDate.toISOString().split('T')[0];
     })();
 
-    // ── Local state ──────────────────────────────────────────────────────────
-
-    // ── Destino obligatorio ──
-    const [destino, setDestino] = useState(null); // null | 'liquipops' | 'maquila' | 'mixto'
     const MAQUILA_UNITS_PER_BOX = 6;
-
-    const [unitsPerBox, setUnitsPerBox] = useState(defaultUnitsPerBox);
 
     // ── Contramuestra: solo para LIQUIPOPS 350g (cualquier sabor) ──
     const isLiquipops350 = /liquipops/i.test(product.name || '') && /350/i.test(product.name || '');
-    const [contramuestraQty, setContramuestraQty] = useState(isLiquipops350 ? 1 : 0);
+    const savedMarcado = noteData.processParameters?.marcado_cajas || {};
+    const savedDestino = ['liquipops', 'maquila', 'mixto'].includes(savedMarcado.destino)
+        ? savedMarcado.destino
+        : null;
+    const initialContramuestraQty = Number(savedMarcado.contramuestra_qty);
+    const initialContramuestra = Number.isFinite(initialContramuestraQty)
+        ? initialContramuestraQty
+        : (isLiquipops350 ? 1 : 0);
+    const initialMaquilaQtyValue = Number(savedMarcado.maquila_qty);
+    const initialMaquilaQty = Number.isFinite(initialMaquilaQtyValue) ? initialMaquilaQtyValue : 0;
+    const initialPackableUnits = Math.max(0, approvedTarros - initialContramuestra - initialMaquilaQty);
+    const initialIsCarritoDone = hasCarriots && receivedQtyFromCarriots === 0 && initialPackableUnits === 0;
+    const inferredDestino = savedDestino
+        || (initialMaquilaQty > 0 ? (initialPackableUnits > 0 ? 'mixto' : 'maquila') : null)
+        || (!isWeightBased && !initialIsCarritoDone ? 'liquipops' : null);
+    const savedUnitsPerBox = Number(savedMarcado.unidades_por_caja);
+    const initialUnitsPerBox = Number.isFinite(savedUnitsPerBox) && savedUnitsPerBox > 0
+        ? savedUnitsPerBox
+        : (inferredDestino === 'maquila' ? MAQUILA_UNITS_PER_BOX : defaultUnitsPerBox);
+    const savedFullBoxes = Number(savedMarcado.cajas_llenas);
+    const savedPartialUnits = Number(savedMarcado.unidades_sueltas);
+    const initialFullBoxes = Number.isFinite(savedFullBoxes) && savedFullBoxes >= 0
+        ? savedFullBoxes
+        : (initialUnitsPerBox > 0 ? Math.floor(initialPackableUnits / initialUnitsPerBox) : 0);
+    const initialPartialUnits = Number.isFinite(savedPartialUnits) && savedPartialUnits >= 0
+        ? savedPartialUnits
+        : (initialUnitsPerBox > 0 ? Math.round(initialPackableUnits % initialUnitsPerBox) : 0);
+    const initialPrinted = savedMarcado.etiquetas_impresas === true;
+
+    // ── Local state ──────────────────────────────────────────────────────────
+
+    // ── Destino obligatorio ──
+    const [destino, setDestino] = useState(inferredDestino); // null | 'liquipops' | 'maquila' | 'mixto'
+    const [unitsPerBox, setUnitsPerBox] = useState(initialUnitsPerBox);
+    const [contramuestraQty, setContramuestraQty] = useState(initialContramuestra);
 
     // ── Maquila / Marca Blanca ──
-    const [maquilaQty, setMaquilaQty] = useState(0);
+    const [maquilaQty, setMaquilaQty] = useState(initialMaquilaQty);
 
     // When destino changes, auto-set maquila qty, box sizes, and reset pending box answer
     useEffect(() => {
@@ -225,14 +244,14 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
     const defaultFullBoxes = regularBoxSize > 0 ? Math.floor(packableUnits / regularBoxSize) : 0;
     const defaultPartialUnits = regularBoxSize > 0 ? Math.round(packableUnits % regularBoxSize) : 0;
 
-    const [fullBoxes, setFullBoxes] = useState(defaultFullBoxes);
-    const [partialUnits, setPartialUnits] = useState(defaultPartialUnits);
+    const [fullBoxes, setFullBoxes] = useState(initialFullBoxes);
+    const [partialUnits, setPartialUnits] = useState(initialPartialUnits);
 
     // Defective labels: default = 1 label per defective unit (each unit needs its own NO CONFORME sticker)
     const [defectiveBoxes, setDefectiveBoxes] = useState(defectiveTarros > 0 ? defectiveTarros : 0);
 
     const [qrDataUrl, setQrDataUrl] = useState('');
-    const [printed, setPrinted] = useState(false);
+    const [printed, setPrinted] = useState(initialPrinted);
     const [printing, setPrinting] = useState(false);
     const [labelCopies, setLabelCopies] = useState(1);
 
@@ -267,6 +286,11 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
         || isCarritoDone
     );
     const isValid = distributionValid && pendingBoxResolved;
+    const invalidReason = !destinoSelected
+        ? 'Selecciona el destino de esta producción'
+        : !pendingBoxResolved
+            ? 'Confirma si hay una caja pendiente'
+            : 'Ajusta la distribución de cajas';
     // Total labels = new full + partial + defective + contramuestra + pending + maquila
     const totalBoxesToPrint = (isWeightBased
         ? Number(labelCopies) + Number(defectiveBoxes)
@@ -306,10 +330,11 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 : null,
             pendingBoxOriginal: pendingBox,
             newPartialUnits: Number(partialUnits),
+            invalidReason,
             isValid,
             printed
         });
-    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, isValid, contramuestraQty, maquilaNum, maquilaBoxSize, destino, pendingFillQty, pendingAnswer, pendingConfirmed, pendingBox, printed, onMarcadoChange]);
+    }, [unitsPerBox, fullBoxes, partialUnits, totalIngested, totalBoxesToPrint, invalidReason, isValid, contramuestraQty, maquilaNum, maquilaBoxSize, destino, pendingFillQty, pendingAnswer, pendingConfirmed, pendingBox, printed, onMarcadoChange]);
 
     // ── Fix: recalculate when freshEmpaque arrives (async fetch corrects stale initial state) ──
     // On first mount, approvedTarros/defectiveTarros come from stale processParameters (or fallback to totalTarros).
@@ -1134,7 +1159,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                                     ) : printed ? (
                                         <>✅ Reimprimir {totalBoxesToPrint} Etiqueta{totalBoxesToPrint > 1 ? 's' : ''}</>
                                     ) : !isValid ? (
-                                        <>❌ Revisa la distribución de cajas</>
+                                        <>❌ {invalidReason}</>
                                     ) : !isReady ? (
                                         <>🔌 Conecta la impresora primero</>
                                     ) : (

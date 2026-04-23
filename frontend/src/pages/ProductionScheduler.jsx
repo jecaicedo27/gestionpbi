@@ -13,15 +13,16 @@ afectará drásticamente la capacidad matemática del modelo productivo de Liqui
 */
 import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
-import { format, parse, startOfWeek, getDay } from 'date-fns';
+import { format, parse, startOfWeek, getDay, addDays } from 'date-fns';
 import { enUS, es } from 'date-fns/locale';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import withDragAndDrop from 'react-big-calendar/lib/addons/dragAndDrop';
 import 'react-big-calendar/lib/addons/dragAndDrop/styles.css';
+import TimeGrid from 'react-big-calendar/lib/TimeGrid';
 
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import { Loader, AlertTriangle, CheckCircle, Save, Trash2, Info } from 'lucide-react';
+import { Loader, AlertTriangle, CheckCircle, CheckSquare, Save, Trash2, Info, Clock } from 'lucide-react';
 
 const locales = {
     'es': es,
@@ -37,9 +38,40 @@ const localizer = dateFnsLocalizer({
 
 const DnDCalendar = withDragAndDrop(Calendar);
 
+// Custom 3-day view: yesterday, today, tomorrow
+class ThreeDayView extends React.Component {
+    render() {
+        const { date, localizer, min, max, scrollToTime, enableAutoScroll = true, ...props } = this.props;
+        const start = addDays(date, -1);
+        const range = [start, addDays(start, 1), addDays(start, 2)];
+        return <TimeGrid {...props} range={range} eventOffset={15} localizer={localizer}
+            min={min || localizer.startOf(new Date(), 'day')}
+            max={max || localizer.endOf(new Date(), 'day')}
+            scrollToTime={scrollToTime || localizer.startOf(new Date(), 'day')}
+            enableAutoScroll={enableAutoScroll} />;
+    }
+}
+ThreeDayView.range = (date) => {
+    const start = addDays(date, -1);
+    return [start, addDays(start, 1), addDays(start, 2)];
+};
+ThreeDayView.navigate = (date, action) => {
+    switch (action) {
+        case 'PREV': return addDays(date, -3);
+        case 'NEXT': return addDays(date, 3);
+        default: return date;
+    }
+};
+ThreeDayView.title = (date, { localizer }) => {
+    const start = addDays(date, -1);
+    const end = addDays(date, 1);
+    return localizer.format({ start, end }, 'dayRangeHeaderFormat');
+};
+
 const ProductionScheduler = ({ readOnly = false }) => {
     const { user } = useAuth();
     const isAdmin = user?.role === 'ADMIN';
+    const isViewOnly = user?.role === 'DISTRIBUIDOR';
     const [events, setEvents] = useState([]);
     const [suggestions, setSuggestions] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -55,9 +87,18 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
     // "Already started" warning modal
     const [alreadyStartedModal, setAlreadyStartedModal] = useState(null); // { batchTitle, noteId }
+    const [pendingWashModal, setPendingWashModal] = useState(null); // { washTitle }
 
     // Line State: 'liquipops' or 'geniality'
     const [activeLine, setActiveLine] = useState('liquipops');
+
+    // Ingredient lot counts for Geniality sidebar
+    const [ingredientLots, setIngredientLots] = useState({});
+
+    // Multi-select for bulk delete
+    const [bulkSelectMode, setBulkSelectMode] = useState(false);
+    const [selectedBatchIds, setSelectedBatchIds] = useState(new Set());
+    const [isDeletingBulk, setIsDeletingBulk] = useState(false);
 
     // Fetch templates on mount for launch modal
     useEffect(() => {
@@ -65,9 +106,61 @@ const ProductionScheduler = ({ readOnly = false }) => {
     }, []);
 
     // Auto-select best template for a batch (most stages wins = master template)
+    const handleLaunchIngredient = async (batchId, templateCode, baseWeight) => {
+        setIsLaunching(true);
+        try {
+            const notesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
+            if (notesRes.data?.length > 0) {
+                const sorted = [...notesRes.data].sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
+                const activeNote = sorted.find(n => n.status === 'EXECUTING') || sorted.find(n => n.status === 'PENDING') || sorted[0];
+                setAlreadyStartedModal({
+                    batchTitle: templateCode,
+                    noteId: activeNote.id,
+                    status: activeNote.status,
+                    stageName: activeNote.stageName || activeNote.stageOrder || '',
+                    execBase: '/assembly-execution',
+                });
+                setIsLaunching(false);
+                return;
+            }
+            const templatesRes = await api.get('/assembly-templates?all=true');
+            const tmpl = (templatesRes.data || []).find(t => t.isActive && t.templateCode === templateCode);
+            if (!tmpl) {
+                alert(`Template ${templateCode} no encontrado. Verifica que exista y esté activo.`);
+                setIsLaunching(false);
+                return;
+            }
+            const lotCount = baseWeight ? Math.max(1, Math.round(baseWeight / 100)) : 1;
+            const userId = localStorage.getItem('userId');
+            const res = await api.post('/assembly-notes/quick-start', {
+                templateId: tmpl.id,
+                userId,
+                quantity: lotCount,
+                existingBatchId: batchId,
+            });
+            if (res.data?.firstNoteId) {
+                window.location.href = `/assembly-execution/${res.data.firstNoteId}`;
+            } else {
+                alert(`No se generaron notas para ${templateCode}.`);
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error al iniciar ingrediente: ' + (err.response?.data?.error || err.message));
+        }
+        setIsLaunching(false);
+    };
+
     const handleLaunchBatch = async (batchId, title, flavor, mix, baseWeight) => {
         setIsLaunching(true);
         try {
+            const sortedEvents = [...events].sort((a, b) => new Date(a.start) - new Date(b.start));
+            const cleanBatchId = String(batchId).split('-p')[0];
+            const batchIdx = sortedEvents.findIndex(e => {
+                const eId = String(e.originalId || e.id).split('-p')[0];
+                return eId === cleanBatchId;
+            });
+            // Aux-event restriction removed: operators need to start the next base
+            // while spherification is still running (can't do water change yet).
             // 1. Check if notes already exist for this batch
             const notesBase = activeLine === 'geniality' ? '/geniality/assembly-notes' : '/assembly-notes';
             const execBase = activeLine === 'geniality' ? '/geniality/assembly-execution' : '/assembly-execution';
@@ -95,8 +188,9 @@ const ProductionScheduler = ({ readOnly = false }) => {
             // Each line has its own BATCH template
             // ESCARCHADOR has its own umbrella template (no saborización step)
             const isEscarchador = flavorKey.includes('ESCARCHADOR');
+            const isLiquimon = flavorKey.includes('LIQUIMON');
             const batchTemplateCode = activeLine === 'geniality'
-                ? (isEscarchador ? 'BATCH-ESCARCHADOR' : 'BATCH-GENIALITY')
+                ? (isEscarchador ? 'BATCH-ESCARCHADOR' : isLiquimon ? 'BATCH-LIQUIMON' : 'BATCH-GENIALITY')
                 : 'BATCH-LIQUIPOPS';
             const batchTemplate = allTemplates.find(t => t.templateCode === batchTemplateCode);
 
@@ -289,21 +383,22 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     });
 
                     // Second part: 00:00:00 to (End - 1 min)
-                    // Aggressive buffer: 1 minute time gap to ensure NO collision visual
                     const startPart2 = new Date(midnight); // 00:00:00
-
                     const endPart2 = new Date(end);
-                    endPart2.setMinutes(endPart2.getMinutes() - 1); // Shave off 1 full minute
+                    endPart2.setMinutes(endPart2.getMinutes() - 1);
 
-                    allEvents.push({
-                        ...evt,
-                        id: `${evt.id}-p2`,
-                        start: startPart2,
-                        end: endPart2,
-                        title: evt.title + ' (Parte 2)',
-                        originalId: evt.id,
-                        allDay: false
-                    });
+                    const part2DurationMin = (endPart2.getTime() - startPart2.getTime()) / 60000;
+                    if (part2DurationMin >= 30) {
+                        allEvents.push({
+                            ...evt,
+                            id: `${evt.id}-p2`,
+                            start: startPart2,
+                            end: endPart2,
+                            title: evt.title + ' (Parte 2)',
+                            originalId: evt.id,
+                            allDay: false
+                        });
+                    }
                 } else {
                     // Normal event - doesn't cross midnight
                     allEvents.push({
@@ -350,13 +445,89 @@ const ProductionScheduler = ({ readOnly = false }) => {
             return;
         }
 
+        // ── Ingredient shortcut: no mix fetch, use draggedFlavor data directly ──
+        if (draggedFlavor?.type === 'INGREDIENT') {
+            const lots = draggedFlavor.lots || 1;
+            const baseWeight = lots * 100;
+            setModalData({
+                flavor: draggedFlavor.flavor,
+                isIngredient: true,
+                templateCode: draggedFlavor.templateCode,
+                templateName: draggedFlavor.templateName,
+                scheduledStart: start,
+                scheduledEnd: end,
+                baseWeight,
+                totalPlannedKg: baseWeight,
+                totalSyrupKg: baseWeight,
+                targetBatchCount: lots,
+                mix: [{
+                    productId: draggedFlavor.ingredientProductId,
+                    sku: draggedFlavor.ingredientSku,
+                    name: draggedFlavor.ingredientName || draggedFlavor.templateName,
+                    plannedUnits: lots,
+                    plannedWeightKg: baseWeight,
+                    kgFactor: 1,
+                    packSize: 1,
+                }],
+                readOnly: false,
+            });
+            return;
+        }
+
         try {
             const mixBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
             const res = await api.get(`${mixBase}/mix/${flavor}?line=${activeLine}`);
 
             // CONSTANTS Based on Line
             const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-            const DURATION = config.batchDuration || (activeLine === 'geniality' ? 160 : 140);
+            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : (config.batchDuration || 90);
+
+            // === LIQUIPOPS: Use pre-calculated batch suggestions (skip scaling) ===
+            if (res.data.suggestedBatches && res.data.suggestedBatches.length > 0) {
+                const totalBatches = res.data.suggestedBatches.length;
+                const totalDuration = totalBatches * DURATION;
+                const calculatedEndDate = new Date(start.getTime() + totalDuration * 60000);
+
+                let demandData = {};
+                const sugBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+                try {
+                    const sugRes = await api.get(`${sugBase}/suggestions?line=${activeLine}`);
+                    const sug = (sugRes.data || []).find(s => s.flavor?.toUpperCase() === flavor.toUpperCase());
+                    if (sug) {
+                        demandData = {
+                            demandOrderDeficitUnits: sug.orderDeficitUnits || 0,
+                            demandBackorderKg: sug.totalBackorderKg || 0,
+                            demandInProgressKg: sug.inProgressKg || 0,
+                            demandCurrentStockKg: sug.currentStockKg || 0,
+                            demandEffectiveStockKg: sug.effectiveStockKg || 0,
+                            demandDaysRemaining: sug.daysRemaining || 0,
+                            demandStockDetails: sug.stockDetails || [],
+                        };
+                    }
+                } catch (e) { console.warn('Could not fetch suggestions for demand', e); }
+                try {
+                    const demandRes = await api.get(`${sugBase}/demand?flavor=${encodeURIComponent(flavor)}&line=${activeLine}`);
+                    const demand = demandRes.data || {};
+                    demandData = { ...demandData, demandDistributors: demand.distributors || [], demandSizeTotals: demand.sizeTotals || {}, demandSafetyStock: demand.safetyStock || [] };
+                } catch (e) { console.warn('Could not fetch demand details', e); }
+
+                const scheduledPendingKg = events
+                    .filter(e => e.flavor && e.flavor.toUpperCase() === flavor.toUpperCase() && e.status === 'PENDING')
+                    .reduce((acc, e) => acc + (e.baseWeight || 0), 0);
+
+                setModalData({
+                    ...res.data,
+                    suggestedBatches: res.data.suggestedBatches,
+                    scheduledStart: start,
+                    scheduledEnd: calculatedEndDate,
+                    baseWeight: totalBatches * BATCH_SIZE,
+                    targetBatchCount: totalBatches,
+                    readOnly: false,
+                    ...demandData,
+                    demandScheduledPendingKg: scheduledPendingKg,
+                });
+                return;
+            }
 
             // === LIQUIPOPS: Use pre-calculated batch suggestions (skip scaling) ===
             if (res.data.suggestedBatches && res.data.suggestedBatches.length > 0) {
@@ -417,44 +588,53 @@ const ProductionScheduler = ({ readOnly = false }) => {
             const scaleFactor = totalSyrupKg > 0 ? (targetWeight / totalSyrupKg) : 1;
             const SYRUP_RATIO = activeLine === 'geniality' ? 1.0 : (config.syrupRatio || 0.70);
 
-            // First pass: scaled units (no box rounding, targeting exact capacity)
+            // First pass: scaled units (pack-rounded for Geniality, targeting exact capacity)
             let currentSyrupAssigned = 0;
             let scaledMix = (res.data.mix || []).map(m => {
                 let units = Math.round((m.plannedUnits || 0) * scaleFactor);
                 // For Liquipops, include contramuestra if applicable
                 const is350 = activeLine !== 'geniality' && ((m.name || '').includes('350') || (m.name || '').includes('360'));
                 if (is350 && m.contramuestra && units > 0) units += m.contramuestra;
-                
+
+                // Round to packSize multiples
+                const ps = m.packSize || 1;
+                if (ps > 1) units = Math.round(units / ps) * ps;
+
+                if (is350 && units > 81) units = 80 + (m.contramuestra || 1);
+
                 currentSyrupAssigned += (units * (m.kgFactor || 0) * SYRUP_RATIO);
                 return { ...m, plannedUnits: units, is350 };
             });
 
-            // Second pass: perfectly adjust exact difference in Syrup bounds
-            if (scaledMix.length > 0 && Math.abs(scaleFactor - 1) > 0.01 && Math.abs(currentSyrupAssigned - targetWeight) > 0.05) {
+            // Second pass: adjust to hit target weight (add/remove whole packs)
+            if (scaledMix.length > 0 && Math.abs(currentSyrupAssigned - targetWeight) > 0.5) {
                 scaledMix.sort((a, b) => (a.kgFactor || 0) - (b.kgFactor || 0));
                 let diff = targetWeight - currentSyrupAssigned;
                 let iterations = 0;
-                while (Math.abs(diff) > 0.05 && iterations < 500) {
+                while (Math.abs(diff) > 0.5 && iterations < 200) {
                     iterations++;
                     if (diff > 0) {
-                        const tgt = scaledMix.find(m => ((m.kgFactor || 0) * SYRUP_RATIO) <= diff + 0.05);
+                        const tgt = scaledMix.find(m => {
+                            const ps = m.packSize || 1;
+                            if (m.is350 && m.plannedUnits + ps > 81) return false;
+                            return (ps * (m.kgFactor || 0) * SYRUP_RATIO) <= diff + 0.5;
+                        });
                         if (tgt) {
-                            tgt.plannedUnits += 1;
-                            diff -= ((tgt.kgFactor || 0) * SYRUP_RATIO);
+                            const ps = tgt.packSize || 1;
+                            tgt.plannedUnits += ps;
+                            diff -= (ps * (tgt.kgFactor || 0) * SYRUP_RATIO);
                         } else break;
                     } else {
                         const sortedDesc = [...scaledMix].sort((a,b) => (b.kgFactor || 0) - (a.kgFactor || 0));
-                        const tgt = sortedDesc.find(m => m.plannedUnits > 1 && ((m.kgFactor || 0) * SYRUP_RATIO) <= Math.abs(diff) + 0.05);
+                        const tgt = sortedDesc.find(m => {
+                            const ps = m.packSize || 1;
+                            return m.plannedUnits >= ps * 2 && (ps * (m.kgFactor || 0) * SYRUP_RATIO) <= Math.abs(diff) + 0.5;
+                        });
                         if (tgt) {
-                            tgt.plannedUnits -= 1;
-                            diff += ((tgt.kgFactor || 0) * SYRUP_RATIO);
-                        } else {
-                            const fallback = scaledMix.find(m => m.plannedUnits > 1);
-                            if (fallback) {
-                                fallback.plannedUnits -= 1;
-                                diff += ((fallback.kgFactor || 0) * SYRUP_RATIO);
-                            } else break;
-                        }
+                            const ps = tgt.packSize || 1;
+                            tgt.plannedUnits -= ps;
+                            diff += (ps * (tgt.kgFactor || 0) * SYRUP_RATIO);
+                        } else break;
                     }
                 }
             }
@@ -513,15 +693,18 @@ const ProductionScheduler = ({ readOnly = false }) => {
                 .filter(e => e.flavor && e.flavor.toUpperCase() === flavor.toUpperCase() && e.status === 'PENDING')
                 .reduce((acc, e) => acc + (e.baseWeight || 0), 0);
 
+            const realTotalKg = scaledMix.reduce((a, m) => a + (m.plannedWeightKg || 0), 0);
+            const realLots = activeLine === 'geniality' ? Math.max(1, Math.round(realTotalKg / BATCH_SIZE)) : defaultLots;
+
             setModalData({
                 ...res.data,
                 mix: scaledMix,
-                totalPlannedKg: scaledMix.reduce((a, m) => a + (m.plannedWeightKg || 0), 0),
-                totalSyrupKg: targetWeight,
+                totalPlannedKg: realTotalKg,
+                totalSyrupKg: realTotalKg,
                 scheduledStart: start,
                 scheduledEnd: calculatedEndDate,
-                baseWeight: targetWeight,
-                targetBatchCount: defaultLots,
+                baseWeight: realTotalKg,
+                targetBatchCount: realLots,
                 readOnly: false,
                 ...demandData,
                 demandScheduledPendingKg: scheduledPendingKg,
@@ -598,10 +781,62 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
             // DYNAMIC BATCH SIZE
             const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-            const DURATION = config.batchDuration || (activeLine === 'geniality' ? 160 : 140);
+            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : (config.batchDuration || 90);
 
             let numBatches = modalData.targetBatchCount || 1;
             if (numBatches === 0) numBatches = 1;
+
+            // ═══════════════════════════════════════════════════════
+            // INGREDIENT: Simple single batch (GLUCOSA, FRUCTOSA)
+            // ═══════════════════════════════════════════════════════
+            if (modalData.isIngredient) {
+                const totalWeight = Math.round((modalData.totalSyrupKg || modalData.totalPlannedKg || 0) * 100) / 100;
+                let currentStartDate = new Date(modalData.scheduledStart);
+                let currentEndDate = new Date(modalData.scheduledEnd);
+                const batchDuration = (currentEndDate - currentStartDate) / 60000;
+
+                let hasCollision = true, iterations = 0;
+                while (hasCollision && iterations < 50) {
+                    iterations++; hasCollision = false;
+                    for (const ev of events) {
+                        if (currentStartDate < new Date(ev.end) && currentEndDate > new Date(ev.start)) {
+                            currentStartDate = new Date(ev.end);
+                            currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
+                            hasCollision = true; break;
+                        }
+                    }
+                }
+
+                const genBase = '/geniality/production';
+                const res = await api.post(`${genBase}/schedule`, {
+                    flavor: modalData.flavor,
+                    scheduledStart: currentStartDate,
+                    scheduledEnd: currentEndDate,
+                    baseWeight: totalWeight,
+                    mix: modalData.mix,
+                    batchIndex: 1,
+                    totalBatches: 1
+                });
+
+                const lots = modalData.targetBatchCount || 1;
+                setEvents(prev => [...prev, {
+                    id: res.data.id,
+                    title: `${modalData.templateName || modalData.flavor} (${lots} ${lots === 1 ? 'lote' : 'lotes'})`,
+                    start: new Date(currentStartDate),
+                    end: new Date(currentEndDate),
+                    flavor: modalData.flavor,
+                    mix: modalData.mix,
+                    status: 'PENDING',
+                    baseWeight: totalWeight,
+                    templateCode: modalData.templateCode,
+                }]);
+
+                setIsSaving(false);
+                setModalData(null);
+                await fetchEvents();
+                fetchSuggestions();
+                return;
+            }
 
             // ═══════════════════════════════════════════════════════
             // GENIALITY: Single batch with N lots (large kettle)
@@ -609,7 +844,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
             if (activeLine === 'geniality') {
                 const totalWeight = Math.round((modalData.totalSyrupKg || modalData.totalPlannedKg || 0) * 100) / 100;
                 const exactLots = totalWeight / BATCH_SIZE;
-                const batchDuration = DURATION + (exactLots - 1) * 40;
+                const batchDuration = DURATION;
                 let currentStartDate = new Date(modalData.scheduledStart);
                 let currentEndDate = new Date(currentStartDate.getTime() + batchDuration * 60000);
 
@@ -656,10 +891,32 @@ const ProductionScheduler = ({ readOnly = false }) => {
             }
 
             // ═══════════════════════════════════════════════════════
-            // LIQUIPOPS: Batch creation
+            // LIQUIPOPS: Batch creation (with auto water change every 2 batches)
             // ═══════════════════════════════════════════════════════
+            const WATER_CHANGE_DURATION = 30; // minutes
             const eventsToAdd = [];
             let currentStartDate = new Date(modalData.scheduledStart);
+
+            // Count consecutive production batches before this drop (since last water change)
+            // Only count batches within the same production session (max 3h gap)
+            const sortedPrior = [...events]
+                .filter(ev => ev.end && new Date(ev.end) <= currentStartDate)
+                .sort((a, b) => new Date(b.end) - new Date(a.end));
+            let priorBatchCount = 0;
+            let refTime = new Date(currentStartDate);
+            const MAX_SESSION_GAP = 3 * 60 * 60 * 1000;
+            for (const ev of sortedPrior) {
+                const isWaterChange = (ev.title || '').includes('CAMBIO DE AGUA');
+                if (isWaterChange) break;
+                const isPremix = !ev.flavor;
+                if (isPremix) continue;
+                const isAux = !ev.mix || ev.mix.length === 0;
+                if (isAux) continue;
+                const evEnd = new Date(ev.end);
+                if (refTime - evEnd > MAX_SESSION_GAP) break;
+                priorBatchCount++;
+                refTime = new Date(ev.start);
+            }
 
             // Use suggestedBatches if available (labeling-optimized batches)
             const batchPlan = modalData.suggestedBatches && modalData.suggestedBatches.length > 0
@@ -674,29 +931,43 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     };
                 });
 
+            let batchesSinceWater = priorBatchCount;
+            let batchesCreatedThisSession = 0;
+            const liqBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+
             for (const batch of batchPlan) {
+                // Insert CAMBIO DE AGUA if 2 batches have passed — but never before the first batch of this session
+                if (batchesSinceWater >= 2 && batchesCreatedThisSession > 0) {
+                    const wcStart = new Date(currentStartDate);
+                    const wcEnd = new Date(wcStart.getTime() + WATER_CHANGE_DURATION * 60000);
+
+                    const wcRes = await api.post(`${liqBase}/schedule`, {
+                        flavor: 'CAMBIO DE AGUA',
+                        scheduledStart: wcStart,
+                        scheduledEnd: wcEnd,
+                        baseWeight: 0,
+                        mix: [],
+                        notes: 'Cambio de agua automático (cada 2 baches)'
+                    });
+
+                    eventsToAdd.push({
+                        id: wcRes.data.id,
+                        title: 'CAMBIO DE AGUA',
+                        start: new Date(wcStart),
+                        end: new Date(wcEnd),
+                        flavor: 'CAMBIO DE AGUA',
+                        mix: [],
+                        status: 'PENDING',
+                        baseWeight: 0
+                    });
+
+                    currentStartDate = new Date(wcEnd);
+                    batchesSinceWater = 0;
+                }
+
                 let currentEndDate = new Date(currentStartDate.getTime() + DURATION * 60000);
 
-                // Collision Detection & Auto-Resolution
-                let hasCollision = true, maxIterations = 50, iterations = 0;
-                while (hasCollision && iterations < maxIterations) {
-                    iterations++; hasCollision = false;
-                    const allEvents = [...events, ...eventsToAdd];
-                    for (const ev of allEvents) {
-                        if (currentStartDate < new Date(ev.end) && currentEndDate > new Date(ev.start)) {
-                            currentStartDate = new Date(ev.end);
-                            currentEndDate.setTime(currentStartDate.getTime() + DURATION * 60000);
-                            hasCollision = true; break;
-                        }
-                    }
-                }
-
-                if (iterations >= maxIterations) {
-                    alert('No se pudo encontrar un espacio libre para este bache.');
-                    continue;
-                }
-
-                const liqBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+                // Backend handles overlap detection and auto-adjustment
                 const res = await api.post(`${liqBase}/schedule`, {
                     flavor: modalData.flavor,
                     scheduledStart: currentStartDate,
@@ -708,18 +979,40 @@ const ProductionScheduler = ({ readOnly = false }) => {
                 });
 
                 const batchLabel = batch.label ? ` ${batch.label}` : '';
+                // Use server-adjusted times (backend may have shifted to avoid overlap)
+                const serverStart = new Date(res.data.scheduledStart || currentStartDate);
+                const serverEnd = new Date(res.data.scheduledEnd || currentEndDate);
                 eventsToAdd.push({
                     id: res.data.id,
                     title: `${modalData.flavor} [${batch.index}/${batch.total}]${batchLabel} (${BATCH_SIZE}kg)`,
-                    start: new Date(currentStartDate),
-                    end: new Date(currentEndDate),
+                    start: serverStart,
+                    end: serverEnd,
                     flavor: modalData.flavor,
                     mix: batch.mix,
                     status: 'PENDING',
                     baseWeight: BATCH_SIZE
                 });
 
-                currentStartDate = new Date(currentEndDate);
+                currentStartDate = new Date(serverEnd);
+                batchesSinceWater++;
+                batchesCreatedThisSession++;
+            }
+
+            // Final water change — leave clean water for next session
+            if (batchesCreatedThisSession > 0 && batchesSinceWater > 0) {
+                const wcStart = new Date(currentStartDate);
+                const wcEnd = new Date(wcStart.getTime() + WATER_CHANGE_DURATION * 60000);
+                const wcRes = await api.post(`${liqBase}/schedule`, {
+                    flavor: 'CAMBIO DE AGUA',
+                    scheduledStart: wcStart, scheduledEnd: wcEnd,
+                    baseWeight: 0, mix: [],
+                    notes: 'Cambio de agua final (limpieza)'
+                });
+                eventsToAdd.push({
+                    id: wcRes.data.id, title: 'CAMBIO DE AGUA',
+                    start: new Date(wcStart), end: new Date(wcEnd),
+                    flavor: 'CAMBIO DE AGUA', mix: [], status: 'PENDING', baseWeight: 0
+                });
             }
 
             setIsSaving(false);
@@ -782,6 +1075,9 @@ const ProductionScheduler = ({ readOnly = false }) => {
         'HIERBABUENA': '#10B981', // Emerald
         'UVA': '#8B5CF6', // Purple
         'SANDIA': '#F87171', // Light Red
+        'CAMBIO DE AGUA': '#06B6D4', // Cyan
+        'GLUCOSA': '#F59E0B', // Amber
+        'FRUCTOSA': '#D97706', // Amber-dark
     };
 
     const getFlavorColor = (flavor) => {
@@ -880,9 +1176,9 @@ const ProductionScheduler = ({ readOnly = false }) => {
         }
 
         // Determine duration
-        let durationMin = 140; // Default Liquipops
-        if (activeLine === 'geniality') durationMin = 240; // Geniality default
+        let durationMin = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : (config.batchDuration || 90);
         if (draggedFlavor.type === 'EVENT') durationMin = draggedFlavor.duration || 60;
+        if (draggedFlavor.type === 'INGREDIENT') durationMin = config.geniality_batchDuration || 240;
 
         const durationMs = durationMin * 60000;
 
@@ -899,8 +1195,12 @@ const ProductionScheduler = ({ readOnly = false }) => {
     };
 
     const handleSelectEvent = async (event) => {
+        if (bulkSelectMode) {
+            toggleBatchSelection(event.originalId || event.id);
+            return;
+        }
         // Detect if it's an Auxiliary Event
-        const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA');
+        const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA') || event.title.includes('CAMBIO DE AGUA');
 
         if (isAuxEvent) {
             setModalData({
@@ -998,6 +1298,36 @@ const ProductionScheduler = ({ readOnly = false }) => {
         }
     };
 
+    const handleAuxAction = async (batchId, action) => {
+        try {
+            if (action === 'start') {
+                const sortedEvts = [...events].sort((a, b) => new Date(a.start) - new Date(b.start));
+                const cleanId = String(batchId).split('-p')[0];
+                const idx = sortedEvts.findIndex(e => String(e.originalId || e.id).split('-p')[0] === cleanId);
+            }
+            const auxBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+            const res = await api.patch(`${auxBase}/${batchId}/aux-action`, { action });
+            setEvents(prev => prev.map(e => {
+                const eClean = String(e.originalId || e.id).split('-p')[0].split(':')[0];
+                if (eClean === batchId) {
+                    return {
+                        ...e,
+                        status: res.data.status,
+                        startedAt: res.data.startedAt,
+                        completedAt: res.data.completedAt,
+                    };
+                }
+                return e;
+            }));
+            if (action === 'start') {
+                fetchEvents();
+            }
+        } catch (error) {
+            console.error('Error aux action:', error);
+            alert(`Error: ${error.response?.data?.error || error.message}`);
+        }
+    };
+
     const handleDeleteBatch = async () => {
         if (!modalData?.id) {
             alert("Error: Id de bache no encontrado.");
@@ -1024,6 +1354,37 @@ const ProductionScheduler = ({ readOnly = false }) => {
             console.error("Error deleting batch:", error);
             alert(`Error al eliminar: ${error.message} (${error.response?.status || 'N/A'})`);
         }
+    };
+
+    const toggleBatchSelection = (eventId) => {
+        const cleanId = String(eventId).split('-p')[0].split(':')[0];
+        setSelectedBatchIds(prev => {
+            const next = new Set(prev);
+            if (next.has(cleanId)) next.delete(cleanId); else next.add(cleanId);
+            return next;
+        });
+    };
+
+    const handleBulkDelete = async () => {
+        if (selectedBatchIds.size === 0) return;
+        if (!confirm(`¿Eliminar ${selectedBatchIds.size} evento(s) seleccionados?`)) return;
+        setIsDeletingBulk(true);
+        const delBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+        let deleted = 0;
+        for (const id of selectedBatchIds) {
+            try {
+                await api.delete(`${delBase}/${id}`);
+                deleted++;
+            } catch (e) { console.warn('Error deleting', id, e.message); }
+        }
+        setEvents(prev => prev.filter(e => {
+            const eClean = String(e.originalId || e.id).split('-p')[0].split(':')[0];
+            return !selectedBatchIds.has(eClean);
+        }));
+        setSelectedBatchIds(new Set());
+        setBulkSelectMode(false);
+        setIsDeletingBulk(false);
+        fetchSuggestions();
     };
 
     return (
@@ -1065,6 +1426,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     <h3 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Eventos Auxiliares</h3>
                     <div className="grid grid-cols-2 gap-2">
                         {[
+                            { name: 'CAMBIO DE AGUA', duration: 30, color: 'bg-cyan-50 border-cyan-200 text-cyan-700' },
                             { name: 'LAVADO', duration: 60, color: 'bg-teal-50 border-teal-200 text-teal-700' },
                             { name: 'PAUSA ACTIVA', duration: 15, color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
                             { name: 'MANTENIMIENTO', duration: 120, color: 'bg-gray-50 border-gray-200 text-gray-700' },
@@ -1082,11 +1444,83 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     </div>
                 </div>
 
+                {/* Insumos Intermedios — only in Geniality */}
+                {activeLine === 'geniality' && (() => {
+                    const ingredients = suggestions.filter(s => s.isIngredient);
+                    if (ingredients.length === 0) return null;
+                    return (
+                        <div className="mb-4 pb-4 border-b border-gray-100">
+                            <h3 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Insumos Intermedios</h3>
+                            <div className="space-y-2">
+                                {ingredients.map(ing => {
+                                    const isScheduled = events.some(e => e.flavor === ing.flavor && (e.status === 'PENDING' || e.status?.startsWith('STAGE')));
+                                    const lots = ingredientLots[ing.flavor] || 1;
+                                    return (
+                                        <div
+                                            key={ing.flavor}
+                                            draggable
+                                            onDragStart={() => setDraggedFlavor({ ...ing, type: 'INGREDIENT', lots })}
+                                            className={`rounded-lg border shadow-sm cursor-grab active:cursor-grabbing hover:shadow-md transition-all overflow-hidden
+                                                ${isScheduled ? 'ring-2 ring-blue-200' : ''}
+                                                ${ing.status === 'RED' ? 'border-red-300 bg-red-50' :
+                                                    ing.status === 'YELLOW' ? 'border-yellow-300 bg-yellow-50' :
+                                                        'border-green-300 bg-green-50'}`}
+                                        >
+                                            <div className={`px-3 py-2 flex justify-between items-center ${
+                                                ing.status === 'RED' ? 'bg-red-100' :
+                                                ing.status === 'YELLOW' ? 'bg-yellow-100' : 'bg-green-100'}`}
+                                            >
+                                                <span className="font-black text-sm text-gray-800">{ing.templateName || ing.flavor}</span>
+                                                <div className="flex gap-1">
+                                                    {isScheduled && <span className="bg-blue-500 text-white text-[9px] px-1.5 py-0.5 rounded font-bold">PROG</span>}
+                                                </div>
+                                            </div>
+                                            <div className="px-3 py-2">
+                                                <div className="text-[10px] text-gray-500 mb-1">{ing.templateCode}</div>
+                                                <div className="text-xs text-gray-600 mb-2">
+                                                    Stock: <span className={`font-bold ${ing.status === 'RED' ? 'text-red-600' : ing.status === 'YELLOW' ? 'text-yellow-600' : 'text-green-600'}`}>
+                                                        {ing.currentStockKg} kg
+                                                    </span>
+                                                    <span className="text-gray-400 ml-1">({ing.currentStockG?.toLocaleString()}g)</span>
+                                                </div>
+                                                {ing.inProgressKg > 0 && (
+                                                    <div className="text-[10px] text-blue-600 font-bold mb-2">En progreso: +{ing.inProgressKg} kg</div>
+                                                )}
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-[10px] font-bold text-gray-500 uppercase">Lotes:</span>
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setIngredientLots(prev => ({ ...prev, [ing.flavor]: Math.max(1, (prev[ing.flavor] || 1) - 1) })); }}
+                                                        className="w-6 h-6 rounded border border-gray-300 bg-gray-50 text-gray-600 font-bold text-sm flex items-center justify-center hover:bg-gray-100"
+                                                    >-</button>
+                                                    <input
+                                                        type="number" min="1" max="10"
+                                                        value={lots}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        onChange={(e) => {
+                                                            const v = Math.max(1, Math.min(10, parseInt(e.target.value) || 1));
+                                                            setIngredientLots(prev => ({ ...prev, [ing.flavor]: v }));
+                                                        }}
+                                                        className="w-10 text-center text-sm font-bold border-2 border-gray-200 rounded py-0.5 focus:border-amber-400 outline-none"
+                                                    />
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setIngredientLots(prev => ({ ...prev, [ing.flavor]: Math.min(10, (prev[ing.flavor] || 1) + 1) })); }}
+                                                        className="w-6 h-6 rounded border border-gray-300 bg-gray-50 text-gray-600 font-bold text-sm flex items-center justify-center hover:bg-gray-100"
+                                                    >+</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    );
+                })()}
+
                 {loading ? (
                     <div className="flex justify-center py-10"><Loader className="animate-spin text-blue-500" /></div>
                 ) : (
                     <div className="space-y-3 pb-20">
-                        {suggestions.map((item) => {
+                        {suggestions.filter(s => !s.isIngredient).map((item) => {
                             const isScheduled = events.some(e => e.flavor === item.flavor && e.status === 'PENDING');
                             const scheduledKg = events
                                 .filter(e => e.flavor === item.flavor && (e.status === 'PENDING' || e.status?.startsWith('STAGE')))
@@ -1200,7 +1634,30 @@ const ProductionScheduler = ({ readOnly = false }) => {
             <div className="flex-1 p-4 flex flex-col" style={readOnly ? {} : { marginLeft: '320px' }}>
                 {/* Toolbar — only for admin */}
                 {!readOnly && (
-                    <div className="flex justify-end mb-2">
+                    <div className="flex justify-end gap-2 mb-2">
+                        <button
+                            onClick={async () => {
+                                const hourStr = prompt('¿Desde qué hora recorrer los baches pendientes?\n(formato 24h, ej: 14 para 2PM)', new Date().getHours().toString());
+                                if (!hourStr) return;
+                                const hour = parseInt(hourStr);
+                                if (isNaN(hour) || hour < 0 || hour > 23) { alert('Hora inválida'); return; }
+                                try {
+                                    const res = await api.post(`/production/liquipops/${activeLine}/reschedule-shift`, { shiftStartHour: hour });
+                                    if (res.data.rescheduled === 0) {
+                                        alert(res.data.message || 'No hay baches pendientes para recorrer.');
+                                    } else {
+                                        const effTime = new Date(res.data.effectiveStart).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+                                        alert(`✅ ${res.data.rescheduled} baches recorridos.\nInicio efectivo: ${effTime}${res.data.runningBatch ? `\n(Bache en curso: ${res.data.runningBatch})` : ''}`);
+                                    }
+                                    await fetchEvents();
+                                } catch (e) {
+                                    alert('Error: ' + (e.response?.data?.error || e.message));
+                                }
+                            }}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold rounded-lg hover:bg-amber-100 transition-all"
+                        >
+                            <Clock className="w-3.5 h-3.5" /> Recorrer Turno
+                        </button>
                         <button
                             onClick={async () => {
                                 if (!confirm(`¿Borrar TODAS las programaciones pendientes de ${activeLine === 'geniality' ? 'Geniality' : 'Liquipops'}? Esta acción no se puede deshacer.`)) return;
@@ -1216,6 +1673,36 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             className="flex items-center gap-2 px-3 py-1.5 bg-red-50 border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 transition-all"
                         >
                             <Trash2 className="w-3.5 h-3.5" /> Borrar Todas
+                        </button>
+                        <button
+                            onClick={() => { setBulkSelectMode(!bulkSelectMode); setSelectedBatchIds(new Set()); }}
+                            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${bulkSelectMode ? 'bg-purple-600 text-white' : 'bg-purple-50 border border-purple-200 text-purple-600 hover:bg-purple-100'}`}
+                        >
+                            <CheckSquare className="w-3.5 h-3.5" /> {bulkSelectMode ? 'Cancelar selección' : 'Seleccionar'}
+                        </button>
+                    </div>
+                )}
+                {bulkSelectMode && (
+                    <div className="flex items-center gap-3 px-4 py-2 bg-purple-50 border-b border-purple-200">
+                        <span className="text-sm font-bold text-purple-700">
+                            {selectedBatchIds.size} seleccionado(s)
+                        </span>
+                        <button
+                            onClick={() => {
+                                const allIds = new Set();
+                                events.forEach(e => { allIds.add(String(e.originalId || e.id).split('-p')[0].split(':')[0]); });
+                                setSelectedBatchIds(allIds);
+                            }}
+                            className="px-2 py-1 text-xs font-bold text-purple-600 bg-white border border-purple-300 rounded hover:bg-purple-100"
+                        >
+                            Seleccionar todos
+                        </button>
+                        <button
+                            onClick={handleBulkDelete}
+                            disabled={selectedBatchIds.size === 0 || isDeletingBulk}
+                            className="px-3 py-1 text-xs font-bold text-white bg-red-500 rounded hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                        >
+                            <Trash2 className="w-3 h-3" /> {isDeletingBulk ? 'Eliminando...' : `Eliminar (${selectedBatchIds.size})`}
                         </button>
                     </div>
                 )}
@@ -1245,7 +1732,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
                         <span className="text-sm text-gray-400">Vista de producción programada</span>
                     </div>
                 )}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4" style={{ width: '100%' }}>
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 overflow-x-auto" style={{ width: '100%' }}>
+                  <div style={{ minWidth: '2450px' }}>
                     {readOnly ? (
                         <Calendar
                             localizer={localizer}
@@ -1256,22 +1744,26 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             views={['week', 'day']}
                             min={new Date(new Date().setHours(0, 0, 0, 0))}
                             max={new Date(new Date().setHours(23, 59, 59))}
-                            step={20}
-                            timeslots={3}
+                            step={15}
+                            timeslots={4}
                             scrollToTime={new Date(new Date().setHours(8, 0, 0, 0))}
                             formats={{
                                 timeGutterFormat: (date, culture, localizer) =>
                                     localizer.format(date, 'HH:mm', culture),
                             }}
                             culture='es'
-                            style={{ height: readOnly ? 'calc(100vh - 180px)' : '1200px' }}
+                            dayLayoutAlgorithm="no-overlap"
+                            messages={{ week: 'Semana', day: 'Día', today: 'Hoy', previous: 'Ant.', next: 'Sig.' }}
+                            style={{ height: readOnly ? 'calc(100vh - 140px)' : '1600px' }}
                             onSelectEvent={handleSelectEvent}
                             components={{
                                 event: ({ event }) => {
-                                    const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA');
+                                    const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA') || event.title.includes('CAMBIO DE AGUA');
                                     const isCompleted = event.status === 'COMPLETED';
                                     const isInProgress = event.status && event.status !== 'PENDING' && !isCompleted;
                                     const statusLabel = getStatusLabel(event.status);
+                                    const auxStarted = isAuxEvent && isInProgress;
+                                    const auxPending = isAuxEvent && !isInProgress && !isCompleted;
                                     return (
                                         <div className="flex justify-between items-center h-full px-1.5 overflow-hidden" title={event.title}>
                                             <div className="flex-1 min-w-0">
@@ -1286,8 +1778,44 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                         ) : `⏸ ${event.mix?.length || 0} ingredientes`}
                                                     </div>
                                                 )}
+                                                {!isAuxEvent && event.startedAt && (
+                                                    <div className="text-[9px] truncate" style={{ opacity: 0.85 }}>
+                                                        Inicio: {new Date(event.startedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                    </div>
+                                                )}
+                                                {!isAuxEvent && !isCompleted && event.mix?.length > 0 && (() => {
+                                                    const sizes = event.mix.filter(m => m.plannedUnits > 0);
+                                                    if (sizes.length === 0) return null;
+                                                    const toGR = (label) => { const kg = parseFloat(label); return kg && kg < 10 ? `${Math.round(kg * 1000)}g` : label; };
+                                                    return (
+                                                        <div className="text-[10px] font-bold leading-tight truncate" style={{ opacity: 0.95, letterSpacing: '0.3px' }}>
+                                                            {sizes.map((m, i) => <span key={i}>{i > 0 && ' · '}{toGR(m.sizeLabel)}:{m.plannedUnits}</span>)}
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {isAuxEvent && isCompleted && (
+                                                    <div className="text-[10px] truncate" style={{ opacity: 0.9 }}>Finalizado</div>
+                                                )}
                                             </div>
-                                            {!isAuxEvent && !isCompleted && (
+                                            {!isViewOnly && isAuxEvent && !isCompleted && (
+                                                <button
+                                                    className="ml-1 w-5 h-5 flex items-center justify-center rounded shrink-0 z-10 transition-all hover:scale-110"
+                                                    style={{
+                                                        background: auxStarted ? 'rgba(239, 68, 68, 0.95)' : 'rgba(255,255,255,0.9)',
+                                                        color: auxStarted ? 'white' : '#06B6D4',
+                                                        fontSize: '10px', fontWeight: 'bold'
+                                                    }}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        const cleanId = String(event.originalId || event.id).split('-p')[0];
+                                                        handleAuxAction(cleanId, auxStarted ? 'finish' : 'start');
+                                                    }}
+                                                    title={auxStarted ? 'Finalizar lavado' : 'Iniciar lavado'}
+                                                >
+                                                    {auxStarted ? '⏹' : '▶'}
+                                                </button>
+                                            )}
+                                            {!isViewOnly && !isAuxEvent && !isCompleted && (
                                                 <button
                                                     className="ml-1.5 w-7 h-7 flex items-center justify-center rounded-md shadow-sm shrink-0 z-10 transition-all hover:scale-110"
                                                     style={{
@@ -1299,7 +1827,11 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        if (event.templateCode) {
+                                                            handleLaunchIngredient(cleanId, event.templateCode, event.baseWeight);
+                                                        } else {
+                                                            handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        }
                                                     }}
                                                     title={isInProgress ? 'Ya iniciado — ver en PLC' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
@@ -1315,9 +1847,15 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                 const isCompleted = event.status === 'COMPLETED';
                                 const isPending = event.status === 'PENDING';
                                 const isInProgress = !isCompleted && !isPending && event.status;
+                                const eClean = String(event.originalId || event.id).split('-p')[0].split(':')[0];
+                                const isSelected = bulkSelectMode && selectedBatchIds.has(eClean);
 
                                 let bgColor, border = 'none', opacity = 1, extraStyles = {};
-                                if (isCompleted) {
+                                if (isSelected) {
+                                    bgColor = 'linear-gradient(135deg, #7c3aed, #6d28d9)';
+                                    border = '3px solid #fbbf24';
+                                    extraStyles = { boxShadow: '0 0 12px rgba(251, 191, 36, 0.6)' };
+                                } else if (isCompleted) {
                                     bgColor = 'linear-gradient(135deg, #059669, #047857)';
                                     border = '2px solid #34d399';
                                     opacity = 0.7;
@@ -1329,19 +1867,20 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                         animation: 'calendarPulse 2.5s ease-in-out infinite',
                                     };
                                 } else {
-                                    bgColor = getFlavorColor(event.flavor);
+                                    bgColor = bulkSelectMode ? getFlavorColor(event.flavor) + 'aa' : getFlavorColor(event.flavor);
                                     opacity = 0.85;
                                 }
 
                                 return {
                                     style: {
                                         background: bgColor,
-                                        borderRadius: '6px',
-                                        border,
+                                        borderRadius: '8px',
+                                        border: border !== 'none' ? border : '2px solid rgba(255,255,255,0.7)',
                                         color: 'white',
                                         fontSize: '12px',
                                         padding: '0px',
                                         opacity,
+                                        cursor: bulkSelectMode ? 'pointer' : undefined,
                                         ...extraStyles
                                     }
                                 };
@@ -1358,16 +1897,18 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             // FIX: Explicitly set min/max to current day start/end
                             min={new Date(new Date().setHours(0, 0, 0, 0))}
                             max={new Date(new Date().setHours(23, 59, 59))}
-                            step={20}
-                            timeslots={3} // 3 slots of 20 mins = 1 hour
+                            step={15}
+                            timeslots={4}
                             scrollToTime={new Date(new Date().setHours(8, 0, 0, 0))}
                             formats={{
                                 timeGutterFormat: (date, culture, localizer) =>
                                     localizer.format(date, 'HH:mm', culture),
                             }}
                             culture='es'
+                            dayLayoutAlgorithm="no-overlap"
+                            messages={{ week: 'Semana', day: 'Día', today: 'Hoy', previous: 'Ant.', next: 'Sig.' }}
                             resizable
-                            style={{ height: '1200px' }} // Adjusted: 1200px = 50px/hour (Compact)
+                            style={{ height: '2600px' }}
                             onEventDrop={handleEventChange}
                             onEventResize={handleEventChange}
                             onSelectEvent={handleSelectEvent}
@@ -1381,47 +1922,92 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             })}
                             components={{
                                 event: ({ event }) => {
-                                    const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA');
+                                    const isAuxEvent = !event.mix || event.mix.length === 0 || event.title.includes('LAVADO') || event.title.includes('MANTENIMIENTO') || event.title.includes('PAUSA') || event.title.includes('CAMBIO DE AGUA');
                                     const isCompleted = event.status === 'COMPLETED';
                                     const isInProgress = event.status && event.status !== 'PENDING' && !isCompleted;
                                     const statusLabel = getStatusLabel(event.status);
 
+                                    const auxStarted = isAuxEvent && isInProgress;
+                                    const auxPending = isAuxEvent && !isInProgress && !isCompleted;
                                     return (
-                                        <div className="flex justify-between items-center h-full px-1.5 overflow-hidden" title={event.title}>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="font-bold truncate" style={{ fontSize: '11px' }}>{event.title}</div>
-                                                {!isAuxEvent && (
-                                                    <div className="text-[10px] truncate" style={{ opacity: 0.95 }}>
-                                                        {isCompleted ? '🏁 Finalizado' : isInProgress ? (
-                                                            <span className="flex items-center gap-0.5">
-                                                                <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#34d399', boxShadow: '0 0 6px #34d399', animation: 'pulse 1.5s ease-in-out infinite' }} />
-                                                                {` ${statusLabel}`}
-                                                            </span>
-                                                        ) : `⏸ ${event.mix?.length || 0} ingredientes`}
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {!isAuxEvent && !isCompleted && (
+                                        <div className="relative h-full px-2 py-1.5 overflow-hidden" title={event.title}>
+                                            {isAuxEvent && !isCompleted && (
                                                 <button
-                                                    className="ml-1.5 w-7 h-7 flex items-center justify-center rounded-md shadow-sm shrink-0 z-10 transition-all hover:scale-110"
+                                                    className="absolute flex items-center justify-center rounded z-10 transition-all hover:scale-110"
                                                     style={{
-                                                        background: isInProgress ? 'rgba(16, 185, 129, 0.95)' : 'rgba(255,255,255,0.9)',
-                                                        color: isInProgress ? 'white' : '#2563eb',
-                                                        fontSize: '14px',
-                                                        fontWeight: 'bold'
+                                                        top: 2, right: 4, width: 20, height: 20,
+                                                        background: auxStarted ? 'rgba(239, 68, 68, 0.95)' : 'rgba(255,255,255,0.95)',
+                                                        color: auxStarted ? 'white' : '#06B6D4',
+                                                        fontSize: '10px', fontWeight: 'bold'
                                                     }}
                                                     onMouseDown={(e) => e.stopPropagation()}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        handleAuxAction(cleanId, auxStarted ? 'finish' : 'start');
+                                                    }}
+                                                    title={auxStarted ? 'Finalizar lavado' : 'Iniciar lavado'}
+                                                >
+                                                    {auxStarted ? '⏹' : '▶'}
+                                                </button>
+                                            )}
+                                            {!isAuxEvent && !isCompleted && (
+                                                <button
+                                                    className="absolute flex items-center justify-center rounded-lg z-10 transition-all hover:scale-110"
+                                                    style={{
+                                                        top: 4, right: 4, width: 30, height: 30,
+                                                        background: isInProgress ? 'rgba(16, 185, 129, 0.95)' : 'rgba(255,255,255,0.95)',
+                                                        color: isInProgress ? 'white' : '#2563eb',
+                                                        fontSize: '15px', fontWeight: 'bold'
+                                                    }}
+                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        const cleanId = String(event.originalId || event.id).split('-p')[0];
+                                                        if (event.templateCode) {
+                                                            handleLaunchIngredient(cleanId, event.templateCode, event.baseWeight);
+                                                        } else {
+                                                            handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        }
                                                     }}
                                                     title={isInProgress ? 'Ya iniciado — ver en PLC' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
                                                 >
                                                     {isLaunching ? '⏳' : isInProgress ? '⚡' : '▶'}
                                                 </button>
+                                            )}
+                                            <div className="font-bold pr-9" style={{ fontSize: '12px', lineHeight: 1.3 }}>{event.title}</div>
+                                            {!isAuxEvent && (
+                                                <div className="text-[10px] mt-1" style={{ opacity: 0.9 }}>
+                                                    {isCompleted ? '🏁 Finalizado' : isInProgress ? (
+                                                        <span className="flex items-center gap-0.5">
+                                                            <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#34d399', boxShadow: '0 0 6px #34d399', animation: 'pulse 1.5s ease-in-out infinite' }} />
+                                                            {` ${statusLabel}`}
+                                                        </span>
+                                                    ) : `⏸ ${event.mix?.length || 0} ingredientes`}
+                                                </div>
+                                            )}
+                                            {!isAuxEvent && event.startedAt && (
+                                                <div className="text-[10px] mt-0.5" style={{ opacity: 0.85 }}>
+                                                    Inicio: {new Date(event.startedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                </div>
+                                            )}
+                                            {!isAuxEvent && !isCompleted && event.mix?.length > 0 && (() => {
+                                                const sizes = event.mix.filter(m => m.plannedUnits > 0);
+                                                if (sizes.length === 0) return null;
+                                                const toGR = (label) => { const kg = parseFloat(label); return kg && kg < 10 ? `${Math.round(kg * 1000)}g` : label; };
+                                                return (
+                                                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                                                        {sizes.map((m, i) => (
+                                                            <span key={i} className="text-[11px] font-black" style={{ opacity: 0.95 }}>
+                                                                {toGR(m.sizeLabel)}: {m.plannedUnits}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })()}
+                                            {isAuxEvent && isCompleted && (
+                                                <div className="text-[10px] mt-1" style={{ opacity: 0.9 }}>Finalizado</div>
                                             )}
                                         </div>
                                     );
@@ -1431,9 +2017,15 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                 const isCompleted = event.status === 'COMPLETED';
                                 const isPending = event.status === 'PENDING';
                                 const isInProgress = !isCompleted && !isPending && event.status;
+                                const eClean = String(event.originalId || event.id).split('-p')[0].split(':')[0];
+                                const isSelected = bulkSelectMode && selectedBatchIds.has(eClean);
                                 let bgColor, border = 'none', opacity = 1, extraStyles = {};
 
-                                if (event.status === 'PREVIEW' || event.isDragging) {
+                                if (isSelected) {
+                                    bgColor = 'linear-gradient(135deg, #7c3aed, #6d28d9)';
+                                    border = '3px solid #fbbf24';
+                                    extraStyles = { boxShadow: '0 0 12px rgba(251, 191, 36, 0.6)' };
+                                } else if (event.status === 'PREVIEW' || event.isDragging) {
                                     bgColor = '#10b981';
                                 } else if (isCompleted) {
                                     bgColor = 'linear-gradient(135deg, #059669, #047857)';
@@ -1447,25 +2039,27 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                         animation: 'calendarPulse 2.5s ease-in-out infinite',
                                     };
                                 } else {
-                                    bgColor = getFlavorColor(event.flavor);
+                                    bgColor = bulkSelectMode ? getFlavorColor(event.flavor) + 'aa' : getFlavorColor(event.flavor);
                                     opacity = 0.85;
                                 }
 
                                 return {
                                     style: {
                                         background: bgColor,
-                                        borderRadius: '6px',
-                                        border,
+                                        borderRadius: '8px',
+                                        border: border !== 'none' ? border : '2px solid rgba(255,255,255,0.7)',
                                         color: 'white',
                                         fontSize: '12px',
                                         padding: '0px',
                                         opacity,
+                                        cursor: bulkSelectMode ? 'pointer' : undefined,
                                         ...extraStyles
                                     }
                                 };
                             }}
                         />
                     )}
+                  </div>
                 </div>
             </div>
 
@@ -1663,11 +2257,13 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                             const ratio = newTotalSyrupKg / (prev.totalSyrupKg || 1);
                                                                             const updatedMix = prev.mix.map(m => {
                                                                                 const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
-                                                                                const newUnits = Math.round((m.plannedUnits || 0) * ratio);
-                                                                                return { ...m, plannedUnits: newUnits, plannedWeightKg: newUnits * factor };
+                                                                                let newUnits = Math.round((m.plannedUnits || 0) * ratio);
+                                                                                const ps = m.packSize || 1;
+                                                                                if (ps > 1) newUnits = Math.max(ps, Math.round(newUnits / ps) * ps);
+                                                                                return { ...m, plannedUnits: newUnits, plannedWeightKg: Math.round(newUnits * factor * 100) / 100, boxes: ps > 1 ? Math.floor(newUnits / ps) : m.boxes };
                                                                             });
                                                                             const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
-                                                                            const baseDuration = 160;
+                                                                            const baseDuration = config.geniality_batchDuration || 240;
                                                                             const totalDuration = baseDuration + (newVal - 1) * 40;
                                                                             const newEnd = new Date(new Date(prev.scheduledStart).getTime() + totalDuration * 60000);
 
@@ -1679,7 +2275,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                             const ratio = newVal / currentVal;
 
                                                                             const updatedMix = prev.mix.map(m => {
-                                                                                const factor = m.kgFactor || parseFloat(m.sizeLabel) || 0;
+                                                                                const rawSize = parseFloat(m.sizeLabel) || 0;
+                                                                                const factor = m.kgFactor || (rawSize >= 100 ? rawSize / 1000 : rawSize) || 0;
                                                                                 const newUnits = Math.round((m.plannedUnits || 0) * ratio);
                                                                                 return {
                                                                                     ...m,
@@ -1780,17 +2377,52 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                             {modalData.suggestedBatches && modalData.suggestedBatches.length > 0 ? (
                                                 /* ═══ BATCH GROUPS VIEW (Liquipops labeling-optimized) ═══ */
                                                 <div>
-                                                    <h4 className="text-sm font-bold text-gray-700 mb-3">
-                                                        Plan de Baches por Rotulado
-                                                        <span className="ml-2 text-[10px] font-normal text-purple-500">📦 {modalData.suggestedBatches.length} baches · pack cerrado · 1 contramuestra/bache</span>
-                                                    </h4>
+                                                    <div className="flex items-center justify-between mb-3">
+                                                        <h4 className="text-sm font-bold text-gray-700">
+                                                            Plan de Baches por Rotulado
+                                                            <span className="ml-2 text-[10px] font-normal text-purple-500">📦 {modalData.suggestedBatches.length} baches · pack cerrado · 1 contramuestra/bache</span>
+                                                        </h4>
+                                                        <div className="flex gap-1">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const batches = [...modalData.suggestedBatches];
+                                                                    const typeA = batches.filter(b => b.type === 'MEDIUM');
+                                                                    const typeB = batches.filter(b => b.type !== 'MEDIUM');
+                                                                    const reordered = [...typeB, ...typeA].map((b, i) => ({ ...b, batchIndex: i + 1 }));
+                                                                    setModalData(prev => ({ ...prev, suggestedBatches: reordered }));
+                                                                }}
+                                                                className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 rounded hover:bg-amber-100 transition-colors"
+                                                            >
+                                                                &#8645; Invertir orden
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    const batches = [...modalData.suggestedBatches];
+                                                                    const typeA = batches.filter(b => b.type === 'MEDIUM');
+                                                                    const typeB = batches.filter(b => b.type !== 'MEDIUM');
+                                                                    const mixed = [];
+                                                                    const maxLen = Math.max(typeA.length, typeB.length);
+                                                                    for (let i = 0; i < maxLen; i++) {
+                                                                        if (i < typeB.length) mixed.push(typeB[i]);
+                                                                        if (i < typeA.length) mixed.push(typeA[i]);
+                                                                    }
+                                                                    setModalData(prev => ({ ...prev, suggestedBatches: mixed.map((b, i) => ({ ...b, batchIndex: i + 1 })) }));
+                                                                }}
+                                                                className="flex items-center gap-1 px-2 py-1 text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 rounded hover:bg-purple-100 transition-colors"
+                                                            >
+                                                                &#8596; Mezclar
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                     {(() => {
                                                         const BATCH_SIZE_DISPLAY = activeLine === 'geniality' ? 100 : 120;
                                                         const groups = [];
                                                         modalData.suggestedBatches.forEach(batch => {
                                                             const key = batch.mix.map(m => `${m.productId}:${m.plannedUnits}`).join('|');
-                                                            const existing = groups.find(g => g.key === key);
-                                                            if (existing) { existing.count++; existing.indices.push(batch.batchIndex); }
+                                                            const last = groups[groups.length - 1];
+                                                            if (last && last.key === key) { last.count++; last.indices.push(batch.batchIndex); }
                                                             else groups.push({ key, batch, count: 1, indices: [batch.batchIndex] });
                                                         });
                                                         return groups.map((group, gi) => (
@@ -1853,7 +2485,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                 </h4>
                                                 <div className="flex h-10 w-full rounded-lg overflow-hidden border border-gray-200 shadow-sm">
                                                     {modalData.mix.map((item, idx) => {
-                                                        const getWeight = (m) => parseFloat(m.plannedWeightKg) || (parseFloat(m.plannedUnits || 0) * (parseFloat(m.kgFactor || parseFloat(m.sizeLabel)) || 0));
+                                                        const getWeight = (m) => { const rawSize = parseFloat(m.sizeLabel) || 0; const f = m.kgFactor || (rawSize >= 100 ? rawSize / 1000 : rawSize) || 0; return parseFloat(m.plannedWeightKg) || (parseFloat(m.plannedUnits || 0) * f); };
                                                         const totalWeight = modalData.mix.reduce((acc, m) => acc + getWeight(m), 0) || 1;
                                                         const itemWeight = getWeight(item);
                                                         const percentage = (itemWeight / totalWeight) * 100;
@@ -1896,29 +2528,27 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                                 <div className="flex items-center gap-2">
                                                                     <input
                                                                         type="number"
-                                                                        step={item.packSize > 1 ? item.packSize : 1}
+                                                                        step={1}
                                                                         min={0}
                                                                         className={`w-20 p-2 text-right border rounded-md font-mono font-bold ${modalData.readOnly && modalData.status !== 'PENDING' ? 'bg-gray-100 text-gray-500' : 'bg-white text-gray-800 border-blue-200'}`}
                                                                         value={item.plannedUnits}
                                                                         onChange={(e) => {
-                                                                            const rawUnits = parseInt(e.target.value) || 0;
-                                                                            const ps = item.packSize || 1;
-                                                                            const newUnits = ps > 1 ? Math.round(rawUnits / ps) * ps : rawUnits;
+                                                                            const newUnits = parseInt(e.target.value) || 0;
                                                                             setModalData(prev => {
                                                                                 const updatedMix = prev.mix.map(m => {
                                                                                     if (m.productId === item.productId) {
+                                                                                        const rawSize = parseFloat(m.sizeLabel) || 0;
                                                                                         const factor = m.kgFactor
                                                                                             || (m.plannedUnits > 0 ? Math.round((m.plannedWeightKg / m.plannedUnits) * 1000) / 1000 : 0)
-                                                                                            || parseFloat(m.sizeLabel) || 0;
-                                                                                        return { ...m, plannedUnits: newUnits, plannedWeightKg: Math.round(newUnits * factor * 100) / 100, boxes: ps > 1 ? Math.floor(newUnits / ps) : null, kgFactor: factor };
+                                                                                            || (rawSize >= 100 ? rawSize / 1000 : rawSize) || 0;
+                                                                                        const mps = m.packSize || 1;
+                                                                                        return { ...m, plannedUnits: newUnits, plannedWeightKg: Math.round(newUnits * factor * 100) / 100, boxes: mps > 1 ? Math.floor(newUnits / mps) : null, kgFactor: factor };
                                                                                     }
                                                                                     return m;
                                                                                 });
                                                                                 const newTotalPlannedKg = updatedMix.reduce((acc, m) => acc + (m.plannedWeightKg || 0), 0);
                                                                                 if (activeLine === 'geniality') {
-                                                                                    const currentLots = prev.targetBatchCount || ((prev.totalSyrupKg || 0) / 100) || 1;
-                                                                                    const targetSyrupKg = Math.round(currentLots * 100);
-                                                                                    return { ...prev, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: targetSyrupKg, baseWeight: targetSyrupKg, _edited: true };
+                                                                                    return { ...prev, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: newTotalPlannedKg, baseWeight: newTotalPlannedKg, _edited: true };
                                                                                 }
                                                                                 const ratio = config.syrupRatio || 0.70;
                                                                                 return { ...prev, mix: updatedMix, totalPlannedKg: newTotalPlannedKg, totalSyrupKg: Math.round(newTotalPlannedKg * ratio), _edited: true };
@@ -1991,11 +2621,15 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                             )}
                                         </>
                                     )}
-                                    {modalData.readOnly && readOnly && modalData.type !== 'EVENT' && (
+                                    {modalData.readOnly && readOnly && !isViewOnly && modalData.type !== 'EVENT' && (
                                         <button
                                             onClick={() => {
                                                 const cleanId = String(modalData.originalId || modalData.id).split('-p')[0];
-                                                handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix, modalData.baseWeight);
+                                                if (modalData.templateCode) {
+                                                    handleLaunchIngredient(cleanId, modalData.templateCode, modalData.baseWeight);
+                                                } else {
+                                                    handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix, modalData.baseWeight);
+                                                }
                                             }}
                                             disabled={isLaunching}
                                             className="px-5 py-2 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 shadow-sm flex items-center gap-2 disabled:opacity-50"
@@ -2129,6 +2763,51 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                 style={{ background: 'linear-gradient(135deg, #059669, #10b981)' }}
                             >
                                 ⚡ Ir a Producción
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ===== PENDING WASH MODAL ===== */}
+            {pendingWashModal && (
+                <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+                        <div style={{ background: 'linear-gradient(135deg, #0891b2, #06b6d4)' }} className="px-6 py-5 text-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 bg-white/20 backdrop-blur rounded-xl flex items-center justify-center text-2xl">
+                                    🚿
+                                </div>
+                                <div>
+                                    <h2 className="text-lg font-bold">Lavado Pendiente</h2>
+                                    <p className="text-sm text-cyan-100 opacity-90">Debes finalizar el lavado antes de continuar</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-4">
+                                <div className="text-sm font-bold text-cyan-800 mb-1">
+                                    {pendingWashModal.isWashBlock ? '⏳ Bache en proceso' : '🧼 Lavado pendiente'}
+                                </div>
+                                <div className="text-xs text-cyan-600">
+                                    {pendingWashModal.isWashBlock ? pendingWashModal.washTitle : 'Este evento aún no ha sido finalizado'}
+                                </div>
+                            </div>
+                            {!pendingWashModal.isWashBlock && (
+                                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                                    <p className="text-sm text-amber-800 leading-relaxed">
+                                        Presiona el botón <span className="font-bold">▶ Iniciar</span> en el cambio de agua y luego <span className="font-bold">⏹ Finalizar</span> antes de iniciar el siguiente bache.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-6 pb-6">
+                            <button
+                                onClick={() => setPendingWashModal(null)}
+                                className="w-full px-4 py-2.5 text-sm font-bold text-white rounded-xl hover:opacity-90 transition-all"
+                                style={{ background: 'linear-gradient(135deg, #0891b2, #06b6d4)' }}
+                            >
+                                Entendido
                             </button>
                         </div>
                     </div>

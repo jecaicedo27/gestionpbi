@@ -4,6 +4,11 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const logger = require('../utils/logger');
+const {
+    buildPurchaseOrderWorkflowAlert,
+    emitPurchaseOrderWorkflowAlert,
+    normalizeRole
+} = require('../services/purchaseOrderAlertService');
 
 /**
  * GET /procurement/purchase-orders
@@ -19,7 +24,14 @@ exports.list = async (req, res) => {
                 where,
                 include: {
                     items: { select: { id: true, siigoProductName: true, quantityOrdered: true, quantityReceived: true, lots: { select: { id: true } } } },
-                    receptions: { select: { id: true, status: true, siigoRef: true } },
+                    receptions: {
+                        select: {
+                            id: true,
+                            status: true,
+                            siigoRef: true,
+                            items: { select: { orderItemId: true, quantityReceived: true } }
+                        }
+                    },
                     createdBy: { select: { name: true } },
                     approvedBy: { select: { name: true } },
                     _count: { select: { receptions: true } }
@@ -145,15 +157,6 @@ exports.create = async (req, res) => {
             },
             include: { items: true }
         });
-
-        const io = req.app.get('io');
-        if (io) {
-            io.emit('purchase_order:new', {
-                orderNumber: order.orderNumber,
-                supplierName: order.supplierName,
-                createdAt: order.createdAt
-            });
-        }
 
         logger.info(`📋 OC creada: ${orderNumber} (${resolvedPaymentMethod}) por ${req.user.name}`);
         res.status(201).json(order);
@@ -292,6 +295,10 @@ exports.sendToCartera = async (req, res) => {
             where: { id: req.params.id },
             data: { status: 'PAYMENT_PENDING' }
         });
+        emitPurchaseOrderWorkflowAlert(
+            req,
+            buildPurchaseOrderWorkflowAlert('PAYMENT_PENDING', updated)
+        );
 
         logger.info(`📨 OC ${order.orderNumber} enviada a Cartera`);
         res.json(updated);
@@ -558,6 +565,77 @@ exports.registerCreditPayment = async (req, res) => {
     } catch (error) {
         logger.error('Error registering credit payment:', error.message);
         res.status(500).json({ error: 'Error registrando pago de crédito' });
+    }
+};
+
+/**
+ * GET /procurement/purchase-order-alerts/pending — Pending workflow alerts for Cartera/Contabilidad
+ */
+exports.getPendingWorkflowAlerts = async (req, res) => {
+    try {
+        const role = normalizeRole(req.user?.role);
+        const queries = [];
+
+        if (role === 'CARTERA') {
+            queries.push(
+                prisma.purchaseOrder.findMany({
+                    where: { status: 'PAYMENT_PENDING' },
+                    orderBy: { updatedAt: 'desc' },
+                    take: 20
+                }).then(orders => orders.map(order => buildPurchaseOrderWorkflowAlert('PAYMENT_PENDING', order, { createdAt: order.updatedAt })))
+            );
+
+            queries.push(
+                prisma.purchaseOrder.findMany({
+                    where: {
+                        status: 'COMPLETED',
+                        paymentMethod: 'CREDITO',
+                        creditPaid: false
+                    },
+                    orderBy: { updatedAt: 'desc' },
+                    take: 20
+                }).then(orders => orders.map(order => buildPurchaseOrderWorkflowAlert('CREDIT_PAYMENT_PENDING', order, { createdAt: order.updatedAt })))
+            );
+        }
+
+        if (role === 'CONTABILIDAD') {
+            queries.push(
+                prisma.reception.findMany({
+                    where: {
+                        status: { not: 'COMPLETED' },
+                        items: { some: { quantityReceived: { gt: 0 } } },
+                        purchaseOrder: {
+                            is: { status: { in: ['PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING'] } }
+                        }
+                    },
+                    include: {
+                        purchaseOrder: true,
+                        items: { select: { quantityReceived: true } }
+                    },
+                    orderBy: { receivedAt: 'desc' },
+                    take: 20
+                }).then(receptions => receptions.map(reception => {
+                    const receivedTotal = (reception.items || []).reduce((sum, item) => sum + (item.quantityReceived || 0), 0);
+                    return buildPurchaseOrderWorkflowAlert('ACCOUNTING_PENDING', reception.purchaseOrder, {
+                        receptionId: reception.id,
+                        createdAt: reception.receivedAt,
+                        message: `La OC ${reception.purchaseOrder.orderNumber} de ${reception.purchaseOrder.supplierName} tiene una recepción ${receivedTotal > 0 ? `por ${(receivedTotal / 1000).toLocaleString()} kg ` : ''}pendiente de registrar en Siigo.`
+                    });
+                }))
+            );
+        }
+
+        const results = await Promise.all(queries);
+        const alerts = results
+            .flat()
+            .filter(Boolean)
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .slice(0, 30);
+
+        res.json({ alerts });
+    } catch (error) {
+        logger.error('Error getting purchase order workflow alerts:', error.message);
+        res.status(500).json({ error: 'Error obteniendo alertas de órdenes de compra' });
     }
 };
 

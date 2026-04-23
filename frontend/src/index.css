@@ -23,12 +23,10 @@
 /* Calendar Visual Fixes */
 .rbc-allday-cell {
     display: none !important;
-    /* Hide unused All Day row to fix top alignment */
 }
 
 .rbc-time-view .rbc-header {
     border-bottom: 1px solid #e5e7eb !important;
-    /* Tailwind gray-200 */
 }
 
 .rbc-time-header-content {
@@ -39,9 +37,37 @@
     border-left: 1px solid #e5e7eb !important;
 }
 
-/* Ensure header column lines up with body column */
 .rbc-time-header-content>.rbc-row>.rbc-header {
     border-bottom: none !important;
+}
+
+/* Calendar: force wider columns — horizontal scroll on tablet */
+.rbc-time-view {
+    min-width: 1400px;
+}
+
+.rbc-time-gutter {
+    min-width: 60px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+}
+
+/* Taller time slots for readability on touch devices */
+.rbc-timeslot-group {
+    min-height: 80px !important;
+}
+
+/* Events: readable text, no shadow */
+.rbc-event {
+    min-height: 28px !important;
+    font-size: 12px !important;
+    line-height: 1.3 !important;
+    box-shadow: none !important;
+}
+
+.rbc-event-content {
+    white-space: normal !important;
+    overflow: visible !important;
 }
 
 /* PQR Lot Timeline gauge animation */

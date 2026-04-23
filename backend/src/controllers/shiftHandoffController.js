@@ -548,7 +548,13 @@ const getBlockStatus = async (req, res) => {
         const today = getShiftDate();
         const outgoingShift = getOutgoingShift();
 
-        if (today.getDay() === 0 && (outgoingShift === 'MANANA' || outgoingShift === 'TARDE')) {
+        const isSunday = today.getDay() === 0;
+        const isMondayEarlyMorning = today.getDay() === 1 && outgoingShift === 'TARDE';
+
+        logger.info(`[block-status] user=${req.user?.name} role=${req.user?.role} today=${today.toISOString()} day=${today.getDay()} isSunday=${isSunday} outgoing=${outgoingShift}`);
+
+        if (isSunday || isMondayEarlyMorning) {
+            logger.info(`[block-status] SKIP — Sunday/MondayEarly → blocked:false`);
             return res.json({ blocked: false, pending: [] });
         }
 

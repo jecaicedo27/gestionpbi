@@ -103,8 +103,8 @@ const Layout = () => {
 
                     <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
                         {/* Zebra printer status — shown to operational roles */}
-                        {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA', 'SUPERADMIN'].includes(user?.role) && (
-                            <div className="relative hidden sm:block" ref={zebraRef}>
+                        {['PRODUCCION', 'OPERARIO_PICKING', 'ADMIN', 'LOGISTICA', 'SUPERADMIN', 'QUIMICO'].includes(user?.role) && (
+                            <div className="relative" ref={zebraRef}>
                                 <button
                                     onClick={() => { setInputRelay(relayIp || ''); setInputForce(forceIp || ''); setShowZebraConfig(v => !v); }}
                                     title="Estado impresora Zebra — clic para configurar"

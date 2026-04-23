@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import api from '../services/api';
 import ProcessTypeManager from '../components/admin/ProcessTypeManager';
 import { Card, Tabs } from 'antd';
+import { useZebra } from '../context/ZebraContext';
 
 const AdminConfig = () => {
     const [config, setConfig] = useState({
@@ -52,6 +53,56 @@ const AdminConfig = () => {
         }
     };
 
+    const { zebraStatus, zebraIp, recheckNow, isRechecking } = useZebra();
+    const [zebraConfigIp, setZebraConfigIp] = useState('');
+    const [zebraLoading, setZebraLoading] = useState(true);
+    const [zebraSaving, setZebraSaving] = useState(false);
+    const [zebraMsg, setZebraMsg] = useState(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch('/api/zebra/config', {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setZebraConfigIp(data.ip || '');
+                }
+            } catch {}
+            setZebraLoading(false);
+        })();
+    }, []);
+
+    const saveZebraIp = async () => {
+        const ip = zebraConfigIp.trim();
+        if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+            setZebraMsg({ type: 'error', text: 'IP inválida. Formato: 192.168.0.108' });
+            return;
+        }
+        setZebraSaving(true);
+        setZebraMsg(null);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch('/api/zebra/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ ip }),
+            });
+            if (res.ok) {
+                setZebraMsg({ type: 'success', text: `IP actualizada a ${ip}. Todos los dispositivos la usarán.` });
+                recheckNow();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                setZebraMsg({ type: 'error', text: err.error || 'Error al guardar' });
+            }
+        } catch {
+            setZebraMsg({ type: 'error', text: 'Error de conexión' });
+        }
+        setZebraSaving(false);
+    };
+
     const [activeTab, setActiveTab] = useState('liquipops');
 
     const getFieldName = (baseName) => {
@@ -74,7 +125,8 @@ const AdminConfig = () => {
             if (baseName === 'alertYellow') return 12;
             if (baseName === 'alertRed') return 3;
             if (baseName === 'syrupRatio') return 1.0;
-            if (baseName === 'batchDuration') return activeTab === 'geniality' ? 160 : 140;
+            if (baseName === 'batchDuration') return activeTab === 'geniality' ? 240 : 90;
+            if (baseName === 'shiftBatchTarget') return 5;
         }
         return val;
     };
@@ -134,6 +186,66 @@ const AdminConfig = () => {
                         {saving ? 'Guardando...' : 'Guardar'}
                     </button>
                 </div>
+            </div>
+
+            <hr className="mb-6 border-gray-200" />
+
+            {/* ── Zebra Printer Config ── */}
+            <h2 className="text-xl font-bold mb-4 text-gray-800">Impresora Zebra ZD230</h2>
+            <p className="text-sm text-gray-600 mb-4">IP centralizada de la impresora de etiquetas. Al cambiarla aquí, todos los dispositivos (tablets, PCs) la usarán automáticamente.</p>
+
+            <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 mb-6">
+                <div className="flex items-center gap-3 mb-3">
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${
+                        zebraStatus === 'connected' ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                        : zebraStatus === 'checking' ? 'bg-slate-50 border-slate-200 text-slate-400 animate-pulse'
+                        : 'bg-red-50 border-red-200 text-red-500'
+                    }`}>
+                        {zebraStatus === 'connected' ? `Conectada (${zebraIp})` : zebraStatus === 'checking' ? 'Verificando...' : 'No alcanzable'}
+                    </span>
+                    <button
+                        onClick={recheckNow}
+                        disabled={isRechecking}
+                        className="text-xs text-violet-600 hover:text-violet-800 font-semibold underline disabled:opacity-50"
+                    >
+                        {isRechecking ? 'Verificando...' : 'Verificar ahora'}
+                    </button>
+                </div>
+
+                <div className="flex gap-3 items-end">
+                    <div className="flex-1">
+                        <label className="block text-sm font-medium text-violet-800 mb-1">IP de la Zebra</label>
+                        {zebraLoading ? (
+                            <p className="text-xs text-gray-400">Cargando...</p>
+                        ) : (
+                            <input
+                                type="text"
+                                value={zebraConfigIp}
+                                onChange={e => setZebraConfigIp(e.target.value)}
+                                placeholder="192.168.0.108"
+                                className="w-full px-3 py-2 border border-violet-300 rounded-md focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white text-sm"
+                                onKeyDown={e => e.key === 'Enter' && saveZebraIp()}
+                            />
+                        )}
+                    </div>
+                    <button
+                        onClick={saveZebraIp}
+                        disabled={zebraSaving || zebraLoading}
+                        className="px-5 py-2 bg-violet-600 text-white font-semibold text-sm rounded-md hover:bg-violet-700 disabled:opacity-50"
+                    >
+                        {zebraSaving ? 'Guardando...' : 'Aplicar'}
+                    </button>
+                </div>
+
+                {zebraMsg && (
+                    <div className={`mt-3 p-2.5 rounded text-xs font-medium ${zebraMsg.type === 'success' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'}`}>
+                        {zebraMsg.text}
+                    </div>
+                )}
+
+                <p className="text-xs text-violet-500 mt-3">
+                    Si la IP configurada no responde, el sistema buscará automáticamente la impresora en la red 192.168.0.x
+                </p>
             </div>
 
             <hr className="mb-6 border-gray-200" />
@@ -368,6 +480,20 @@ const AdminConfig = () => {
 
                             {activeTab === 'liquipops' ? (
                                 <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-blue-700 mb-1">Meta de Baches por Turno</label>
+                                        <p className="text-xs text-gray-500 mb-2"><strong>KPI de Turno.</strong> Cantidad de baches esferificados que cada turno debe completar. Se usa para medir el cumplimiento del turno y el banner motivacional del operador.</p>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            max="15"
+                                            name="shiftBatchTarget"
+                                            value={getDisplayValue('shiftBatchTarget')}
+                                            onChange={handleChange}
+                                            className="w-full px-3 py-2 border border-blue-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 font-bold text-blue-900"
+                                        />
+                                        <p className="text-xs text-gray-400 mt-1">Actualmente: {getDisplayValue('shiftBatchTarget')} baches por turno</p>
+                                    </div>
                                     <div>
                                         <label className="block text-sm font-medium text-purple-700 mb-1">% de Jarabe en Producto Final</label>
                                         <p className="text-xs text-gray-500 mb-2"><strong>Rendimiento del jarabe.</strong> Si un tarro pesa 350gr y este valor es 0.70 (70%), significa que solo necesitas 245gr de jarabe del batch. El 30% restante (105gr) se añade después (líquido protector, etc). Con 120kg de jarabe produces MÁS unidades que antes.</p>

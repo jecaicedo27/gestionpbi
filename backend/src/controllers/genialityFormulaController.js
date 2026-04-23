@@ -10,12 +10,13 @@ async function listFormulas(req, res) {
         const { productId, isActive } = req.query;
 
         const where = {
-            product: { 
+            product: {
                 accountGroup: { in: [1402, 1405] },
                 OR: [
                     { name: { contains: 'SIROPE' } },
                     { name: { contains: 'SABORIZACION' } },
-                    { name: { contains: 'ESCARCHADO' } }
+                    { name: { contains: 'ESCARCHADO' } },
+                    { name: { contains: 'LIQUIMON' } }
                 ]
             }
         };

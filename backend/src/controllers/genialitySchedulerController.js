@@ -4,9 +4,14 @@ const XLSX = require('xlsx');
 const path = require('path');
 const configController = require('./configController');
 
+const WATER_DENSITY_FLAVORS = ['LIQUIMON'];
+
 // Helper: Parse size to Kg
 // density: g/cm³ (= g/mL). Default 1.0 for water-like. Siropes use 1.35.
 const parseSize = (name, density = 1.0) => {
+    if (density > 1.0 && WATER_DENSITY_FLAVORS.some(f => name.toUpperCase().includes(f))) {
+        density = 1.0;
+    }
     const regex = /X\s*(\d+)\s*(ML|GR|G|L|KG)/i;
     const match = name.match(regex);
     if (!match) return { value: 0, unit: 'N/A', kgFactor: 0 };
@@ -199,7 +204,9 @@ exports.getSuggestions = async (req, res) => {
                     units: totalProductStock,
                     kg: stockKg,
                     sizeWeight: kgFactor,
-                    deficitUnits
+                    deficitUnits,
+                    scheduledUnits: ipUnits,
+                    dailyVelocity: Math.round((p.dailyVelocity || 0) * 10) / 10
                 });
             });
 
@@ -330,6 +337,66 @@ exports.getSuggestions = async (req, res) => {
             return isActionA ? -1 : 1;
         });
 
+        // ── Append intermediate ingredient suggestions (GLUCOSA, FRUCTOSA) ──
+        const INGREDIENT_DEFS = [
+            { sku: 'PROCELIQUIPOPS26', label: 'GLUCOSA', templateCode: 'TMPL-AZINV-001', templateName: 'Azúcar Inverter Glucosa', targetG: 30000, alertG: 15000 },
+            { sku: 'PROCELIQUIPOPS43', label: 'FRUCTOSA', templateCode: 'TMPL-FRUCT-001', templateName: 'Azúcar Invertida Fructosa', targetG: 30000, alertG: 15000 },
+        ];
+        const ingredientProducts = await prisma.product.findMany({
+            where: { sku: { in: INGREDIENT_DEFS.map(d => d.sku) } },
+            select: { id: true, sku: true, name: true, currentStock: true, productionZoneStock: true }
+        });
+
+        const ingredientProductIds = ingredientProducts.map(p => p.id);
+        const ingredientInProgress = await prisma.batchOutputTarget.groupBy({
+            by: ['productId'],
+            where: {
+                productId: { in: ingredientProductIds },
+                batch: { status: { notIn: ['COMPLETED', 'FAILED'] } }
+            },
+            _sum: { plannedUnits: true }
+        });
+        const ingredientIPMap = {};
+        for (const d of ingredientInProgress) {
+            ingredientIPMap[d.productId] = d._sum.plannedUnits || 0;
+        }
+
+        for (const def of INGREDIENT_DEFS) {
+            const prod = ingredientProducts.find(p => p.sku === def.sku);
+            if (!prod) continue;
+
+            const totalStockG = (prod.currentStock || 0) + (prod.productionZoneStock || 0);
+            const totalStockKg = totalStockG / 1000;
+            const inProgressKg = (ingredientIPMap[prod.id] || 0);
+            let status = 'GREEN';
+            if (totalStockG < def.targetG) status = 'YELLOW';
+            if (totalStockG < def.alertG) status = 'RED';
+
+            suggestions.push({
+                flavor: def.label,
+                isIngredient: true,
+                ingredientSku: def.sku,
+                ingredientProductId: prod.id,
+                ingredientName: prod.name,
+                templateCode: def.templateCode,
+                templateName: def.templateName,
+                daysRemaining: 999,
+                status,
+                dailyConsumptionKg: 0,
+                currentStockKg: Math.round(totalStockKg * 10) / 10,
+                currentStockG: Math.round(totalStockG),
+                effectiveStockKg: Math.round((totalStockKg + inProgressKg) * 10) / 10,
+                orderDeficitUnits: 0,
+                totalBackorderKg: 0,
+                inProgressUnits: 0,
+                inProgressKg: Math.round(inProgressKg),
+                availableSizes: `${Math.round(totalStockKg * 10) / 10} kg`,
+                stockDetails: [],
+                suggestedAction: status !== 'GREEN' ? `Producir ${def.label}` : 'OK',
+                hasMissingSize: false,
+            });
+        }
+
         res.json(suggestions);
     } catch (error) {
         console.error(error);
@@ -343,6 +410,43 @@ exports.calculateBatchMix = async (req, res) => {
     const groupName = 'GENIALITY';
 
     try {
+        // ── Handle intermediate ingredient flavors (GLUCOSA, FRUCTOSA) ──
+        const INGREDIENT_MAP = {
+            'GLUCOSA': { sku: 'PROCELIQUIPOPS26', templateCode: 'TMPL-AZINV-001', templateName: 'Azúcar Inverter Glucosa' },
+            'FRUCTOSA': { sku: 'PROCELIQUIPOPS43', templateCode: 'TMPL-FRUCT-001', templateName: 'Azúcar Invertida Fructosa' },
+        };
+        const ingredientDef = INGREDIENT_MAP[flavor.toUpperCase()];
+        if (ingredientDef) {
+            const product = await prisma.product.findFirst({ where: { sku: ingredientDef.sku } });
+            if (!product) return res.status(404).json({ error: 'Ingredient not found' });
+
+            return res.json({
+                flavor: flavor.toUpperCase(),
+                isIngredient: true,
+                templateCode: ingredientDef.templateCode,
+                templateName: ingredientDef.templateName,
+                strategy: 'INGREDIENT',
+                totalPlannedKg: 100,
+                totalBaseKg: 100,
+                totalSyrupKg: 100,
+                targetBatchCount: 1,
+                targetTotalKg: 100,
+                mix: [{
+                    productId: product.id,
+                    sku: product.sku,
+                    name: product.name,
+                    sizeLabel: 'kg',
+                    kgFactor: 1,
+                    packSize: 1,
+                    plannedUnits: 1,
+                    plannedWeightKg: 100,
+                    orderDemandUnits: 0,
+                    boxes: null,
+                    contramuestra: 0
+                }]
+            });
+        }
+
         const products = await prisma.product.findMany({
             where: {
                 group: { name: groupName },
@@ -585,6 +689,13 @@ exports.updateBatch = async (req, res) => {
     }
 };
 
+// SKUs of intermediate ingredients schedulable from Geniality calendar
+const INGREDIENT_SKUS = ['PROCELIQUIPOPS26', 'PROCELIQUIPOPS43'];
+const INGREDIENT_TEMPLATE_MAP = {
+    'PROCELIQUIPOPS26': 'TMPL-AZINV-001',
+    'PROCELIQUIPOPS43': 'TMPL-FRUCT-001',
+};
+
 // NEW: Fetch Schedule
 exports.getSchedule = async (req, res) => {
     try {
@@ -596,13 +707,22 @@ exports.getSchedule = async (req, res) => {
                 status: {
                     in: ['PENDING', 'STAGE_1_BASE', 'STAGE_2_JARABE', 'STAGE_3_ESFERIFICACION', 'STAGE_4_PRODUCTO_FINAL', 'LABELING', 'COMPLETED']
                 },
-                outputTargets: {
-                    some: {
-                        product: {
-                            group: { name: groupName }
+                OR: [
+                    {
+                        outputTargets: {
+                            some: {
+                                product: { group: { name: groupName } }
+                            }
+                        }
+                    },
+                    {
+                        outputTargets: {
+                            some: {
+                                product: { sku: { in: INGREDIENT_SKUS } }
+                            }
                         }
                     }
-                }
+                ]
             },
             include: {
                 outputTargets: {
@@ -618,6 +738,9 @@ exports.getSchedule = async (req, res) => {
             const isGenialityBatch = b.outputTargets.some(t => t.product?.group?.name === 'GENIALITY' || t.product?.name?.includes('SIROPE'));
             const batchDensity = isGenialityBatch ? 1.35 : 1.0;
 
+            const ingredientSku = b.outputTargets.find(t => INGREDIENT_TEMPLATE_MAP[t.product?.sku]);
+            const templateCode = ingredientSku ? INGREDIENT_TEMPLATE_MAP[ingredientSku.product.sku] : undefined;
+
             return {
                 id: b.id,
                 title: `${b.flavor}${seq} (${Math.round(b.baseWeight || 0)}kg)`,
@@ -625,13 +748,15 @@ exports.getSchedule = async (req, res) => {
                 end: b.scheduledEnd,
                 flavor: b.flavor,
                 status: b.status,
-                baseWeight: b.baseWeight, // Exposed for frontend calculations
-                notes: b.notes, // Include notes for auxiliary events
+                baseWeight: b.baseWeight,
+                startedAt: b.startedAt,
+                notes: b.notes,
+                ...(templateCode ? { templateCode } : {}),
                 mix: b.outputTargets.map(t => {
                     const sizeInfo = parseSize(t.product.name, batchDensity);
                     return {
                         id: t.productId,
-                        productId: t.productId,  // Frontend launch uses this field
+                        productId: t.productId,
                         name: t.product.name,
                         sku: t.product.sku,
                         plannedUnits: t.plannedUnits,

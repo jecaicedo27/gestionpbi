@@ -30,10 +30,11 @@ const Sidebar = () => {
         // ── Distribución ──
         { icon: ShoppingCart, label: 'Tienda', path: '/shop', roles: ['DISTRIBUIDOR'], section: 'Distribución' },
         { icon: Package, label: 'Mis Pedidos', path: '/orders', roles: ['DISTRIBUIDOR'] },
+        { icon: Calendar, label: 'Cronograma Producción', path: '/production/view', roles: ['DISTRIBUIDOR'] },
 
         // ── Logística ──
         { icon: Package, label: 'Pedidos', path: '/orders', roles: ['ADMIN', 'LOGISTICA'], section: 'Logística' },
-        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory', roles: ['ADMIN', 'PRODUCCION', 'CARTERA', 'LOGISTICA', 'OPERARIO_PICKING', 'QUIMICO'] },
+        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory', roles: ['ADMIN', 'PRODUCCION', 'CARTERA', 'LOGISTICA', 'OPERARIO_PICKING', 'QUIMICO', 'CONTABILIDAD'] },
         { icon: Layers, label: 'Trazabilidad Lotes', path: '/lots/traceability', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
 
         // ── Producción ──

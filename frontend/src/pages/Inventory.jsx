@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 import { socket } from '../services/socket';
-import { Search, AlertTriangle, CheckCircle, XCircle, Grid, List, RefreshCw } from 'lucide-react';
+import { Search, Filter, AlertTriangle, CheckCircle, XCircle, Grid, List, RefreshCw, TrendingDown } from 'lucide-react';
 import InventoryMatrix from '../components/inventory/InventoryMatrix';
 import SyncProgressModal from '../components/inventory/SyncProgressModal';
 import ProductAnalysisModal from '../components/inventory/ProductAnalysisModal';
@@ -19,6 +19,8 @@ const Inventory = () => {
     const [groups, setGroups] = useState([]);
     const [viewMode, setViewMode] = useState('MATRIX'); // 'LIST' or 'MATRIX'
     const [showPlanningModal, setShowPlanningModal] = useState(false); // Added
+    const [showNegativeOnly, setShowNegativeOnly] = useState(false);
+    const [showUnassignedOnly, setShowUnassignedOnly] = useState(false);
 
     // Product Analysis Modal State
     const [selectedProduct, setSelectedProduct] = useState(null);
@@ -231,12 +233,16 @@ const Inventory = () => {
         }
     };
 
+    const negativeCount = products.filter(p => (p.currentStock || 0) < 0).length;
+
+    const getUnassignedQty = (p) => p.unassignedQty || 0;
+    const unassignedCount = products.filter(p => getUnassignedQty(p) > 0).length;
+
     const filteredProducts = products.filter(p => {
         const term = searchTerm.trim().toLowerCase();
         let matchesSearch = true;
         if (term) {
             if (term.includes('%')) {
-                // Convert % wildcards to regex: escape special chars, then replace % with .*
                 const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*');
                 const re = new RegExp(escaped, 'i');
                 matchesSearch = re.test(p.name) || re.test(p.code);
@@ -245,6 +251,9 @@ const Inventory = () => {
                     p.code.toLowerCase().includes(term);
             }
         }
+
+        if (showNegativeOnly && (p.currentStock || 0) >= 0) return false;
+        if (showUnassignedOnly && getUnassignedQty(p) <= 0) return false;
 
         if (selectedGroup === 'ALL') return matchesSearch;
         return matchesSearch && p.group === selectedGroup;
@@ -321,11 +330,39 @@ const Inventory = () => {
                     </div>
                 </div>
 
+                {/* Negative stock alert */}
+                {negativeCount > 0 && (
+                    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${showNegativeOnly ? 'bg-red-100 border-red-300' : 'bg-red-50 border-red-200'} cursor-pointer transition-colors hover:bg-red-100`}
+                        onClick={() => { setShowNegativeOnly(v => !v); if (!showNegativeOnly) setShowUnassignedOnly(false); }}>
+                        <TrendingDown className="w-4 h-4 text-red-600" />
+                        <span className="text-sm font-semibold text-red-700">
+                            {negativeCount} producto{negativeCount !== 1 ? 's' : ''} con stock negativo
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${showNegativeOnly ? 'bg-red-600 text-white' : 'bg-red-200 text-red-800'}`}>
+                            {showNegativeOnly ? 'Mostrando' : 'Ver'}
+                        </span>
+                    </div>
+                )}
+
+                {/* Unassigned lots alert */}
+                {unassignedCount > 0 && (
+                    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${showUnassignedOnly ? 'bg-amber-100 border-amber-300' : 'bg-amber-50 border-amber-200'} cursor-pointer transition-colors hover:bg-amber-100`}
+                        onClick={() => { setShowUnassignedOnly(v => !v); if (!showUnassignedOnly) setShowNegativeOnly(false); }}>
+                        <AlertTriangle className="w-4 h-4 text-amber-600" />
+                        <span className="text-sm font-semibold text-amber-700">
+                            {unassignedCount} producto{unassignedCount !== 1 ? 's' : ''} con cantidades sin lote asignado
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${showUnassignedOnly ? 'bg-amber-600 text-white' : 'bg-amber-200 text-amber-800'}`}>
+                            {showUnassignedOnly ? 'Mostrando' : 'Ver'}
+                        </span>
+                    </div>
+                )}
+
                 {/* Wrapped Groups Filter */}
                 <div className="flex gap-1.5 flex-wrap pb-1">
                     <button
-                        onClick={() => setSelectedGroup('ALL')}
-                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${selectedGroup === 'ALL' ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50 border border-neutral-200'}`}
+                        onClick={() => { setSelectedGroup('ALL'); setShowNegativeOnly(false); setShowUnassignedOnly(false); }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${selectedGroup === 'ALL' && !showNegativeOnly ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50 border border-neutral-200'}`}
                     >
                         Todos
                     </button>

@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
-import ShiftHandoffForm from '../components/ShiftHandoffForm';
-import ShiftHandoffApproval from '../components/ShiftHandoffApproval';
 import ShiftHandoverTab from '../components/ShiftHandover/ShiftHandoverTab';
 
 // ── Shift definitions ────────────────────────────────────────────────────────
@@ -44,6 +42,13 @@ const AREA_ICONS = {
     PRODUCCION: '⚙️', SIROPES: '🧪', EMPAQUE: '📦',
     LOGISTICA: '🚛', ASEO: '🧹'
 };
+
+function getAreaShiftOptions(area) {
+    return FIXED_AREAS.includes(area)
+        ? ['DIURNO']
+        : ['MANANA', 'TARDE', 'NOCHE', 'DIURNO'];
+}
+
 const ABSENCE_REASONS = [
     { value: 'PERMISO', label: 'Permiso', icon: '📝', color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff' },
     { value: 'VACACIONES', label: 'Vacaciones', icon: '🏖️', color: '#0891b2', bg: '#ecfeff', border: '#a5f3fc' },
@@ -54,6 +59,7 @@ const ABSENCE_REASONS = [
     { value: 'MATERNIDAD', label: 'Maternidad', icon: '🤰', color: '#db2777', bg: '#fdf2f8', border: '#fbcfe8' },
     { value: 'DILIGENCIA', label: 'Diligencia', icon: '📋', color: '#4b5563', bg: '#f9fafb', border: '#d1d5db' },
 ];
+const ABSENCE_LOOKAHEAD_DAYS = 120;
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
 function getMonday(d) {
@@ -71,6 +77,21 @@ function formatDate(d) {
 
 function formatDateShort(d) {
     return new Date(d).toLocaleDateString('es-CO', { day: 'numeric', month: 'short' });
+}
+
+function getAbsenceStatus(startDate, endDate) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(endDate);
+    end.setHours(0, 0, 0, 0);
+
+    if (start > today) return { label: 'Próxima', bg: '#ecfeff', color: '#0891b2', border: '#a5f3fc' };
+    if (end >= today) return { label: 'Activa', bg: '#f0fdf4', color: '#16a34a', border: '#bbf7d0' };
+    return null;
 }
 
 function formatWeekRange(start) {
@@ -125,11 +146,6 @@ export default function ShiftSchedulePage() {
     const tableRef = useRef(null);
     const [exporting, setExporting] = useState(false);
 
-    // ── Handoff state ────────────────────────────────────────────────────────
-    const [handoffData, setHandoffData] = useState({ handoffs: [], operators: [], outgoingShift: '', incomingShift: '' });
-    const [handoffLoading, setHandoffLoading] = useState(false);
-    const [handoffMsg, setHandoffMsg] = useState('');
-
     const today = new Date().toISOString().split('T')[0];
     const [absForm, setAbsForm] = useState({ employeeId: '', startDate: today, endDate: today, reason: 'PERMISO', notes: '' });
     const [empForm, setEmpForm] = useState({ name: '', area: 'PRODUCCION', role: 'OPERARIO', groupNumber: '', isFixed: false, restrictions: [], whatsapp: '' });
@@ -177,44 +193,14 @@ export default function ShiftSchedulePage() {
     const fetchAbsences = useCallback(async () => {
         try {
             const month = weekStart.substring(0, 7);
-            const res = await api.get('/shifts/absences', { params: { month } });
+            const res = await api.get('/shifts/absences', {
+                params: { month, includeUpcoming: true, lookaheadDays: ABSENCE_LOOKAHEAD_DAYS }
+            });
             setAbsences(res.data);
         } catch (e) { console.error(e); }
     }, [weekStart]);
 
-    // ── Handoff fetching ──────────────────────────────────────────────────
-    const fetchHandoffs = useCallback(async () => {
-        setHandoffLoading(true);
-        try {
-            const res = await api.get('/shifts/handoff/today');
-            setHandoffData(res.data);
-        } catch (e) { console.error('fetchHandoffs error:', e); }
-        setHandoffLoading(false);
-    }, []);
-
-    useEffect(() => { fetchWeek(); fetchEmployees(); fetchPendingUsers(); fetchAbsences(); fetchHandoffs(); }, [fetchWeek, fetchEmployees, fetchPendingUsers, fetchAbsences, fetchHandoffs]);
-
-    const handleApproveHandoff = async (handoffId, pin) => {
-        try {
-            await api.post(`/shifts/handoff/${handoffId}/approve`, { pin });
-            setHandoffMsg('✅ Entrega aprobada');
-            fetchHandoffs();
-        } catch (e) {
-            setHandoffMsg(`❌ ${e.response?.data?.error || e.message}`);
-        }
-        setTimeout(() => setHandoffMsg(''), 3000);
-    };
-
-    const handleRejectHandoff = async (handoffId, pin, reason) => {
-        try {
-            await api.post(`/shifts/handoff/${handoffId}/reject`, { pin, reason });
-            setHandoffMsg('❌ Entrega rechazada');
-            fetchHandoffs();
-        } catch (e) {
-            setHandoffMsg(`❌ ${e.response?.data?.error || e.message}`);
-        }
-        setTimeout(() => setHandoffMsg(''), 3000);
-    };
+    useEffect(() => { fetchWeek(); fetchEmployees(); fetchPendingUsers(); fetchAbsences(); }, [fetchWeek, fetchEmployees, fetchPendingUsers, fetchAbsences]);
 
     const changeWeek = (offset) => {
         const d = new Date(weekStart);
@@ -319,7 +305,7 @@ export default function ShiftSchedulePage() {
 
             // ── Build table rows ──
             const areaRows = AREAS.map(area => {
-                const showShifts = area === 'LOGISTICA' || area === 'ASEO' ? ['DIURNO'] : ['MANANA', 'TARDE', 'NOCHE'];
+                const showShifts = getAreaShiftOptions(area);
                 const cells = shiftCols.map(sc => {
                     const isApplicable = showShifts.includes(sc.key);
                     if (!isApplicable) return `<td style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center;color:#e2e8f0;">—</td>`;
@@ -579,8 +565,8 @@ export default function ShiftSchedulePage() {
             <div style={{ display: 'flex', gap: 4, marginBottom: 24, background: '#f1f5f9', borderRadius: 12, padding: 4 }}>
                 {(
                     isAdmin
-                        ? [['schedule', '📅 Cuadro Semanal'], ['handover', '🔄 Relevo'], ['handoffs', '📝 Entregas (Legacy)'], ['absences', '🤒 Ausencias'], ['employees', '👥 Empleados']]
-                        : [['handover', '🔄 Relevo de Turno'], ['handoffs', '📝 Entrega (Legacy)']]
+                        ? [['schedule', '📅 Cuadro Semanal'], ['handover', '🔄 Relevo'], ['absences', '🤒 Ausencias'], ['employees', '👥 Empleados']]
+                        : [['handover', '🔄 Relevo de Turno']]
                 ).map(([key, label]) => (
                     <button key={key} onClick={() => setTab(key)} style={{
                         flex: 1, padding: '12px 20px', border: 'none', borderRadius: 10,
@@ -716,7 +702,7 @@ export default function ShiftSchedulePage() {
                                     {AREAS.map(area => {
                                         const areaShifts = grid[area] || {};
                                         const areaAbsent = absentByArea[area] || [];
-                                        const showShifts = area === 'LOGISTICA' || area === 'ASEO' ? ['DIURNO'] : ['MANANA', 'TARDE', 'NOCHE'];
+                                        const showShifts = getAreaShiftOptions(area);
                                         return (
                                             <tr key={area} style={{ borderBottom: '1px solid #e2e8f0' }}>
                                                 <td style={{
@@ -883,9 +869,12 @@ export default function ShiftSchedulePage() {
                     </div>
                     <div style={cardStyle}>
                         <h3 style={cardTitleStyle}>📋 Historial de Ausencias</h3>
+                        <div style={{ fontSize: 12, color: '#64748b', marginTop: -8, marginBottom: 14 }}>
+                            Mes del cuadro + próximas ausencias de los siguientes {ABSENCE_LOOKAHEAD_DAYS} días
+                        </div>
                         {absences.length === 0 ? (
                             <p style={{ color: '#94a3b8', fontSize: 15, textAlign: 'center', padding: 40 }}>
-                                Sin ausencias registradas este mes
+                                Sin ausencias registradas ni próximas
                             </p>
                         ) : (
                             <div style={{ maxHeight: 550, overflowY: 'auto' }}>
@@ -894,6 +883,7 @@ export default function ShiftSchedulePage() {
                                     const start = new Date(a.startDate);
                                     const end = new Date(a.endDate);
                                     const days = Math.max(1, Math.ceil((end - start) / 86400000) + 1);
+                                    const status = getAbsenceStatus(a.startDate, a.endDate);
                                     return (
                                         <div key={a.id} style={{
                                             padding: '14px 16px', borderBottom: '1px solid #f1f5f9',
@@ -907,6 +897,12 @@ export default function ShiftSchedulePage() {
                                                         fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
                                                         background: '#eff6ff', color: '#2563eb'
                                                     }}>{days} día{days > 1 ? 's' : ''}</span>
+                                                    {status && (
+                                                        <span style={{
+                                                            fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                                                            background: status.bg, color: status.color, border: `1px solid ${status.border}`
+                                                        }}>{status.label}</span>
+                                                    )}
                                                 </div>
                                                 {a.notes && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>{a.notes}</div>}
                                             </div>
@@ -1223,62 +1219,6 @@ export default function ShiftSchedulePage() {
             {/* ═══════ TAB: HANDOVER (Relevo de Turno) ═══════════════════════════ */}
             {tab === 'handover' && (
                 <ShiftHandoverTab />
-            )}
-
-            {/* ═══════ TAB 4: HANDOFFS (Entregas de Turno - Legacy) ═════════════ */}
-            {tab === 'handoffs' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-                    {/* Status summary */}
-                    <div style={{
-                        padding: '16px 20px', borderRadius: 14, display: 'flex',
-                        alignItems: 'center', gap: 16, flexWrap: 'wrap',
-                        background: handoffData.allDelivered
-                            ? 'linear-gradient(135deg, #f0fdf4, #dcfce7)'
-                            : 'linear-gradient(135deg, #fffbeb, #fef3c7)',
-                        border: `2px solid ${handoffData.allDelivered ? '#86efac' : '#fde68a'}`
-                    }}>
-                        <span style={{ fontSize: 32 }}>
-                            {handoffData.allDelivered ? '🟢' : '🟡'}
-                        </span>
-                        <div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>
-                                {handoffData.allDelivered
-                                    ? '✅ Todas las entregas aprobadas — turno desbloqueado'
-                                    : `⏳ ${handoffData.pendingCount || 0} entrega(s) pendiente(s)`
-                                }
-                            </div>
-                            <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>
-                                Turno saliente: <strong>{handoffData.outgoingShift}</strong> →
-                                Turno entrante: <strong>{handoffData.incomingShift}</strong>
-                            </div>
-                        </div>
-                    </div>
-
-                    {handoffMsg && (
-                        <div style={{
-                            padding: '10px 16px', borderRadius: 10, fontWeight: 600, fontSize: 14,
-                            background: handoffMsg.includes('❌') ? '#fef2f2' : '#f0fdf4',
-                            color: handoffMsg.includes('❌') ? '#dc2626' : '#16a34a',
-                            border: `1px solid ${handoffMsg.includes('❌') ? '#fecaca' : '#bbf7d0'}`,
-                            textAlign: 'center'
-                        }}>{handoffMsg}</div>
-                    )}
-
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 24 }}>
-                        {/* Left: Operator form */}
-                        <ShiftHandoffForm onSuccess={fetchHandoffs} />
-
-                        {/* Right: Leader approval panel */}
-                        <ShiftHandoffApproval
-                            operators={handoffData.operators}
-                            handoffs={handoffData.handoffs}
-                            outgoingShift={handoffData.outgoingShift}
-                            onApprove={handleApproveHandoff}
-                            onReject={handleRejectHandoff}
-                            loading={handoffLoading}
-                        />
-                    </div>
-                </div>
             )}
         </div>
     );

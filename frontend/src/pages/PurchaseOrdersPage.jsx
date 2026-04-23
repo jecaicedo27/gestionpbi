@@ -513,10 +513,26 @@ const PurchaseOrdersPage = () => {
         setSubmittingAccounting(false);
     };
 
+    const hasPendingAccountingReception = (order) => (order?.receptions || []).some(rec => !rec.siigoRef);
+    const getLottedQty = (item) => (item?.lots || []).reduce((sum, lot) => sum + (lot.initialQuantity || lot.currentQuantity || 0), 0);
+    const getAccountedReceivedQtyForItem = (order, itemId) => (order?.receptions || [])
+        .filter(reception => !!reception.siigoRef)
+        .flatMap(reception => reception.items || [])
+        .filter(item => item.orderItemId === itemId)
+        .reduce((sum, item) => sum + (item.quantityReceived || 0), 0);
+    const canLotItem = (order, item) => getAccountedReceivedQtyForItem(order, item?.id) > getLottedQty(item);
+    const hasReceivableLots = (order) => (order?.items || []).some(item => (item.quantityReceived || 0) > 0 && canLotItem(order, item));
+
     // ── Lots ──
     const openLotModal = (poItem) => {
-        setSelectedPOItem(poItem);
-        const received = poItem.quantityReceived || 0;
+        const accountedQuantity = getAccountedReceivedQtyForItem(selectedOrder, poItem.id);
+        const lottedQuantity = getLottedQty(poItem);
+        setSelectedPOItem({
+            ...poItem,
+            accountedQuantity,
+            lottedQuantity,
+            quantityAvailableForLots: Math.max(0, accountedQuantity - lottedQuantity)
+        });
         setLotEntries([{
             lotNumber: '',
             quantity: 0,
@@ -540,6 +556,7 @@ const PurchaseOrdersPage = () => {
     };
 
     const submitLots = async () => {
+        if (!selectedPOItem?.quantityAvailableForLots) { message.error('No hay cantidad recibida y contabilizada disponible para lotear este producto.'); return; }
         if (lotEntries.some(l => !l.lotNumber || !l.quantity)) { message.warning('Completa número de lote y cantidad'); return; }
         setSubmittingLots(true);
         try {
@@ -670,7 +687,9 @@ const PurchaseOrdersPage = () => {
                     PAID: (isLogistica || isAdmin || (!isRestrictedRole))
                         ? { label: '📦 Recibir', icon: <InboxOutlined />, tab: 'info', style: { background: '#722ed1', borderColor: '#722ed1', color: '#fff' } }
                         : { label: 'Ver', icon: <EyeOutlined />, tab: 'info' },
-                    PARTIALLY_RECEIVED: (isLogistica || isAdmin || (!isRestrictedRole))
+                    PARTIALLY_RECEIVED: isContabilidad && hasPendingAccountingReception(r)
+                        ? { label: '📊 Contabilizar parcial', icon: null, tab: 'accounting', style: { background: '#d4b106', borderColor: '#d4b106', color: '#fff' } }
+                        : (isLogistica || isAdmin || (!isRestrictedRole))
                         ? { label: '📦 Recibir', icon: <InboxOutlined />, tab: 'info', style: { background: '#722ed1', borderColor: '#722ed1', color: '#fff' } }
                         : { label: 'Ver', icon: <EyeOutlined />, tab: 'info' },
                     ACCOUNTING_PENDING: isContabilidad
@@ -698,8 +717,7 @@ const PurchaseOrdersPage = () => {
                     CANCELLED: { label: 'Ver', icon: <EyeOutlined />, tab: 'info' },
                 };
                 const action = actionMap[r.status] || { label: 'Ver', icon: <EyeOutlined />, tab: 'info' };
-                const hasSiigoInvoice = r.receptions?.length > 0 && r.receptions.every(rec => rec.siigoRef);
-                const needsLots = r.status === 'COMPLETED' && hasSiigoInvoice && r.items?.some(i => (i.quantityReceived || 0) > 0 && (!i.lots || i.lots.length === 0));
+                const needsLots = ['COMPLETED', 'PARTIALLY_RECEIVED'].includes(r.status) && hasReceivableLots(r);
                 return (
                     <Space size="small">
                         {(!isRestrictedRole || isLogistica) && needsLots && (
@@ -728,7 +746,7 @@ const PurchaseOrdersPage = () => {
     const pendingStatuses = isCartera
         ? ['PAYMENT_PENDING', 'SENT', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
         : isContabilidad
-            ? ['ACCOUNTING_PENDING']
+            ? ['PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING']
             : isLogistica
                 ? ['SENT', 'PAID', 'PARTIALLY_RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED']
                 : ['DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SENT', 'PAYMENT_PENDING', 'PAID', 'PARTIALLY_RECEIVED', 'RECEIVED', 'ACCOUNTING_PENDING', 'COMPLETED'];
@@ -745,6 +763,9 @@ const PurchaseOrdersPage = () => {
             if (o.status === 'PAYMENT_PENDING') return true;
             if (o.paymentMethod === 'CREDITO' && !o.creditPaid) return true;
             return false;
+        }
+        if (isContabilidad && o.status === 'PARTIALLY_RECEIVED') {
+            return hasPendingAccountingReception(o);
         }
         // Logística: SENT credit POs are actionable (can receive directly)
         if (isLogistica && o.status === 'SENT' && o.paymentMethod !== 'CREDITO') return false;
@@ -1093,9 +1114,11 @@ const PurchaseOrdersPage = () => {
                                     {
                                         title: 'Lotes', key: 'lots', width: 80, align: 'center',
                                         render: (_, r) => {
-                                            const isAccounted = selectedOrder?.receptions?.length > 0 && selectedOrder.receptions.every(rec => !!rec.siigoRef);
-                                            const disabled = r.quantityReceived === 0 || !isAccounted;
-                                            const tip = disabled ? (r.quantityReceived === 0 ? "Sin recibir" : "Aún falta validación de contabilidad (Siigo)") : "Crear lotes";
+                                            const availableToLot = canLotItem(selectedOrder, r);
+                                            const disabled = r.quantityReceived === 0 || !availableToLot;
+                                            const tip = disabled
+                                                ? (r.quantityReceived === 0 ? "Sin recibir" : "Aún falta validación de contabilidad (Siigo) para este producto")
+                                                : "Crear lotes";
                                             return (
                                                 <Tooltip title={tip}>
                                                     <Button size="small" icon={<TagsOutlined />} onClick={() => openLotModal(r)}
@@ -1145,6 +1168,7 @@ const PurchaseOrdersPage = () => {
                             {receptionMode ? (
                                 <div>
                                     <Alert message="Registrando recepción de mercancía" type="info" showIcon style={{ marginBottom: 16 }} />
+                                    <Alert message="Si un producto no llegó, déjalo en 0. Se contabiliza y lotea solo lo recibido; lo faltante queda pendiente en la OC." type="warning" showIcon style={{ marginBottom: 16 }} />
                                     <Table dataSource={receptionItems} rowKey="orderItemId" size="small" pagination={false}
                                         columns={[
                                             { title: 'Producto', dataIndex: 'siigoProductName' },
@@ -1167,7 +1191,7 @@ const PurchaseOrdersPage = () => {
                                             {
                                                 title: 'Recibido ahora', key: 'qty', width: 150, render: (_, r, idx) => (
                                                     <div>
-                                                        <InputNumber min={0} value={r.quantityReceived} addonAfter="g"
+                                                        <InputNumber min={0} max={r.quantityExpected} value={r.quantityReceived} addonAfter="g"
                                                             onChange={v => { const u = [...receptionItems]; u[idx].quantityReceived = v || 0; setReceptionItems(u); }}
                                                             formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} style={{ width: '100%' }} />
                                                         {r.quantityReceived > 0 && (
@@ -1711,19 +1735,48 @@ const PurchaseOrdersPage = () => {
 
                         {/* ── TAB: Lots (hidden for CONTABILIDAD/CARTERA) ── */}
                         {!isContabilidad && !isCartera && <Tabs.TabPane tab={`🏷️ Lotes`} key="lots">
-                            {/* Items that need lots */}
-                            {selectedOrder.items?.filter(i => (i.quantityReceived || 0) > 0 && (!i.lots || i.lots.length === 0)).length > 0 && (
+                            {(() => {
+                                if (hasPendingAccountingReception(selectedOrder) && hasReceivableLots(selectedOrder)) return (
+                                    <div style={{ background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 8, padding: '12px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <span style={{ fontSize: 22 }}>⏳</span>
+                                        <div>
+                                            <Text strong style={{ color: '#ad6800', display: 'block' }}>Recepción parcial en curso</Text>
+                                            <Text style={{ color: '#595959', fontSize: 13 }}>Puedes lotear solo los productos que ya fueron validados por Contabilidad en Siigo. Lo demás queda bloqueado hasta su validación.</Text>
+                                        </div>
+                                    </div>
+                                );
+                                if (selectedOrder?.receptions?.length === 0) return (
+                                    <div style={{ background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 8, padding: '12px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+                                        <span style={{ fontSize: 22 }}>⏳</span>
+                                        <div>
+                                            <Text strong style={{ color: '#d46b08', display: 'block' }}>Sin recepción registrada</Text>
+                                            <Text style={{ color: '#595959', fontSize: 13 }}>Primero debe registrarse la recepción de mercancía antes de crear lotes.</Text>
+                                        </div>
+                                    </div>
+                                );
+                                return null;
+                            })()}
+                            {selectedOrder.items?.filter(i => (i.quantityReceived || 0) > 0 && canLotItem(selectedOrder, i)).length > 0 && (
                                 <div style={{ background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 8, padding: '10px 14px', marginBottom: 12 }}>
-                                    <Text strong style={{ display: 'block', marginBottom: 8 }}>📦 Productos recibidos sin lotes:</Text>
-                                    {selectedOrder.items.filter(i => (i.quantityReceived || 0) > 0 && (!i.lots || i.lots.length === 0)).map(item => (
+                                    <Text strong style={{ display: 'block', marginBottom: 8 }}>📦 Productos recibidos y contabilizados disponibles para lotear:</Text>
+                                    {selectedOrder.items.filter(i => (i.quantityReceived || 0) > 0 && canLotItem(selectedOrder, i)).map(item => (
                                         <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #ffe7ba' }}>
                                             <div>
                                                 <Text strong>{item.siigoProductName}</Text>
-                                                <Text style={{ marginLeft: 8 }} type="secondary">({item.quantityReceived?.toLocaleString()} g recibidos)</Text>
+                                                <Text style={{ marginLeft: 8 }} type="secondary">
+                                                    ({getAccountedReceivedQtyForItem(selectedOrder, item.id).toLocaleString()} g contabilizados)
+                                                </Text>
                                             </div>
-                                            <Button type="primary" size="small" icon={<TagsOutlined />} onClick={() => openLotModal(item)}>
-                                                Registrar Lotes
-                                            </Button>
+                                            {(() => {
+                                                const availableToLot = canLotItem(selectedOrder, item);
+                                                return (
+                                                    <Tooltip title={!availableToLot ? 'Contabilidad debe registrar la recepción en Siigo antes de lotear' : 'Crear lotes'}>
+                                                        <Button type="primary" size="small" icon={<TagsOutlined />} onClick={() => openLotModal(item)} disabled={!availableToLot}>
+                                                            {availableToLot ? 'Registrar Lotes' : '⏳ Pendiente Siigo'}
+                                                        </Button>
+                                                    </Tooltip>
+                                                );
+                                            })()}
                                         </div>
                                     ))}
                                 </div>
@@ -2298,7 +2351,7 @@ const PurchaseOrdersPage = () => {
             {/* ══════ LOT CREATION MODAL ══════ */}
             {(() => {
                 const lotsTotal = lotEntries.reduce((s, l) => s + (l.quantity || 0), 0);
-                const maxQty = selectedPOItem?.quantityReceived || 0;
+                const maxQty = selectedPOItem?.quantityAvailableForLots || 0;
                 const exceeds = lotsTotal > maxQty;
                 const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0 && l.expiresAtRaw?.trim());
                 const canSubmit = allValid && !exceeds && lotsTotal > 0;
@@ -2314,7 +2367,7 @@ const PurchaseOrdersPage = () => {
                 okButtonProps={{ disabled: !canSubmit }}>
                 {selectedPOItem && (
                     <div>
-                        <Alert message={`Recibido: ${fmtQty(selectedPOItem.quantityReceived)} — Clasifica según los lotes que llegaron del proveedor`} type="info" showIcon style={{ marginBottom: 16 }} />
+                        <Alert message={`Disponible para lotear: ${fmtQty(maxQty)} — Ya contabilizado en Siigo para este producto`} type="info" showIcon style={{ marginBottom: 16 }} />
                         {/* Column headers */}
                         <div style={{ display: 'flex', gap: 8, padding: '0 8px', marginBottom: 4 }}>
                             <Text strong style={{ flex: 2, fontSize: 12 }}>N° Lote proveedor</Text>

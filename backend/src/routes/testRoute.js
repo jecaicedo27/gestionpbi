@@ -3,6 +3,10 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const {
+    PROCUREMENT_ALERT_EVENT,
+    buildPurchaseOrderWorkflowAlert
+} = require('../services/purchaseOrderAlertService');
 
 function getAlertLevel(product) {
     if (product.currentStock === 0) return 'CRITICO';
@@ -55,12 +59,15 @@ router.get('/test-inventory', async (req, res) => {
 router.get('/test-po-alert', (req, res) => {
     const io = req.app.get('io');
     if (!io) return res.json({ error: 'io not found on app' });
-    io.emit('purchase_order:new', {
+    const alert = buildPurchaseOrderWorkflowAlert('PAYMENT_PENDING', {
+        id: 'test-po-alert',
         orderNumber: 'OC-TEST-001',
         supplierName: 'TEST SUPPLIER',
-        createdAt: new Date()
+        status: 'PAYMENT_PENDING',
+        paymentMethod: 'CONTADO'
     });
-    res.json({ success: true, message: 'Evento purchase_order:new emitido' });
+    io.emit(PROCUREMENT_ALERT_EVENT, alert);
+    res.json({ success: true, message: `Evento ${PROCUREMENT_ALERT_EVENT} emitido` });
 });
 
 module.exports = router;

@@ -328,15 +328,24 @@ function renderCarritoLabel(data, xOff) {
     fields += `^FO${x},${y}^A0N,50,46^FD${carritoDisplay}^FS\n`;
     y += 56;
 
-    // 3. Product Destino
-    let shortName = productName.replace(/.*SABOR A\s?/i, '').replace(/X\s*\d+.*$/i, '').trim() || productName.substring(0, 18);
-    if (shortName.length > 20) shortName = shortName.substring(0, 20);
-    fields += `^FO${x},${y}^A0N,22,22^FD${esc(shortName)}^FS\n`;
-    y += 30;
+    // 3. Product Destino + Size
+    const sizeMatch = productName.match(/X\s*(\d+)\s*(ML|G|KG)/i);
+    const sizeTag = sizeMatch ? ` ${sizeMatch[1]}${sizeMatch[2].toUpperCase()}` : '';
+    let shortName = productName
+        .replace(/.*SABOR A\s?/i, '')
+        .replace(/\bESTANDARIZAD[AO]\b/i, '')
+        .replace(/X\s*\d+\s*(ML|G|KG)/i, '')
+        .trim() || productName.substring(0, 18);
+    if (shortName.length > 18) shortName = shortName.substring(0, 18);
+    shortName = `${shortName}${sizeTag}`;
+    fields += `^FO${x},${y}^A0N,22,20^FD${esc(shortName)}^FS\n`;
+    y += 28;
 
-    // 4. Lote and Qty
-    fields += `^FO${x},${y}^A0N,20,18^FDLote: ${esc(lotNumber)}^FS\n`;
-    y += 24;
+    // 4. Lote (two lines: label + value, readable but no QR overlap)
+    fields += `^FO${x},${y}^A0N,16,14^FDLote:^FS\n`;
+    y += 18;
+    fields += `^FO${x},${y}^A0N,22,20^FD${esc(lotNumber)}^FS\n`;
+    y += 26;
     fields += `^FO${x},${y}^A0N,30,28^FD${esc(qtyText)}^FS\n`;
     y += 34;
 

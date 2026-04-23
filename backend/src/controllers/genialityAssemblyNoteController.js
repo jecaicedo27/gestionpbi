@@ -820,12 +820,13 @@ const assemblyNoteController = {
             const mm = String(co.getMinutes()).padStart(2, '0');
 
             // ── Flavor resolution for generic templates ──
-            const isGeniality = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR';
+            const isGeniality = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR' || template.templateCode === 'BATCH-LIQUIMON';
             const isEscarchadorBatch = template.templateCode === 'BATCH-ESCARCHADOR';
+            const isLiquimonBatch = template.templateCode === 'BATCH-LIQUIMON';
             let flavorProductId = null; // resolved output product (ESFERAS [SABOR])
             let flavorCompuestoId = null; // resolved input product (COMPUESTO [SABOR])
             let sizeMap = {}; // resolved output products per size (3400, 1150, 350)
-            if (flavorKey && isGeniality && !isEscarchadorBatch) {
+            if (flavorKey && isGeniality && !isEscarchadorBatch && !isLiquimonBatch) {
                 // ── GENIALITY flavor resolution: just replace {SABOR} in stage names ──
                 const flavorNorm = stripAccents(flavorKey).toUpperCase();
                 console.log(`[quickStart] Geniality flavor resolution: ${flavorKey}`);
@@ -1060,6 +1061,41 @@ const assemblyNoteController = {
                     }
                 }
                 console.log(`[quickStart] BATCH-ESCARCHADOR: ${flatStages.length} flat stages ready`);
+            } else if (isLiquimonBatch) {
+                // BATCH-LIQUIMON: sub-templates already correct (TMPL-LIQ-BASE = Base Cítrica).
+                // Resolve LIQUIMON output products per size for EMPAQUE/ENSAMBLE stages.
+                console.log(`[quickStart] BATCH-LIQUIMON — resolving output products`);
+                const allLiquimon = await prisma.product.findMany({
+                    where: { name: { contains: 'LIQUIMON', mode: 'insensitive' }, accountGroup: 1402 },
+                    select: { id: true, name: true }
+                });
+                for (const size of ['1000', '500']) {
+                    const prod = allLiquimon.find(p => p.name.toUpperCase().includes(`${size} ML`));
+                    if (prod) {
+                        sizeMap[size] = prod;
+                        console.log(`[quickStart] Liquimon size ${size}ml → ${prod.name} (${prod.id})`);
+                    }
+                }
+                for (const stage of flatStages) {
+                    const code = stage.processType?.code;
+                    if (code !== 'G_EMPAQUE' && code !== 'G_ENSAMBLE') continue;
+                    const name = (stage.stageName || '').toUpperCase();
+                    for (const [size, prod] of Object.entries(sizeMap)) {
+                        if (name.includes(size)) {
+                            stage.outputProductId = prod.id;
+                            console.log(`[quickStart] Liquimon ${code} "${stage.stageName}" → outputProductId=${prod.id} (${prod.name})`);
+                            break;
+                        }
+                    }
+                    if (stage.outputProductId) {
+                        const schedulerTarget = (reqOutputTargets || []).find(t => t.productId === stage.outputProductId);
+                        if (schedulerTarget && schedulerTarget.plannedUnits === 0) {
+                            stage._skipStage = true;
+                            console.log(`[quickStart] Liquimon ${code} "${stage.stageName}" → skipped (0 planned units)`);
+                        }
+                    }
+                }
+                console.log(`[quickStart] BATCH-LIQUIMON: ${flatStages.length} flat stages ready`);
             } else if (flavorKey) {
                 // Use accent-insensitive JS matching (CAFE matches CAFÉ)
                 const flavorNorm = stripAccents(flavorKey).toUpperCase();
@@ -1292,6 +1328,11 @@ const assemblyNoteController = {
                     }
                 });
                 console.log(`[quickStart] Reusing existing batch → new batchNumber=${batchNumber} (was ${batch.batchNumber}, id=${existingBatchId})`);
+
+                const { rescheduleAfterBatchStart } = require('./productionSchedulerController');
+                rescheduleAfterBatchStart(existingBatchId, 'geniality').catch(err =>
+                    console.error('[quickStart] geniality reschedule error:', err.message)
+                );
             } else {
                 try {
                     batch = await prisma.productionBatch.create({
@@ -1345,7 +1386,7 @@ const assemblyNoteController = {
                 console.log(`[quickStart] ⚠️ Ignored frontend quantity=${quantity} for Geniality, forcing 1 massive bundle.`);
             }
 
-            const isGenialityTemplate = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR';
+            const isGenialityTemplate = template.templateCode === 'BATCH-GENIALITY' || template.templateCode === 'BATCH-ESCARCHADOR' || template.templateCode === 'BATCH-LIQUIMON';
             const scaleFactor = (isGenialityTemplate && batch.baseWeight && batch.baseWeight > 0)
                  ? (batch.baseWeight / 100.0) // Simply total kg divided by 100kg formula baseline
                  : 1.0;
@@ -1360,20 +1401,21 @@ const assemblyNoteController = {
                     continue;
                 }
                 const isPesaje = ['PESAJE', 'G_PESAJE'].includes(stage.processType?.code);
+                const isGEProduction = ['GE_PREMIX', 'GE_BASE_LIQUIDA', 'GE_COCCION'].includes(stage.processType?.code);
                 const isEnsamble = ['ENSAMBLE', 'G_ENSAMBLE'].includes(stage.processType?.code);
 
                 // ── Resolve noteQty and noteUnit for this stage ──
-                // PESAJE inputs can be:
+                // PESAJE/GE_ inputs can be:
                 //   a) Per-gram ratios (e.g. BASE=0.98/g) → need × formula.baseQuantity
                 //   b) Absolute quantities (e.g. AGUA=48000g) → use as-is
                 // Heuristic: if ALL quantityPerUnit < 2, they're ratios; otherwise absolute.
                 // ENSAMBLE: template inputs store ABSOLUTE quantities (e.g. 118004g).
-                let noteQty = isPesaje ? 1 : baseQty;
+                let noteQty = (isPesaje || isGEProduction) ? 1 : baseQty;
                 let noteUnit = 'lote';
                 const stageProductId = stage.outputProductId || stage._subTemplateProductId;
                 let pesajeBaseQuantity = null; // only set when inputs are per-gram ratios
 
-                if (isPesaje && stageProductId) {
+                if ((isPesaje || isGEProduction) && stageProductId) {
                     const stageFormula = await prisma.formula.findFirst({
                         where: { productId: stageProductId, isActive: true },
                         select: { baseQuantity: true, baseUnit: true },

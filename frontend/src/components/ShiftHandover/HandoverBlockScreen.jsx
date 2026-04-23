@@ -4,9 +4,9 @@ import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 
 /**
- * Full-screen block: shown after grace period expires for incoming shift workers
- * whose handover has not been completed. They cannot use the system until the
- * outgoing shift completes the handover process or an admin force-completes it.
+ * Full-screen block: shown during mandatory handover windows.
+ * Starts 10 minutes before shift end and remains until the handover is completed
+ * or an admin force-completes it.
  *
  * Includes audible alarm that plays when block first appears and every 60 seconds.
  * IMPORTANT: Does NOT block on /shift-schedule so users can actually complete the handover.
@@ -63,7 +63,7 @@ export default function HandoverBlockScreen() {
         };
 
         check();
-        const interval = setInterval(check, 20000);
+        const interval = setInterval(check, 5000);
         return () => clearInterval(interval);
     }, [user]);
 
@@ -93,6 +93,11 @@ export default function HandoverBlockScreen() {
 
     const AREA_LABELS = { PRODUCCION: 'Producción', SIROPES: 'Siropes', EMPAQUE: 'Empaque' };
     const SHIFT_LABELS = { MANANA: 'Mañana', TARDE: 'Tarde', NOCHE: 'Noche' };
+    const phaseText = {
+        PRE_HANDOVER: 'Preparación obligatoria de relevo',
+        GRACE: 'Tiempo de gracia de relevo',
+        POST_GRACE: 'Relevo vencido'
+    }[blockInfo.blockPhase] || 'Relevo pendiente';
 
     return (
         <div style={{
@@ -125,7 +130,7 @@ export default function HandoverBlockScreen() {
                     fontSize: 24, fontWeight: 800, color: '#fff',
                     margin: '0 0 8px', letterSpacing: '-0.5px'
                 }}>
-                    Turno Bloqueado
+                    {phaseText}
                 </h2>
 
                 <p style={{
@@ -139,6 +144,16 @@ export default function HandoverBlockScreen() {
                         {SHIFT_LABELS[blockInfo.outgoingShift]}</strong> debe entregar primero.</>
                     )}
                 </p>
+
+                {blockInfo.requiresAdminRelease && (
+                    <div style={{
+                        padding: '12px 16px', borderRadius: 14, marginBottom: 18,
+                        background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.35)',
+                        color: '#fde68a', fontSize: 13, fontWeight: 700, lineHeight: 1.5
+                    }}>
+                        Ya venció la gracia. Si alguien no está presente, solo un administrador puede liberar el turno con novedad.
+                    </div>
+                )}
 
                 {/* Pending items */}
                 {blockInfo.pendingSteps && blockInfo.pendingSteps.length > 0 && (
@@ -181,7 +196,7 @@ export default function HandoverBlockScreen() {
                 </button>
 
                 <p style={{ fontSize: 12, color: '#475569', margin: 0, lineHeight: 1.5 }}>
-                    Si necesitas ayuda, contacta al líder del turno saliente o a un administrador.
+                    La pantalla se libera cuando firman los operarios salientes, autoriza el líder saliente, firman los entrantes y acepta el líder entrante.
                 </p>
             </div>
 

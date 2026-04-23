@@ -10,14 +10,33 @@
 const express = require('express');
 const router = express.Router();
 const net = require('net');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 const { auth } = require('../middleware/auth');
 
 const ZEBRA_PORT = 9100;
+const FALLBACK_IP = process.env.ZEBRA_PRINTER_IP || '192.168.0.126';
+const SETTINGS_KEY = 'ZEBRA_PRINTER_IP';
 
-// --- Configurable printer IP ---
-// Can be overridden per-request via body { printerIp: '...' }
-// Falls back to env variable ZEBRA_PRINTER_IP, then to hardcoded default.
-const DEFAULT_PRINTER_IP = process.env.ZEBRA_PRINTER_IP || '192.168.0.126';
+let cachedIp = null;
+let cacheTime = 0;
+const CACHE_TTL = 60_000;
+
+async function getConfiguredIp() {
+    if (cachedIp && Date.now() - cacheTime < CACHE_TTL) return cachedIp;
+    try {
+        const setting = await prisma.systemSettings.findUnique({ where: { key: SETTINGS_KEY } });
+        const val = setting?.value;
+        if (val?.ip) {
+            cachedIp = val.ip;
+            cacheTime = Date.now();
+            return val.ip;
+        }
+    } catch (e) {}
+    return FALLBACK_IP;
+}
+
+function invalidateCache() { cachedIp = null; cacheTime = 0; }
 
 // ── In-memory print job queue (survives process restarts poorly, but fine for labels) ──
 const printJobQueue = [];
@@ -91,7 +110,7 @@ function sendZPL(ip, zpl, timeoutMs = 8000) {
  * Query: ?ip=192.168.0.126 (optional, overrides default)
  */
 router.get('/status', auth, async (req, res) => {
-    const printerIp = req.query.ip || DEFAULT_PRINTER_IP;
+    const printerIp = req.query.ip || await getConfiguredIp();
     
     // Sanitize client IP from headers (could be a comma-separated list)
     let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -134,7 +153,7 @@ router.get('/status', auth, async (req, res) => {
  */
 router.post('/print', auth, async (req, res) => {
     const { zpl, printerIp: bodyIp } = req.body;
-    const printerIp = bodyIp || DEFAULT_PRINTER_IP;
+    const printerIp = bodyIp || await getConfiguredIp();
     
     // Sanitize client IP from headers
     let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -169,6 +188,69 @@ router.post('/print', auth, async (req, res) => {
         console.error(`❌ Zebra [backend-proxy] error:`, err.message);
         res.status(500).json({ error: err.message });
     }
+});
+
+// ── GET /api/zebra/config — Centralized printer IP ──
+router.get('/config', auth, async (req, res) => {
+    try {
+        const setting = await prisma.systemSettings.findUnique({ where: { key: SETTINGS_KEY } });
+        const val = setting?.value || {};
+        res.json({
+            ip: val.ip || FALLBACK_IP,
+            source: val.source || 'default',
+            updatedAt: setting?.updatedAt || null,
+        });
+    } catch (e) {
+        res.json({ ip: FALLBACK_IP, source: 'default', updatedAt: null });
+    }
+});
+
+// ── PUT /api/zebra/config — Admin sets printer IP manually ──
+router.put('/config', auth, async (req, res) => {
+    if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Solo ADMIN puede cambiar la IP' });
+    const { ip } = req.body;
+    if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        return res.status(400).json({ error: 'IP inválida' });
+    }
+    try {
+        const setting = await prisma.systemSettings.upsert({
+            where: { key: SETTINGS_KEY },
+            update: { value: { ip, source: 'admin', lastSeenAt: new Date().toISOString() } },
+            create: { key: SETTINGS_KEY, value: { ip, source: 'admin', lastSeenAt: new Date().toISOString() }, description: 'Zebra ZD230 printer IP' },
+        });
+        invalidateCache();
+        console.log(`🖨️ [Zebra] IP actualizada por admin: ${ip}`);
+        res.json({ ip, source: 'admin', updatedAt: setting.updatedAt });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ── POST /api/zebra/report-ip — Relay/device reports discovered IP ──
+router.post('/report-ip', (req, res) => {
+    const { ip } = req.body;
+    if (!ip || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        return res.status(400).json({ error: 'IP inválida' });
+    }
+    (async () => {
+        try {
+            const existing = await prisma.systemSettings.findUnique({ where: { key: SETTINGS_KEY } });
+            const val = existing?.value || {};
+            if (val.source === 'admin' && val.ip !== ip) {
+                return res.json({ ok: true, ignored: true, reason: 'IP fijada por admin' });
+            }
+            await prisma.systemSettings.upsert({
+                where: { key: SETTINGS_KEY },
+                update: { value: { ip, source: 'discovered', lastSeenAt: new Date().toISOString() } },
+                create: { key: SETTINGS_KEY, value: { ip, source: 'discovered', lastSeenAt: new Date().toISOString() }, description: 'Zebra ZD230 printer IP' },
+            });
+            invalidateCache();
+            console.log(`🖨️ [Zebra] IP reportada por relay/dispositivo: ${ip}`);
+            res.json({ ok: true, ip });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    })();
 });
 
 module.exports = router;

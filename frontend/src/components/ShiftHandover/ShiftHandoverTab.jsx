@@ -7,10 +7,19 @@ import LeaderAuthorizationPanel from './LeaderAuthorizationPanel';
 import IncomingLeaderPanel from './IncomingLeaderPanel';
 import HandoverTimeline from './HandoverTimeline';
 import HandoverHistory from './HandoverHistory';
+import HandoverSimulationPanel from './HandoverSimulationPanel';
 
 const SHIFT_LABELS = { MANANA: '🌅 Mañana', TARDE: '☀️ Tarde', NOCHE: '🌙 Noche' };
 const AREA_LABELS = { PRODUCCION: 'Producción', SIROPES: 'Siropes', EMPAQUE: 'Empaque' };
 const AREA_ICONS = { PRODUCCION: '⚙️', SIROPES: '🧪', EMPAQUE: '📦' };
+const ADMIN_AREA_ORDER = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
+const CURRENT_REFRESH_MS = 15000;
+const AREA_THEMES = {
+    PRODUCCION: { color: '#1d4ed8', bg: '#eff6ff', headerBg: '#dbeafe', border: '#93c5fd', soft: '#f8fbff' },
+    SIROPES: { color: '#0e7490', bg: '#ecfeff', headerBg: '#cffafe', border: '#67e8f9', soft: '#f6feff' },
+    EMPAQUE: { color: '#15803d', bg: '#f0fdf4', headerBg: '#dcfce7', border: '#86efac', soft: '#f8fff9' }
+};
+const DEFAULT_THEME = { color: '#475569', bg: '#f8fafc', headerBg: '#f1f5f9', border: '#cbd5e1', soft: '#ffffff' };
 const STATUS_LABELS = {
     PENDING: { label: 'Pendiente', color: '#94a3b8', bg: '#f1f5f9' },
     IN_PROGRESS: { label: 'En Progreso', color: '#f59e0b', bg: '#fffbeb' },
@@ -20,30 +29,36 @@ const STATUS_LABELS = {
     VALIDATED: { label: 'Validado', color: '#2563eb', bg: '#eff6ff' }
 };
 
+function getAreaTheme(area) {
+    return AREA_THEMES[area] || DEFAULT_THEME;
+}
+
 export default function ShiftHandoverTab() {
     const { user } = useAuth();
     const isAdmin = user?.role === 'ADMIN';
 
-    const [view, setView] = useState('current'); // 'current' | 'history'
+    const [view, setView] = useState('current'); // 'current' | 'history' | 'simulation'
     const [handoverData, setHandoverData] = useState(null);
     const [checklists, setChecklists] = useState([]);
     const [loading, setLoading] = useState(true);
     const [areaFilter, setAreaFilter] = useState(''); // '' = auto from user
 
-    // For admin: load all 3 areas
+    // Current relevo must show the 3 areas, like the simulator, so everyone can sign.
     const [allAreas, setAllAreas] = useState([]);
 
-    const fetchCurrent = useCallback(async () => {
-        setLoading(true);
+    const fetchCurrent = useCallback(async ({ silent = false } = {}) => {
+        if (silent && typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+            return;
+        }
+        if (!silent) setLoading(true);
         try {
-            if (isAdmin && !areaFilter) {
-                // Load all areas
-                const results = await Promise.all(
-                    ['PRODUCCION', 'SIROPES', 'EMPAQUE'].map(area =>
-                        api.get('/shift-handover/current', { params: { area } }).then(r => r.data).catch(() => null)
-                    )
+            if (!areaFilter) {
+                const res = await api.get('/shift-handover/current-all');
+                const areas = Array.isArray(res.data?.areas) ? res.data.areas : [];
+                const orderedAreas = ADMIN_AREA_ORDER.map(area =>
+                    areas.find(item => item?.area === area) || { enabled: true, area, handover: null }
                 );
-                setAllAreas(results.filter(Boolean));
+                setAllAreas(orderedAreas);
                 setHandoverData(null);
             } else {
                 const params = areaFilter ? { area: areaFilter } : {};
@@ -53,8 +68,9 @@ export default function ShiftHandoverTab() {
             }
         } catch (e) {
             console.error('Error loading handover:', e);
+        } finally {
+            if (!silent) setLoading(false);
         }
-        setLoading(false);
     }, [isAdmin, areaFilter]);
 
     const fetchChecklists = useCallback(async () => {
@@ -71,13 +87,25 @@ export default function ShiftHandoverTab() {
         if (view === 'current') {
             fetchCurrent();
             fetchChecklists();
-            const interval = setInterval(fetchCurrent, 30000);
+            const interval = setInterval(() => fetchCurrent({ silent: true }), CURRENT_REFRESH_MS);
             return () => clearInterval(interval);
         }
     }, [view, fetchCurrent, fetchChecklists]);
 
     const handleUpdate = () => {
-        fetchCurrent();
+        fetchCurrent({ silent: true });
+    };
+
+    const getAreaShellStyle = (data) => {
+        const area = data?.handover?.area || data?.area;
+        const theme = getAreaTheme(area);
+        return {
+            border: `2px solid ${theme.border}`,
+            borderRadius: 8,
+            padding: 20,
+            background: theme.soft,
+            boxShadow: `0 10px 28px ${theme.border}33`
+        };
     };
 
     // Render a single area handover card
@@ -101,19 +129,26 @@ export default function ShiftHandoverTab() {
 
         const h = data.handover;
         const status = STATUS_LABELS[h.status] || STATUS_LABELS.PENDING;
+        const theme = getAreaTheme(h.area);
         const areaChecklists = checklists.filter(c => c.area === h.area);
 
         return (
             <div>
                 {/* Status banner */}
                 <div style={{
-                    padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
-                    background: status.bg, borderBottom: `2px solid ${status.color}20`, marginBottom: 20, borderRadius: 12
+                    padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+                    background: h.status === 'RECEIVED' ? '#f0fdf4' : theme.headerBg,
+                    borderBottom: `2px solid ${theme.border}`,
+                    marginBottom: 20,
+                    borderRadius: 8
                 }}>
-                    <span style={{ fontSize: 28 }}>{AREA_ICONS[h.area]}</span>
+                    <span style={{ fontSize: 32 }}>{AREA_ICONS[h.area]}</span>
                     <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a' }}>
-                            {AREA_LABELS[h.area]} — Relevo de Turno
+                        <div style={{ fontSize: 26, fontWeight: 950, color: theme.color, lineHeight: 1.05 }}>
+                            {AREA_LABELS[h.area]}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#334155', marginTop: 3, fontWeight: 800 }}>
+                            Relevo de Turno
                         </div>
                         <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>
                             {SHIFT_LABELS[h.outgoingShift]} → {SHIFT_LABELS[h.incomingShift]}
@@ -125,7 +160,7 @@ export default function ShiftHandoverTab() {
                         </div>
                     </div>
                     <div style={{
-                        padding: '6px 14px', borderRadius: 20, fontWeight: 800, fontSize: 12,
+                        padding: '6px 14px', borderRadius: 8, fontWeight: 800, fontSize: 12,
                         background: status.color, color: '#fff', textTransform: 'uppercase'
                     }}>
                         {status.label}
@@ -133,7 +168,7 @@ export default function ShiftHandoverTab() {
                 </div>
 
                 {/* Timeline */}
-                <HandoverTimeline status={h.status} />
+                <HandoverTimeline handover={h} />
 
                 {/* Panels */}
                 <div style={{ display: 'grid', gap: 20, marginTop: 20 }}>
@@ -158,7 +193,11 @@ export default function ShiftHandoverTab() {
                 marginBottom: 20, flexWrap: 'wrap', gap: 12
             }}>
                 <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', borderRadius: 10, padding: 3 }}>
-                    {[['current', '🔄 Relevo Actual'], ['history', '📋 Historial']].map(([key, label]) => (
+                    {[
+                        ['current', '🔄 Relevo Actual'],
+                        ...(isAdmin ? [['simulation', '🧪 Simulacro']] : []),
+                        ['history', '📋 Historial']
+                    ].map(([key, label]) => (
                         <button key={key} onClick={() => setView(key)} style={{
                             padding: '8px 16px', border: 'none', borderRadius: 8, cursor: 'pointer',
                             background: view === key ? '#fff' : 'transparent',
@@ -186,7 +225,7 @@ export default function ShiftHandoverTab() {
                         </div>
                     )}
                     {view === 'current' && (
-                        <button onClick={fetchCurrent} disabled={loading} style={{
+                        <button onClick={() => fetchCurrent()} disabled={loading} style={{
                             padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0',
                             background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6
                         }}>
@@ -199,21 +238,25 @@ export default function ShiftHandoverTab() {
             {/* Current view */}
             {view === 'current' && (
                 <>
-                    {loading ? (
+                    {loading && !handoverData && allAreas.length === 0 ? (
                         <div style={{ padding: 60, textAlign: 'center', color: '#94a3b8' }}>Cargando...</div>
-                    ) : allAreas.length > 0 ? (
-                        // Admin multi-area view
-                        <div style={{ display: 'grid', gap: 24 }}>
-                            {allAreas.map((data, i) => (
-                                <div key={data?.handover?.id || i} style={{
-                                    border: '1px solid #e2e8f0', borderRadius: 16, padding: 20, background: '#fff'
-                                }}>
-                                    {renderAreaHandover(data)}
-                                </div>
-                            ))}
-                        </div>
+                    ) : !areaFilter ? (
+                        // Multi-area view: all workers see the same live relevo board.
+                        allAreas.length > 0 ? (
+                            <div style={{ display: 'grid', gap: 24 }}>
+                                {allAreas.map((data) => (
+                                    <div key={data?.area || data?.handover?.id} style={getAreaShellStyle(data)}>
+                                        {renderAreaHandover(data)}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>
+                                No fue posible cargar el relevo actual. Usa refrescar para reintentar.
+                            </div>
+                        )
                     ) : (
-                        <div style={{ border: '1px solid #e2e8f0', borderRadius: 16, padding: 20, background: '#fff' }}>
+                        <div style={getAreaShellStyle(handoverData)}>
                             {renderAreaHandover(handoverData)}
                         </div>
                     )}
@@ -222,6 +265,9 @@ export default function ShiftHandoverTab() {
 
             {/* History view */}
             {view === 'history' && <HandoverHistory isAdmin={isAdmin} />}
+
+            {/* Simulation view */}
+            {view === 'simulation' && isAdmin && <HandoverSimulationPanel />}
         </div>
     );
 }

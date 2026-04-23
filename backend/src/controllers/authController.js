@@ -47,7 +47,8 @@ const login = async (req, res) => {
             const isAdmin = isExternalAdminUser(user);
             const isDistribuidor = user.role === 'DISTRIBUIDOR';
             const isContabilidad = user.role === 'CONTABILIDAD';
-            if (!isAdmin && !isDistribuidor && !isContabilidad) {
+            const isCartera = user.role === 'CARTERA';
+            if (!isAdmin && !isDistribuidor && !isContabilidad && !isCartera) {
                 logger.warn(`⛔ External login blocked: ${email} (${user.role}) from IP ${clientIp}`);
                 saveAudit({ email, role: user.role, ip: clientIp, allowed: false, reason: 'EXTERNAL_BLOCKED', geoLat: geoLat || null, geoLon: geoLon || null, userAgent });
 
@@ -77,6 +78,7 @@ const login = async (req, res) => {
         const reason = isInternal ? 'INTERNAL'
             : isExternalAdminUser(user) ? 'ADMIN_EXTERNAL'
                 : user.role === 'CONTABILIDAD' ? 'CONTABILIDAD_EXTERNAL'
+                : user.role === 'CARTERA' ? 'CARTERA_EXTERNAL'
                 : 'DISTRIBUIDOR_EXTERNAL';
 
         saveAudit({ email, role: user.role, ip: clientIp, allowed: true, reason, geoLat: geoLat || null, geoLon: geoLon || null, userAgent });

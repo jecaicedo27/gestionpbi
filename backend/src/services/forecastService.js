@@ -8,7 +8,7 @@
  * 4. Configurable buffer percentage
  */
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = global.__prisma || (global.__prisma = new PrismaClient());
 const logger = require('../utils/logger');
 
 // Process prefixes that should be excluded from purchasing forecast
@@ -150,14 +150,15 @@ async function calculateForecast() {
         by: ['productId'],
         where: { type: 'CONS' },
         _sum: { quantity: true },
-        _count: { id: true }
+        orderBy: { productId: 'asc' }
     });
 
     // Recent consumption (last 4 weeks) grouped by product
     const recentCons = await prisma.movement.groupBy({
         by: ['productId'],
         where: { type: 'CONS', date: { gte: fourWeeksAgo } },
-        _sum: { quantity: true }
+        _sum: { quantity: true },
+        orderBy: { productId: 'asc' }
     });
     const recentMap = {};
     recentCons.forEach(r => { recentMap[r.productId] = r._sum.quantity || 0; });

@@ -634,4 +634,268 @@ const getOperators = async (req, res) => {
     }
 };
 
-module.exports = { getProductionKpis, getOperators };
+/**
+ * GET /api/production-kpis/schedule-adherence
+ * Query params: days (default 7), line (liquipops — only line with spherification)
+ *
+ * Measures how well production uses the spherification machine (FORMACION step).
+ * Only one batch can be in FORMACION at a time — that's the bottleneck.
+ * Adherence = FORMACION duration vs batchDuration config.
+ */
+const getScheduleAdherence = async (req, res) => {
+    try {
+        const days = parseInt(req.query.days) || 7;
+
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+
+        const config = await prisma.systemSettings.findUnique({ where: { key: 'PRODUCTION_CONFIG' } });
+        const cfg = config?.value || {};
+        const targetDuration = cfg.batchDuration || 90;
+
+        const batches = await prisma.productionBatch.findMany({
+            where: {
+                scheduledStart: { not: null, gte: since },
+                assemblyNotes: {
+                    some: { processType: { code: 'FORMACION' } }
+                }
+            },
+            include: {
+                assemblyNotes: {
+                    select: {
+                        id: true, stageOrder: true, stageName: true,
+                        startedAt: true, completedAt: true, status: true,
+                        processType: { select: { code: true } },
+                        executedBy: { select: { id: true, name: true } },
+                        completedBy: { select: { id: true, name: true } },
+                    },
+                    orderBy: { stageOrder: 'asc' }
+                }
+            },
+            orderBy: { scheduledStart: 'asc' }
+        });
+
+        const results = [];
+        let totalAdherence = 0;
+        let completedCount = 0;
+        let onTimeCount = 0;
+        let delayedCount = 0;
+        let inProgressCount = 0;
+
+        for (const batch of batches) {
+            const formacionNote = batch.assemblyNotes.find(n => n.processType?.code === 'FORMACION');
+            if (!formacionNote) continue;
+
+            const entry = {
+                batchNumber: batch.batchNumber,
+                flavor: batch.flavor,
+                scheduledStart: batch.scheduledStart,
+                startedBy: formacionNote.executedBy?.name || null,
+                completedByName: formacionNote.completedBy?.name || null,
+                scheduledEnd: batch.scheduledEnd,
+                targetDurationMin: targetDuration,
+                line: 'liquipops'
+            };
+
+            if (formacionNote.startedAt && formacionNote.completedAt) {
+                const fStart = new Date(formacionNote.startedAt);
+                const fEnd = new Date(formacionNote.completedAt);
+                const actualMin = (fEnd - fStart) / 60000;
+                const delayMin = Math.max(0, actualMin - targetDuration);
+                const adherenceScore = Math.max(0, Math.round(100 - (delayMin / targetDuration) * 100));
+
+                entry.formacionStartedAt = fStart;
+                entry.formacionCompletedAt = fEnd;
+                entry.actualMin = Math.round(actualMin);
+                entry.delayMin = Math.round(delayMin);
+                entry.adherenceScore = adherenceScore;
+                entry.status = 'completed';
+
+                const sShift = fStart.getHours() >= 6 && fStart.getHours() < 14 ? 'MANANA' : fStart.getHours() >= 14 && fStart.getHours() < 22 ? 'TARDE' : 'NOCHE';
+                const eShift = fEnd.getHours() >= 6 && fEnd.getHours() < 14 ? 'MANANA' : fEnd.getHours() >= 14 && fEnd.getHours() < 22 ? 'TARDE' : 'NOCHE';
+                entry.startShift = sShift;
+                entry.endShift = eShift;
+                entry.crossShift = sShift !== eShift;
+
+                totalAdherence += adherenceScore;
+                completedCount++;
+                if (delayMin <= 0) onTimeCount++;
+                else delayedCount++;
+            } else if (formacionNote.startedAt) {
+                const fStart = new Date(formacionNote.startedAt);
+                const now = new Date();
+                const elapsedMin = (now - fStart) / 60000;
+                const timeUsedPct = Math.min(200, Math.round((elapsedMin / targetDuration) * 100));
+
+                let trafficLight = 'green';
+                if (timeUsedPct > 110) trafficLight = 'red';
+                else if (timeUsedPct > 90) trafficLight = 'yellow';
+
+                entry.formacionStartedAt = fStart;
+                entry.elapsedMin = Math.round(elapsedMin);
+                entry.timeUsedPct = timeUsedPct;
+                entry.trafficLight = trafficLight;
+                entry.status = 'in_progress';
+                entry.adherenceScore = null;
+                inProgressCount++;
+            } else {
+                entry.status = 'pending';
+                entry.adherenceScore = null;
+            }
+
+            results.push(entry);
+        }
+
+        // Shift completion: proportional credit when FORMACION crosses shift boundaries
+        const getShiftAt = (date) => {
+            const h = date.getHours();
+            if (h >= 6 && h < 14) return 'MANANA';
+            if (h >= 14 && h < 22) return 'TARDE';
+            return 'NOCHE';
+        };
+
+        const getShiftEnd = (date, shift) => {
+            const d = new Date(date);
+            if (shift === 'MANANA') d.setHours(14, 0, 0, 0);
+            else if (shift === 'TARDE') d.setHours(22, 0, 0, 0);
+            else { d.setHours(6, 0, 0, 0); if (date.getHours() >= 22) d.setDate(d.getDate() + 1); }
+            return d;
+        };
+
+        const toLocalDateStr = (date) => {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        };
+
+        const getShiftDateStr = (date, shift) => {
+            if (shift === 'NOCHE' && date.getHours() < 6) {
+                const prev = new Date(date); prev.setDate(prev.getDate() - 1);
+                return toLocalDateStr(prev);
+            }
+            return toLocalDateStr(date);
+        };
+
+        const shiftBuckets = {};
+        const ensureBucket = (dateStr, shift) => {
+            const key = `${dateStr}_${shift}`;
+            if (!shiftBuckets[key]) shiftBuckets[key] = { date: dateStr, shift, completed: 0, batches: [] };
+            return key;
+        };
+
+        for (const b of results) {
+            if (!b.formacionStartedAt) continue;
+            const fStart = new Date(b.formacionStartedAt);
+            const fEnd = b.formacionCompletedAt ? new Date(b.formacionCompletedAt) : new Date();
+            const totalMs = fEnd - fStart;
+            if (totalMs <= 0) continue;
+
+            const startShift = getShiftAt(fStart);
+            const endShift = b.formacionCompletedAt ? getShiftAt(fEnd) : null;
+            const isCompleted = b.status === 'completed';
+            const batchInfo = { batchNumber: b.batchNumber, flavor: b.flavor, actualMin: b.actualMin, adherenceScore: b.adherenceScore, status: b.status, startedBy: b.startedBy, completedByName: b.completedByName };
+
+            if (isCompleted && startShift === endShift) {
+                const key = ensureBucket(getShiftDateStr(fStart, startShift), startShift);
+                shiftBuckets[key].completed += 1;
+                shiftBuckets[key].batches.push({ ...batchInfo, fraction: 1, fractionPct: 100 });
+            } else if (isCompleted) {
+                const shiftBoundary = getShiftEnd(fStart, startShift);
+                const msInFirst = Math.max(0, shiftBoundary - fStart);
+                const msInSecond = Math.max(0, fEnd - shiftBoundary);
+                const fracFirst = msInFirst / totalMs;
+                const fracSecond = msInSecond / totalMs;
+                const minFirst = Math.round(msInFirst / 60000);
+                const minSecond = Math.round(msInSecond / 60000);
+
+                const keyFirst = ensureBucket(getShiftDateStr(fStart, startShift), startShift);
+                shiftBuckets[keyFirst].completed += Math.round(fracFirst * 100) / 100;
+                shiftBuckets[keyFirst].batches.push({ ...batchInfo, fraction: Math.round(fracFirst * 100) / 100, fractionPct: Math.round(fracFirst * 100), minutes: minFirst });
+
+                const keySecond = ensureBucket(getShiftDateStr(fEnd, endShift), endShift);
+                shiftBuckets[keySecond].completed += Math.round(fracSecond * 100) / 100;
+                shiftBuckets[keySecond].batches.push({ ...batchInfo, fraction: Math.round(fracSecond * 100) / 100, fractionPct: Math.round(fracSecond * 100), minutes: minSecond });
+            } else if (b.status === 'in_progress') {
+                const key = ensureBucket(getShiftDateStr(fStart, startShift), startShift);
+                shiftBuckets[key].batches.push({ ...batchInfo, fraction: 0, fractionPct: 0, inProgress: true });
+            }
+        }
+
+        // Process counts per shift: ALL completed notes, not just FORMACION
+        const allCompletedNotes = await prisma.assemblyNote.findMany({
+            where: { completedAt: { gte: since }, status: 'COMPLETED' },
+            select: { completedAt: true, processType: { select: { code: true } } }
+        });
+        const shiftProcessCounts = {};
+        for (const note of allCompletedNotes) {
+            if (!note.completedAt || !note.processType?.code) continue;
+            const d = new Date(note.completedAt);
+            const shift = getShiftAt(d);
+            const dateStr = getShiftDateStr(d, shift);
+            const key = `${dateStr}_${shift}`;
+            if (!shiftProcessCounts[key]) shiftProcessCounts[key] = {};
+            const code = note.processType.code;
+            shiftProcessCounts[key][code] = (shiftProcessCounts[key][code] || 0) + 1;
+        }
+
+        // Key intermediate material stock (current snapshot)
+        const KEY_SKUS = ['PROCELIQUIPOPS27', 'PROCELIQUIPOPS43', 'PROCELIQUIPOPS26', 'PROCELIQUIPOPS01'];
+        const keyMaterials = await prisma.product.findMany({
+            where: { sku: { in: KEY_SKUS } },
+            select: { sku: true, name: true, productionZoneStock: true, currentStock: true }
+        });
+
+        // Fetch shift team info (leader + operators) — indexed by week
+        const shiftWeeks = await prisma.shiftWeek.findMany({
+            where: { weekStart: { lte: new Date() }, weekEnd: { gte: since } },
+            include: { assignments: { include: { employee: true } } },
+            orderBy: { weekStart: 'asc' }
+        });
+
+        const getTeamForDateAndShift = (dateStr, shift) => {
+            const d = new Date(dateStr + 'T12:00:00');
+            const matchingWeek = shiftWeeks.find(sw => sw.weekStart <= d && sw.weekEnd >= d);
+            if (!matchingWeek) return { leader: null, operators: [] };
+            const team = matchingWeek.assignments.filter(a => a.shift === shift);
+            const leader = team.find(t => t.employee?.role === 'LIDER');
+            const operators = team.filter(t => t.area === 'PRODUCCION' && t.employee?.role !== 'LIDER');
+            return { leader: leader?.employee?.name || null, operators: operators.map(o => o.employee?.name) };
+        };
+
+        const shiftTarget = cfg.shiftBatchTarget || 5;
+        const shiftCompletion = Object.values(shiftBuckets).map(s => {
+            const { leader, operators } = getTeamForDateAndShift(s.date, s.shift);
+            const key = `${s.date}_${s.shift}`;
+            return {
+                ...s,
+                completed: Math.round(s.completed * 10) / 10,
+                target: shiftTarget,
+                completionPct: Math.round((s.completed / shiftTarget) * 100),
+                leader,
+                team: operators,
+                processCounts: shiftProcessCounts[key] || {}
+            };
+        });
+
+        res.json({
+            meta: { days, since, line: 'liquipops', targetDurationMin: targetDuration, shiftBatchTarget: shiftTarget, generatedAt: new Date() },
+            batches: results,
+            summary: {
+                totalBatches: results.length,
+                completedBatches: completedCount,
+                avgAdherence: completedCount > 0 ? Math.round(totalAdherence / completedCount) : null,
+                onTime: onTimeCount,
+                delayed: delayedCount,
+                inProgress: inProgressCount
+            },
+            shiftCompletion,
+            keyMaterialStock: keyMaterials
+        });
+    } catch (err) {
+        console.error('[KPI] Schedule adherence error:', err);
+        res.status(500).json({ error: 'Error calculando adherencia', detail: err.message });
+    }
+};
+
+module.exports = { getProductionKpis, getOperators, getScheduleAdherence };

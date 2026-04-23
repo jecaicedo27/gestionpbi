@@ -4,6 +4,10 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const logger = require('../utils/logger');
+const {
+    buildPurchaseOrderWorkflowAlert,
+    emitPurchaseOrderWorkflowAlert
+} = require('../services/purchaseOrderAlertService');
 
 const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
 const extractTrailingNumber = (value) => {
@@ -39,42 +43,87 @@ exports.create = async (req, res) => {
             return res.status(400).json({ error: `OC en estado ${order.status} no puede recibir mercancía` });
         }
 
-        // Create reception with items
-        const reception = await prisma.reception.create({
-            data: {
-                purchaseOrderId,
-                receivedById: req.user.id,
-                observations: observations || null,
-                status: 'RECEIVED',
-                items: {
-                    create: items.map(item => ({
-                        orderItemId: item.orderItemId,
-                        quantityExpected: item.quantityExpected,
-                        quantityReceived: item.quantityReceived,
-                        discrepancyNote: item.discrepancyNote || null
-                    }))
-                }
-            },
-            include: { items: true }
-        });
+        const orderItemsById = new Map(order.items.map(item => [item.id, item]));
+        const seenItems = new Set();
+        const receivedItems = [];
 
-        // Update accumulated received quantity on each PO item
         for (const item of items) {
-            await prisma.purchaseOrderItem.update({
-                where: { id: item.orderItemId },
-                data: { quantityReceived: { increment: item.quantityReceived } }
+            const quantityReceived = Number(item.quantityReceived || 0);
+            if (quantityReceived <= 0) continue;
+
+            if (seenItems.has(item.orderItemId)) {
+                return res.status(400).json({ error: 'Hay productos repetidos en la recepción' });
+            }
+            seenItems.add(item.orderItemId);
+
+            const orderItem = orderItemsById.get(item.orderItemId);
+            if (!orderItem) {
+                return res.status(400).json({ error: 'La recepción incluye un producto que no pertenece a esta OC' });
+            }
+
+            const remaining = Math.max(0, orderItem.quantityOrdered - orderItem.quantityReceived);
+            if (quantityReceived > remaining) {
+                return res.status(400).json({
+                    error: `${orderItem.siigoProductName} excede lo pendiente por recibir. Pendiente: ${remaining.toLocaleString()} g`
+                });
+            }
+
+            receivedItems.push({
+                orderItemId: item.orderItemId,
+                quantityExpected: Number(item.quantityExpected ?? remaining),
+                quantityReceived,
+                discrepancyNote: item.discrepancyNote || null
             });
         }
 
-        // Update PO status: check if all items are fully received
-        const updatedItems = await prisma.purchaseOrderItem.findMany({
-            where: { purchaseOrderId }
+        if (receivedItems.length === 0) {
+            return res.status(400).json({ error: 'Debe registrar al menos un producto con cantidad recibida mayor a 0' });
+        }
+
+        const { reception, updatedOrder, allReceived } = await prisma.$transaction(async (tx) => {
+            const createdReception = await tx.reception.create({
+                data: {
+                    purchaseOrderId,
+                    receivedById: req.user.id,
+                    observations: observations || null,
+                    status: 'RECEIVED',
+                    items: { create: receivedItems }
+                },
+                include: { items: true }
+            });
+
+            for (const item of receivedItems) {
+                await tx.purchaseOrderItem.update({
+                    where: { id: item.orderItemId },
+                    data: { quantityReceived: { increment: item.quantityReceived } }
+                });
+            }
+
+            const updatedItems = await tx.purchaseOrderItem.findMany({
+                where: { purchaseOrderId }
+            });
+            const allItemsReceived = updatedItems.every(i => i.quantityReceived >= i.quantityOrdered);
+            const orderAfterReception = await tx.purchaseOrder.update({
+                where: { id: purchaseOrderId },
+                data: { status: allItemsReceived ? 'ACCOUNTING_PENDING' : 'PARTIALLY_RECEIVED' }
+            });
+
+            return {
+                reception: createdReception,
+                updatedOrder: orderAfterReception,
+                allReceived: allItemsReceived
+            };
         });
-        const allReceived = updatedItems.every(i => i.quantityReceived >= i.quantityOrdered);
-        await prisma.purchaseOrder.update({
-            where: { id: purchaseOrderId },
-            data: { status: allReceived ? 'ACCOUNTING_PENDING' : 'PARTIALLY_RECEIVED' }
-        });
+
+        emitPurchaseOrderWorkflowAlert(
+            req,
+            buildPurchaseOrderWorkflowAlert('ACCOUNTING_PENDING', updatedOrder, {
+                receptionId: reception.id,
+                message: allReceived
+                    ? `La OC ${updatedOrder.orderNumber} de ${updatedOrder.supplierName} ya fue recibida completa por Logística y está lista para contabilizar.`
+                    : `La OC ${updatedOrder.orderNumber} de ${updatedOrder.supplierName} tiene una recepción parcial lista para contabilizar. Lo faltante queda pendiente por recibir.`
+            })
+        );
 
         logger.info(`📦 Recepción creada para OC ${order.orderNumber} por ${req.user.name}`);
         res.status(201).json(reception);
@@ -189,18 +238,37 @@ exports.validate = async (req, res) => {
             }
         }
 
-        // Check if all receptions for this PO are validated
-        const pendingReceptions = await prisma.reception.count({
-            where: {
-                purchaseOrderId: reception.purchaseOrderId,
-                status: { not: 'COMPLETED' }
-            }
+        const [orderItemsState, pendingReceptions] = await Promise.all([
+            prisma.purchaseOrderItem.findMany({
+                where: { purchaseOrderId: reception.purchaseOrderId },
+                select: { quantityOrdered: true, quantityReceived: true }
+            }),
+            prisma.reception.count({
+                where: {
+                    purchaseOrderId: reception.purchaseOrderId,
+                    status: { not: 'COMPLETED' },
+                    items: { some: { quantityReceived: { gt: 0 } } }
+                }
+            })
+        ]);
+
+        const allItemsReceived = orderItemsState.every(item => item.quantityReceived >= item.quantityOrdered);
+        const nextOrderStatus = allItemsReceived
+            ? (pendingReceptions === 0 ? 'COMPLETED' : 'ACCOUNTING_PENDING')
+            : 'PARTIALLY_RECEIVED';
+
+        const completedOrder = await prisma.purchaseOrder.update({
+            where: { id: reception.purchaseOrderId },
+            data: { status: nextOrderStatus }
         });
-        if (pendingReceptions === 0) {
-            await prisma.purchaseOrder.update({
-                where: { id: reception.purchaseOrderId },
-                data: { status: 'COMPLETED' }
-            });
+
+        if (nextOrderStatus === 'COMPLETED') {
+            if (completedOrder.paymentMethod === 'CREDITO' && !completedOrder.creditPaid) {
+                emitPurchaseOrderWorkflowAlert(
+                    req,
+                    buildPurchaseOrderWorkflowAlert('CREDIT_PAYMENT_PENDING', completedOrder, { receptionId: reception.id })
+                );
+            }
         }
 
         logger.info(`💰 Recepción validada por contabilidad: ${req.user.name} — Siigo ref: ${siigoInvoiceRef || 'N/A'}`);
@@ -223,21 +291,38 @@ exports.createLots = async (req, res) => {
         const orderItem = await prisma.purchaseOrderItem.findUnique({
             where: { id: purchaseOrderItemId },
             include: {
-                lots: { select: { initialQuantity: true } }
+                lots: { select: { initialQuantity: true } },
+                purchaseOrder: {
+                    select: { receptions: { select: { siigoRef: true } } }
+                }
             }
         });
         if (!orderItem) return res.status(404).json({ error: 'Item de OC no encontrado' });
+
+        const accountedReceived = await prisma.receptionItem.aggregate({
+            where: {
+                orderItemId: purchaseOrderItemId,
+                quantityReceived: { gt: 0 },
+                reception: { is: { siigoRef: { not: null } } }
+            },
+            _sum: { quantityReceived: true }
+        });
+        const accountedReceivedQty = accountedReceived._sum.quantityReceived || 0;
+
+        if (accountedReceivedQty <= 0) {
+            return res.status(400).json({ error: 'No se puede lotear sin una recepción validada por Contabilidad en Siigo para este producto.' });
+        }
 
         // Validate: total lots (existing + new) cannot exceed quantityReceived
         const existingLotsTotal = (orderItem.lots || []).reduce((sum, l) => sum + l.initialQuantity, 0);
         const newLotsTotal = lots.reduce((sum, l) => sum + (l.quantity || 0), 0);
         const totalAfter = existingLotsTotal + newLotsTotal;
-        const maxAllowed = orderItem.quantityReceived || 0;
+        const maxAllowed = accountedReceivedQty;
 
         if (totalAfter > maxAllowed) {
             const remaining = maxAllowed - existingLotsTotal;
             return res.status(400).json({
-                error: `La suma de lotes (${(totalAfter / 1000).toLocaleString()} kg) excede lo recibido (${(maxAllowed / 1000).toLocaleString()} kg). Disponible para lotear: ${(remaining / 1000).toLocaleString()} kg`
+                error: `La suma de lotes (${(totalAfter / 1000).toLocaleString()} kg) excede lo recibido y contabilizado (${(maxAllowed / 1000).toLocaleString()} kg). Disponible para lotear: ${(remaining / 1000).toLocaleString()} kg`
             });
         }
 
@@ -267,30 +352,33 @@ exports.createLots = async (req, res) => {
             if (prod?.unit) productUnit = prod.unit;
         }
 
-        const created = [];
-        for (const lot of lots) {
-            const materialLot = await prisma.materialLot.create({
-                data: {
-                    purchaseOrderItemId,
-                    productId: resolvedProductId,
-                    siigoProductCode: orderItem.siigoProductCode,
-                    siigoProductName: orderItem.siigoProductName,
-                    lotNumber: lot.lotNumber,
-                    initialQuantity: lot.quantity,
-                    currentQuantity: lot.quantity,
-                    unit: productUnit,
-                    expiresAt: lot.expiresAt ? new Date(lot.expiresAt) : null,
-                    qrData: JSON.stringify({
-                        lot: lot.lotNumber,
-                        sku: orderItem.siigoProductCode,
-                        name: orderItem.siigoProductName,
-                        qty: lot.quantity,
-                        received: new Date().toISOString().slice(0, 10)
-                    })
-                }
-            });
-            created.push(materialLot);
-        }
+        const created = await prisma.$transaction(async (tx) => {
+            const materialLots = [];
+            for (const lot of lots) {
+                const materialLot = await tx.materialLot.create({
+                    data: {
+                        purchaseOrderItemId,
+                        productId: resolvedProductId,
+                        siigoProductCode: orderItem.siigoProductCode,
+                        siigoProductName: orderItem.siigoProductName,
+                        lotNumber: lot.lotNumber,
+                        initialQuantity: lot.quantity,
+                        currentQuantity: lot.quantity,
+                        unit: productUnit,
+                        expiresAt: lot.expiresAt ? new Date(lot.expiresAt) : null,
+                        qrData: JSON.stringify({
+                            lot: lot.lotNumber,
+                            sku: orderItem.siigoProductCode,
+                            name: orderItem.siigoProductName,
+                            qty: lot.quantity,
+                            received: new Date().toISOString().slice(0, 10)
+                        })
+                    }
+                });
+                materialLots.push(materialLot);
+            }
+            return materialLots;
+        });
 
         logger.info(`🏷️ ${created.length} lotes creados para ${orderItem.siigoProductName} — Total: ${(newLotsTotal / 1000).toFixed(1)} kg`);
         res.status(201).json(created);

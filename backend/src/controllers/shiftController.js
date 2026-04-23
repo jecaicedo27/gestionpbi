@@ -552,11 +552,11 @@ const registerAbsence = async (req, res) => {
     }
 };
 
-// ── GET /absences?month=YYYY-MM ──────────────────────────────
+// ── GET /absences?month=YYYY-MM&includeUpcoming=true ─────────
 const getAbsences = async (req, res) => {
     try {
-        const { month } = req.query;
-        let where = {};
+        const { month, includeUpcoming, lookaheadDays } = req.query;
+        const filters = [];
         if (month) {
             const start = new Date(`${month}-01T12:00:00`);
             start.setDate(1);
@@ -565,12 +565,27 @@ const getAbsences = async (req, res) => {
             const end = new Date(start);
             end.setMonth(end.getMonth() + 1);
             
-            // Find absences that overlap with the month
-            where = {
+            // Find absences that overlap with the selected month
+            filters.push({
                 startDate: { lt: end },
                 endDate: { gte: start }
-            };
+            });
         }
+        if (includeUpcoming === 'true') {
+            const days = Math.min(Math.max(parseInt(lookaheadDays, 10) || 120, 1), 365);
+            const today = new Date();
+            today.setHours(0,0,0,0);
+
+            const horizon = new Date(today);
+            horizon.setDate(horizon.getDate() + days);
+
+            filters.push({
+                startDate: { lte: horizon },
+                endDate: { gte: today }
+            });
+        }
+
+        const where = filters.length > 1 ? { OR: filters } : (filters[0] || {});
         const absences = await prisma.shiftAbsence.findMany({
             where,
             include: { employee: true },

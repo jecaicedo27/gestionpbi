@@ -88,13 +88,10 @@ const genialitySchedulerRoutes = require('./genialitySchedulerRoutes');
 // Geniality process-types: ONLY G_* codes (exclusive to Geniality production line)
 router.get('/geniality/process-types', auth, async (req, res) => {
     try {
-        const { PrismaClient: PC } = require('@prisma/client');
-        const _pt = new PC();
-        const types = await _pt.processType.findMany({
+        const types = await _prisma.processType.findMany({
             where: { code: { startsWith: 'G_' }, active: true },
             orderBy: { name: 'asc' }
         });
-        await _pt.$disconnect();
         res.json(types);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch geniality process types' }); }
 });
@@ -102,14 +99,11 @@ router.get('/geniality/process-types', auth, async (req, res) => {
 // Geniality products: ONLY accountGroups 1402 and 1405 (siropes)
 router.get('/geniality/products', auth, async (req, res) => {
     try {
-        const { PrismaClient: PC2 } = require('@prisma/client');
-        const _pp = new PC2();
-        const products = await _pp.product.findMany({
+        const products = await _prisma.product.findMany({
             where: { accountGroup: { in: [1402, 1405] }, active: true },
             select: { id: true, name: true, sku: true, accountGroup: true, unit: true },
             orderBy: { name: 'asc' }
         });
-        await _pp.$disconnect();
         res.json(products);
     } catch (e) { res.status(500).json({ error: 'Failed to fetch geniality products' }); }
 });

@@ -6,8 +6,364 @@ const { PrismaClient } = require('@prisma/client');
 const logger = require('../utils/logger');
 const { validatePin, buildAuditEntry } = require('../services/pinValidationService');
 const handoverService = require('../services/shiftHandoverService');
+const { buildShiftProductionSummary } = require('../services/shiftProductionSummaryService');
 
 const prisma = new PrismaClient();
+const COMPLETED_HANDOVER_STATUSES = ['RECEIVED', 'WITH_INCIDENT', 'VALIDATED'];
+const PRODUCTION_VALIDATED_AREAS = ['SIROPES', 'EMPAQUE'];
+const AUTO_BATCH_SUMMARY_ID = 'AUTO_SHIFT_BATCH_SUMMARY';
+const REVIEWABLE_HANDOVER_STATUSES = ['PENDING', 'IN_PROGRESS'];
+
+async function resolveCurrentHandoverForArea(area) {
+    if (!area || !handoverService.HANDOVER_AREAS.includes(area)) {
+        return { enabled: true, area, handover: null, message: 'Área no participa en relevo' };
+    }
+
+    const activeShift = handoverService.getCurrentActiveShift();
+    const currentTransition = handoverService.getCurrentTransition();
+
+    const loadHandover = async (transition) => {
+        if (!transition) return null;
+        const opDate = handoverService.getOperationalDate(transition.outgoing);
+        const weekStartDate = handoverService.getWeekStartUTC(opDate);
+        const week = await prisma.shiftWeek.findUnique({ where: { weekStart: weekStartDate } });
+        if (!week) return null;
+
+        const handover = await prisma.shiftHandoverRecord.findUnique({
+            where: {
+                weekId_operationalDate_area_outgoingShift: {
+                    weekId: week.id,
+                    operationalDate: new Date(opDate + 'T00:00:00.000Z'),
+                    area,
+                    outgoingShift: transition.outgoing
+                }
+            },
+            include: {
+                signatures: {
+                    include: {
+                        employee: { select: { id: true, name: true, role: true } },
+                        user: { select: { id: true, name: true } }
+                    },
+                    orderBy: { signedAt: 'asc' }
+                },
+                outgoingLeader: { select: { id: true, name: true } },
+                incomingLeader: { select: { id: true, name: true } },
+                supervisor: { select: { id: true, name: true } }
+            }
+        });
+
+        return { handover, opDate, outgoingShift: transition.outgoing, incomingShift: transition.incoming };
+    };
+
+    const previousTransition = handoverService.SHIFT_TRANSITIONS.find(t => t.incoming === activeShift);
+    const activeTransition = handoverService.SHIFT_TRANSITIONS.find(t => t.outgoing === activeShift);
+    const candidates = currentTransition
+        ? [currentTransition]
+        : [previousTransition, activeTransition].filter(Boolean);
+
+    let selected = null;
+    for (const transition of candidates) {
+        const candidate = await loadHandover(transition);
+        if (!candidate) continue;
+        if (!selected) selected = candidate;
+        if (candidate.handover && !COMPLETED_HANDOVER_STATUSES.includes(candidate.handover.status)) {
+            selected = candidate;
+            break;
+        }
+    }
+
+    if (!selected) {
+        return { enabled: true, area, handover: null, message: 'No hay cuadro para esta semana' };
+    }
+
+    const { handover, opDate, outgoingShift, incomingShift } = selected;
+    const minsUntilEnd = handoverService.getMinutesUntilShiftEnd(outgoingShift);
+
+    const absentIds = await handoverService.getAbsentEmployeeIds(opDate);
+    let filteredHandover = handover;
+    if (handover && absentIds.size > 0) {
+        filteredHandover = {
+            ...handover,
+            outgoingParticipants: (handover.outgoingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
+            incomingParticipants: (handover.incomingParticipants || []).filter(p => !absentIds.has(p.employeeId))
+        };
+    }
+
+    const outgoingOps = (filteredHandover?.outgoingParticipants || []).filter(p => p.role !== 'LIDER');
+    const signatureState = filteredHandover
+        ? handoverService.getHandoverSignatureState(filteredHandover)
+        : {
+            outgoing: { signedCount: 0, expectedCount: outgoingOps.length, allSigned: false, missingParticipants: [] },
+            incoming: { signedCount: 0, expectedCount: 0, allSigned: false, missingParticipants: [] }
+        };
+
+    return {
+        enabled: true,
+        handover: filteredHandover,
+        area,
+        outgoingShift,
+        incomingShift,
+        minutesUntilEnd: minsUntilEnd,
+        signedCount: signatureState.outgoing.signedCount,
+        expectedCount: signatureState.outgoing.expectedCount,
+        allSigned: signatureState.outgoing.allSigned,
+        signatureState
+    };
+}
+
+function isLeaderParticipant(participants, user) {
+    return (participants || []).some((participant) =>
+        participant.role === 'LIDER' &&
+        (participant.userId === user.id || participant.employeeId === user.shiftEmployee?.id)
+    );
+}
+
+function isParticipantOrAdmin(handover, user) {
+    if (user.role === 'ADMIN') return true;
+    const employeeId = user.shiftEmployee?.id;
+    return [
+        ...(handover.outgoingParticipants || []),
+        ...(handover.incomingParticipants || [])
+    ].some(participant =>
+        participant.userId === user.id ||
+        (employeeId && participant.employeeId === employeeId)
+    );
+}
+
+function findSavedBatchSummary(checklist) {
+    if (!Array.isArray(checklist)) return null;
+    const item = checklist.find(entry =>
+        entry?.id === AUTO_BATCH_SUMMARY_ID ||
+        entry?.fieldType === 'production_summary'
+    );
+    return item?.value || null;
+}
+
+function withSavedReviewSelections(summary, handover) {
+    const saved = findSavedBatchSummary(handover.checklist);
+    if (!saved?.reviewSelections) return summary;
+    return {
+        ...summary,
+        reviewSelections: saved.reviewSelections,
+        reviewedAt: saved.reviewedAt || summary.reviewedAt || null
+    };
+}
+
+function normalizeReviewSelections(reviewSelections, user) {
+    if (!reviewSelections || typeof reviewSelections !== 'object' || Array.isArray(reviewSelections)) {
+        return {};
+    }
+
+    const normalized = {};
+    for (const [section, entries] of Object.entries(reviewSelections)) {
+        if (!entries || typeof entries !== 'object' || Array.isArray(entries)) continue;
+        const sectionEntries = {};
+        for (const [batchKey, value] of Object.entries(entries)) {
+            const selected = typeof value === 'object' ? value.selected !== false : Boolean(value);
+            if (!selected) continue;
+            sectionEntries[batchKey] = {
+                selected: true,
+                userId: value?.userId || user.id,
+                userName: value?.userName || user.name,
+                selectedAt: value?.selectedAt || new Date().toISOString()
+            };
+        }
+        if (Object.keys(sectionEntries).length > 0) {
+            normalized[section] = sectionEntries;
+        }
+    }
+    return normalized;
+}
+
+function upsertBatchSummaryChecklistItem(checklist, summary) {
+    const existing = Array.isArray(checklist) ? checklist : [];
+    const filtered = existing.filter(entry =>
+        entry?.id !== AUTO_BATCH_SUMMARY_ID &&
+        entry?.fieldType !== 'production_summary'
+    );
+    return [
+        {
+            id: AUTO_BATCH_SUMMARY_ID,
+            label: summary.title || 'Baches del turno',
+            fieldType: 'production_summary',
+            value: summary
+        },
+        ...filtered
+    ];
+}
+
+function mergeReviewSelections(savedSelections = {}, submittedSelections = {}) {
+    const merged = { ...savedSelections };
+    for (const [section, entries] of Object.entries(submittedSelections || {})) {
+        merged[section] = {
+            ...(merged[section] || {}),
+            ...(entries || {})
+        };
+    }
+    return merged;
+}
+
+function mergeSubmittedChecklistWithSavedReview(submittedChecklist, handover) {
+    if (!Array.isArray(submittedChecklist)) return submittedChecklist || null;
+    const savedSummary = findSavedBatchSummary(handover.checklist);
+    if (!savedSummary?.reviewSelections) return submittedChecklist;
+
+    return submittedChecklist.map(item => {
+        if (item?.id !== AUTO_BATCH_SUMMARY_ID && item?.fieldType !== 'production_summary') return item;
+        return {
+            ...item,
+            value: {
+                ...(item.value || {}),
+                reviewSelections: mergeReviewSelections(
+                    savedSummary.reviewSelections,
+                    item.value?.reviewSelections || {}
+                ),
+                reviewedAt: item.value?.reviewedAt || savedSummary.reviewedAt || new Date().toISOString()
+            }
+        };
+    });
+}
+
+async function ensureLeaderCanValidateHandover({ user, handover, participantSide }) {
+    if (user.shiftEmployee?.role !== 'LIDER') {
+        return {
+            allowed: false,
+            error: participantSide === 'OUTGOING'
+                ? 'Solo un líder puede autorizar el relevo saliente'
+                : 'Solo un líder puede aceptar el relevo entrante'
+        };
+    }
+
+    const validationArea = PRODUCTION_VALIDATED_AREAS.includes(handover.area) ? 'PRODUCCION' : handover.area;
+    let validationSource = handover;
+
+    if (validationArea !== handover.area) {
+        validationSource = await prisma.shiftHandoverRecord.findUnique({
+            where: {
+                weekId_operationalDate_area_outgoingShift: {
+                    weekId: handover.weekId,
+                    operationalDate: handover.operationalDate,
+                    area: validationArea,
+                    outgoingShift: handover.outgoingShift
+                }
+            }
+        });
+    }
+
+    if (!validationSource) {
+        return {
+            allowed: false,
+            error: `No se encontró el relevo de ${validationArea.toLowerCase()} para validar ${handover.area.toLowerCase()}`
+        };
+    }
+
+    const participants = participantSide === 'OUTGOING'
+        ? validationSource.outgoingParticipants
+        : validationSource.incomingParticipants;
+
+    if (isLeaderParticipant(participants, user)) {
+        return { allowed: true };
+    }
+
+    if (PRODUCTION_VALIDATED_AREAS.includes(handover.area)) {
+        return {
+            allowed: false,
+            error: participantSide === 'OUTGOING'
+                ? `El relevo de ${handover.area.toLowerCase()} solo lo puede autorizar el líder saliente de Producción`
+                : `El relevo de ${handover.area.toLowerCase()} solo lo puede aceptar el líder entrante de Producción`
+        };
+    }
+
+    return {
+        allowed: false,
+        error: participantSide === 'OUTGOING'
+            ? 'Solo el líder saliente asignado puede autorizar este relevo'
+            : 'Solo el líder entrante asignado puede aceptar este relevo'
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  GET /shift-handover/simulation/tarde-noche
+//  Admin-only dry run: validates the real roster without writing signatures.
+// ═══════════════════════════════════════════════════════════════════════════════
+const getTardeNocheSimulation = async (req, res) => {
+    try {
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ error: 'Solo ADMIN puede iniciar simulacros de relevo' });
+        }
+
+        const enabled = await handoverService.isHandoverEnabled();
+        if (!enabled) return res.json({ enabled: false, simulation: true, records: [] });
+
+        const outgoingShift = 'TARDE';
+        const incomingShift = 'NOCHE';
+        const opDate = handoverService.getOperationalDate(outgoingShift);
+        const weekStartDate = handoverService.getWeekStartUTC(opDate);
+        const week = await prisma.shiftWeek.findUnique({ where: { weekStart: weekStartDate } });
+        if (!week) {
+            return res.json({
+                enabled: true,
+                simulation: true,
+                records: [],
+                message: 'No hay cuadro publicado para simular el relevo Tarde → Noche'
+            });
+        }
+
+        const absentIds = await handoverService.getAbsentEmployeeIds(opDate);
+        const records = await prisma.shiftHandoverRecord.findMany({
+            where: {
+                weekId: week.id,
+                operationalDate: new Date(opDate + 'T00:00:00.000Z'),
+                outgoingShift,
+                incomingShift,
+                area: { in: handoverService.HANDOVER_AREAS }
+            },
+            orderBy: { area: 'asc' }
+        });
+
+        const checklists = await prisma.shiftHandoverChecklist.findMany({
+            where: { active: true, area: { in: handoverService.HANDOVER_AREAS } },
+            orderBy: [{ area: 'asc' }, { sortOrder: 'asc' }]
+        });
+
+        const simulationRecords = records.map(record => ({
+            id: `SIM-${record.id}`,
+            realHandoverId: record.id,
+            actualStatus: record.status,
+            area: record.area,
+            operationalDate: record.operationalDate,
+            outgoingShift: record.outgoingShift,
+            incomingShift: record.incomingShift,
+            graceDeadline: record.graceDeadline,
+            status: 'PENDING',
+            outgoingParticipants: (record.outgoingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
+            incomingParticipants: (record.incomingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
+            signatures: [],
+            outgoingLeader: null,
+            outgoingLeaderAt: null,
+            incomingLeader: null,
+            incomingLeaderAt: null,
+            checklist: null,
+            pendingTasks: null,
+            incidents: null,
+            observations: null
+        }));
+
+        res.json({
+            enabled: true,
+            simulation: true,
+            operationalDate: opDate,
+            outgoingShift,
+            incomingShift,
+            records: simulationRecords,
+            checklists,
+            generatedAt: new Date().toISOString()
+        });
+    } catch (err) {
+        logger.error('[Handover] getTardeNocheSimulation error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  GET /shift-handover/current?area=
@@ -28,71 +384,34 @@ const getCurrent = async (req, res) => {
             area = emp?.area;
         }
 
-        if (!area || !handoverService.HANDOVER_AREAS.includes(area)) {
-            return res.json({ enabled: true, handover: null, message: 'Área no participa en relevo' });
-        }
-
-        const activeShift = handoverService.getCurrentActiveShift();
-        const opDate = handoverService.getOperationalDate(activeShift);
-        const weekStartDate = handoverService.getWeekStartUTC(opDate);
-
-        const week = await prisma.shiftWeek.findUnique({ where: { weekStart: weekStartDate } });
-        if (!week) return res.json({ enabled: true, handover: null, message: 'No hay cuadro para esta semana' });
-
-        const handover = await prisma.shiftHandoverRecord.findUnique({
-            where: {
-                weekId_operationalDate_area_outgoingShift: {
-                    weekId: week.id,
-                    operationalDate: new Date(opDate + 'T00:00:00.000Z'),
-                    area,
-                    outgoingShift: activeShift
-                }
-            },
-            include: {
-                signatures: {
-                    include: {
-                        employee: { select: { id: true, name: true, role: true } },
-                        user: { select: { id: true, name: true } }
-                    },
-                    orderBy: { signedAt: 'asc' }
-                },
-                outgoingLeader: { select: { id: true, name: true } },
-                incomingLeader: { select: { id: true, name: true } },
-                supervisor: { select: { id: true, name: true } }
-            }
-        });
-
-        const minsUntilEnd = handoverService.getMinutesUntilShiftEnd(activeShift);
-
-        // Filter absent employees from participants at runtime
-        const absentIds = await handoverService.getAbsentEmployeeIds(opDate);
-        let filteredHandover = handover;
-        if (handover && absentIds.size > 0) {
-            filteredHandover = {
-                ...handover,
-                outgoingParticipants: (handover.outgoingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
-                incomingParticipants: (handover.incomingParticipants || []).filter(p => !absentIds.has(p.employeeId))
-            };
-        }
-
-        // Count expected vs signed (using filtered participants)
-        const outgoingOps = (filteredHandover?.outgoingParticipants || []).filter(p => p.role !== 'LIDER');
-        const signedCount = filteredHandover?.signatures?.length || 0;
-        const expectedCount = outgoingOps.length;
-
-        res.json({
-            enabled: true,
-            handover: filteredHandover,
-            area,
-            outgoingShift: activeShift,
-            incomingShift: handoverService.SHIFT_TRANSITIONS.find(t => t.outgoing === activeShift)?.incoming,
-            minutesUntilEnd: minsUntilEnd,
-            signedCount,
-            expectedCount,
-            allSigned: signedCount >= expectedCount && expectedCount > 0
-        });
+        res.json(await resolveCurrentHandoverForArea(area));
     } catch (err) {
         logger.error('[Handover] getCurrent error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  GET /shift-handover/current-all
+//  Shared dashboard helper: returns all handover areas in one request
+// ═══════════════════════════════════════════════════════════════════════════════
+const getCurrentAll = async (req, res) => {
+    try {
+        const enabled = await handoverService.isHandoverEnabled();
+        if (!enabled) {
+            return res.json({
+                enabled: false,
+                areas: handoverService.HANDOVER_AREAS.map(area => ({ enabled: false, area, handover: null }))
+            });
+        }
+
+        const areas = await Promise.all(
+            handoverService.HANDOVER_AREAS.map(area => resolveCurrentHandoverForArea(area))
+        );
+
+        res.json({ enabled: true, areas });
+    } catch (err) {
+        logger.error('[Handover] getCurrentAll error:', err);
         res.status(500).json({ error: err.message });
     }
 };
@@ -208,14 +527,81 @@ const getSignatures = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  GET /shift-handover/:id/production-summary
+//  Automatic production snapshot for the leader handover checklist.
+// ═══════════════════════════════════════════════════════════════════════════════
+const getProductionSummary = async (req, res) => {
+    try {
+        const handover = await prisma.shiftHandoverRecord.findUnique({
+            where: { id: req.params.id }
+        });
+        if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
+
+        const summary = withSavedReviewSelections(
+            await buildShiftProductionSummary(prisma, handover),
+            handover
+        );
+        res.json(summary);
+    } catch (err) {
+        logger.error('[Handover] getProductionSummary error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  PATCH /shift-handover/:id/review-selection
+//  Saves visual review checks only inside the handover checklist JSON.
+// ═══════════════════════════════════════════════════════════════════════════════
+const updateReviewSelection = async (req, res) => {
+    try {
+        const handover = await prisma.shiftHandoverRecord.findUnique({
+            where: { id: req.params.id }
+        });
+        if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
+        if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status)) {
+            return res.status(409).json({ error: `No se puede modificar la revisión en estado: ${handover.status}` });
+        }
+        const shiftEmployee = await prisma.shiftEmployee.findUnique({
+            where: { userId: req.user.id }
+        });
+        const user = { ...req.user, shiftEmployee };
+        if (!isParticipantOrAdmin(handover, user)) {
+            return res.status(403).json({ error: 'Solo participantes del relevo o ADMIN pueden marcar esta revisión' });
+        }
+
+        const reviewSelections = normalizeReviewSelections(req.body?.reviewSelections, user);
+        const summary = {
+            ...(await buildShiftProductionSummary(prisma, handover)),
+            reviewSelections,
+            reviewedAt: new Date().toISOString()
+        };
+        const checklist = upsertBatchSummaryChecklistItem(handover.checklist, summary);
+
+        await prisma.shiftHandoverRecord.update({
+            where: { id: handover.id },
+            data: { checklist }
+        });
+
+        res.json({ success: true, summary });
+    } catch (err) {
+        logger.error('[Handover] updateReviewSelection error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  POST /shift-handover/:id/sign — Operator signs with PIN
 // ═══════════════════════════════════════════════════════════════════════════════
 const signOperator = async (req, res) => {
     try {
         const { pin, notes } = req.body;
+        const participantGroup = req.body?.participantGroup === 'INCOMING' ? 'INCOMING' : 'OUTGOING';
         const user = await validatePin(pin);
         if (!user) return res.status(401).json({ error: 'PIN inválido' });
         if (!user.shiftEmployee) return res.status(403).json({ error: 'Usuario no tiene empleado de turno asociado' });
+        if (user.shiftEmployee.role === 'LIDER' && user.role !== 'ADMIN') {
+            return res.status(403).json({ error: 'La firma de operarios es solo para personal operativo. Los líderes firman en su paso de autorización.' });
+        }
 
         const handover = await prisma.shiftHandoverRecord.findUnique({
             where: { id: req.params.id },
@@ -223,23 +609,31 @@ const signOperator = async (req, res) => {
         });
         if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
 
-        // Verify user is in the outgoing participants
-        const outParticipants = handover.outgoingParticipants || [];
-        const isOutgoing = outParticipants.some(p => p.userId === user.id || p.employeeId === user.shiftEmployee.id);
-        if (!isOutgoing && user.role !== 'ADMIN') {
-            return res.status(403).json({ error: 'No estás asignado al turno saliente de este relevo' });
+        const participants = participantGroup === 'INCOMING'
+            ? (handover.incomingParticipants || [])
+            : (handover.outgoingParticipants || []);
+
+        const isParticipant = participants.some(p => p.role !== 'LIDER' && (p.userId === user.id || p.employeeId === user.shiftEmployee.id));
+        if (!isParticipant && user.role !== 'ADMIN') {
+            return res.status(403).json({
+                error: participantGroup === 'INCOMING'
+                    ? 'No estás asignado al turno entrante de este relevo'
+                    : 'No estás asignado al turno saliente de este relevo'
+            });
         }
 
         // Check not already signed
-        const alreadySigned = handover.signatures.some(s => s.userId === user.id);
+        const alreadySigned = handover.signatures.some(s => s.userId === user.id && s.participantGroup === participantGroup);
         if (alreadySigned) return res.status(409).json({ error: 'Ya firmaste este relevo' });
 
-        // Can only sign when PENDING or IN_PROGRESS
-        if (!['PENDING', 'IN_PROGRESS'].includes(handover.status)) {
-            return res.status(409).json({ error: `No se puede firmar en estado: ${handover.status}` });
+        if (participantGroup === 'OUTGOING' && !['PENDING', 'IN_PROGRESS'].includes(handover.status)) {
+            return res.status(409).json({ error: `No se puede firmar salida en estado: ${handover.status}` });
+        }
+        if (participantGroup === 'INCOMING' && handover.status !== 'DELIVERED') {
+            return res.status(409).json({ error: `No se puede firmar ingreso en estado: ${handover.status}` });
         }
 
-        const audit = buildAuditEntry('OPERATOR_SIGNED', user, req);
+        const audit = buildAuditEntry(`${participantGroup}_OPERATOR_SIGNED`, user, req);
 
         // Create signature
         await prisma.shiftHandoverSignature.create({
@@ -247,28 +641,29 @@ const signOperator = async (req, res) => {
                 handoverId: handover.id,
                 employeeId: user.shiftEmployee.id,
                 userId: user.id,
+                participantGroup,
                 ipAddress: audit.ip,
                 userAgent: audit.device,
                 notes: notes || null
             }
         });
 
-        // Check if all expected operators have now signed
-        const outOps = outParticipants.filter(p => p.role !== 'LIDER');
-        const newSignCount = handover.signatures.length + 1;
-        const allSigned = newSignCount >= outOps.length && outOps.length > 0;
+        const updatedHandover = await prisma.shiftHandoverRecord.findUnique({
+            where: { id: handover.id },
+            include: { signatures: true }
+        });
+        const signatureState = handoverService.getHandoverSignatureState(updatedHandover);
+        const currentState = participantGroup === 'INCOMING' ? signatureState.incoming : signatureState.outgoing;
 
         const prevLog = Array.isArray(handover.auditLog) ? handover.auditLog : [];
-        const updateData = {
-            status: allSigned ? 'IN_PROGRESS' : 'IN_PROGRESS', // stays IN_PROGRESS until leader authorizes
+        const updateData = participantGroup === 'OUTGOING' ? {
+            status: 'IN_PROGRESS',
+            auditLog: [...prevLog, audit]
+        } : {
             auditLog: [...prevLog, audit]
         };
-        if (allSigned) {
+        if (participantGroup === 'OUTGOING' && currentState.allSigned) {
             updateData.allSignedAt = new Date();
-        }
-        // Move from PENDING to IN_PROGRESS on first signature
-        if (handover.status === 'PENDING') {
-            updateData.status = 'IN_PROGRESS';
         }
 
         await prisma.shiftHandoverRecord.update({
@@ -276,14 +671,16 @@ const signOperator = async (req, res) => {
             data: updateData
         });
 
-        logger.info(`[Handover] Operator signed: ${user.name} (${user.shiftEmployee.area}) | Handover: ${handover.id} | ${newSignCount}/${outOps.length}`);
+        logger.info(`[Handover] ${participantGroup} operator signed: ${user.name} (${user.shiftEmployee.area}) | Handover: ${handover.id} | ${currentState.signedCount}/${currentState.expectedCount}`);
 
         res.json({
             success: true,
             operatorName: user.name,
-            signedCount: newSignCount,
-            expectedCount: outOps.length,
-            allSigned
+            participantGroup,
+            signedCount: currentState.signedCount,
+            expectedCount: currentState.expectedCount,
+            allSigned: currentState.allSigned,
+            signatureState
         });
     } catch (err) {
         logger.error('[Handover] signOperator error:', err);
@@ -300,12 +697,6 @@ const authorizeOutgoing = async (req, res) => {
         const user = await validatePin(pin);
         if (!user) return res.status(401).json({ error: 'PIN inválido' });
 
-        // Must be LIDER or ADMIN
-        const empRole = user.shiftEmployee?.role;
-        if (empRole !== 'LIDER' && user.role !== 'ADMIN') {
-            return res.status(403).json({ error: 'Solo un líder puede autorizar el relevo saliente' });
-        }
-
         const handover = await prisma.shiftHandoverRecord.findUnique({
             where: { id: req.params.id },
             include: { signatures: true }
@@ -315,25 +706,35 @@ const authorizeOutgoing = async (req, res) => {
             return res.status(409).json({ error: `Estado actual no permite autorización: ${handover.status}` });
         }
 
+        const authorization = await ensureLeaderCanValidateHandover({
+            user,
+            handover,
+            participantSide: 'OUTGOING'
+        });
+        if (!authorization.allowed) {
+            return res.status(403).json({ error: authorization.error });
+        }
+
         // Verify all operators have signed
-        const outOps = (handover.outgoingParticipants || []).filter(p => p.role !== 'LIDER');
-        if (handover.signatures.length < outOps.length) {
+        const signatureState = handoverService.getHandoverSignatureState(handover);
+        if (signatureState.outgoing.expectedCount > 0 && !signatureState.outgoing.allSigned) {
             return res.status(409).json({
-                error: `Faltan firmas de operarios: ${handover.signatures.length}/${outOps.length}`,
-                signedCount: handover.signatures.length,
-                expectedCount: outOps.length
+                error: `Faltan firmas de operarios salientes: ${signatureState.outgoing.signedCount}/${signatureState.outgoing.expectedCount}`,
+                signedCount: signatureState.outgoing.signedCount,
+                expectedCount: signatureState.outgoing.expectedCount
             });
         }
 
         const audit = buildAuditEntry('OUTGOING_LEADER_AUTHORIZED', user, req);
         const prevLog = Array.isArray(handover.auditLog) ? handover.auditLog : [];
+        const checklistForSave = mergeSubmittedChecklistWithSavedReview(checklist, handover);
 
         const updated = await prisma.shiftHandoverRecord.update({
             where: { id: handover.id },
             data: {
                 outgoingLeaderId: user.id,
                 outgoingLeaderAt: new Date(),
-                checklist: checklist || null,
+                checklist: checklistForSave,
                 pendingTasks: pendingTasks || null,
                 incidents: incidents || null,
                 observations: observations || null,
@@ -362,17 +763,30 @@ const acceptIncoming = async (req, res) => {
         const user = await validatePin(pin);
         if (!user) return res.status(401).json({ error: 'PIN inválido' });
 
-        const empRole = user.shiftEmployee?.role;
-        if (empRole !== 'LIDER' && user.role !== 'ADMIN') {
-            return res.status(403).json({ error: 'Solo un líder puede aceptar el relevo entrante' });
-        }
-
         const handover = await prisma.shiftHandoverRecord.findUnique({
             where: { id: req.params.id }
         });
         if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
         if (handover.status !== 'DELIVERED') {
             return res.status(409).json({ error: `Estado actual no permite aceptación: ${handover.status}` });
+        }
+
+        const authorization = await ensureLeaderCanValidateHandover({
+            user,
+            handover,
+            participantSide: 'INCOMING'
+        });
+        if (!authorization.allowed) {
+            return res.status(403).json({ error: authorization.error });
+        }
+
+        const signatureState = handoverService.getHandoverSignatureState(handover);
+        if (signatureState.incoming.expectedCount > 0 && !signatureState.incoming.allSigned) {
+            return res.status(409).json({
+                error: `Faltan firmas de operarios entrantes: ${signatureState.incoming.signedCount}/${signatureState.incoming.expectedCount}`,
+                signedCount: signatureState.incoming.signedCount,
+                expectedCount: signatureState.incoming.expectedCount
+            });
         }
 
         const audit = buildAuditEntry('INCOMING_LEADER_ACCEPTED', user, req);
@@ -621,11 +1035,15 @@ const updateChecklists = async (req, res) => {
 };
 
 module.exports = {
+    getTardeNocheSimulation,
     getCurrent,
+    getCurrentAll,
     getHistory,
     getChecklists,
     getDetail,
     getSignatures,
+    getProductionSummary,
+    updateReviewSelection,
     signOperator,
     authorizeOutgoing,
     acceptIncoming,

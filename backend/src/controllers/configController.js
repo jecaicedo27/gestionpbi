@@ -17,10 +17,12 @@ exports.getConfig = async (req, res) => {
                 alertYellow: 12,
                 alertRed: 3,
                 syrupRatio: 0.70,
-                batchDuration: 140,
+                batchDuration: 90,
+                shiftBatchTarget: 5,
                 geniality_targetDays: 8,
                 geniality_alertYellow: 12,
-                geniality_alertRed: 3
+                geniality_alertRed: 3,
+                geniality_batchDuration: 240
             });
         }
 

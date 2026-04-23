@@ -1,6 +1,7 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const browserManager = require('../services/siigoBrowserManager');
+const siigoService = require('../services/siigoService');
 
 /**
  * POST /api/rpa/siigo-assembly
@@ -211,6 +212,11 @@ const createSiigoAdjustment = async (req, res) => {
                         console.error(`⚠️ Auto-transfer a PUBLICIDAD falló para lote ${finishedLotStockId}:`, transferErr.message);
                     }
                 }
+                if (result.success) {
+                    siigoService.syncAllProducts().then(() => {
+                        console.log('🔄 Inventario Siigo sincronizado después de ajuste exitoso');
+                    }).catch(e => console.warn('⚠️ Sync post-ajuste falló:', e.message));
+                }
             },
             reject: async (err) => {
                 const durationMs = Date.now() - startTime;
@@ -278,6 +284,8 @@ const retryExecution = async (req, res) => {
 
         const original = await prisma.rpaExecution.findUnique({ where: { id } });
         if (!original) return res.status(404).json({ error: 'Ejecución no encontrada' });
+        if (original.status === 'RUNNING') return res.status(409).json({ error: 'Esta ejecución ya está en curso' });
+        if (original.status === 'SUCCESS') return res.status(409).json({ error: 'Esta ejecución ya fue exitosa' });
 
         // Reset the SAME record to RUNNING
         await prisma.rpaExecution.update({
@@ -404,8 +412,29 @@ const getOrphanNotes = async (req, res) => {
             orderBy: { completedAt: 'desc' }
         });
 
+        // Exclude EMPAQUE notes that have a sibling ENSAMBLE note with a successful RPA
+        const batchIds = [...new Set(orphans.map(n => n.productionBatchId).filter(Boolean))];
+        const siblingEnsambles = batchIds.length > 0 ? await prisma.assemblyNote.findMany({
+            where: {
+                productionBatchId: { in: batchIds },
+                processType: { code: 'ENSAMBLE' },
+                rpaExecutions: { some: { status: { in: ['SUCCESS', 'RUNNING'] } } }
+            },
+            select: { productionBatchId: true, productId: true }
+        }) : [];
+        const coveredKeys = new Set(siblingEnsambles.map(e => `${e.productionBatchId}:${e.productId}`));
+
+        // Also exclude products that already have a RUNNING RPA right now
+        const runningRpas = await prisma.rpaExecution.findMany({
+            where: { status: 'RUNNING' },
+            select: { productName: true },
+        });
+        const runningProducts = new Set(runningRpas.map(r => r.productName));
+
         // Only return notes that have actual production data (not zero-qty stubs)
         const withData = orphans.filter(n => {
+            if (coveredKeys.has(`${n.productionBatchId}:${n.productId}`)) return false;
+            if (runningProducts.has(n.product?.name)) return false;
             const emp = n.processParameters?.empaque;
             const carriots = (n.processParameters?.carriots_consumed || []).length;
             const qty = emp?.conteo_qty || emp?.approved_qty || 0;
@@ -445,7 +474,7 @@ const dispatchOrphan = async (req, res) => {
         const { assemblyNoteId } = req.body;
         if (!assemblyNoteId) return res.status(400).json({ error: 'assemblyNoteId requerido' });
 
-        // Ensure no existing RUNNING/SUCCESS execution
+        // Ensure no existing RUNNING/SUCCESS execution for this note
         const existing = await prisma.rpaExecution.findFirst({
             where: { assemblyNoteId, status: { in: ['RUNNING', 'SUCCESS'] } }
         });
@@ -464,6 +493,17 @@ const dispatchOrphan = async (req, res) => {
             }
         });
         if (!note) return res.status(404).json({ error: 'Nota no encontrada' });
+
+        // Block if there's already a RUNNING RPA for the same product (from auto-retry or manual)
+        const productRunning = await prisma.rpaExecution.findFirst({
+            where: { productName: note.product?.name, status: 'RUNNING' }
+        });
+        if (productRunning) {
+            return res.status(409).json({
+                success: false,
+                error: `Ya hay un RPA en curso para ${note.product?.name}. Espera a que termine.`
+            });
+        }
 
         const emp = note.processParameters?.empaque || {};
         const qty = emp.conteo_qty || emp.approved_qty || note.targetQuantity || 0;

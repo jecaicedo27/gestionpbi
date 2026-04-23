@@ -10,7 +10,11 @@ router.get('/demand/:flavor', auth, productionSchedulerController.getFlavorDeman
 router.get('/schedule', auth, productionSchedulerController.getSchedule);
 router.post('/schedule', auth, productionSchedulerController.createBatch);
 router.delete('/all', auth, productionSchedulerController.deleteAllBatches);
+router.post('/:line/reschedule-shift', auth, productionSchedulerController.rescheduleShift);
 router.put('/:id', auth, productionSchedulerController.updateBatch);
+router.patch('/:id/aux-action', auth, productionSchedulerController.auxAction);
 router.delete('/:id', auth, productionSchedulerController.deleteBatch);
+// router.post('/batches/:id/output-targets', auth, productionSchedulerController.addOutputTarget);
+// router.patch('/batches/:id/output-targets', auth, productionSchedulerController.updateOutputTarget);
 
 module.exports = router;

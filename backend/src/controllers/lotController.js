@@ -1743,6 +1743,8 @@ const lotController = {
                     const sourceZone = lot.zone;
                     const roundedQty = Math.round(quantity);
 
+                    let survivingLotId = lotId;
+
                     if (roundedQty >= lot.currentQuantity) {
                         const existing = await tx.finishedLotStock.findUnique({
                             where: { productId_lotNumber_zone: { productId: lot.productId, lotNumber: lot.lotNumber, zone: targetZone } }
@@ -1750,6 +1752,7 @@ const lotController = {
                         if (existing) {
                             await tx.finishedLotStock.update({ where: { id: existing.id }, data: { currentQuantity: { increment: lot.currentQuantity } } });
                             await tx.finishedLotStock.delete({ where: { id: lotId } });
+                            survivingLotId = existing.id;
                         } else {
                             await tx.finishedLotStock.update({ where: { id: lotId }, data: { zone: targetZone } });
                         }
@@ -1777,7 +1780,7 @@ const lotController = {
                     if (lot.productId) {
                         await tx.finishedLotTransfer.create({
                             data: {
-                                finishedLotStockId: lotId,
+                                finishedLotStockId: survivingLotId,
                                 productId: lot.productId,
                                 lotNumber: lot.lotNumber,
                                 fromZone: sourceZone,

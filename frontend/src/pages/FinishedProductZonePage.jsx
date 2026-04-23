@@ -1734,7 +1734,6 @@ const FinishedProductZonePage = () => {
                                             <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#334155' }}>
                                                 📄 {printCount === totalLabels ? `${totalLabels} rótulo${totalLabels > 1 ? 's' : ''}` : `${printCount} de ${totalLabels}`}
                                             </span>
-                                            {/* Range selector */}
                                             <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.72rem' }}>
                                                 <span style={{ color: '#64748b', fontWeight: 600 }}>Desde:</span>
                                                 <input type="number" min={1} max={totalLabels} value={printFrom}

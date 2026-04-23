@@ -19,9 +19,12 @@ const assemblyNoteController = {
             if (status) where.status = status;
             if (batchId) where.productionBatchId = batchId;
             if (productId) where.productId = productId;
-            // Filtro de fecha: solo lotes a partir de `since` (ISO string)
+            // Filtro de fecha: notas creadas o actualizadas desde `since`
             if (since) {
-                where.productionBatch = { createdAt: { gte: new Date(since) } };
+                where.OR = [
+                    { createdAt: { gte: new Date(since) } },
+                    { updatedAt: { gte: new Date(since) } },
+                ];
             }
 
             const notes = await prisma.assemblyNote.findMany({
@@ -30,7 +33,7 @@ const assemblyNoteController = {
                     product: { select: { id: true, name: true, sku: true } },
                     productionBatch: {
                         select: {
-                            id: true, batchNumber: true, scheduledStart: true,
+                            id: true, batchNumber: true, scheduledStart: true, scheduledEnd: true,
                             status: true, flavor: true,
                             outputTargets: {
                                 include: { product: { select: { id: true, name: true, sku: true, size: true } } },
@@ -704,6 +707,37 @@ const assemblyNoteController = {
     },
 
     /**
+     * POST /api/assembly-notes/:id/reopen — ADMIN only
+     * Reopen a completed note (typically CONTEO) back to EXECUTING so operators can redo it.
+     */
+    reopenNote: async (req, res) => {
+        try {
+            const { id } = req.params;
+            if (req.user?.role !== 'ADMIN') {
+                return res.status(403).json({ error: 'Solo ADMIN puede reabrir una etapa completada' });
+            }
+
+            const note = await prisma.assemblyNote.findUnique({
+                where: { id },
+                include: { processType: { select: { code: true, name: true } }, productionBatch: { select: { batchNumber: true } } }
+            });
+            if (!note) return res.status(404).json({ error: 'Nota no encontrada' });
+            if (note.status !== 'COMPLETED') return res.status(400).json({ error: `La nota está en estado ${note.status}, no se puede reabrir` });
+
+            await prisma.assemblyNote.update({
+                where: { id },
+                data: { status: 'EXECUTING', completedAt: null, completedById: null }
+            });
+
+            console.log(`[reopenNote] ✅ ADMIN ${req.user.name} reopened ${note.processType?.code} for batch ${note.productionBatch?.batchNumber}`);
+            res.json({ success: true, message: `${note.processType?.name || note.processType?.code} reabierto para ${note.productionBatch?.batchNumber}` });
+        } catch (error) {
+            console.error('[reopenNote] ERROR:', error.message);
+            res.status(500).json({ error: error.message });
+        }
+    },
+
+    /**
      * GET /api/assembly-notes/:id/check-proteccion
      * Check if sufficient PROTECCIÓN stock exists for the batch's flavor
      */
@@ -1270,6 +1304,12 @@ const assemblyNoteController = {
                     }
                 });
                 console.log(`[quickStart] Reusing existing batch → new batchNumber=${batchNumber} (was ${batch.batchNumber}, id=${existingBatchId})`);
+
+                const { rescheduleAfterBatchStart } = require('./productionSchedulerController');
+                const batchLine = template.templateCode?.startsWith('GTPL') ? 'geniality' : 'liquipops';
+                rescheduleAfterBatchStart(existingBatchId, batchLine).catch(err =>
+                    console.error('[quickStart] reschedule error:', err.message)
+                );
             } else {
                 try {
                     batch = await prisma.productionBatch.create({

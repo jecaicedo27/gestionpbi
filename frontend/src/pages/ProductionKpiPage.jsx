@@ -39,13 +39,20 @@ const ProductionKpiPage = () => {
     const [lineFilter, setLineFilter] = useState('all'); // all, liquipops, geniality
     const [sortKey, setSortKey] = useState('overallScore');
     const [sortDir, setSortDir] = useState('desc');
+    const [adherenceData, setAdherenceData] = useState(null);
+    const [shiftPage, setShiftPage] = useState(0);
+    const [expandedShift, setExpandedShift] = useState(null);
 
     const loadData = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await api.get(`/production-kpis?days=${days}&line=${lineFilter}`);
+            const [res, adhRes] = await Promise.all([
+                api.get(`/production-kpis?days=${days}&line=${lineFilter}`),
+                api.get(`/production-kpis/schedule-adherence?days=${days}&line=${lineFilter}`)
+            ]);
             setData(res.data);
+            setAdherenceData(adhRes.data);
         } catch (e) {
             setError(e.response?.data?.error || 'Error cargando KPIs');
         } finally {
@@ -148,6 +155,316 @@ const ProductionKpiPage = () => {
                     </div>
                 ) : !data ? null : (
                     <>
+                        {/* ── Schedule Adherence ──────────────────────────────────── */}
+                        {adherenceData && (
+                            <section>
+                                <div className="flex items-center gap-2 mb-3">
+                                    <TrendingUp size={15} className="text-indigo-500" />
+                                    <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Adherencia Esferificación</h2>
+                                    <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">KPI 50%</span>
+                                </div>
+
+                                {/* Summary cards */}
+                                <div className="grid grid-cols-5 gap-3 mb-4">
+                                    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
+                                        <div className={`text-2xl font-bold ${(adherenceData.summary.avgAdherence ?? 0) >= 80 ? 'text-emerald-600' : (adherenceData.summary.avgAdherence ?? 0) >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                                            {adherenceData.summary.avgAdherence != null ? `${adherenceData.summary.avgAdherence}%` : '—'}
+                                        </div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Promedio</div>
+                                        {adherenceData.summary.avgAdherence != null && (
+                                            <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                <div className={`h-full rounded-full ${(adherenceData.summary.avgAdherence ?? 0) >= 80 ? 'bg-emerald-500' : (adherenceData.summary.avgAdherence ?? 0) >= 50 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${adherenceData.summary.avgAdherence}%` }} />
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm">
+                                        <div className="text-2xl font-bold text-slate-800">{adherenceData.summary.totalBatches}</div>
+                                        <div className="text-xs text-slate-400 mt-0.5">Total baches</div>
+                                    </div>
+                                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 shadow-sm">
+                                        <div className="text-2xl font-bold text-emerald-600">{adherenceData.summary.onTime}</div>
+                                        <div className="text-xs text-emerald-500 mt-0.5">A tiempo</div>
+                                    </div>
+                                    <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 shadow-sm">
+                                        <div className="text-2xl font-bold text-red-600">{adherenceData.summary.delayed}</div>
+                                        <div className="text-xs text-red-500 mt-0.5">Retrasados</div>
+                                    </div>
+                                    <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 shadow-sm">
+                                        <div className="text-2xl font-bold text-blue-600">{adherenceData.summary.inProgress}</div>
+                                        <div className="text-xs text-blue-500 mt-0.5">En curso</div>
+                                    </div>
+                                </div>
+
+                                {/* Batch detail table */}
+                                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="bg-slate-50 border-b border-slate-200">
+                                                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Bache</th>
+                                                <th className="text-right px-3 py-2 text-xs font-semibold text-slate-500">Objetivo</th>
+                                                <th className="text-right px-3 py-2 text-xs font-semibold text-slate-500">Esferificación</th>
+                                                <th className="text-right px-3 py-2 text-xs font-semibold text-slate-500">Exceso</th>
+                                                <th className="text-center px-3 py-2 text-xs font-semibold text-slate-500">Score</th>
+                                                <th className="text-center px-3 py-2 text-xs font-semibold text-slate-500">Estado</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(adherenceData.batches || []).map((b, i) => {
+                                                const score = b.adherenceScore ?? b.projectedAdherence ?? null;
+                                                const scoreColor = score == null ? 'text-slate-400' : score >= 90 ? 'text-emerald-600' : score >= 60 ? 'text-amber-600' : 'text-red-600';
+                                                const light = b.trafficLight;
+                                                const lightColors = { green: 'bg-emerald-500', yellow: 'bg-amber-400', red: 'bg-red-500' };
+                                                return (
+                                                    <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/50">
+                                                        <td className="px-4 py-2">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="font-semibold text-slate-700">{b.flavor || b.batchNumber.split('-').slice(0, -2).join(' ')}</span>
+                                                                {b.crossShift && <span className="text-[9px] bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded-full font-bold" title={`Inició en turno ${b.startShift} y terminó en ${b.endShift}`}>⇄ 2 turnos</span>}
+                                                            </div>
+                                                            <div className="text-[10px] text-slate-400">{b.scheduledStart ? format(new Date(b.scheduledStart), 'dd/MM HH:mm') : ''}</div>
+                                                        </td>
+                                                        <td className="px-3 py-2 text-right text-slate-600">{fmtMin(b.targetDurationMin)}</td>
+                                                        <td className="px-3 py-2 text-right font-semibold text-slate-700">{b.actualMin != null ? fmtMin(b.actualMin) : '—'}</td>
+                                                        <td className="px-3 py-2 text-right">
+                                                            {b.delayMin != null ? (
+                                                                <span className={b.delayMin > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600'}>
+                                                                    {b.delayMin > 0 ? `+${fmtMin(b.delayMin)}` : 'OK'}
+                                                                </span>
+                                                            ) : '—'}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            <span className={`font-bold ${scoreColor}`}>{score != null ? `${score}%` : '—'}</span>
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            {b.status === 'completed' ? (
+                                                                <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold">Completado</span>
+                                                            ) : b.status === 'in_progress' ? (
+                                                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold">
+                                                                    <span className={`w-2 h-2 rounded-full ${lightColors[light] || 'bg-slate-300'}`} />
+                                                                    {light === 'green' ? 'A tiempo' : light === 'yellow' ? 'Ajustado' : light === 'red' ? 'Retrasado' : 'Pendiente'}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-[10px] text-slate-400">Pendiente</span>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                    {(!adherenceData.batches || adherenceData.batches.length === 0) && (
+                                        <div className="text-center py-8 text-sm text-slate-400">No hay baches programados en este periodo</div>
+                                    )}
+                                </div>
+                            </section>
+                        )}
+
+                        {/* ── Shift Completion ──────────────────────────────── */}
+                        {adherenceData?.shiftCompletion?.length > 0 && (() => {
+                            const SHIFT_ORDER = { MANANA: 0, TARDE: 1, NOCHE: 2 };
+                            const sorted = [...adherenceData.shiftCompletion].sort((a, b) => {
+                                const dateCmp = b.date.localeCompare(a.date);
+                                if (dateCmp !== 0) return dateCmp;
+                                return SHIFT_ORDER[a.shift] - SHIFT_ORDER[b.shift];
+                            });
+                            const PER_PAGE = 6;
+                            const totalPages = Math.ceil(sorted.length / PER_PAGE);
+                            const page = shiftPage || 0;
+                            const visible = sorted.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
+                            const target = adherenceData.meta?.shiftBatchTarget || 5;
+
+                            return (
+                            <section>
+                                <div className="flex items-center justify-between mb-3">
+                                    <div className="flex items-center gap-2">
+                                        <TrendingUp size={15} className="text-amber-500" />
+                                        <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Cumplimiento por Turno</h2>
+                                        <span className="text-xs text-slate-400">(meta: {target} baches)</span>
+                                    </div>
+                                    {totalPages > 1 && (
+                                        <div className="flex items-center gap-1">
+                                            <button onClick={() => setShiftPage(Math.max(0, page - 1))} disabled={page === 0}
+                                                className="px-2 py-1 text-xs font-semibold rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">← Recientes</button>
+                                            <span className="text-xs text-slate-400 px-2">{page + 1}/{totalPages}</span>
+                                            <button onClick={() => setShiftPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
+                                                className="px-2 py-1 text-xs font-semibold rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">Anteriores →</button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                    {visible.map((s, i) => {
+                                        const pct = s.completionPct;
+                                        const shiftLabel = s.shift === 'MANANA' ? 'Mañana' : s.shift === 'TARDE' ? 'Tarde' : 'Noche';
+                                        const shiftIcon = s.shift === 'MANANA' ? '🌅' : s.shift === 'TARDE' ? '☀️' : '🌙';
+                                        const shiftKey = `${s.date}_${s.shift}`;
+                                        const isExpanded = expandedShift === shiftKey;
+                                        return (
+                                            <div key={i} className={`bg-white border rounded-xl shadow-sm cursor-pointer transition-all ${isExpanded ? 'border-blue-400 ring-1 ring-blue-200 col-span-2 md:col-span-3' : 'border-slate-200 hover:border-blue-300'}`}
+                                                onClick={() => setExpandedShift(isExpanded ? null : shiftKey)}>
+                                                <div className="px-4 py-3">
+                                                    <div className="flex items-center justify-between mb-1">
+                                                        <div className="text-xs font-semibold text-slate-500">{shiftIcon} {s.date} — {shiftLabel}</div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-lg font-bold ${pct >= 90 ? 'text-emerald-600' : pct >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{pct}%</span>
+                                                            <ChevronDown size={14} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                                        </div>
+                                                    </div>
+                                                    {s.leader && <div className="text-[10px] text-blue-600 font-semibold mb-0.5">👤 Líder: {s.leader}</div>}
+                                                    <div className="text-xs text-slate-400">{s.completed}/{target} batches esferificados</div>
+                                                    <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                        <div className={`h-full rounded-full ${pct >= 90 ? 'bg-emerald-500' : pct >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                                                    </div>
+                                                </div>
+                                                {isExpanded && (
+                                                    <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/50" onClick={e => e.stopPropagation()}>
+                                                        {s.team?.length > 0 && (
+                                                            <div className="mb-3">
+                                                                <div className="text-[10px] font-bold text-slate-500 uppercase mb-1">Equipo Producción</div>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {s.team.map((name, ti) => (
+                                                                        <span key={ti} className="text-[10px] bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{name}</span>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                        <div className="text-[10px] font-bold text-slate-500 uppercase mb-2">Baches Esferificados</div>
+                                                        {(!s.batches || s.batches.length === 0) ? (
+                                                            <div className="text-xs text-slate-400 italic">Sin baches registrados</div>
+                                                        ) : (
+                                                            <div className="space-y-1.5">
+                                                                {s.batches.map((batch, bi) => (
+                                                                    <div key={bi} className="flex items-center gap-2 bg-white rounded-lg px-3 py-2 border border-slate-100">
+                                                                        <div className="flex-1">
+                                                                            <div className="flex items-center gap-2">
+                                                                                <span className="text-xs font-bold text-slate-700">{batch.flavor}</span>
+                                                                                <span className="text-[10px] text-slate-400 font-mono">{batch.batchNumber}</span>
+                                                                                {batch.inProgress && <span className="text-[9px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full font-bold animate-pulse">En progreso</span>}
+                                                                            </div>
+                                                                            {batch.actualMin != null && <div className="text-[10px] text-slate-400">Duración: {fmtMin(batch.actualMin)}</div>}
+                                                                            <div className="text-[10px] text-slate-400">
+                                                                                {batch.startedBy && <span>Inició: <span className="font-semibold text-slate-600">{batch.startedBy}</span></span>}
+                                                                                {batch.completedByName && batch.completedByName !== batch.startedBy && <span> → Completó: <span className="font-semibold text-slate-600">{batch.completedByName}</span></span>}
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="text-right">
+                                                                            {batch.fractionPct != null && batch.fractionPct < 100 ? (
+                                                                                <div>
+                                                                                    <div className={`text-sm font-bold ${batch.fractionPct >= 50 ? 'text-blue-600' : 'text-amber-600'}`}>{batch.fractionPct}%</div>
+                                                                                    <div className="text-[9px] text-slate-400">{batch.minutes}min de este turno</div>
+                                                                                </div>
+                                                                            ) : batch.adherenceScore != null ? (
+                                                                                <div className={`text-sm font-bold ${batch.adherenceScore >= 90 ? 'text-emerald-600' : batch.adherenceScore >= 60 ? 'text-amber-600' : 'text-red-600'}`}>
+                                                                                    Score: {batch.adherenceScore}%
+                                                                                </div>
+                                                                            ) : null}
+                                                                        </div>
+                                                                        <div className="w-12">
+                                                                            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                                                                <div className={`h-full rounded-full ${batch.fractionPct >= 100 || batch.fractionPct == null ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                                                                                    style={{ width: `${batch.fractionPct ?? 100}%` }} />
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+
+                                                        {/* Process counts */}
+                                                        {s.processCounts && Object.keys(s.processCounts).length > 0 && (() => {
+                                                            const PROC_COLORS = {
+                                                                PESAJE: 'bg-purple-100 text-purple-700',
+                                                                COCCION: 'bg-orange-100 text-orange-700',
+                                                                MEZCLADO: 'bg-yellow-100 text-yellow-700',
+                                                                PROTECCION_GATE: 'bg-teal-100 text-teal-700',
+                                                                FORMACION: 'bg-blue-100 text-blue-700',
+                                                                CONTEO: 'bg-indigo-100 text-indigo-700',
+                                                                EMPAQUE: 'bg-green-100 text-green-700',
+                                                                ENSAMBLE: 'bg-pink-100 text-pink-700',
+                                                                G_PESAJE: 'bg-purple-50 text-purple-600',
+                                                                G_EMPAQUE: 'bg-green-50 text-green-600',
+                                                                G_ENSAMBLE: 'bg-pink-50 text-pink-600',
+                                                                G_MEZCLADO: 'bg-yellow-50 text-yellow-600',
+                                                                GE_BASE_LIQUIDA: 'bg-cyan-100 text-cyan-700',
+                                                                GE_COCCION: 'bg-orange-50 text-orange-600',
+                                                                GE_PREMIX: 'bg-lime-100 text-lime-700',
+                                                            };
+                                                            const PROC_LABELS = {
+                                                                PESAJE: 'Pesaje', COCCION: 'Cocción', MEZCLADO: 'Mezclado',
+                                                                PROTECCION_GATE: 'Protección', FORMACION: 'Formación',
+                                                                CONTEO: 'Conteo', EMPAQUE: 'Empaque', ENSAMBLE: 'Ensamble',
+                                                                MEDICION: 'Medición', MAESTRO_PERLAS: 'Maestro',
+                                                                G_PESAJE: 'Pesaje (G)', G_EMPAQUE: 'Empaque (G)', G_ENSAMBLE: 'Ensamble (G)',
+                                                                G_MEZCLADO: 'Mezclado (G)', GE_BASE_LIQUIDA: 'Base Líquida (G)',
+                                                                GE_COCCION: 'Cocción (G)', GE_PREMIX: 'Premix (G)',
+                                                            };
+                                                            const ORDER = ['PESAJE', 'COCCION', 'MEZCLADO', 'PROTECCION_GATE', 'FORMACION', 'CONTEO', 'EMPAQUE', 'ENSAMBLE', 'G_PESAJE', 'G_MEZCLADO', 'G_EMPAQUE', 'G_ENSAMBLE', 'GE_BASE_LIQUIDA', 'GE_COCCION', 'GE_PREMIX'];
+                                                            const entries = Object.entries(s.processCounts).sort((a, b) => {
+                                                                const ai = ORDER.indexOf(a[0]), bi = ORDER.indexOf(b[0]);
+                                                                return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+                                                            });
+                                                            return (
+                                                                <div className="mt-3">
+                                                                    <div className="text-[10px] font-bold text-slate-500 uppercase mb-1.5">Procesos completados este turno</div>
+                                                                    <div className="flex flex-wrap gap-1.5">
+                                                                        {entries.map(([code, count]) => (
+                                                                            <span key={code} className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${PROC_COLORS[code] || 'bg-slate-100 text-slate-600'}`}>
+                                                                                {PROC_LABELS[code] || code}: {count}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })()}
+
+                                                        {/* Key material stock */}
+                                                        {(() => {
+                                                            if (!adherenceData.keyMaterialStock?.length) return null;
+                                                            const THRESHOLDS = {
+                                                                'PROCELIQUIPOPS27': { green: 300000, yellow: 150000 },
+                                                                'PROCELIQUIPOPS43': { green: 30000, yellow: 15000 },
+                                                                'PROCELIQUIPOPS26': { green: 30000, yellow: 15000 },
+                                                                'PROCELIQUIPOPS01': { green: 50000, yellow: 25000 },
+                                                            };
+                                                            const SHORT_NAMES = {
+                                                                'PROCELIQUIPOPS27': 'Alginato',
+                                                                'PROCELIQUIPOPS43': 'Fructosa',
+                                                                'PROCELIQUIPOPS26': 'Glucosa',
+                                                                'PROCELIQUIPOPS01': 'Base Liquipops',
+                                                            };
+                                                            return (
+                                                                <div className="mt-3">
+                                                                    <div className="text-[10px] font-bold text-slate-500 uppercase mb-1.5">Insumos intermedios (stock actual)</div>
+                                                                    <div className="grid grid-cols-2 gap-1.5">
+                                                                        {adherenceData.keyMaterialStock.map(m => {
+                                                                            const thresh = THRESHOLDS[m.sku] || { green: 50000, yellow: 20000 };
+                                                                            const stock = m.productionZoneStock || 0;
+                                                                            const stockKg = (stock / 1000).toFixed(1);
+                                                                            const colorCls = stock >= thresh.green ? 'border-emerald-300 bg-emerald-50'
+                                                                                : stock >= thresh.yellow ? 'border-amber-300 bg-amber-50'
+                                                                                : 'border-red-300 bg-red-50';
+                                                                            const textCls = stock >= thresh.green ? 'text-emerald-700'
+                                                                                : stock >= thresh.yellow ? 'text-amber-700' : 'text-red-700';
+                                                                            return (
+                                                                                <div key={m.sku} className={`border rounded-lg px-2.5 py-1.5 ${colorCls}`}>
+                                                                                    <div className="text-[9px] font-semibold text-slate-600">{SHORT_NAMES[m.sku] || m.name}</div>
+                                                                                    <div className={`text-sm font-bold ${textCls}`}>{stockKg} kg</div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </section>
+                            );
+                        })()}
+
                         {/* ── Time KPIs per process ──────────────────────────────── */}
                         <section>
                             <div className="flex items-center gap-2 mb-3">

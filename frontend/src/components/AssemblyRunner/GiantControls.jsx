@@ -84,11 +84,11 @@ const GiantControls = ({
                         {submitting ? (
                             <>
                                 <Loader2 size={20} className="animate-spin" />
-                                FINALIZANDO...
+                                COMPLETANDO...
                             </>
                         ) : (
                             <>
-                                {nextLabel !== 'SIGUIENTE' ? nextLabel : 'FINALIZAR'}
+                                {nextLabel !== 'SIGUIENTE' ? nextLabel : 'COMPLETAR ETAPA'}
                                 <Check size={20} />
                             </>
                         )}

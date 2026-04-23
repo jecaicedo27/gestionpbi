@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const rpaController = require('../controllers/rpaController');
 const { auth, roles } = require('../middleware/auth');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 // Siigo Assembly Note RPA
 router.post('/siigo-assembly', auth, roles(['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING']), rpaController.createSiigoAssemblyNote);
@@ -23,8 +25,6 @@ router.post('/dispatch-orphan', auth, roles(['ADMIN', 'PRODUCCION']), rpaControl
 // Recent adjustment executions by product (for persistent UI state)
 router.get('/adjustments/recent', auth, async (req, res) => {
     try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const execs = await prisma.rpaExecution.findMany({
             where: {
@@ -67,8 +67,6 @@ router.get('/adjustments/recent', auth, async (req, res) => {
 // Get RPA execution by ID
 router.get('/:id', auth, async (req, res) => {
     try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const exec = await prisma.rpaExecution.findUnique({ where: { id: req.params.id } });
         if (!exec) return res.status(404).json({ error: 'Not found' });
         res.json(exec);
@@ -76,4 +74,3 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 module.exports = router;
-

@@ -110,6 +110,19 @@ pool.query('SELECT NOW()', (err, res) => {
         const { cleanupExpired } = require('./controllers/cartController');
         setInterval(() => cleanupExpired(io), 5 * 60 * 1000);
         logger.info('🛒 CRON: Cart cleanup programado cada 5 minutos');
+
+        // ═══ CRON: Shift reschedule at 6:00, 14:00, 22:00 Colombia ═══
+        const cron = require('node-cron');
+        const { _reschedulePendingForShift } = require('./controllers/productionSchedulerController');
+        cron.schedule('0 6,14,22 * * *', async () => {
+            try {
+                const result = await _reschedulePendingForShift('liquipops');
+                if (result.rescheduled > 0) {
+                    logger.info(`⏰ SHIFT RESCHEDULE [liquipops]: ${result.rescheduled} baches recorridos. Inicio efectivo: ${result.effectiveStart}`);
+                }
+            } catch (e) { logger.error(`⏰ SHIFT RESCHEDULE error: ${e.message}`); }
+        }, { timezone: 'America/Bogota' });
+        logger.info('⏰ CRON: Shift reschedule programado a las 6:00, 14:00, 22:00 COT');
     });
 });
 

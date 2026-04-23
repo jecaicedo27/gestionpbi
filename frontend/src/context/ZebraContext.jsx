@@ -19,7 +19,7 @@ const ZebraContext = createContext(null);
 const ZebraRefContext = createContext(null);
 
 const POLL_INTERVAL_MS = 10_000;
-const ZEBRA_IP = '192.168.0.126';
+const ZEBRA_IP = '192.168.0.108';
 
 // ¿La app está sirviendo por HTTP? (sin TLS)
 const isHttp = () => window.location.protocol === 'http:';
@@ -145,12 +145,29 @@ export const ZebraProvider = ({ children }) => {
 
         setZebraStatus('checking');
 
-        // Initial delay for tablets: browser sandbox needs a moment to stabilize
-        // after F5 before allowing site-to-LAN fetches.
-        const initTimeout = setTimeout(() => {
+        const init = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch('/api/zebra/config', {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                if (res.ok) {
+                    const { ip } = await res.json();
+                    if (ip) {
+                        setConfigIp(ip);
+                        const localForce = localStorage.getItem('zebra_force_ip');
+                        if (localForce && localForce !== ip) {
+                            localStorage.setItem('zebra_force_ip', ip);
+                            setForceIpState(ip);
+                        }
+                    }
+                }
+            } catch (e) {}
             checkStatus();
             intervalRef.current = setInterval(checkStatus, POLL_INTERVAL_MS);
-        }, 3000); 
+        };
+
+        const initTimeout = setTimeout(init, 3000);
 
         return () => {
             clearTimeout(initTimeout);

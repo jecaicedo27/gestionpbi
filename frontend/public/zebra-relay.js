@@ -90,6 +90,15 @@ async function discoverZebra() {
             printerIp = found[0];
             console.log(`✅ Zebra encontrada: ${printerIp}`);
             if (found.length > 1) console.log(`   (Otras: ${found.slice(1).join(', ')}) — use --ip para especificar`);
+            // Report discovered IP to backend
+            const postData = JSON.stringify({ ip: printerIp });
+            const reportReq = https.request({
+                hostname: 'gestionpbi.lat', path: '/api/zebra/report-ip', method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+            }, () => {});
+            reportReq.on('error', () => {});
+            reportReq.write(postData);
+            reportReq.end();
             discovering = false;
             return;
         }

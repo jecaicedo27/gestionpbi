@@ -25,6 +25,10 @@ const RpaStatusTag = ({ executionId }) => {
                     }
                 }
             } catch (e) {
+                if (e.response?.status === 404) {
+                    setStatus('FAILED');
+                    return;
+                }
                 console.warn('RPA poll err:', e.message);
             }
             timer = setTimeout(checkStatus, 3000);

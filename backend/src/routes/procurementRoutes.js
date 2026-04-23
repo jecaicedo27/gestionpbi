@@ -41,6 +41,7 @@ const receptionPhotoUpload = multer({ storage: makeStorage(RECEPTION_PHOTO_DIR, 
 
 // ── Purchase Orders ──
 
+router.get('/purchase-order-alerts/pending', auth, roles('CARTERA', 'CONTABILIDAD'), purchaseOrderController.getPendingWorkflowAlerts);
 router.get('/purchase-orders', auth, purchaseOrderController.list);
 router.get('/purchase-orders/:id', auth, purchaseOrderController.getById);
 router.get('/purchase-orders/:id/pdf', auth, generatePDF);
@@ -350,8 +351,8 @@ router.get('/forecast', auth, async (req, res) => {
         const result = await forecastService.calculateForecast();
         res.json(result);
     } catch (error) {
-        console.error('Forecast error:', error.message);
-        res.status(500).json({ error: 'Error calculando forecast' });
+        console.error('Forecast error:', error.message, error.stack);
+        res.status(500).json({ error: 'Error calculando forecast', detail: error.message });
     }
 });
 
@@ -366,8 +367,6 @@ router.get('/forecast/config', auth, async (req, res) => {
 
 router.put('/forecast/config', auth, roles('ADMIN', 'DIRECTOR_TECNICO'), async (req, res) => {
     try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const { inventoryWeeks, bufferPct, growthBufferPct } = req.body;
 
         const updates = [];
@@ -415,8 +414,6 @@ router.get('/packaging', auth, async (req, res) => {
 
 router.post('/packaging', auth, roles('ADMIN', 'DIRECTOR_TECNICO'), async (req, res) => {
     try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const { siigoProductCode, siigoProductName, packagingDesc, gramsPerUnit } = req.body;
 
         const pkg = await prisma.productPackaging.upsert({

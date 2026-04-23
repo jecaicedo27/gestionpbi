@@ -77,6 +77,14 @@ const PREMIXES = [
         shadow: 'shadow-fuchsia-200',
         description: 'Gomas especiales para fórmula Dióxido',
     },
+    {
+        name: 'Azúcar Invertida',
+        code: 'TMPL-AZINV-001-v2',
+        emoji: '🍯',
+        gradient: 'from-yellow-500 to-orange-500',
+        shadow: 'shadow-yellow-200',
+        description: 'Fórmula unificada de azúcar invertida',
+    },
 ];
 
 const PROCESSES = [

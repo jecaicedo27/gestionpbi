@@ -10,7 +10,22 @@ async function listFormulas(req, res) {
         const { productId, isActive } = req.query;
 
         const where = {
-            product: { accountGroup: { notIn: [1402, 1405] } }
+            product: {
+                accountGroup: { notIn: [1402] },
+                NOT: {
+                    AND: [
+                        { accountGroup: 1405 },
+                        { OR: [
+                            { name: { contains: 'SIROPE' } },
+                            { name: { contains: 'SABORIZACION' } },
+                            { name: { contains: 'ESCARCHADO' } },
+                            { name: { contains: 'LIQUIMON' } },
+                            { name: { contains: 'BASE SIROPE' } },
+                            { name: { contains: 'BASE CITRICA' } },
+                        ]}
+                    ]
+                }
+            }
         };
         if (productId) where.productId = productId;
         if (isActive !== undefined) where.isActive = isActive === 'true';

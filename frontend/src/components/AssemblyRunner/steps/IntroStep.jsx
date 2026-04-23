@@ -186,6 +186,9 @@ const IntroStep = ({
     const [adminEditingProduct, setAdminEditingProduct] = useState(null); // productId being edited
     const [adminEditValue, setAdminEditValue] = useState('');
     const [adminSaving, setAdminSaving] = useState(false);
+    const [addingPresentation, setAddingPresentation] = useState(false);
+    const [availableProducts, setAvailableProducts] = useState([]);
+    const [loadingProducts, setLoadingProducts] = useState(false);
     // ── Photo modal state ──
     const [photoModal, setPhotoModal] = useState(null); // { url, label }
 
@@ -210,7 +213,7 @@ const IntroStep = ({
         // Auto-skip if any EMPAQUE note has already been started or completed
         // Also skip for Geniality batches — carriots reception is a separate wizard step
         const anyEmpaqueStarted = empaqueNotes.some(n => n.status === 'COMPLETED' || n.status === 'EXECUTING');
-        const showReception = !empaqueReceptionConfirmed && !anyEmpaqueStarted && !hasCarriotsSystem;
+        const showReception = !empaqueReceptionConfirmed && (!anyEmpaqueStarted || isAdmin) && !hasCarriotsSystem;
         if (showReception) {
             const batchNumber = noteData.productionBatch?.batchNumber || '';
             const productName = noteData.product?.name || noteData.stageName || '';
@@ -424,7 +427,8 @@ const IntroStep = ({
                                                             autoFocus
                                                             value={adminEditValue}
                                                             onChange={(e) => setAdminEditValue(e.target.value)}
-                                                            className="w-16 px-1 py-1 text-base font-black text-red-700 bg-white border-2 border-red-400 rounded-lg text-center focus:border-red-500 outline-none"
+                                                            onFocus={(e) => e.target.select()}
+                                                            className="w-28 px-2 py-2 text-2xl font-black text-red-700 bg-white border-3 border-red-400 rounded-xl text-center focus:border-red-500 outline-none"
                                                         />
                                                         <div className="flex gap-1.5">
                                                             {/* Save button */}
@@ -447,6 +451,22 @@ const IntroStep = ({
                                                                                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                                                                                     body: JSON.stringify({ processParameters: { conteo: currentConteo, admin_conteo_edit: { productId: target.productId, oldValue: conteo, newValue: newVal, editedBy: user?.name || user?.email, editedAt: new Date().toISOString() } } })
                                                                                 });
+                                                                                const matchEmpaque = empaqueNotes.find(en => en.productId === target.productId);
+                                                                                if (matchEmpaque) {
+                                                                                    await fetch(`/api/assembly-notes/${matchEmpaque.id}/process-params`, {
+                                                                                        method: 'PATCH',
+                                                                                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                                                                        body: JSON.stringify({ processParameters: { empaque: { conteo_qty: newVal, approved_qty: newVal, defective_qty: 0 } } })
+                                                                                    });
+                                                                                }
+                                                                                const batchId = noteData.productionBatch?.id;
+                                                                                if (batchId) {
+                                                                                    await fetch(`/api/production/liquipops/batches/${batchId}/output-targets`, {
+                                                                                        method: 'PATCH',
+                                                                                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                                                                        body: JSON.stringify({ productId: target.productId, actualUnits: newVal })
+                                                                                    });
+                                                                                }
                                                                                 conteoEntry.actual = newVal;
                                                                             }
                                                                         }
@@ -486,16 +506,16 @@ const IntroStep = ({
                                                                 {deviation > 0 ? `+${deviation}` : deviation}
                                                             </div>
                                                         )}
-                                                        {isAdmin && displayReal !== null && displayReal !== 0 && (
+                                                        {isAdmin && (
                                                             <button
                                                                 onClick={() => {
                                                                     setAdminEditingProduct(target.productId);
-                                                                    setAdminEditValue(String(displayReal));
+                                                                    setAdminEditValue(String(displayReal ?? 0));
                                                                 }}
-                                                                className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center shadow-md transition-all opacity-80 hover:opacity-100"
+                                                                className="mt-1 px-2 py-0.5 bg-red-500 hover:bg-red-600 active:scale-95 rounded-lg flex items-center justify-center shadow-md transition-all"
                                                                 title="Editar conteo (Solo Admin)"
                                                             >
-                                                                <span className="text-white text-[8px] font-bold">✏️</span>
+                                                                <span className="text-white text-[10px] font-bold">✏️ Editar</span>
                                                             </button>
                                                         )}
                                                     </div>
@@ -589,6 +609,79 @@ const IntroStep = ({
                                 );
                             })}
                         </div>
+
+                        {/* Admin: Add Presentation */}
+                        {isAdmin && (
+                            <div className="px-3 py-2 shrink-0">
+                                {!addingPresentation ? (
+                                    <button
+                                        onClick={async () => {
+                                            setAddingPresentation(true);
+                                            setLoadingProducts(true);
+                                            try {
+                                                const existingIds = outputTargets.map(t => t.productId);
+                                                const flavor = extractFlavor(noteData.product?.name || '');
+                                                const res = await fetch(`/api/products?search=${encodeURIComponent(flavor || '')}&limit=50`, {
+                                                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                                                });
+                                                const data = await res.json();
+                                                const excludeKeywords = ['ETIQUETA', 'SELLO', 'CAJA', 'EMPAQUE', 'INSUMO'];
+                                                const products = (data.products || data || []).filter(p => {
+                                                    const name = (p.name || '').toUpperCase();
+                                                    return !existingIds.includes(p.id)
+                                                        && name.includes('LIQUIPOPS')
+                                                        && !excludeKeywords.some(kw => name.includes(kw));
+                                                });
+                                                setAvailableProducts(products);
+                                            } catch (e) { console.error(e); }
+                                            setLoadingProducts(false);
+                                        }}
+                                        className="w-full py-2.5 rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold text-sm transition-all active:scale-[0.98]"
+                                    >
+                                        + Agregar presentación
+                                    </button>
+                                ) : (
+                                    <div className="bg-indigo-50 rounded-xl border-2 border-indigo-200 p-3">
+                                        <div className="text-xs font-bold text-indigo-700 mb-2">Seleccione presentación:</div>
+                                        {loadingProducts ? (
+                                            <div className="text-center text-xs text-slate-400 py-2">Cargando...</div>
+                                        ) : availableProducts.length === 0 ? (
+                                            <div className="text-center text-xs text-slate-400 py-2">No hay presentaciones adicionales disponibles</div>
+                                        ) : (
+                                            <div className="space-y-1.5 max-h-40 overflow-auto">
+                                                {availableProducts.map(p => (
+                                                    <button
+                                                        key={p.id}
+                                                        onClick={async () => {
+                                                            try {
+                                                                const token = localStorage.getItem('token');
+                                                                const batchId = noteData.productionBatch?.id;
+                                                                await fetch(`/api/production/liquipops/batches/${batchId}/output-targets`, {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                                                                    body: JSON.stringify({ productId: p.id, plannedUnits: 0, plannedWeightKg: 0 })
+                                                                });
+                                                                setAddingPresentation(false);
+                                                                window.location.reload();
+                                                            } catch (e) { console.error('Error adding target:', e); }
+                                                        }}
+                                                        className="w-full text-left px-3 py-2 rounded-lg bg-white border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 transition-all text-xs font-semibold text-slate-700"
+                                                    >
+                                                        {p.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                        <button
+                                            onClick={() => { setAddingPresentation(false); setAvailableProducts([]); }}
+                                            className="mt-2 w-full py-1.5 rounded-lg bg-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-300 transition-all"
+                                        >
+                                            Cancelar
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         {/* Status Summary */}
                         <div className="px-3 pb-2 shrink-0">
@@ -888,20 +981,20 @@ const IntroStep = ({
                                     const target2 = outputTargets.find(t =>
                                         nums2.some(n => (t.product?.name || '').toLowerCase().includes(n))
                                     );
-                                    const planned2 = target2?.plannedUnits;
-
                                     // Conteo data for this presentation
                                     const empData2 = en.empaqueData || {};
                                     const empRef2 = en.processParameters?.empaqueRef || {};
                                     const ce = target2 ? Object.values(conteoMap).find(c => String(c.productId) === String(target2.productId)) : null;
-                                    
+
                                     const productCarriots = carriotsData.filter(c => String(c.productId) === String(target2?.productId || en.productId || target2?.product?.id));
                                     const carriotsSum = productCarriots.length > 0 ? productCarriots.reduce((sum, c) => sum + Number(c.qty), 0) : null;
 
-                                    const plannedConteo = planned2 ?? ce?.planned ?? empData2.planned_qty ?? empRef2.planned_qty;
-                                    
-                                    // Use carriots sum (if used) -> drafted count (auto-saved) -> explicitly saved actual -> empaque fallbacks
-                                    // drafted count is stored by product ID as string
+                                    const plannedConteo = ce?.planned
+                                        ?? empRef2.planned_qty
+                                        ?? empData2.planned_qty
+                                        ?? (target2?.plannedUnits > 0 ? target2.plannedUnits : undefined)
+                                        ?? null;
+
                                     const draftValue = (target2 && conteoDraftMap[target2.productId] !== undefined) ? parseInt(conteoDraftMap[target2.productId], 10) : null;
                                     const actualConteo = carriotsSum !== null ? carriotsSum : (draftValue !== null && !isNaN(draftValue) ? draftValue : (ce?.actual ?? empData2.conteo_qty ?? empRef2.conteo_qty));
                                     const diff = actualConteo != null && plannedConteo ? actualConteo - plannedConteo : null;
@@ -970,7 +1063,8 @@ const IntroStep = ({
                                                                         autoFocus
                                                                         value={adminEditValue}
                                                                         onChange={(e) => setAdminEditValue(e.target.value)}
-                                                                        className="w-16 px-1 py-1 text-base font-black text-red-700 bg-white border-2 border-red-400 rounded-lg text-center focus:border-red-500 outline-none"
+                                                                        onFocus={(e) => e.target.select()}
+                                                            className="w-28 px-2 py-2 text-2xl font-black text-red-700 bg-white border-3 border-red-400 rounded-xl text-center focus:border-red-500 outline-none"
                                                                     />
                                                                     <div className="flex gap-1.5">
                                                                         <button

@@ -26,6 +26,19 @@ const MONTH_OPTIONS = (() => {
     return opts;
 })();
 
+const REQUIRED_ZONES = {
+    1404: ['Zona Producción'],
+    1405: ['Zona Producción'],
+    1400: ['Zona Producción', 'Bodega Principal'],
+    1403: ['Zona Producción', 'Bodega Principal'],
+    1406: ['Zona Producción', 'Bodega Principal'],
+    1407: ['Zona Producción', 'Bodega Principal'],
+    1408: ['Zona Producción', 'Bodega Principal'],
+    1409: ['Zona Producción', 'Bodega Principal'],
+    1401: ['Zona Producción', 'Producto Terminado'],
+    1402: ['Zona Producción', 'Producto Terminado'],
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtGrams = (qty, unitName = 'g') => {
     if (qty == null || qty === '') return '—';
@@ -86,6 +99,10 @@ export default function InventoryCountPage() {
     const [pickedSummary, setPickedSummary] = useState({});
     const scannerInputRef = useRef(null);
     const [lastScan, setLastScan] = useState(null);
+    const [accountCodes, setAccountCodes] = useState([]);
+    const [adjustmentState, setAdjustmentState] = useState({});
+    const [siigoModal, setSiigoModal] = useState(null);
+    const [otherZoneCounts, setOtherZoneCounts] = useState({});
     const scanHandlerRef = useRef(null);
 
     // ── Global Scanner Hook: intercept fast keystrokes so they don't leak into visible inputs ──
@@ -118,6 +135,35 @@ export default function InventoryCountPage() {
         setLoadingSessions(false);
     }, []);
     useEffect(() => { fetchSessions(); }, [fetchSessions]);
+
+    useEffect(() => {
+        api.get('/inventory-count/account-codes').then(r => setAccountCodes(r.data)).catch(() => {});
+    }, []);
+
+    // Poll RPA status for running adjustments
+    useEffect(() => {
+        const running = Object.entries(adjustmentState).filter(([, v]) => v?.status === 'RUNNING');
+        if (running.length === 0) return;
+        const interval = setInterval(async () => {
+            for (const [productId, { executionId }] of running) {
+                try {
+                    const { data } = await api.get(`/rpa/${executionId}`);
+                    if (data.status !== 'RUNNING') {
+                        setAdjustmentState(prev => ({
+                            ...prev,
+                            [productId]: { ...prev[productId], status: data.status, siigoNoteCode: data.siigoNoteCode }
+                        }));
+                        if (data.status === 'SUCCESS') {
+                            api.get('/inventory/products').then(res => {
+                                if (res?.data) setSystemProducts(Array.isArray(res.data) ? res.data : []);
+                            }).catch(() => {});
+                        }
+                    }
+                } catch (e) {}
+            }
+        }, 5000);
+        return () => clearInterval(interval);
+    }, [adjustmentState]);
 
     // ── Open session ────────────────────────────────────────────────────
     const openSession = useCallback(async (session) => {
@@ -155,6 +201,48 @@ export default function InventoryCountPage() {
                 im[key] = { physicalGrams: ln.physicalQty, notes: ln.notes || '', lineId: ln.id };
             });
             setInputMap(im);
+            // Load existing SIIGO_ADJUSTMENT RPAs to prevent duplicates
+            try {
+                const { data: adjRpas } = await api.get('/rpa/history?type=SIIGO_ADJUSTMENT&limit=100');
+                const adjState = {};
+                for (const rpa of adjRpas) {
+                    if (!rpa.productName) continue;
+                    const allProducts = [...matLots, ...finLots];
+                    const matchProd = allProducts.find(l =>
+                        l.product?.name === rpa.productName || l.product?.sku === rpa.productName
+                    );
+                    const pid = matchProd?.productId || matchProd?.product?.id;
+                    if (pid && !adjState[pid]) {
+                        adjState[pid] = {
+                            executionId: rpa.id,
+                            status: rpa.status,
+                            siigoNoteCode: rpa.siigoNoteCode,
+                            accountCode: rpa.observations?.match(/\d{8}/)?.[0] || '71050503',
+                        };
+                    }
+                }
+                setAdjustmentState(adjState);
+            } catch (e) { console.warn('Could not load adjustment RPAs', e); }
+            // Load cross-zone counts from other sessions of the same month
+            try {
+                const { data: allSessions } = await api.get('/inventory-count/sessions');
+                const otherSess = allSessions.filter(s =>
+                    s.month === sess.month && s.id !== sess.id && s.status !== 'CANCELLED'
+                );
+                const ozc = {};
+                for (const os of otherSess) {
+                    try {
+                        const { data: osDetail } = await api.get(`/inventory-count/sessions/${os.id}`);
+                        ozc[os.warehouseName] = {};
+                        for (const line of osDetail.lines || []) {
+                            if (!line.productId) continue;
+                            ozc[os.warehouseName][line.productId] =
+                                (ozc[os.warehouseName][line.productId] || 0) + line.physicalQty;
+                        }
+                    } catch (e2) {}
+                }
+                setOtherZoneCounts(ozc);
+            } catch (e) { console.warn('Could not load cross-zone counts', e); }
             setSearch('');
             setFilterUncounted(false);
             setView('session');
@@ -457,13 +545,20 @@ export default function InventoryCountPage() {
             }
             agMap[ag].products[pid].lots.push(row);
         }
+        // Filter: only show account groups whose REQUIRED_ZONES includes this session's warehouse
+        const sessionWarehouse = activeSession?.warehouseName;
         return Object.values(agMap)
+            .filter(ag => {
+                const zones = REQUIRED_ZONES[ag.agId];
+                if (!zones || !sessionWarehouse) return true;
+                return zones.includes(sessionWarehouse);
+            })
             .sort((a, b) => String(a.agId).localeCompare(String(b.agId)))
             .map(ag => ({
                 ...ag,
                 products: Object.values(ag.products).sort((a, b) => a.productName.localeCompare(b.productName))
             }));
-    }, [allLotRows, systemProducts, activeZone, isFinishedSession]);
+    }, [allLotRows, systemProducts, activeZone, isFinishedSession, activeSession]);
 
     // ── Filtered accountGroups ────────────────────────────────────────────────
     const filteredAccountGroups = useMemo(() => {
@@ -950,6 +1045,7 @@ export default function InventoryCountPage() {
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-rose-600 uppercase tracking-wide">📦 Separados</th>
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-green-600 uppercase tracking-wide">📝 Físico (estante)</th>
                                                 <th className="text-left px-4 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Δ vs ERP</th>
+                                                {activeSession.status === 'IN_PROGRESS' && <th className="px-4 py-3 text-xs font-semibold text-neutral-500 uppercase tracking-wide">Notas</th>}
                                                 {activeSession.status === 'IN_PROGRESS' && <th className="px-4 py-3"></th>}
                                             </tr>
                                         </thead>
@@ -957,7 +1053,7 @@ export default function InventoryCountPage() {
                                             {filteredAccountGroups.map((ag) => (
                                                 <>
                                                     <tr key={`ag-${ag.agId}`} className="bg-neutral-700 sticky top-0">
-                                                        <td colSpan={activeSession.status === 'IN_PROGRESS' ? 7 : 6} className="px-4 py-2">
+                                                        <td colSpan={activeSession.status === 'IN_PROGRESS' ? 8 : 6} className="px-4 py-2">
                                                             <span className="text-white font-bold text-xs uppercase tracking-widest">{ag.agName}</span>
                                                             <span className="ml-3 text-neutral-400 text-xs">
                                                                 {ag.products.length} producto{ag.products.length !== 1 ? 's' : ''} ·{' '}
@@ -969,7 +1065,21 @@ export default function InventoryCountPage() {
                                                         const allActiveCounted = group.lots.filter(r => r.isActive).every(r => r.isCounted);
                                                         const hasActive = group.lots.some(r => r.isActive);
                                                         const isEditable = activeSession.status === 'IN_PROGRESS';
-                                                        const colCount = isEditable ? 7 : 6;
+                                                        const colCount = isEditable ? 8 : 6;
+                                                        // Summary totals for the product group
+                                                        const totalErp = group.lots.filter(r => r.isActive).reduce((s, r) => s + (r.systemGrams || 0), 0);
+                                                        const lotsPhysical = group.lots.filter(r => r.isActive && r.isCounted).reduce((s, r) => s + (r.physicalGrams || 0), 0);
+                                                        const slKey = `nolot-${group.productId}`;
+                                                        const slSaved = inputMap[slKey]?.lineId;
+                                                        const slPhysical = slSaved ? (parseFloat(inputMap[slKey]?.physicalGrams) || 0) : 0;
+                                                        const totalPhysical = lotsPhysical + slPhysical;
+                                                        const totalSeparated = typeof pickedSummary[group.productId] === 'object' ? pickedSummary[group.productId].total : (pickedSummary[group.productId] || 0);
+                                                        const totalDiff = totalPhysical + totalSeparated - totalErp;
+                                                        const siigoDiff = (totalPhysical + totalSeparated) - (group.siigoTotal || 0);
+                                                        const hasCounted = group.lots.some(r => r.isActive && r.isCounted) || !!slSaved;
+                                                        const showReconcile = isEditable;
+                                                        const hasSiigoDiff = group.siigoTotal != null && Math.round(siigoDiff) !== 0;
+                                                        const hasLocalDiff = totalDiff !== 0;
                                                         return (
                                                             <>
                                                                 <tr key={`header-${group.productId}`} className="bg-indigo-50 border-t-2 border-indigo-100">
@@ -978,7 +1088,7 @@ export default function InventoryCountPage() {
                                                                             ? <span className="text-green-500 text-base">✓</span>
                                                                             : <span className="inline-block w-4 h-4 rounded-full border-2 border-amber-400 bg-amber-50"></span>}
                                                                     </td>
-                                                                    <td className="px-4 py-2.5" colSpan={2}>
+                                                                    <td className="px-4 py-2.5">
                                                                         <div className="flex items-center gap-3 flex-wrap">
                                                                             <span className="font-bold text-neutral-800 text-sm">{group.productName}</span>
                                                                             {group.productCode && <code className="text-xs text-neutral-400">{group.productCode}</code>}
@@ -989,6 +1099,11 @@ export default function InventoryCountPage() {
                                                                                     🔵 Total en Siigo: {fmtGrams(group.siigoTotal, group.unit)}
                                                                                 </span>
                                                                             )}
+                                                                            {hasCounted && (
+                                                                                <span className="ml-2 inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-700 text-xs font-semibold px-2.5 py-1 rounded-full border border-emerald-200">
+                                                                                    Total Planta: {fmtGrams(totalPhysical + totalSeparated, group.unit)}
+                                                                                </span>
+                                                                            )}
                                                                             {pickedSummary[group.productId] && (
                                                                                 <span className="ml-2 inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 text-xs font-semibold px-2.5 py-1 rounded-full border border-rose-200 cursor-help"
                                                                                     title={
@@ -996,12 +1111,99 @@ export default function InventoryCountPage() {
                                                                                             ? `Separados para:\n${pickedSummary[group.productId].orders.map(o => `• ${o.distributorName} (P-${o.orderNumber}): ${o.quantity} uds`).join('\n')}`
                                                                                             : "Unidades físicamente separadas en piso pero que aún no han sido descontadas por Siigo"
                                                                                     }>
-                                                                                    📦 Separados (Sin facturar): {fmtGrams(typeof pickedSummary[group.productId] === 'object' ? pickedSummary[group.productId].total : pickedSummary[group.productId], group.unit)}
+                                                                                    📦 Separados: {fmtGrams(totalSeparated, group.unit)}
                                                                                 </span>
                                                                             )}
                                                                         </div>
                                                                     </td>
-                                                                    <td colSpan={colCount - 2}></td>
+                                                                    <td className="px-2 py-2.5 text-center text-sm font-bold">{fmtGrams(totalErp, group.unit)}</td>
+                                                                    <td className="px-2 py-2.5 text-center text-sm font-bold">{fmtGrams(totalSeparated, group.unit)}</td>
+                                                                    <td className="px-2 py-2.5 text-center text-sm font-bold">{hasCounted ? fmtGrams(totalPhysical, group.unit) : '—'}</td>
+                                                                    <td className={`px-2 py-2.5 text-center text-sm font-bold ${totalDiff < 0 ? 'text-red-600' : totalDiff > 0 ? 'text-green-600' : ''}`}>
+                                                                        {totalDiff !== 0 ? (totalDiff > 0 ? '+' : '') + fmtGrams(totalDiff, group.unit) : '—'}
+                                                                    </td>
+                                                                    {isEditable && (
+                                                                        <td colSpan={2} className="px-2 py-2.5 text-right whitespace-nowrap">
+                                                                            {showReconcile && (() => {
+                                                                                const adj = adjustmentState[group.productId];
+                                                                                const rpaRunning = adj?.status === 'RUNNING';
+                                                                                const rpaSuccess = adj?.status === 'SUCCESS';
+                                                                                const rpaFailed = adj?.status === 'FAILED';
+                                                                                // Cross-zone logic
+                                                                                const requiredZones = REQUIRED_ZONES[ag.agId] || [activeSession.warehouseName];
+                                                                                const isSingleZone = requiredZones.length === 1;
+                                                                                const otherRequired = requiredZones.filter(z => z !== activeSession.warehouseName);
+                                                                                const allZonesCounted = hasCounted && otherRequired.every(z =>
+                                                                                    otherZoneCounts[z] && otherZoneCounts[z][group.productId] !== undefined
+                                                                                );
+                                                                                let crossPhysical = totalPhysical + totalSeparated;
+                                                                                if (!isSingleZone) {
+                                                                                    for (const z of otherRequired) {
+                                                                                        crossPhysical += (otherZoneCounts[z]?.[group.productId] || 0);
+                                                                                    }
+                                                                                }
+                                                                                const crossDiff = crossPhysical - (group.siigoTotal || 0);
+                                                                                const hasCrossDiff = group.siigoTotal != null && Math.round(crossDiff) !== 0;
+                                                                                const adjQty = Math.round(crossDiff);
+                                                                                const missingZones = otherRequired.filter(z => !otherZoneCounts[z]?.[group.productId]);
+                                                                                return (
+                                                                                    <div className="flex flex-col gap-1 items-end">
+                                                                                        {allZonesCounted && hasCrossDiff && !rpaRunning && (
+                                                                                            <button
+                                                                                                className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap font-medium"
+                                                                                                onClick={() => {
+                                                                                                    const defaultCode = activeZone === 'PRODUCTION' ? '71050503' : '71050504';
+                                                                                                    setAdjustmentState(prev => ({ ...prev, [group.productId]: undefined }));
+                                                                                                    setSiigoModal({
+                                                                                                        productId: group.productId,
+                                                                                                        productName: group.productName,
+                                                                                                        productCode: group.productCode,
+                                                                                                        siigoActual: fmtGrams(group.siigoTotal, group.unit),
+                                                                                                        plantaReal: fmtGrams(crossPhysical, group.unit),
+                                                                                                        adjQty: adjQty,
+                                                                                                        adjFormatted: fmtGrams(adjQty, group.unit),
+                                                                                                        accountCode: defaultCode,
+                                                                                                    });
+                                                                                                }}
+                                                                                            >Ajustar Siigo ({adjQty > 0 ? '+' : ''}{fmtGrams(adjQty, group.unit)})</button>
+                                                                                        )}
+                                                                                        {hasCounted && !allZonesCounted && !isSingleZone && missingZones.length > 0 && (
+                                                                                            <span className="text-xs text-amber-600">
+                                                                                                Falta contar en: {missingZones.join(', ')}
+                                                                                            </span>
+                                                                                        )}
+                                                                                        {rpaRunning && (
+                                                                                            <span className="text-xs text-amber-600 animate-pulse">Ejecutando RPA...</span>
+                                                                                        )}
+                                                                                        {rpaFailed && (
+                                                                                            <span className="text-xs text-red-600">RPA falló</span>
+                                                                                        )}
+                                                                                        {rpaSuccess && (
+                                                                                            <span className="text-xs text-green-700 font-semibold">
+                                                                                                Siigo: {adj.siigoNoteCode || 'OK'}
+                                                                                            </span>
+                                                                                        )}
+                                                                                        {hasCounted && hasLocalDiff && (rpaSuccess || !hasCrossDiff) && !adj?.dbAligned && (
+                                                                                            <button
+                                                                                                className="px-2 py-1 text-xs bg-neutral-700 text-white rounded hover:bg-neutral-800"
+                                                                                                onClick={async () => {
+                                                                                                    if (!confirm(`Alinear BD: Los lotes contados se ajustarán a la cantidad física.\nLotes NO contados → cantidad 0.\n\nEsta acción NO se puede deshacer.`)) return;
+                                                                                                    try {
+                                                                                                        const { data } = await api.post(`/inventory-count/sessions/${activeSession.id}/reconcile-product`, { productId: group.productId });
+                                                                                                        alert(`Alineado: ${data.changesCount} lote(s) ajustados en BD`);
+                                                                                                        setAdjustmentState(prev => ({ ...prev, [group.productId]: { ...prev[group.productId], dbAligned: true } }));
+                                                                                                    } catch (e) { alert('Error: ' + (e.response?.data?.error || e.message)); }
+                                                                                                }}
+                                                                                            >Alinear BD</button>
+                                                                                        )}
+                                                                                        {adj?.dbAligned && (
+                                                                                            <span className="text-xs text-green-700 font-semibold">BD Alineada</span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                );
+                                                                            })()}
+                                                                        </td>
+                                                                    )}
                                                                 </tr>
                                                                 {group.lots.map(({ lot, isActive, isCounted, physicalGrams, systemGrams, diff, zone }) => {
                                                                     const key = lot.id;
@@ -1090,7 +1292,7 @@ export default function InventoryCountPage() {
                                                                                     <input type="text" data-scanner-ignore="true" value={localInput.notes}
                                                                                         onChange={e => setInputMap(m => ({ ...m, [key]: { ...m[key], notes: e.target.value } }))}
                                                                                         placeholder="Opcional"
-                                                                                        className="w-full min-w-[70px] border border-neutral-100 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-300" />
+                                                                                        className="w-20 border border-neutral-100 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-300" />
                                                                                 ) : <span className="text-neutral-400 text-xs">{localInput.notes || ''}</span>}
                                                                             </td>
                                                                             {isEditable && (
@@ -1366,6 +1568,79 @@ export default function InventoryCountPage() {
                             </div>
                         </div>
                     )}
+                </div>
+            )}
+            {/* ══ MODAL AJUSTE SIIGO ══════════════════════════════════════ */}
+            {siigoModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setSiigoModal(null)}>
+                    <div className="bg-white rounded-xl shadow-2xl w-[480px] max-w-[95vw] p-6" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-lg font-bold text-neutral-800 mb-4">Ajustar inventario en Siigo</h3>
+                        <div className="space-y-3 mb-5">
+                            <div className="bg-neutral-50 rounded-lg p-3">
+                                <div className="text-sm font-semibold text-neutral-700">{siigoModal.productName}</div>
+                                <div className="text-xs text-neutral-400 mt-0.5">{siigoModal.productCode}</div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3 text-center">
+                                <div className="bg-indigo-50 rounded-lg p-2">
+                                    <div className="text-xs text-indigo-500 mb-1">Siigo actual</div>
+                                    <div className="text-sm font-bold text-indigo-700">{siigoModal.siigoActual}</div>
+                                </div>
+                                <div className="bg-emerald-50 rounded-lg p-2">
+                                    <div className="text-xs text-emerald-500 mb-1">Planta real</div>
+                                    <div className="text-sm font-bold text-emerald-700">{siigoModal.plantaReal}</div>
+                                </div>
+                                <div className={`rounded-lg p-2 ${siigoModal.adjQty < 0 ? 'bg-red-50' : 'bg-green-50'}`}>
+                                    <div className={`text-xs mb-1 ${siigoModal.adjQty < 0 ? 'text-red-500' : 'text-green-500'}`}>Ajuste</div>
+                                    <div className={`text-sm font-bold ${siigoModal.adjQty < 0 ? 'text-red-700' : 'text-green-700'}`}>
+                                        {siigoModal.adjQty > 0 ? '+' : ''}{siigoModal.adjFormatted}
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-neutral-600 mb-1.5">Cuenta contable</label>
+                                <div className="border border-neutral-200 rounded-lg max-h-[240px] overflow-y-auto">
+                                    {accountCodes.map(ac => (
+                                        <div
+                                            key={ac.code}
+                                            className={`px-3 py-2 text-sm cursor-pointer border-b border-neutral-100 last:border-b-0 transition-colors
+                                                ${siigoModal.accountCode === ac.code
+                                                    ? 'bg-blue-50 text-blue-700 font-semibold'
+                                                    : 'hover:bg-neutral-50 text-neutral-700'}`}
+                                            onClick={() => setSiigoModal(prev => ({ ...prev, accountCode: ac.code }))}
+                                        >
+                                            <span className="text-neutral-400 text-xs mr-2">{ac.code}</span>
+                                            {ac.name}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex gap-2 justify-end">
+                            <button
+                                className="px-4 py-2 text-sm rounded-lg border border-neutral-300 text-neutral-600 hover:bg-neutral-50"
+                                onClick={() => setSiigoModal(null)}
+                            >Cancelar</button>
+                            <button
+                                className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700"
+                                onClick={async () => {
+                                    const m = siigoModal;
+                                    try {
+                                        const { data } = await api.post('/rpa/siigo-adjustment', {
+                                            productName: m.productName,
+                                            productSku: m.productCode,
+                                            quantity: m.adjQty,
+                                            accountCode: m.accountCode,
+                                        });
+                                        setAdjustmentState(prev => ({
+                                            ...prev,
+                                            [m.productId]: { accountCode: m.accountCode, executionId: data.executionId, status: 'RUNNING' }
+                                        }));
+                                        setSiigoModal(null);
+                                    } catch (e) { alert('Error: ' + (e.response?.data?.error || e.message)); }
+                                }}
+                            >Ejecutar ajuste</button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

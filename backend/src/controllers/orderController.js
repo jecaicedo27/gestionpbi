@@ -6,7 +6,9 @@ const prisma = new PrismaClient();
 
 const createOrder = async (req, res) => {
     const { items, allowLooseUnits, distributorId: bodyDistributorId, notes } = req.body;
-    
+
+    console.log(`[createOrder] user: ${req.user?.name} role: ${req.user?.role} allowLooseUnits: ${allowLooseUnits} (type: ${typeof allowLooseUnits})`);
+
     // Distributors self-assign; ADMIN can pass distributorId in body
     const distributorId = (req.user.role === 'DISTRIBUIDOR' || !bodyDistributorId) ? req.user.id : bodyDistributorId;
 
@@ -38,8 +40,8 @@ const createOrder = async (req, res) => {
             }
 
             // Validate full box (bypassed if ADMIN with allowLooseUnits flag)
-            const isAdmin = req.user.role === 'ADMIN';
-            const bypassPackSize = isAdmin && allowLooseUnits === true;
+            const canBypass = ['ADMIN', 'LOGISTICA'].includes(req.user.role);
+            const bypassPackSize = canBypass && allowLooseUnits === true;
             
             if (!bypassPackSize && product.packSize && product.packSize > 1 && item.quantity % product.packSize !== 0) {
                 return res.status(400).json({

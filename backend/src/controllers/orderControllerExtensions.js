@@ -758,10 +758,15 @@ exports.getTransportGuide = async (req, res) => {
             const m = n.match(/(\d+)\s*GR/); if (m) return parseInt(m[1]);
             return 350;
         };
+        const getUnitsPerBox = (item) => {
+            if (order.packingMode === 'EVEREST') return 6;
+            return (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+        };
+
         const rows = order.items.map(item => {
             const qty = item.allocatedQty || 0;
             const weightG = getWeightG(item.product?.name);
-            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+            const unitsPerBox = getUnitsPerBox(item);
             const boxes = Math.ceil(qty / unitsPerBox);
             const weightKg = (qty * weightG / 1000).toFixed(2);
             return `<tr>
@@ -775,8 +780,7 @@ exports.getTransportGuide = async (req, res) => {
         const totalUnits = order.items.reduce((s, i) => s + (i.allocatedQty || 0), 0);
         const totalBoxes = order.items.reduce((s, item) => {
             const qty = item.allocatedQty || 0;
-            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
-            return s + Math.ceil(qty / unitsPerBox);
+            return s + Math.ceil(qty / getUnitsPerBox(item));
         }, 0);
 
         // ── Category summary: group boxes by product type/size ──
@@ -796,7 +800,7 @@ exports.getTransportGuide = async (req, res) => {
             const qty = item.allocatedQty || 0;
             if (qty <= 0) return;
             const name = (item.product?.name || '').toUpperCase();
-            const unitsPerBox = (item.product?.packSize && item.product.packSize > 1) ? item.product.packSize : 1;
+            const unitsPerBox = getUnitsPerBox(item);
             const boxes = Math.ceil(qty / unitsPerBox);
             const weightKg = qty * getWeightG(item.product?.name) / 1000;
             const cat = categories.find(c => c.match(name));

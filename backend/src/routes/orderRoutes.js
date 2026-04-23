@@ -6,6 +6,8 @@ const { auth, roles } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 // Legacy routes (kept for compatibility)
 router.get('/catalog', auth, distributorController.getCatalog);
@@ -74,8 +76,6 @@ const readyUpload = multer({
 router.post('/:id/ready-photos', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']), readyUpload.single('photo'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const url = `/uploads/orders/ready/${req.file.filename}`;
         
         const currentOrder = await prisma.order.findUnique({ where: { id: req.params.id }, select: { readyPhotosUrls: true } });
@@ -86,7 +86,6 @@ router.post('/:id/ready-photos', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']
             where: { id: req.params.id },
             data: { readyPhotosUrls: updatedUrls }
         });
-        await prisma.$disconnect();
         res.json({ ok: true, url, readyPhotosUrls: updated.readyPhotosUrls });
     } catch (err) {
         console.error(err);
@@ -97,13 +96,10 @@ router.post('/:id/ready-photos', auth, roles(['ADMIN', 'LOGISTICA', 'COMERCIAL']
 // Siigo invoice PDF proxy — streams PDF from Siigo API
 router.get('/:id/siigo-pdf', auth, async (req, res) => {
     try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
         const order = await prisma.order.findUnique({
             where: { id: req.params.id },
             select: { invoicePdfUrl: true, invoiceNumber: true }
         });
-        await prisma.$disconnect();
 
         if (!order?.invoicePdfUrl) {
             return res.status(404).json({ error: 'No hay factura Siigo para este pedido' });

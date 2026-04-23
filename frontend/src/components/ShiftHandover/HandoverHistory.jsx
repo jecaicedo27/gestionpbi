@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Calendar, ChevronDown, ChevronUp, Search } from 'lucide-react';
+import { ChevronDown, ChevronUp, Search } from 'lucide-react';
 import api from '../../services/api';
 
 const SHIFT_LABELS = { MANANA: '🌅 Mañana', TARDE: '☀️ Tarde', NOCHE: '🌙 Noche' };
@@ -61,13 +61,53 @@ export default function HandoverHistory({ isAdmin }) {
 
     const formatDate = (dateStr) => {
         if (!dateStr) return '';
-        const d = new Date(dateStr + 'T12:00:00');
+        const dateOnly = String(dateStr).slice(0, 10);
+        const d = new Date(`${dateOnly}T12:00:00`);
         return d.toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' });
     };
 
     const formatTime = (dateStr) => {
         if (!dateStr) return '';
-        return new Date(dateStr).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+        return new Date(dateStr).toLocaleTimeString('es-CO', {
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: 'America/Bogota'
+        });
+    };
+
+    const formatDateTime = (dateStr) => {
+        if (!dateStr) return '';
+        return new Date(dateStr).toLocaleString('es-CO', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: 'America/Bogota'
+        });
+    };
+
+    const renderSignatureGroup = (title, signatures, color) => {
+        if (!signatures || signatures.length === 0) return null;
+        return (
+            <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6, textTransform: 'uppercase' }}>{title}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {signatures.map((signature, index) => (
+                        <span key={index} style={{
+                            padding: '4px 10px',
+                            borderRadius: 8,
+                            fontSize: 12,
+                            background: color.bg,
+                            color: color.text,
+                            fontWeight: 600
+                        }}>
+                            ✅ {signature.employee?.name || signature.user?.name || 'Operario'} — {formatTime(signature.signedAt)}
+                        </span>
+                    ))}
+                </div>
+            </div>
+        );
     };
 
     return (
@@ -126,6 +166,8 @@ export default function HandoverHistory({ isAdmin }) {
                         const st = STATUS_LABELS[r.status] || STATUS_LABELS.PENDING;
                         const expanded = expandedId === r.id;
                         const detail = detailCache[r.id];
+                        const deliveredAt = r.outgoingLeaderAt;
+                        const deliveredBy = r.outgoingLeader?.name || 'Sin entregar';
 
                         return (
                             <div key={r.id} style={{
@@ -140,16 +182,20 @@ export default function HandoverHistory({ isAdmin }) {
                                         cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left'
                                     }}
                                 >
-                                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', minWidth: 100 }}>
-                                            {formatDate(r.operationalDate)}
-                                        </span>
-                                        <span style={{ fontSize: 12, color: '#64748b' }}>
-                                            {AREA_LABELS[r.area]}
-                                        </span>
-                                        <span style={{ fontSize: 12, color: '#64748b' }}>
-                                            {SHIFT_LABELS[r.outgoingShift]} → {SHIFT_LABELS[r.incomingShift]}
-                                        </span>
+                                    <div style={{ flex: 1, display: 'grid', gap: 8 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                            <span style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', minWidth: 100 }}>
+                                                {AREA_LABELS[r.area]}
+                                            </span>
+                                            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
+                                                {SHIFT_LABELS[r.outgoingShift]} → {SHIFT_LABELS[r.incomingShift]}
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                                            <SummaryItem label="Fecha" value={formatDate(r.operationalDate)} />
+                                            <SummaryItem label="Entrega" value={deliveredAt ? formatDateTime(deliveredAt) : 'Sin entregar'} />
+                                            <SummaryItem label="Líder que entregó" value={deliveredBy} />
+                                        </div>
                                     </div>
                                     <span style={{
                                         padding: '4px 10px', borderRadius: 8, fontWeight: 700, fontSize: 11,
@@ -167,21 +213,15 @@ export default function HandoverHistory({ isAdmin }) {
                                             <div style={{ padding: 16, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Cargando...</div>
                                         ) : (
                                             <div style={{ paddingTop: 12 }}>
-                                                {/* Signatures */}
-                                                {detail.signatures && detail.signatures.length > 0 && (
-                                                    <div style={{ marginBottom: 12 }}>
-                                                        <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 6, textTransform: 'uppercase' }}>Firmas</div>
-                                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                                            {detail.signatures.map((s, i) => (
-                                                                <span key={i} style={{
-                                                                    padding: '4px 10px', borderRadius: 8, fontSize: 12,
-                                                                    background: '#f0fdf4', color: '#16a34a', fontWeight: 600
-                                                                }}>
-                                                                    ✅ {s.employee?.name || s.user?.name || 'Operario'} — {formatTime(s.signedAt)}
-                                                                </span>
-                                                            ))}
-                                                        </div>
-                                                    </div>
+                                                {renderSignatureGroup(
+                                                    'Firmas de Salida',
+                                                    (detail.signatures || []).filter(signature => signature.participantGroup === 'OUTGOING'),
+                                                    { bg: '#fffbeb', text: '#b45309' }
+                                                )}
+                                                {renderSignatureGroup(
+                                                    'Firmas de Ingreso',
+                                                    (detail.signatures || []).filter(signature => signature.participantGroup === 'INCOMING'),
+                                                    { bg: '#eff6ff', text: '#1d4ed8' }
                                                 )}
 
                                                 {/* Leaders */}
@@ -255,6 +295,19 @@ export default function HandoverHistory({ isAdmin }) {
                     })}
                 </div>
             )}
+        </div>
+    );
+}
+
+function SummaryItem({ label, value }) {
+    return (
+        <div>
+            <div style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', marginBottom: 2 }}>
+                {label}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>
+                {value}
+            </div>
         </div>
     );
 }

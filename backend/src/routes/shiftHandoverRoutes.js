@@ -4,6 +4,8 @@ const { auth } = require('../middleware/auth');
 const hc = require('../controllers/shiftHandoverController');
 
 // Current handover for area
+router.get('/simulation/tarde-noche', auth, hc.getTardeNocheSimulation);
+router.get('/current-all',      auth, hc.getCurrentAll);
 router.get('/current',          auth, hc.getCurrent);
 
 // History
@@ -21,6 +23,8 @@ router.get('/block-status',     auth, hc.blockStatus);
 router.post('/verify-pin',      auth, hc.verifyPin);
 
 // Detail & signatures
+router.get('/:id/production-summary', auth, hc.getProductionSummary);
+router.patch('/:id/review-selection', auth, hc.updateReviewSelection);
 router.get('/:id',              auth, hc.getDetail);
 router.get('/:id/signatures',   auth, hc.getSignatures);
 

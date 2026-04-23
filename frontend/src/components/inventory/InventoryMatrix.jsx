@@ -100,12 +100,11 @@ const InventoryMatrix = ({ products, onProductClick, onBulkValidationOpen }) => 
         const groupProducts = products.filter(p => p.group === groupName);
         const warehouseNames = new Set();
 
+        const HIDDEN_WAREHOUSES = ['Maquilas'];
         groupProducts.forEach(p => {
             if (Array.isArray(p.warehouses) && p.warehouses.length > 0) {
                 p.warehouses.forEach(w => {
-                    if (!HIDDEN_WAREHOUSES.has(w.name?.trim().toUpperCase())) {
-                        warehouseNames.add(w.name);
-                    }
+                    if (!HIDDEN_WAREHOUSES.includes(w.name)) warehouseNames.add(w.name);
                 });
             } else {
                 warehouseNames.add('Sin asignar');

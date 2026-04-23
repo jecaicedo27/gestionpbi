@@ -879,10 +879,8 @@ class AssemblyService {
                 }
             });
 
-            // ── CONTEO completion: sync actual counts → BatchOutputTarget ──
-            // Downstream EMPAQUE/ENSAMBLE notes read META from outputTargets.plannedUnits.
-            // After CONTEO, update plannedUnits so Ensamble Siigo shows the real count,
-            // not the original scheduled estimate.
+            // ── CONTEO completion: sync actual counts → BatchOutputTarget.actualUnits ──
+            // plannedUnits preserves the original scheduled value for reporting.
             if (note.processType?.code === 'CONTEO') {
                 const conteoMap = note.processParameters?.conteo;
                 if (conteoMap && typeof conteoMap === 'object') {
@@ -890,26 +888,22 @@ class AssemblyService {
                         if (data.productId && data.actual != null) {
                             const actualUnits = parseInt(data.actual, 10);
                             console.log(`[completeNote] CONTEO actual: ${productName} → ${actualUnits} units`);
-                            // Update BatchOutputTarget: plannedUnits (for downstream Siigo META)
-                            // AND actualUnits (Fase 5 relational field — fuente de verdad para reportes)
                             const updated = await tx.batchOutputTarget.updateMany({
                                 where: {
                                     batchId: note.productionBatchId,
                                     productId: data.productId,
                                 },
                                 data: {
-                                    plannedUnits: actualUnits,
                                     actualUnits: actualUnits,
                                 },
                             });
-                            // If no outputTarget existed (fully unplanned presentation), create one
                             if (updated.count === 0 && actualUnits > 0) {
                                 console.log(`[completeNote] 🆕 Creating outputTarget for unplanned ${productName}`);
                                 await tx.batchOutputTarget.create({
                                     data: {
                                         batchId: note.productionBatchId,
                                         productId: data.productId,
-                                        plannedUnits: actualUnits,
+                                        plannedUnits: 0,
                                         plannedWeightKg: 0,
                                         actualUnits: actualUnits,
                                     }
@@ -1459,7 +1453,7 @@ class AssemblyService {
             const stageName = result.stageName || '';
             const lotNum = result.createdLotNumber;
             const batchNum = result.batchNumber || '';
-            const qty = result.targetQuantity || actualQuantity; // App-first quantity
+            const qty = actualQuantity || result.targetQuantity;
 
             // ── GLOBAL RPA DUPLICATE LOCK ──────────────────────────────────────────────
             prisma.rpaExecution.findFirst({

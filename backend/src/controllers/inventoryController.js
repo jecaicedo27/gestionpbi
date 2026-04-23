@@ -19,9 +19,28 @@ exports.getAllProducts = async (req, res) => {
             orderBy: { name: 'asc' }
         });
 
-        // 2. Fetch Replenishment Data (Cached)
-        const replenishmentData = await dataMiningService.getReplenishmentProjection();
+        // 2. Fetch Replenishment Data (Cached) + lot stock aggregation
+        const [replenishmentData, mlAgg, flsAgg] = await Promise.all([
+            dataMiningService.getReplenishmentProjection(),
+            prisma.materialLot.groupBy({
+                by: ['productId'],
+                where: { status: { in: ['AVAILABLE', 'LOW_STOCK'] }, productId: { not: null } },
+                _sum: { currentQuantity: true },
+            }),
+            prisma.finishedLotStock.groupBy({
+                by: ['productId'],
+                where: { status: { in: ['AVAILABLE', 'LOW'] } },
+                _sum: { currentQuantity: true },
+            }),
+        ]);
         const replenishmentMap = new Map(replenishmentData.map(r => [r.id, r]));
+        const lotStockMap = new Map();
+        for (const row of mlAgg) {
+            lotStockMap.set(row.productId, (lotStockMap.get(row.productId) || 0) + (row._sum.currentQuantity || 0));
+        }
+        for (const row of flsAgg) {
+            lotStockMap.set(row.productId, (lotStockMap.get(row.productId) || 0) + (row._sum.currentQuantity || 0));
+        }
 
         const inventory = products.map(p => {
             const reserved = p.inventoryAlternate?.reservedQty || 0;
@@ -50,7 +69,8 @@ exports.getAllProducts = async (req, res) => {
                 daysOfStock: rData.daysOfStock || p.daysOfStock || 0,
                 minimumStock: p.minimumStock || rData.minimumStock || 0, // Prefer DB
                 packSize: p.packSize || rData.packSize || 1,             // Prefer DB
-                alertLevel: getAlertLevel(p)
+                alertLevel: getAlertLevel(p),
+                unassignedQty: Math.max(0, (p.currentStock || 0) - (lotStockMap.get(p.id) || 0))
             };
         });
 

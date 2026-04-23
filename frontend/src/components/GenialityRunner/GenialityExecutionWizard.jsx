@@ -711,7 +711,7 @@ const GenialityExecutionWizard = () => {
         // Auto-ingest is now deferred to ENSAMBLE step (handleComplete)
         if (currentStep.type === 'MARCADO_CAJAS') {
             if (marcadoCajas.isValid === false) {
-                message.error('🚫 La cantidad a empacar supera la producción real. Ajuste las cajas.');
+                message.error(`🚫 ${marcadoCajas.invalidReason || 'La cantidad a empacar supera la producción real. Ajuste las cajas.'}`);
                 return;
             }
             try {
@@ -725,6 +725,9 @@ const GenialityExecutionWizard = () => {
                             total_cajas: marcadoCajas.totalCajas,
                             ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
                             contramuestra_qty: marcadoCajas.contramuestraQty || 0,
+                            maquila_qty: marcadoCajas.maquilaQty || 0,
+                            destino: marcadoCajas.destino || null,
+                            etiquetas_impresas: marcadoCajas.printed || false,
                             lote: note.productionBatch?.batchNumber,
                             fecha_marcado: new Date().toISOString(),
                         }
@@ -740,6 +743,8 @@ const GenialityExecutionWizard = () => {
                         ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
                         contramuestra_qty: marcadoCajas.contramuestraQty || 0,
                         maquila_qty: marcadoCajas.maquilaQty || 0,
+                        destino: marcadoCajas.destino || null,
+                        etiquetas_impresas: marcadoCajas.printed || false,
                         lote: note.productionBatch?.batchNumber,
                     };
                 }
@@ -798,8 +803,9 @@ const GenialityExecutionWizard = () => {
             // 1. Siigo RPA with carrito qty only (fire-and-forget but capture ID)
             const isRpaEnabledCarrito = note.processParameters?.assembly_on_complete
                 || ['EMPAQUE', 'G_EMPAQUE'].includes(note.processType?.code);
+            const alreadyHasRpa = activeCarrito.rpaExecutionId && activeCarrito.labeledAt;
             let rpaExecId = null;
-            if (isRpaEnabledCarrito) {
+            if (isRpaEnabledCarrito && !alreadyHasRpa) {
                 try {
                     const rpaRes = await api.post('/rpa/siigo-assembly', {
                         productName, productSku, quantity: carritoQty, assemblyType: 'proceso',
@@ -812,6 +818,9 @@ const GenialityExecutionWizard = () => {
                 } catch (e) {
                     message.warning('⚠️ Siigo no disponible — proceso continúa');
                 }
+            } else if (alreadyHasRpa) {
+                rpaExecId = activeCarrito.rpaExecutionId;
+                console.log(`[MarcadoCajas] Carrito ${activeCarritoId} ya tiene RPA ${rpaExecId} — skip duplicado`);
             }
 
             // 2. Ingest partial stock for this carrito
@@ -1838,6 +1847,12 @@ const GenialityExecutionWizard = () => {
         if (!proteccionValidated) canAdvance = false;
     }
 
+    // Block GE_BASE_LIQUIDA until ingredients confirmed AND timer done
+    if (currentStep.type === 'GE_BASE_LIQUIDA') {
+        const bp = note?.processParameters || {};
+        if (!bp.base_liquida_confirmed || !bp.base_liquida_timer_done) canAdvance = false;
+    }
+
     // Block EMPAQUE step until all defective jars have a cause + photo
     if (currentStep.type === 'EMPAQUE') {
         const defectivos = parseInt(empaqueDefective || 0, 10);
@@ -1961,6 +1976,12 @@ const GenialityExecutionWizard = () => {
                     key={`${currentStepIndex}-${currentStep.data?.id || currentStep.type}`}
                     stepType={currentStep.type}
                     stepData={currentStep.data}
+                    onConfirm={async () => {
+                        try {
+                            const res = await api.get(`/assembly-notes/${note.id}`);
+                            if (res.data) setNote(res.data);
+                        } catch (e) { console.warn('refresh note:', e.message); }
+                    }}
                     batchMultiplier={note?.processParameters?.repeatTotal || allBatchNotes.filter(n => n.stageName === note.stageName).length}
                     currentCount={currentStepIndex + 1}
                     totalSteps={wizardSteps.length}
@@ -2002,10 +2023,17 @@ const GenialityExecutionWizard = () => {
                     onResumeCarrito={handleResumeCarrito}
                     onUpdateCarrito={async (carritoId, updates) => {
                         updateCarritoLocal(carritoId, updates);
+                        const isEmpaqueSide = ['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)
+                            || ['EMPAQUE', 'CARRITOS_RECEPTION', 'G_CONTEO_CARRITOS', 'MARCADO_CAJAS'].includes(wizardSteps[currentStepIndex]?.type);
+                        if (isEmpaqueSide) {
+                            setEmpaqueCarriots(prev => prev.map(c => c.id === carritoId ? { ...c, ...updates } : c));
+                        }
                         try {
-                            const updated = carriots.map(c => c.id === carritoId ? { ...c, ...updates } : c);
-                            await api.patch(`/assembly-notes/${note.id}`, {
-                                processParameters: { ...note.processParameters, carriots: updated }
+                            const sourceCarriots = isEmpaqueSide ? empaqueCarriots : carriots;
+                            const updated = sourceCarriots.map(c => c.id === carritoId ? { ...c, ...updates } : c);
+                            const targetNote = isEmpaqueSide ? (conteoNote || note) : note;
+                            await api.patch(`/assembly-notes/${targetNote.id}`, {
+                                processParameters: { ...targetNote.processParameters, carriots: updated }
                             });
                         } catch (e) {
                             console.error('Error saving update state', e);

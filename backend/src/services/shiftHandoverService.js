@@ -16,7 +16,9 @@ const SHIFT_TRANSITIONS = [
 
 const HANDOVER_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
 const PRE_ALERT_MINUTES = 15;
+const PRE_BLOCK_MINUTES = 10;
 const GRACE_MINUTES = 10;
+const COMPLETED_STATUSES = ['RECEIVED', 'WITH_INCIDENT', 'VALIDATED'];
 
 // ── Colombia timezone helpers ─────────────────────────────────────────────────
 
@@ -75,20 +77,13 @@ function getCurrentTransition() {
 
     for (const t of SHIFT_TRANSITIONS) {
         const endMins = t.endHour * 60 + t.endMinute;
-        const preStart = endMins - PRE_ALERT_MINUTES;
-        const graceEnd = endMins + GRACE_MINUTES;
+        const preStart = (24 * 60 + endMins - PRE_ALERT_MINUTES) % (24 * 60);
+        const graceEnd = (endMins + GRACE_MINUTES) % (24 * 60);
 
-        // Handle NOCHE crossing midnight
-        if (t.outgoing === 'NOCHE') {
-            // Pre-alert: 05:45–06:10
-            const preStartNorm = (24 * 60 + endMins - PRE_ALERT_MINUTES) % (24 * 60);
-            if (mins >= preStartNorm || mins <= graceEnd) {
-                return { ...t, preStart: preStartNorm, graceEnd };
-            }
-        } else {
-            if (mins >= preStart && mins <= graceEnd) {
-                return { ...t, preStart, graceEnd };
-            }
+        if (preStart <= graceEnd) {
+            if (mins >= preStart && mins <= graceEnd) return { ...t, preStart, graceEnd };
+        } else if (mins >= preStart || mins <= graceEnd) {
+            return { ...t, preStart, graceEnd };
         }
     }
     return null;
@@ -101,8 +96,8 @@ function getOperationalDate(shift) {
     const col = getColombiaTime();
     const mins = col.getHours() * 60 + col.getMinutes();
 
-    if (shift === 'NOCHE' && mins < 360 + GRACE_MINUTES) {
-        // Before 06:10 → the NOCHE shift belongs to yesterday
+    if (shift === 'NOCHE' && mins < 1320) {
+        // Before the next night shift starts, NOCHE belongs to yesterday.
         const yesterday = new Date(col);
         yesterday.setDate(yesterday.getDate() - 1);
         return formatLocalDate(yesterday);
@@ -119,6 +114,117 @@ function getMinutesUntilShiftEnd(shift) {
     let endMins = transition.endHour * 60 + transition.endMinute;
     if (shift === 'NOCHE' && mins >= 1320) endMins += 1440; // past 22:00 → end tomorrow
     return endMins - mins;
+}
+
+function getHandoverWindowPhase(outgoingShift) {
+    const minutesUntilEnd = getMinutesUntilShiftEnd(outgoingShift);
+    if (minutesUntilEnd <= PRE_BLOCK_MINUTES && minutesUntilEnd >= 0) return 'PRE_HANDOVER';
+    if (minutesUntilEnd < 0 && minutesUntilEnd >= -GRACE_MINUTES) return 'GRACE';
+    if (minutesUntilEnd < -GRACE_MINUTES) return 'POST_GRACE';
+    return null;
+}
+
+function isParticipant(participants, employeeId) {
+    return (participants || []).some(p => p.employeeId === employeeId);
+}
+
+function getParticipantOperators(participants) {
+    return (participants || []).filter(p => p.role !== 'LIDER');
+}
+
+function getSignaturesByGroup(handover, participantGroup) {
+    return (handover.signatures || []).filter(signature => signature.participantGroup === participantGroup);
+}
+
+function getSignedUserIdsByGroup(handover, participantGroup) {
+    return new Set(getSignaturesByGroup(handover, participantGroup).map(signature => signature.userId));
+}
+
+function getMissingParticipants(participants, signedUserIds) {
+    return getParticipantOperators(participants).filter(participant => !signedUserIds.has(participant.userId));
+}
+
+function getHandoverSignatureState(handover) {
+    const outgoingSignedUserIds = getSignedUserIdsByGroup(handover, 'OUTGOING');
+    const incomingSignedUserIds = getSignedUserIdsByGroup(handover, 'INCOMING');
+    const outgoingOperators = getParticipantOperators(handover.outgoingParticipants);
+    const incomingOperators = getParticipantOperators(handover.incomingParticipants);
+    const outgoingMissing = getMissingParticipants(handover.outgoingParticipants, outgoingSignedUserIds);
+    const incomingMissing = getMissingParticipants(handover.incomingParticipants, incomingSignedUserIds);
+
+    return {
+        outgoing: {
+            signedCount: outgoingOperators.length - outgoingMissing.length,
+            expectedCount: outgoingOperators.length,
+            allSigned: outgoingOperators.length > 0 && outgoingMissing.length === 0,
+            missingParticipants: outgoingMissing
+        },
+        incoming: {
+            signedCount: incomingOperators.length - incomingMissing.length,
+            expectedCount: incomingOperators.length,
+            allSigned: incomingOperators.length > 0 && incomingMissing.length === 0,
+            missingParticipants: incomingMissing
+        }
+    };
+}
+
+function getHandoverPendingSteps(handover) {
+    const signatureState = getHandoverSignatureState(handover);
+    const steps = [];
+
+    if (signatureState.outgoing.missingParticipants.length > 0) {
+        steps.push(`Faltan firmas de salida: ${signatureState.outgoing.missingParticipants.map(p => p.name).join(', ')}`);
+    }
+    if (signatureState.outgoing.missingParticipants.length === 0 && ['PENDING', 'IN_PROGRESS'].includes(handover.status)) {
+        steps.push('Falta autorización del líder saliente');
+    }
+    if (handover.status === 'DELIVERED' && signatureState.incoming.missingParticipants.length > 0) {
+        steps.push(`Faltan firmas de ingreso: ${signatureState.incoming.missingParticipants.map(p => p.name).join(', ')}`);
+    }
+    if (handover.status === 'DELIVERED' && signatureState.incoming.missingParticipants.length === 0) {
+        steps.push('Falta aceptación del líder entrante');
+    }
+
+    return {
+        steps,
+        missingSigners: [
+            ...signatureState.outgoing.missingParticipants.map(p => ({
+                participantGroup: 'OUTGOING',
+                employeeId: p.employeeId,
+                userId: p.userId,
+                name: p.name
+            })),
+            ...signatureState.incoming.missingParticipants.map(p => ({
+                participantGroup: 'INCOMING',
+                employeeId: p.employeeId,
+                userId: p.userId,
+                name: p.name
+            }))
+        ],
+        signatureState
+    };
+}
+
+function getParticipantPendingSteps(handover, participantSide) {
+    const pending = getHandoverPendingSteps(handover);
+    if (participantSide === 'OUTGOING') {
+        return {
+            steps: pending.steps.filter(step => !step.startsWith('Faltan firmas de ingreso')),
+            missingSigners: pending.missingSigners.filter(item => item.participantGroup === 'OUTGOING')
+        };
+    }
+
+    if (handover.status === 'PENDING' || handover.status === 'IN_PROGRESS') {
+        return {
+            steps: pending.steps,
+            missingSigners: pending.missingSigners
+        };
+    }
+
+    return {
+        steps: pending.steps.filter(step => !step.startsWith('Faltan firmas de salida') && step !== 'Falta autorización del líder saliente'),
+        missingSigners: pending.missingSigners.filter(item => item.participantGroup === 'INCOMING')
+    };
 }
 
 // ── Check if feature flag is enabled ──────────────────────────────────────────
@@ -164,7 +270,7 @@ async function generateHandoversForWeek(weekId) {
 
     // Helper: check if an employee is absent on a specific date
     const isAbsentOnDate = (employeeId, dateStr) => {
-        const d = new Date(dateStr + 'T12:00:00Z');
+        const d = new Date(dateStr + 'T12:00:00');
         return absences.some(a =>
             a.employeeId === employeeId &&
             a.startDate <= d &&
@@ -212,7 +318,7 @@ async function generateHandoversForWeek(weekId) {
         for (const transition of SHIFT_TRANSITIONS) {
             for (const dateStr of dates) {
                 const opDate = new Date(dateStr + 'T00:00:00.000Z');
-                const dayOfWeek = opDate.getDay(); // 0=Sun
+                const dayOfWeek = opDate.getUTCDay(); // 0=Sun
 
                 // Skip Sunday daytime shifts (no MANANA→TARDE or TARDE→NOCHE on Sunday)
                 if (dayOfWeek === 0 && (transition.outgoing === 'MANANA' || transition.outgoing === 'TARDE')) continue;
@@ -374,15 +480,15 @@ async function getBlockInfo(userId) {
 
     const area = user.shiftEmployee.area;
     const activeShift = getCurrentActiveShift();
-    const opDate = getOperationalDate(activeShift);
+    const todayDate = getColombiaDateString();
 
     // Sunday daytime → no block
-    const dayOfWeek = new Date(opDate + 'T12:00:00').getDay();
+    const dayOfWeek = new Date(todayDate + 'T12:00:00').getDay();
     if (dayOfWeek === 0 && (activeShift === 'MANANA' || activeShift === 'TARDE')) {
         return { blocked: false };
     }
 
-    const weekStartDate = getWeekStartUTC(opDate);
+    const weekStartDate = getWeekStartUTC(todayDate);
     const week = await prisma.shiftWeek.findUnique({ where: { weekStart: weekStartDate } });
     if (!week) return { blocked: false };
 
@@ -393,89 +499,80 @@ async function getBlockInfo(userId) {
     if (!userAssignment) return { blocked: false };
     const userShift = userAssignment.shift;
 
-    // Find the handover record for the PREVIOUS transition (incoming shift = userShift)
-    // e.g. if user is TARDE, check MANANA→TARDE handover
-    const relevantTransition = SHIFT_TRANSITIONS.find(t => t.incoming === userShift);
-    if (!relevantTransition) return { blocked: false };
+    const candidates = [];
+    const addCandidate = (transition, participantSide) => {
+        if (!transition) return;
+        const phase = getHandoverWindowPhase(transition.outgoing);
+        if (!phase) return;
+        const opDate = getOperationalDate(transition.outgoing);
+        const key = `${opDate}:${transition.outgoing}:${participantSide}`;
+        if (candidates.some(c => c.key === key)) return;
+        candidates.push({ key, transition, participantSide, phase, opDate });
+    };
 
-    // Determine the correct operational date for that transition
-    let handoverOpDate = opDate;
-    // If user is MANANA incoming and we're before 06:10, the handover is NOCHE→MANANA of yesterday
-    if (userShift === 'MANANA' && activeShift === 'NOCHE') {
-        // The NOCHE shift's operational date
-        handoverOpDate = getOperationalDate('NOCHE');
+    const currentTransition = getCurrentTransition();
+    if (currentTransition) {
+        if (userShift === currentTransition.outgoing) addCandidate(currentTransition, 'OUTGOING');
+        if (userShift === currentTransition.incoming) addCandidate(currentTransition, 'INCOMING');
     }
 
-    const handover = await prisma.shiftHandoverRecord.findUnique({
-        where: {
-            weekId_operationalDate_area_outgoingShift: {
-                weekId: week.id,
-                operationalDate: new Date(handoverOpDate + 'T00:00:00.000Z'),
-                area,
-                outgoingShift: relevantTransition.outgoing
-            }
-        }
-    });
+    addCandidate(SHIFT_TRANSITIONS.find(t => t.incoming === userShift), 'INCOMING');
+    addCandidate(SHIFT_TRANSITIONS.find(t => t.outgoing === userShift), 'OUTGOING');
 
-    if (!handover) return { blocked: false };
+    for (const candidate of candidates) {
+        const candidateWeek = await prisma.shiftWeek.findUnique({
+            where: { weekStart: getWeekStartUTC(candidate.opDate) }
+        });
+        if (!candidateWeek) continue;
 
-    const completedStatuses = ['RECEIVED', 'WITH_INCIDENT', 'VALIDATED'];
-    const now = new Date();
-
-    // Don't block if the grace deadline hasn't passed yet — the transition hasn't happened
-    if (handover.graceDeadline && now < new Date(handover.graceDeadline)) {
-        return { blocked: false };
-    }
-
-    // Don't block for handovers that were generated retroactively:
-    // If still PENDING (nobody started it) and grace passed > 60 min ago,
-    // it was generated after the fact and shouldn't block anyone.
-    if (handover.status === 'PENDING' && handover.graceDeadline) {
-        const msSinceGrace = now.getTime() - new Date(handover.graceDeadline).getTime();
-        if (msSinceGrace > 60 * 60 * 1000) {
-            return { blocked: false };
-        }
-    }
-
-    const blocked = !completedStatuses.includes(handover.status);
-
-    // Also check: is the user an OUTGOING worker who hasn't signed yet (post-grace)?
-    let outgoingUnsigned = false;
-    const minsUntilEnd = getMinutesUntilShiftEnd(activeShift);
-    if (userShift === activeShift && minsUntilEnd < -GRACE_MINUTES) {
-        // Past grace → check if this user has signed their OWN outgoing handover
-        const outgoingHandover = await prisma.shiftHandoverRecord.findUnique({
+        const handover = await prisma.shiftHandoverRecord.findUnique({
             where: {
                 weekId_operationalDate_area_outgoingShift: {
-                    weekId: week.id,
-                    operationalDate: new Date(opDate + 'T00:00:00.000Z'),
+                    weekId: candidateWeek.id,
+                    operationalDate: new Date(candidate.opDate + 'T00:00:00.000Z'),
                     area,
-                    outgoingShift: activeShift
+                    outgoingShift: candidate.transition.outgoing
                 }
             },
-            include: { signatures: { where: { userId: user.id } } }
+            include: { signatures: true }
         });
-        if (outgoingHandover && outgoingHandover.signatures.length === 0) {
-            outgoingUnsigned = true;
-        }
+        if (!handover || COMPLETED_STATUSES.includes(handover.status)) continue;
+
+        const participants = candidate.participantSide === 'OUTGOING'
+            ? handover.outgoingParticipants
+            : handover.incomingParticipants;
+        if (!isParticipant(participants, user.shiftEmployee.id)) continue;
+
+        const pending = getParticipantPendingSteps(handover, candidate.participantSide);
+        const signatureState = getHandoverSignatureState(handover);
+        const minutesUntilEnd = getMinutesUntilShiftEnd(candidate.transition.outgoing);
+
+        return {
+            blocked: true,
+            handoverId: handover.id,
+            handoverStatus: handover.status,
+            blockPhase: candidate.phase,
+            participantSide: candidate.participantSide,
+            pendingSteps: pending.steps,
+            missingSigners: pending.missingSigners,
+            signatureState,
+            minutesUntilEnd,
+            graceDeadline: handover.graceDeadline,
+            requiresAdminRelease: candidate.phase === 'POST_GRACE' && pending.missingSigners.length > 0,
+            area,
+            outgoingShift: candidate.transition.outgoing,
+            incomingShift: candidate.transition.incoming
+        };
     }
 
-    return {
-        blocked: blocked || outgoingUnsigned,
-        handoverId: handover.id,
-        handoverStatus: handover.status,
-        outgoingUnsigned,
-        area,
-        outgoingShift: relevantTransition.outgoing,
-        incomingShift: userShift
-    };
+    return { blocked: false };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Get absent employee IDs for a given date
 // ═══════════════════════════════════════════════════════════════════════════════
 async function getAbsentEmployeeIds(dateStr) {
-    const d = new Date(dateStr + 'T12:00:00Z');
+    const d = new Date(dateStr + 'T12:00:00');
     const absences = await prisma.shiftAbsence.findMany({
         where: {
             startDate: { lte: d },
@@ -500,6 +597,9 @@ module.exports = {
     getCurrentTransition,
     getOperationalDate,
     getMinutesUntilShiftEnd,
+    getHandoverSignatureState,
+    getHandoverPendingSteps,
+    getParticipantPendingSteps,
     isHandoverEnabled,
     generateHandoversForWeek,
     getCurrentHandover,

@@ -474,3 +474,126 @@ exports.exportMonthExcel = async (req, res) => {
         res.status(500).json({ error: 'Error exportando Excel' });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/inventory-count/sessions/:id/reconcile-product
+// Align DB stock with physical count for a finished product
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getAccountCodes = async (req, res) => {
+    try {
+        const codes = await prisma.siigoAccountCode.findMany({
+            where: { active: true },
+            orderBy: { code: 'asc' },
+            select: { code: true, name: true }
+        });
+        res.json(codes);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+exports.reconcileProduct = async (req, res) => {
+    try {
+        const { id: sessionId } = req.params;
+        const { productId } = req.body;
+        const user = req.user;
+
+        if (user.role !== 'ADMIN') {
+            return res.status(403).json({ error: 'Solo ADMIN puede ejecutar alineación de inventario.' });
+        }
+        if (!productId) return res.status(400).json({ error: 'productId requerido' });
+
+        const session = await prisma.inventoryCountSession.findUnique({ where: { id: sessionId } });
+        if (!session) return res.status(404).json({ error: 'Sesión no encontrada' });
+
+        const WAREHOUSE_TO_ZONE = {
+            'Producto Terminado': 'PRODUCTO_TERMINADO',
+            'Maquilas': 'MAQUILA',
+            'No Conformes': 'NO_CONFORME',
+        };
+        const zone = WAREHOUSE_TO_ZONE[session.warehouseName];
+        if (!zone) return res.status(400).json({ error: `Alineación solo disponible para bodegas de producto terminado (zona: ${session.warehouseName})` });
+
+        const lines = await prisma.inventoryCountLine.findMany({
+            where: { sessionId, productId },
+        });
+
+        const stocks = await prisma.finishedLotStock.findMany({
+            where: { productId, zone, status: { in: ['AVAILABLE', 'LOW'] } },
+        });
+
+        const pickingItems = await prisma.orderPickingItem.findMany({
+            where: {
+                orderItem: {
+                    productId,
+                    order: { status: { in: ['APPROVED', 'IN_PICKING', 'READY'] } },
+                },
+            },
+            select: { lotNumber: true, scannedQty: true },
+        });
+
+        const pickedByLot = {};
+        for (const pi of pickingItems) {
+            const lot = pi.lotNumber || 'S/L';
+            pickedByLot[lot] = (pickedByLot[lot] || 0) + (pi.scannedQty || 0);
+        }
+
+        const changes = [];
+
+        for (const stock of stocks) {
+            const line = lines.find(l =>
+                l.lotNumber === stock.lotNumber ||
+                stock.lotNumber.endsWith(l.lotNumber) ||
+                l.lotNumber.endsWith(stock.lotNumber)
+            );
+
+            let pickedQty = pickedByLot[stock.lotNumber] || 0;
+            if (!pickedQty) {
+                for (const [lotNo, qty] of Object.entries(pickedByLot)) {
+                    if (stock.lotNumber.endsWith(lotNo) || lotNo.endsWith(stock.lotNumber)) {
+                        pickedQty += qty;
+                    }
+                }
+            }
+
+            const physicalQty = line ? Math.round(line.physicalQty) : 0;
+            const newQty = physicalQty + pickedQty;
+            const oldQty = stock.currentQuantity;
+
+            if (newQty === oldQty) continue;
+
+            const newStatus = newQty <= 0 ? 'DEPLETED' : (newQty < 10 ? 'LOW' : 'AVAILABLE');
+
+            await prisma.finishedLotStock.update({
+                where: { id: stock.id },
+                data: {
+                    currentQuantity: Math.max(0, newQty),
+                    status: newStatus,
+                },
+            });
+
+            changes.push({
+                lotNumber: stock.lotNumber,
+                oldQty,
+                newQty: Math.max(0, newQty),
+                physicalQty,
+                pickedQty,
+                newStatus,
+                notCounted: !line,
+            });
+        }
+
+        console.log(`📦 Reconcile [${session.warehouseName}] ${productId}: ${changes.filter(c => !c.notCounted).length} lotes ajustados, ${changes.filter(c => c.notCounted).length} lotes agotados (no contados)`);
+
+        res.json({
+            success: true,
+            productId,
+            zone,
+            changesCount: changes.length,
+            changes,
+        });
+    } catch (err) {
+        console.error('Error en reconcileProduct:', err);
+        res.status(500).json({ error: err.message });
+    }
+};

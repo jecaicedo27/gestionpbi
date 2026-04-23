@@ -577,10 +577,11 @@ const AssemblyExecutionWizard = () => {
         // Auto-ingest is now deferred to ENSAMBLE step (handleComplete)
         if (currentStep.type === 'MARCADO_CAJAS') {
             if (marcadoCajas.isValid === false) {
-                message.error('🚫 La distribución de cajas no es válida. Revisa destino y cantidades.');
+                message.error(`🚫 ${marcadoCajas.invalidReason || 'La distribución de cajas no es válida. Revisa destino y cantidades.'}`);
                 return;
             }
-            if (!marcadoCajas.printed && marcadoCajas.totalCajas > 0) {
+            const isEmpaqueProcess = note.processType?.code === 'EMPAQUE';
+            if (isEmpaqueProcess && !marcadoCajas.printed && marcadoCajas.totalCajas > 0) {
                 Modal.warning({
                     title: 'Debes imprimir las etiquetas',
                     content: 'No puedes avanzar sin imprimir las etiquetas primero. Presiona el botón de imprimir antes de continuar.',
@@ -599,6 +600,9 @@ const AssemblyExecutionWizard = () => {
                             total_cajas: marcadoCajas.totalCajas,
                             ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
                             contramuestra_qty: marcadoCajas.contramuestraQty || 0,
+                            maquila_qty: marcadoCajas.maquilaQty || 0,
+                            destino: marcadoCajas.destino || null,
+                            etiquetas_impresas: marcadoCajas.printed || false,
                             lote: note.productionBatch?.batchNumber,
                             fecha_marcado: new Date().toISOString(),
                         }
@@ -614,6 +618,8 @@ const AssemblyExecutionWizard = () => {
                         ingest_total: marcadoCajas.ingestTotal || (marcadoCajas.totalCajas * marcadoCajas.unidadesPorCaja),
                         contramuestra_qty: marcadoCajas.contramuestraQty || 0,
                         maquila_qty: marcadoCajas.maquilaQty || 0,
+                        destino: marcadoCajas.destino || null,
+                        etiquetas_impresas: marcadoCajas.printed || false,
                         lote: note.productionBatch?.batchNumber,
                     };
                 }
@@ -838,7 +844,7 @@ const AssemblyExecutionWizard = () => {
                         try {
                             await api.post('/rpa/siigo-assembly', {
                                 productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
+                                observations: `Empaque ${note.stageName}. Lote: ${note.productionBatch?.batchNumber || computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
                                 assemblyNoteId: note.id
                             });
                             message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);

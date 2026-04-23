@@ -42,6 +42,7 @@ router.patch('/:id/items/:itemId', assemblyNoteController.updateItemActualQty);
 router.post('/:id/variables', assemblyNoteController.recordVariable);
 router.get('/:id/check-proteccion', assemblyNoteController.checkProteccion);
 router.post('/:id/complete', auth, assemblyNoteController.completeNote);
+router.post('/:id/reopen', auth, assemblyNoteController.reopenNote);
 
 // ── POST /:id/consume-carrito — Geniality: consume packaging materials per carrito ──
 // Called when each carrito is processed in EmpaqueStep (isPartialIngest).

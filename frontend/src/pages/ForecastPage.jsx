@@ -368,7 +368,7 @@ const ForecastPage = () => {
 
                             {/* Grouped by inventory group */}
                             <Collapse
-                                defaultActiveKey={groupNames.slice(0, 3)}
+                                defaultActiveKey={groupNames}
                                 items={groupNames.map(g => ({
                                     key: g,
                                     label: (

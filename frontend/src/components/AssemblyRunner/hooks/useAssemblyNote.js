@@ -148,9 +148,10 @@ export function useAssemblyNote(id) {
             }
 
             // Auto-skip orphaned notes (notes whose template stage was deleted)
-            // BUT: sub-template expanded stages have stageId=null by design — they are NOT orphaned
+            // BUT: sub-template expanded stages and manually-added presentations have stageId=null by design
             const isFromSubTemplate = data.processParameters?.fromSubTemplate;
-            if ((data.status === 'PENDING' || data.status === 'EXECUTING') && !data.stageId && !isFromSubTemplate) {
+            const isManuallyAdded = data.processParameters?.empaque_reception_confirmed;
+            if ((data.status === 'PENDING' || data.status === 'EXECUTING') && !data.stageId && !isFromSubTemplate && !isManuallyAdded) {
                 try {
                     if (data.status === 'PENDING') {
                         await api.post(`/assembly-notes/${data.id}/start`, { operatorId: null }).catch(() => { });
@@ -201,10 +202,12 @@ export function useAssemblyNote(id) {
         const isGECoccion = processCode === 'GE_COCCION';
         const isEscarchadoStep = isGEPremix || isGEBaseLiquida || isGECoccion;
 
+        const isGenialityRoute = window.location.pathname.includes('/geniality/');
         const isSiropeGeniality = (
             ['G_EMPAQUE', 'EMPAQUE', 'CONTEO', 'G_CONTEO'].includes(processCode)
         ) && (
-            noteData.product?.name?.toUpperCase().includes('SIROPE') || 
+            isGenialityRoute ||
+            noteData.product?.name?.toUpperCase().includes('SIROPE') ||
             noteData.product?.name?.toUpperCase().includes('MASA') ||
             noteData.product?.name?.toUpperCase().includes('GENIALITY') ||
             noteData.product?.name?.toUpperCase().includes('SABORIZACION')

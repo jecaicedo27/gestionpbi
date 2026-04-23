@@ -13,7 +13,22 @@ async function listAssemblyTemplates(req, res) {
         // By default hide raw-material account groups in the template editor,
         // but allow the premix panel to fetch everything with ?all=true
         if (all !== 'true') {
-            where.product = { accountGroup: { notIn: [1402, 1405] } };
+            where.product = {
+                accountGroup: { notIn: [1402] },
+                NOT: {
+                    AND: [
+                        { accountGroup: 1405 },
+                        { OR: [
+                            { name: { contains: 'SIROPE' } },
+                            { name: { contains: 'SABORIZACION' } },
+                            { name: { contains: 'ESCARCHADO' } },
+                            { name: { contains: 'LIQUIMON' } },
+                            { name: { contains: 'BASE SIROPE' } },
+                            { name: { contains: 'BASE CITRICA' } },
+                        ]}
+                    ]
+                }
+            };
         }
         if (productId) where.productId = productId;
         if (isActive !== undefined) where.isActive = isActive === 'true';

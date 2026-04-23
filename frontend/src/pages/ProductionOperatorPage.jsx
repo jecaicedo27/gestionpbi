@@ -16,6 +16,7 @@ const PROCESS_GROUPS = [
     { key: 'COMPUESTO',         label: 'Compuesto',         keywords: ['COMPUESTO'] },
     { key: 'ESFERAS',           label: 'Esferas / Perlas',  keywords: ['ESFERAS', 'PERLAS', 'LIQUIPOPS ESFERA'] },
     { key: 'PREMEZCLA',         label: 'Premezcla',         keywords: ['PREMEZCLA', 'PROTONICO', 'FUENTE DE CALCIO', 'GOMA', 'CONSERVANTE', 'CALCIO DIO'] },
+    { key: 'LIQUIMON',          label: 'Liquimon',          keywords: ['LIQUIMON', 'BASE CITRICA'] },
     { key: 'SOMBRILLA',         label: 'Sombrilla',         keywords: ['SOMBRILLA', 'SOMBRELLA', 'UMBRELLA'] },
 ];
 
@@ -124,16 +125,129 @@ const StageProgress = ({ notes }) => {
     );
 };
 
+// ─── Schedule Adherence Indicator ────────────────────────────────────────────
+// Measures FORMACION (spherification) duration vs batchDuration — Liquipops only
+const TARGET_FORMACION_MIN = 90;
+
+const useAdherenceTick = (batch) => {
+    const [tick, setTick] = useState(0);
+    const formacionNote = batch.notes?.find(n => n.processType?.code === 'FORMACION');
+    const isResolved = formacionNote?.completedAt;
+    useEffect(() => {
+        if (isResolved || !formacionNote?.startedAt) return;
+        const id = setInterval(() => setTick(t => t + 1), 30000);
+        return () => clearInterval(id);
+    }, [isResolved, formacionNote?.startedAt]);
+    return tick;
+};
+
+const getAdherenceData = (batch) => {
+    const formacionNote = batch.notes?.find(n => n.processType?.code === 'FORMACION');
+    if (!formacionNote) return null;
+
+    if (formacionNote.startedAt && formacionNote.completedAt) {
+        const fStart = new Date(formacionNote.startedAt);
+        const fEnd = new Date(formacionNote.completedAt);
+        const actualMin = (fEnd - fStart) / 60000;
+        const delayMin = Math.max(0, actualMin - TARGET_FORMACION_MIN);
+        const score = Math.max(0, Math.round(100 - (delayMin / TARGET_FORMACION_MIN) * 100));
+        return { status: 'done', score, delayMin: Math.round(delayMin), actualMin: Math.round(actualMin), targetMin: TARGET_FORMACION_MIN };
+    }
+
+    if (formacionNote.startedAt) {
+        const fStart = new Date(formacionNote.startedAt);
+        const now = new Date();
+        const elapsedMin = (now - fStart) / 60000;
+        const timeUsedPct = Math.round((elapsedMin / TARGET_FORMACION_MIN) * 100);
+
+        let trafficLight = 'green';
+        if (timeUsedPct > 110) trafficLight = 'red';
+        else if (timeUsedPct > 90) trafficLight = 'yellow';
+
+        return { status: 'in_progress', trafficLight, elapsedMin: Math.round(elapsedMin), timeUsedPct, targetMin: TARGET_FORMACION_MIN };
+    }
+
+    return { status: 'pending' };
+};
+
+const AdherenceBadge = ({ batch }) => {
+    useAdherenceTick(batch);
+    const data = getAdherenceData(batch);
+    if (!data || data.status === 'pending') return null;
+
+    if (data.status === 'done') {
+        const medal = data.score >= 95 ? '🏆' : data.score >= 80 ? '⚡' : data.score >= 60 ? '👍' : '⏱️';
+        const label = data.score >= 95 ? 'Excelente' : data.score >= 80 ? 'Buen ritmo' : data.score >= 60 ? 'Aceptable' : 'Lento';
+        const color = data.score >= 80 ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : data.score >= 60 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-red-50 text-red-700 border-red-200';
+        return (
+            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border ${color}`} title={`Esferificación: ${data.actualMin}min (obj: ${data.targetMin}min)`}>
+                {medal} {data.actualMin}min · {label}
+            </span>
+        );
+    }
+
+    const elapsed = data.elapsedMin;
+    const pct = data.timeUsedPct;
+    const icon = pct <= 70 ? '🟢' : pct <= 90 ? '🔵' : pct <= 110 ? '🟡' : '🔴';
+    const msg = pct <= 50 ? 'Vas bien' : pct <= 80 ? 'Buen ritmo' : pct <= 100 ? 'Casi al límite' : 'Excedido';
+    return (
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black border ${
+            pct <= 90 ? 'bg-blue-50 text-blue-700 border-blue-200' : pct <= 110 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-red-50 text-red-700 border-red-200'
+        }`} title={`Esferificando: ${elapsed}min de ${data.targetMin}min`}>
+            {icon} {elapsed}/{data.targetMin}min · {msg}
+        </span>
+    );
+};
+
+// ─── Reopen CONTEO Button (Admin only) ───────────────────────────────────────
+const ReopenConteoButton = ({ noteId, stageName, onSuccess }) => {
+    const [loading, setLoading] = useState(false);
+    const handleReopen = async (e) => {
+        e.stopPropagation();
+        if (!window.confirm(`¿Reabrir "${stageName}"? Esto permitirá continuar el conteo.`)) return;
+        setLoading(true);
+        try {
+            await api.post(`/assembly-notes/${noteId}/reopen`);
+            onSuccess?.();
+        } catch (err) {
+            alert(err.response?.data?.error || 'Error al reabrir');
+        } finally {
+            setLoading(false);
+        }
+    };
+    return (
+        <button
+            onClick={handleReopen}
+            disabled={loading}
+            className="w-full py-2 flex items-center justify-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors border-t border-amber-200"
+        >
+            <RotateCcw size={12} className={loading ? 'animate-spin' : ''} />
+            {loading ? 'Reabriendo...' : `Reabrir ${stageName}`}
+        </button>
+    );
+};
+
 // ─── Batch Card (Redesigned) ──────────────────────────────────────────────────
-const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
+const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) => {
     const [showSummary, setShowSummary] = useState(false);
     const isDone = batch.allDone;
     const isStarted = batch.completed > 0;
     const isRunning = batch.inProgress;
     const progressPct = batch.total > 0 ? Math.round((batch.completed / batch.total) * 100) : 0;
 
-    const currentStage = batch.notes.find(n => n.status === 'EXECUTING');
-    const nextStage = currentStage || batch.notes.find(n => n.status === 'PENDING');
+    const EMPAQUE_CODES = ['EMPAQUE', 'G_EMPAQUE', 'ETIQUETADO'];
+    const isProduccionUser = userRole === 'PRODUCCION';
+    const isPickingUser = ['OPERARIO_PICKING', 'EMPAQUE'].includes(userRole);
+    const roleFilter = (n) => {
+        const code = n.processType?.code || '';
+        if (isProduccionUser) return !EMPAQUE_CODES.includes(code);
+        if (isPickingUser) return EMPAQUE_CODES.includes(code) || code === 'CONTEO';
+        return true;
+    };
+    const currentStage = batch.notes.find(n => n.status === 'EXECUTING' && roleFilter(n))
+        || batch.notes.find(n => n.status === 'EXECUTING');
+    const nextStage = currentStage || batch.notes.find(n => n.status === 'PENDING' && roleFilter(n))
+        || batch.notes.find(n => n.status === 'PENDING');
     const displayStage = currentStage || nextStage;
     const isEmpaqueWaiting = !currentStage && displayStage?.processType?.code === 'EMPAQUE';
     let currentStageName = isEmpaqueWaiting
@@ -241,6 +355,7 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
                         <span className={`text-[11px] font-bold uppercase tracking-wider ${accent.text}`}>
                             {isDone ? '✓ Completado' : isRunning ? 'En Proceso' : 'Pendiente'}
                         </span>
+                        <AdherenceBadge batch={batch} />
                     </div>
                     <div className="flex items-center gap-2">
                         {batchStartedAt && !isDone && (
@@ -320,6 +435,58 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
                         <span className="text-[10px] font-bold text-emerald-700 font-mono break-all leading-tight">{batch.batchNumber}</span>
                     </div>
                 </div>
+
+                {/* Formacion Progress Bar — motivational */}
+                {(() => {
+                    const fNote = batch.notes?.find(n => n.processType?.code === 'FORMACION');
+                    if (!fNote) return null;
+                    const fStarted = fNote.startedAt ? new Date(fNote.startedAt) : null;
+                    const fEnded = fNote.completedAt ? new Date(fNote.completedAt) : null;
+                    if (!fStarted && fNote.status === 'PENDING') return null;
+
+                    if (fEnded) {
+                        const mins = Math.round((fEnded - fStarted) / 60000);
+                        const score = Math.max(0, Math.round(100 - (Math.max(0, mins - TARGET_FORMACION_MIN) / TARGET_FORMACION_MIN) * 100));
+                        const medal = score >= 95 ? '🏆' : score >= 80 ? '⚡' : score >= 60 ? '👍' : '⏱️';
+                        const msg = score >= 95 ? '¡Máquina imparable!' : score >= 80 ? '¡Gran trabajo!' : score >= 60 ? 'Aceptable' : 'A mejorar';
+                        const barColor = score >= 80 ? 'bg-emerald-500' : score >= 60 ? 'bg-amber-400' : 'bg-red-400';
+                        const bgColor = score >= 80 ? 'bg-emerald-50 border-emerald-200' : score >= 60 ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200';
+                        const textColor = score >= 80 ? 'text-emerald-700' : score >= 60 ? 'text-amber-700' : 'text-red-700';
+                        return (
+                            <div className={`mt-2 rounded-lg border px-2.5 py-1.5 ${bgColor}`}>
+                                <div className="flex items-center justify-between mb-1">
+                                    <span className={`text-[10px] font-black ${textColor}`}>{medal} Esferificación: {mins} min</span>
+                                    <span className={`text-[11px] font-black ${textColor}`}>{msg}</span>
+                                </div>
+                                <div className="h-1.5 bg-white/60 rounded-full overflow-hidden">
+                                    <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.min(100, score)}%` }} />
+                                </div>
+                            </div>
+                        );
+                    }
+
+                    if (fStarted && !fEnded) {
+                        const now = new Date();
+                        const elapsed = Math.round((now - fStarted) / 60000);
+                        const pct = Math.round((elapsed / TARGET_FORMACION_MIN) * 100);
+                        const remaining = Math.max(0, TARGET_FORMACION_MIN - elapsed);
+                        const icon = pct <= 70 ? '🟢' : pct <= 90 ? '🔵' : pct <= 100 ? '🟡' : '🔴';
+                        const msg = pct <= 50 ? '¡Vas volando!' : pct <= 75 ? '¡Buen ritmo!' : pct <= 95 ? `Quedan ${remaining} min` : pct <= 100 ? '¡Último minuto!' : `+${elapsed - TARGET_FORMACION_MIN} min extra`;
+                        const barColor = pct <= 80 ? 'bg-blue-500' : pct <= 100 ? 'bg-amber-400' : 'bg-red-500';
+                        return (
+                            <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5">
+                                <div className="flex items-center justify-between mb-1">
+                                    <span className="text-[10px] font-black text-blue-700">{icon} Esferificando: {elapsed} min</span>
+                                    <span className={`text-[10px] font-black ${pct <= 100 ? 'text-blue-600' : 'text-red-600'}`}>{msg}</span>
+                                </div>
+                                <div className="h-1.5 bg-white/60 rounded-full overflow-hidden">
+                                    <div className={`h-full rounded-full ${barColor} transition-all`} style={{ width: `${Math.min(100, pct)}%` }} />
+                                </div>
+                            </div>
+                        );
+                    }
+                    return null;
+                })()}
 
                 {/* Output Targets — programmed vs real */}
                 {batch.outputTargets?.length > 0 && (
@@ -467,8 +634,19 @@ const BatchCard = ({ batch, onStart, onDelete, isAdmin, userRole }) => {
                     </div>
                 )
             ) : (
-                <div className="w-full py-2.5 bg-emerald-50 flex items-center justify-center gap-2 text-emerald-600 text-xs font-semibold border-t border-emerald-100">
-                    <CheckCircle size={14} /> Finalizado
+                <div className="border-t border-emerald-100">
+                    <div className="w-full py-2.5 bg-emerald-50 flex items-center justify-center gap-2 text-emerald-600 text-xs font-semibold">
+                        <CheckCircle size={14} /> Finalizado
+                    </div>
+                    {isAdmin && (() => {
+                        const completedConteo = batch.notes.find(n =>
+                            n.status === 'COMPLETED' && /^(G_)?CONTEO$/i.test(n.processType?.code)
+                        );
+                        if (!completedConteo) return null;
+                        return (
+                            <ReopenConteoButton noteId={completedConteo.id} stageName={completedConteo.stageName || 'Conteo'} onSuccess={onRefresh} />
+                        );
+                    })()}
                 </div>
             )}
         </div>
@@ -486,6 +664,14 @@ const ProductionOperatorPage = () => {
     const [refreshing, setRefreshing] = useState(false);
     const [activeTab, setActiveTab] = useState('active');
     const [activeLine, setActiveLine] = useState('perlas'); // 'perlas' | 'siropes'
+    const [shiftBatchTarget, setShiftBatchTarget] = useState(5);
+
+    useEffect(() => {
+        api.get('/config').then(r => {
+            const t = r.data?.shiftBatchTarget;
+            if (t && t > 0) setShiftBatchTarget(t);
+        }).catch(() => {});
+    }, []);
 
     const fetchData = useCallback(async (showSpinner = false) => {
         if (showSpinner) setRefreshing(true);
@@ -507,6 +693,7 @@ const ProductionOperatorPage = () => {
                         batchNumber: note.productionBatch?.batchNumber || bId.slice(0, 8),
                         productName: note.product?.name || 'Producto',
                         scheduledStart: note.productionBatch?.scheduledStart,
+                        scheduledEnd: note.productionBatch?.scheduledEnd,
                         status: note.productionBatch?.status,
                         batchStatus: note.productionBatch?.status,
                         outputTargets: (note.productionBatch?.outputTargets || []).map(t => ({
@@ -579,8 +766,16 @@ const ProductionOperatorPage = () => {
                     b.inProgress = !b.allDone && (
                         b.notes.some(n => n.status === 'EXECUTING') || isStageInProgress
                     );
+                    b.hasEmpaque = b.notes.some(n => ['EMPAQUE','G_EMPAQUE'].includes(n.processType?.code));
+                    b.hasConteo = b.notes.some(n => n.processType?.code === 'CONTEO');
                     b.firstPending = b.notes.find(n => n.status !== 'COMPLETED');
                     return b;
+                })
+                .filter(b => {
+                    if (['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)) {
+                        return b.hasEmpaque;
+                    }
+                    return true;
                 })
                 .sort((a, c) => {
                     if (a.allDone !== c.allDone) return a.allDone ? 1 : -1;
@@ -628,21 +823,31 @@ const ProductionOperatorPage = () => {
     // Classify batch as sirope or perla — check ALL stage products, not just the first
     const isSirope = (b) => {
         const bn = (b.batchNumber || '').toUpperCase();
-        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY')) return true;
+        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY') || bn.includes('LIQUIMON')) return true;
         return (b.allProductNames || []).some(p => {
             const u = p.toUpperCase();
-            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY');
+            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY') || u.includes('LIQUIMON');
         });
     };
 
     const handleStart = (batch) => {
         if (!batch.firstPending) return;
+        // Role-aware: production users should navigate to production steps, not empaque
+        const EMPAQUE_CODES = ['EMPAQUE', 'G_EMPAQUE', 'ETIQUETADO'];
+        let target = batch.firstPending;
+        if (user?.role === 'PRODUCCION') {
+            const prodNote = batch.notes.find(n => n.status !== 'COMPLETED' && !EMPAQUE_CODES.includes(n.processType?.code));
+            if (prodNote) target = prodNote;
+        } else if (['OPERARIO_PICKING', 'EMPAQUE'].includes(user?.role)) {
+            const empNote = batch.notes.find(n => n.status !== 'COMPLETED' && (EMPAQUE_CODES.includes(n.processType?.code) || n.processType?.code === 'CONTEO'));
+            if (empNote) target = empNote;
+        }
         // All sirope (Geniality) batches → GenialityExecutionWizard
         // It handles both native steps (G_/GE_) and shared steps (EMPAQUE/ENSAMBLE/CONTEO)
         if (isSirope(batch)) {
-            navigate(`/geniality/assembly-execution/${batch.firstPending.id}`);
+            navigate(`/geniality/assembly-execution/${target.id}`);
         } else {
-            navigate(`/assembly-execution/${batch.firstPending.id}`);
+            navigate(`/assembly-execution/${target.id}`);
         }
     };
 
@@ -678,6 +883,13 @@ const ProductionOperatorPage = () => {
     };
     const canSeePremixes = isAdmin || user?.role === 'QUIMICO';
 
+    const isProductionDone = (b) => {
+        if (user?.role !== 'PRODUCCION' || !b.hasConteo) return false;
+        const conteoNote = b.notes.find(n => n.processType?.code === 'CONTEO');
+        if (!conteoNote) return false;
+        return conteoNote.status === 'COMPLETED';
+    };
+
     const lineBatches = batches
         .filter(b => canSeePremixes || !isPremixBatch(b))
         .filter(b => activeLine === 'siropes' ? isSirope(b) : !isSirope(b));
@@ -686,13 +898,16 @@ const ProductionOperatorPage = () => {
     const completedCount = lineBatches.filter(b => b.allDone).length;
     const pending = lineBatches.filter(b => b.completed === 0 && !b.allDone).length;
 
-    const activeBatches = lineBatches.filter(b => !b.allDone);
-    const completedBatches = lineBatches.filter(b => b.allDone);
+    const activeBatches = lineBatches.filter(b => {
+        if (b.allDone) return false;
+        if (isProductionDone(b)) return false;
+        return true;
+    });
+    const completedBatches = lineBatches.filter(b => b.allDone || isProductionDone(b));
 
-    // Counts for line tabs (respect premix visibility)
     const filteredBatches = canSeePremixes ? batches : batches.filter(b => !isPremixBatch(b));
-    const perlaCount = filteredBatches.filter(b => !b.allDone && !isSirope(b)).length;
-    const siropeCount = filteredBatches.filter(b => !b.allDone && isSirope(b)).length;
+    const perlaCount = filteredBatches.filter(b => !b.allDone && !isSirope(b) && !isProductionDone(b)).length;
+    const siropeCount = filteredBatches.filter(b => !b.allDone && isSirope(b) && !isProductionDone(b)).length;
 
     const stats = [
         { label: 'Total', value: total, icon: Factory, color: 'text-slate-700', bg: 'bg-white', border: 'border-slate-200' },
@@ -838,6 +1053,96 @@ const ProductionOperatorPage = () => {
                 </div>
             </div>
 
+            {/* Shift KPI Banner — only for PRODUCCION on perlas tab */}
+            {user?.role === 'PRODUCCION' && activeLine === 'perlas' && (() => {
+                const now = new Date();
+                const cotH = now.getHours(); // Server is in COT
+                const currentShift = cotH >= 6 && cotH < 14 ? 'MANANA' : cotH >= 14 && cotH < 22 ? 'TARDE' : 'NOCHE';
+                const shiftStart = new Date(now);
+                if (currentShift === 'MANANA') shiftStart.setHours(6, 0, 0, 0);
+                else if (currentShift === 'TARDE') shiftStart.setHours(14, 0, 0, 0);
+                else { shiftStart.setHours(22, 0, 0, 0); if (cotH < 6) shiftStart.setDate(shiftStart.getDate() - 1); }
+
+                const shiftBatches = lineBatches.filter(b => {
+                    const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
+                    if (!f?.startedAt) return false;
+                    return new Date(f.startedAt) >= shiftStart;
+                });
+
+                const completed = shiftBatches.filter(b => {
+                    const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
+                    return f?.completedAt;
+                });
+
+                const TARGET_BATCHES = shiftBatchTarget;
+                const completionPct = Math.min(100, Math.round((completed.length / TARGET_BATCHES) * 100));
+
+                let avgFormacion = null;
+                if (completed.length > 0) {
+                    const totalMin = completed.reduce((sum, b) => {
+                        const f = b.notes.find(n => n.processType?.code === 'FORMACION');
+                        return sum + (new Date(f.completedAt) - new Date(f.startedAt)) / 60000;
+                    }, 0);
+                    avgFormacion = Math.round(totalMin / completed.length);
+                }
+                const avgScore = avgFormacion ? Math.max(0, Math.round(100 - (Math.max(0, avgFormacion - TARGET_FORMACION_MIN) / TARGET_FORMACION_MIN) * 100)) : null;
+
+                const shiftLabel = currentShift === 'MANANA' ? 'Mañana' : currentShift === 'TARDE' ? 'Tarde' : 'Noche';
+                const batchColor = completionPct >= 100 ? 'emerald' : completionPct >= 60 ? 'amber' : 'slate';
+                const timeColor = avgScore >= 80 ? 'emerald' : avgScore >= 50 ? 'amber' : 'red';
+
+                const remaining = TARGET_BATCHES - completed.length;
+                const motivMsg = completed.length >= TARGET_BATCHES
+                    ? '🏆 ¡Meta cumplida! ¡Turno élite!'
+                    : remaining === 1
+                    ? '🔥 ¡Uno más y lo logran!'
+                    : completionPct >= 60
+                    ? '⚡ ¡Van por buen camino!'
+                    : completed.length >= 1
+                    ? `💪 Faltan ${remaining} — ¡A darle!`
+                    : `🎯 Meta del turno: ${TARGET_BATCHES} baches`;
+
+                const borderColor = completed.length >= TARGET_BATCHES ? 'border-emerald-300' : 'border-slate-200';
+                const bgGrad = completed.length >= TARGET_BATCHES
+                    ? 'bg-gradient-to-r from-emerald-50 to-emerald-100/50'
+                    : 'bg-white';
+
+                return (
+                    <div className="max-w-screen-2xl mx-auto px-4 pt-4">
+                        <div className={`flex items-center gap-3 border ${borderColor} rounded-xl px-4 py-3 shadow-sm ${bgGrad}`}>
+                            <div className="flex-1 flex items-center gap-4">
+                                <div className="text-center min-w-[80px]">
+                                    <div className={`text-2xl font-black ${completed.length >= TARGET_BATCHES ? 'text-emerald-600' : 'text-slate-700'}`}>{completed.length}/{TARGET_BATCHES}</div>
+                                    <div className="text-[10px] text-slate-400 font-semibold">Esferificados</div>
+                                </div>
+                                <div className="h-8 w-px bg-slate-200" />
+                                <div className="flex-1">
+                                    <div className="flex items-center justify-between mb-1">
+                                        <span className="text-xs font-black text-slate-600">{motivMsg}</span>
+                                        <span className="text-[10px] text-slate-400">Turno {shiftLabel}</span>
+                                    </div>
+                                    <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                                        {Array.from({ length: TARGET_BATCHES }).map((_, i) => (
+                                            <div key={i} className={`inline-block h-full transition-all ${i < completed.length ? 'bg-emerald-500' : 'bg-slate-200'}`}
+                                                style={{ width: `${100 / TARGET_BATCHES}%`, borderRight: i < TARGET_BATCHES - 1 ? '2px solid white' : 'none' }} />
+                                        ))}
+                                    </div>
+                                </div>
+                                {avgFormacion !== null && (
+                                    <>
+                                        <div className="h-8 w-px bg-slate-200" />
+                                        <div className="text-center min-w-[70px]">
+                                            <div className={`text-lg font-black text-${timeColor}-600`}>{avgFormacion}m</div>
+                                            <div className="text-[10px] text-slate-400 font-semibold">Prom.</div>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
             {/* Content (Grid de Batches) */}
             <div className="max-w-screen-2xl mx-auto px-4 py-5">
 
@@ -866,7 +1171,7 @@ const ProductionOperatorPage = () => {
                                 </h2>
                                 <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
                                     {group.batches.map(batch => (
-                                        <BatchCard key={batch.id} batch={batch} onStart={handleStart} onDelete={handleDelete} isAdmin={isAdmin} userRole={user?.role} />
+                                        <BatchCard key={batch.id} batch={batch} onStart={handleStart} onDelete={handleDelete} onRefresh={() => fetchData(true)} isAdmin={isAdmin} userRole={user?.role} />
                                     ))}
                                 </div>
                             </div>
