@@ -11,6 +11,7 @@ import MedicionStep from './steps/MedicionStep';
 import FormacionQCStep from './steps/FormacionQCStep';
 import EsferificacionStep from './steps/EsferificacionStep';
 import ProteccionGateStep from './steps/ProteccionGateStep';
+import PesajeBatchStep from './steps/PesajeBatchStep';
 import GConteoCarritosStep from '../GenialityRunner/steps/GConteoCarritosStep';
 import GEPremixStep from '../GenialityRunner/steps/GEPremixStep';
 import GEBaseLiquidaStep from '../GenialityRunner/steps/GEBaseLiquidaStep';
@@ -37,6 +38,7 @@ const StepDisplay = (props) => {
     if (stepType === 'FORMACION_QC') return <FormacionQCStep {...props} />;
     if (stepType === 'ESFERIFICACION') return <EsferificacionStep {...props} />;
     if (stepType === 'PROTECCION_GATE') return <ProteccionGateStep {...props} />;
+    if (stepType === 'PESAJE_BATCH') return <PesajeBatchStep {...props} />;
 
     // Geniality steps
     if (stepType === 'G_CONTEO_CARRITOS') return <GConteoCarritosStep {...props} />;

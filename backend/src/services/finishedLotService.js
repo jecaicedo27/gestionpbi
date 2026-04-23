@@ -759,10 +759,55 @@ async function getRecallReport({ productId, lotNumber }) {
     return result;
 }
 
+async function reverseForOrder({ orderId, userId }) {
+    const transfers = await prisma.finishedLotTransfer.findMany({
+        where: { orderId, reason: 'Despacho por picking' },
+    });
+
+    if (transfers.length === 0) return [];
+
+    const results = [];
+    for (const t of transfers) {
+        await prisma.$transaction(async (tx) => {
+            const stock = await tx.finishedLotStock.findUnique({
+                where: { id: t.finishedLotStockId },
+            });
+            if (!stock) return;
+
+            const newQty = stock.currentQuantity + t.quantity;
+            await tx.finishedLotStock.update({
+                where: { id: stock.id },
+                data: {
+                    currentQuantity: newQty,
+                    status: computeStatus(newQty, stock.initialQuantity),
+                },
+            });
+
+            await tx.finishedLotTransfer.create({
+                data: {
+                    finishedLotStockId: stock.id,
+                    productId: t.productId,
+                    lotNumber: t.lotNumber,
+                    fromZone: t.fromZone,
+                    toZone: t.toZone,
+                    quantity: t.quantity,
+                    reason: 'Reversión por revert-to-picking',
+                    orderId,
+                    transferredById: userId,
+                },
+            });
+        });
+        results.push({ lotNumber: t.lotNumber, quantity: t.quantity, productId: t.productId });
+    }
+
+    return results;
+}
+
 module.exports = {
     ingestFromProduction,
     transferZone,
     consumeForOrder,
+    reverseForOrder,
     getStockByZone,
     getAvailableLots,
     getStockSummary,

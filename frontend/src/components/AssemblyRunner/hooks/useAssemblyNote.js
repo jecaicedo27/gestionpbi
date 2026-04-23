@@ -266,7 +266,10 @@ export function useAssemblyNote(id) {
             if (isGEBaseLiquida) steps.push({ type: 'GE_BASE_LIQUIDA', data: noteData });
             if (isGECoccion) steps.push({ type: 'GE_COCCION', data: noteData });
         } else {
-            if (noteData.items && noteData.items.length > 0) {
+            const BATCH_PESAJE_TEMPLATES = ['TMPL-AZINV-001', 'TMPL-FRUCT-001'];
+            if (isPesaje && BATCH_PESAJE_TEMPLATES.includes(noteData.template?.templateCode) && noteData.items?.length > 0) {
+                steps.push({ type: 'PESAJE_BATCH', data: noteData.items });
+            } else if (noteData.items && noteData.items.length > 0) {
                 noteData.items.forEach(item => steps.push({ type: 'INPUT', data: item }));
             }
             // For FORMACION (Esferas): QC step → timer after inputs

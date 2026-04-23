@@ -90,6 +90,15 @@ const assemblyNoteController = {
             });
             if (!note) return res.status(404).json({ error: 'Note not found' });
 
+            // Attach template info if templateId exists
+            if (note.templateId) {
+                const tmpl = await prisma.assemblyTemplate.findUnique({
+                    where: { id: note.templateId },
+                    select: { id: true, templateCode: true, templateName: true }
+                });
+                note.template = tmpl;
+            }
+
             // ── Live recalculation for PENDING notes ──────────────────────────────
             // If the note is pending AND we know the template stage, recalculate
             // plannedQuantity from the current template inputs so template changes

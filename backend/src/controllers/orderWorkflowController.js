@@ -727,7 +727,33 @@ exports.completePickingWithBackorder = async (req, res) => {
                 }
             });
 
-            // 7. Close original order as READY with traceability
+            // 7. Adjust reservedQty: release deficit from original, reserve for backorder
+            for (const item of deficitItems) {
+                const deficit = item.requestedQty - item.scannedQty;
+                try {
+                    const alt = await tx.inventoryAlternate.findUnique({ where: { productId: item.productId } });
+                    if (alt) {
+                        await tx.inventoryAlternate.update({
+                            where: { productId: item.productId },
+                            data: {
+                                reservedQty: { decrement: deficit },
+                                availableQty: { increment: deficit }
+                            }
+                        });
+                    }
+                } catch (e) { /* no alternate record */ }
+            }
+
+            // Re-reserve for the new backorder items
+            for (const bItem of backorderItems) {
+                await tx.inventoryAlternate.upsert({
+                    where: { productId: bItem.productId },
+                    update: { reservedQty: { increment: bItem.requestedQty }, availableQty: { decrement: bItem.requestedQty } },
+                    create: { productId: bItem.productId, reservedQty: bItem.requestedQty, availableQty: -bItem.requestedQty }
+                });
+            }
+
+            // 8. Close original order as READY with traceability
             const originalNotes = [
                 cleanOldNotes,
                 `📦 [Completado Parcial ${pickingPct}%] -> Faltantes en ${newOrderNumber}`
@@ -974,6 +1000,9 @@ exports.unscanItem = async (req, res) => {
 /**
  * Admin: Revert order from READY back to IN_PICKING
  * POST /api/orders/:id/revert-to-picking
+ *
+ * Also reverses any finishedLotStock consumed during completePicking,
+ * so stock is restored and won't be double-consumed on re-pick.
  */
 exports.revertToPicking = async (req, res) => {
     try {
@@ -997,6 +1026,21 @@ exports.revertToPicking = async (req, res) => {
             return res.status(400).json({ success: false, error: `El pedido está en estado "${order.status}", solo se pueden devolver pedidos en estado Listo` });
         }
 
+        // Reverse lot consumption from completePicking
+        const finishedLotService = require('../services/finishedLotService');
+        let reversed = [];
+        try {
+            reversed = await finishedLotService.reverseForOrder({
+                orderId: id,
+                userId: req.user.id,
+            });
+            if (reversed.length > 0) {
+                console.log(`[revertToPicking] 🔄 Reversed ${reversed.length} lot consumptions for order ${order.orderNumber}`);
+            }
+        } catch (revErr) {
+            console.warn(`[revertToPicking] ⚠️ Lot reversal failed for ${order.orderNumber}: ${revErr.message}`);
+        }
+
         const revertNote = `[Devuelto a alistamiento por ${req.user.name || 'Admin'} el ${new Date().toLocaleDateString('es-CO')}]`;
         const updatedNotes = [order.notes || '', revertNote].filter(Boolean).join(' | ');
 
@@ -1012,7 +1056,7 @@ exports.revertToPicking = async (req, res) => {
 
         res.json({
             success: true,
-            message: `Pedido ${order.orderNumber} devuelto a En Alistamiento`,
+            message: `Pedido ${order.orderNumber} devuelto a En Alistamiento. ${reversed.length > 0 ? `Se devolvieron ${reversed.length} lotes al inventario.` : ''}`,
             data: updated
         });
     } catch (error) {

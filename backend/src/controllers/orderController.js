@@ -31,7 +31,8 @@ const createOrder = async (req, res) => {
             }
 
             const reserved = product.inventoryAlternate?.reservedQty || 0;
-            const available = product.currentStock - reserved;
+            const isInternal = ['ADMIN', 'LOGISTICA'].includes(req.user.role);
+            const available = isInternal ? product.currentStock : (product.currentStock - reserved);
 
             if (available < item.quantity) {
                 return res.status(400).json({

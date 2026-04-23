@@ -525,6 +525,58 @@ const AssemblyExecutionWizard = () => {
             }
         }
 
+        // PESAJE_BATCH → Save all items' weight + lot + photos at once
+        if (currentStep.type === 'PESAJE_BATCH') {
+            const batchItems = currentStep.data || [];
+            for (const item of batchItems) {
+                const actualQty = actualQuantities[item.id];
+                const isAgua = (item.component?.name || '').toUpperCase().includes('AGUA');
+
+                const savedPhoto = note.processParameters?.weighing_photos?.[item.id];
+                const localPhoto = weighingPhotos[item.id];
+                if (!isAgua && !savedPhoto && !localPhoto) {
+                    message.error(`⚠️ Falta foto de evidencia para: ${item.component?.name || 'ingrediente'}`);
+                    return;
+                }
+                if (!lotNumbers[item.id]?.trim()) {
+                    message.error(`⚠️ Falta lote para: ${item.component?.name || 'ingrediente'}`);
+                    return;
+                }
+                if (!actualQty || actualQty === '') {
+                    message.error(`⚠️ Falta peso para: ${item.component?.name || 'ingrediente'}`);
+                    return;
+                }
+
+                try {
+                    await api.patch(`/assembly-notes/${note.id}/items/${item.id}`, {
+                        actualQuantity: parseFloat(actualQty),
+                        lotNumber: lotNumbers[item.id] || null,
+                        operatorId: user?.id
+                    });
+                } catch (e) {
+                    console.warn(`Error saving item ${item.id}:`, e);
+                }
+            }
+
+            // Persist all photos and lot selections
+            const updatedParams = { ...(note.processParameters || {}) };
+            const allPhotos = { ...(updatedParams.weighing_photos || {}) };
+            const allLotSel = { ...(updatedParams.lot_selections || {}) };
+            batchItems.forEach(item => {
+                if (weighingPhotos[item.id]) allPhotos[item.id] = weighingPhotos[item.id];
+                const itemSel = lotSelections[item.id];
+                if (itemSel?.length > 0) allLotSel[item.id] = itemSel[0]?.lotId || null;
+            });
+            updatedParams.weighing_photos = allPhotos;
+            updatedParams.lot_selections = allLotSel;
+
+            try {
+                await api.patch(`/assembly-notes/${note.id}`, { processParameters: updatedParams }).catch(() => {});
+                note.processParameters = updatedParams;
+            } catch (e) {}
+            message.success('✅ Todos los ingredientes pesados correctamente');
+        }
+
         // ── EMPAQUE QC → persist defective data before advancing to MARCADO_CAJAS ──
         if (currentStep.type === 'EMPAQUE' && note.processType?.code === 'EMPAQUE') {
             const empData = note.empaqueData || {};
@@ -1386,6 +1438,18 @@ const AssemblyExecutionWizard = () => {
         }
     }
 
+    // PESAJE_BATCH: block until ALL items have weight + lot + photo (AGUA exempt from photo)
+    if (currentStep.type === 'PESAJE_BATCH') {
+        const batchItems = currentStep.data || [];
+        canAdvance = batchItems.every(item => {
+            const isAgua = (item.component?.name || '').toUpperCase().includes('AGUA');
+            const hasWeight = actualQuantities[item.id] !== undefined && actualQuantities[item.id] !== '';
+            const hasLot = typeof lotNumbers[item.id] === 'string' && lotNumbers[item.id].trim().length > 0;
+            const hasPhoto = isAgua || !!weighingPhotos[item.id] || !!note?.processParameters?.weighing_photos?.[item.id];
+            return hasWeight && hasLot && hasPhoto;
+        });
+    }
+
     // Block SIGUIENTE on EMPAQUE multi-presentation selector until ALL are completed
     const isEmpaque = note.processType?.code === 'EMPAQUE';
     const empaqueNotes = isEmpaque ? allBatchNotes.filter(n => n.processType?.code === 'EMPAQUE') : [];
@@ -1539,6 +1603,7 @@ const AssemblyExecutionWizard = () => {
     let nextLabel = 'SIGUIENTE';
     if (currentStep.type === 'INTRO' && note.status === 'PENDING') nextLabel = 'INICIAR PROCESO';
     if (currentStep.type === 'INPUT') nextLabel = 'CONFIRMAR PESO';
+    if (currentStep.type === 'PESAJE_BATCH') nextLabel = 'CONFIRMAR TODOS LOS PESOS';
     if (currentStep.type === 'CONTEO') nextLabel = 'PRODUCCIÓN TERMINADA ✓';
     // Unified EMPAQUE wizard labels
     if (currentStep.type === 'EMPAQUE' && isEmpaque) nextLabel = 'CONFIRMAR QC ✓';
@@ -1591,6 +1656,7 @@ const AssemblyExecutionWizard = () => {
                     lotNumbers={lotNumbers}
                     onLotNumberChange={(itemId, value) => setLotNumbers(prev => ({ ...prev, [itemId]: value }))}
                     weighingPhotoUrl={currentStep.type === 'INPUT' ? (weighingPhotos[currentStep.data?.id] || note?.processParameters?.weighing_photos?.[currentStep.data?.id]) : undefined}
+                    weighingPhotos={weighingPhotos}
                     onWeighingPhotoChange={(itemId, url) => setWeighingPhotos(prev => ({ ...prev, [itemId]: url }))}
                     onLotIdSelected={(itemId, lotId) => setSelectedLotIds(prev => ({ ...prev, [itemId]: lotId }))}
                     lotSelections={lotSelections}
