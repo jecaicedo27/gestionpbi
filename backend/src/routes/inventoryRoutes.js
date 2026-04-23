@@ -10,6 +10,7 @@ router.get('/list', auth, inventoryController.getAllProducts);
 router.get('/products', auth, inventoryController.getProductsSimple);
 router.post('/sync', auth, inventoryController.syncFromSiigo);
 router.post('/product/:id/config', auth, inventoryController.updateProductConfig);
+router.get('/product/:id/reservation', auth, inventoryController.getProductReservation);
 router.get('/products/:productId/lot-context', auth, lotController.getProductLotContext);
 router.get('/products/:productId/pack-options', auth, lotController.getProductPackOptions);
 router.get('/unassigned-bulk-ingress/availability', auth, lotController.getBulkIngressAvailability);

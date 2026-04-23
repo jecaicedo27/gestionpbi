@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { X, TrendingUp, Package, AlertCircle, Save, Settings, Layers, Clock, Warehouse, Plus, Pencil, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, TrendingUp, Package, AlertCircle, Save, Settings, Layers, Clock, Warehouse, Plus, Pencil, Trash2, ChevronDown, ChevronUp, ShoppingCart } from 'lucide-react';
 import api from '../../services/api';
 import LotManagementModal from './LotManagementModal';
 import {
@@ -63,6 +63,7 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
     const [showLots, setShowLots] = useState(false);
     const [lotScanForModal, setLotScanForModal] = useState(null);
     const [zoneBreakdown, setZoneBreakdown] = useState(null);
+    const [reservation, setReservation] = useState(null);
     const [packOptions, setPackOptions] = useState([]);
     const [packOptionsLoading, setPackOptionsLoading] = useState(false);
     const [showPackFormats, setShowPackFormats] = useState(false);
@@ -87,6 +88,16 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
             setPackOptionsLoading(false);
         }
     };
+
+    const loadReservation = useCallback(async (targetProduct) => {
+        if (!targetProduct?.id) return;
+        try {
+            const { data } = await api.get(`/inventory/product/${targetProduct.id}/reservation`);
+            setReservation(data);
+        } catch {
+            setReservation(null);
+        }
+    }, []);
 
     const loadZoneBreakdown = useCallback(async (targetProduct) => {
         if (!targetProduct?.id) return;
@@ -131,7 +142,8 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
         });
         loadPackOptions(product.id);
         loadZoneBreakdown(product);
-    }, [product, loadZoneBreakdown]);
+        loadReservation(product);
+    }, [product, loadZoneBreakdown, loadReservation]);
 
     useEffect(() => {
         if (!initialLotScan || !product) return;
@@ -289,7 +301,7 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
 
     return (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4" onClick={onClose}>
-            <div className="bg-white rounded-t-2xl sm:rounded-xl shadow-2xl w-full h-[100dvh] sm:h-auto sm:max-h-[calc(100dvh-2rem)] max-w-2xl overflow-hidden flex flex-col" style={{ animation: 'scaleIn .15s ease-out' }} onClick={e => e.stopPropagation()}>
+            <div className="bg-white rounded-t-2xl sm:rounded-xl shadow-2xl w-full h-[100dvh] sm:h-auto sm:max-h-[calc(100dvh-2rem)] max-w-5xl overflow-hidden flex flex-col" style={{ animation: 'scaleIn .15s ease-out' }} onClick={e => e.stopPropagation()}>
                 {/* Header — compact gradient */}
                 <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-4 sm:px-5 py-3 flex justify-between items-center flex-shrink-0 gap-3">
                     <div className="flex-1 min-w-0">
@@ -304,8 +316,15 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
                     </button>
                 </div>
 
-                {/* Content */}
-                <div className="p-3 sm:p-4 space-y-3 overflow-y-auto flex-1 min-h-0 overscroll-contain">
+                {/* Content — two columns */}
+                <div className="p-3 sm:p-4 overflow-y-auto flex-1 min-h-0 overscroll-contain">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {/* ═══ LEFT COLUMN: INVENTARIO ═══ */}
+                <div className="space-y-3">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                        <Package className="w-3 h-3" /> Inventario
+                    </h3>
 
                     {/* Metrics row — 3 compact cards */}
                     <div className="grid grid-cols-3 gap-2">
@@ -593,7 +612,7 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
                     )}
 
                     {/* Actions — compact */}
-                    <div className="sticky bottom-0 z-10 -mx-3 sm:-mx-4 mt-3 px-3 sm:px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] bg-white/95 backdrop-blur border-t border-slate-200 shadow-[0_-8px_18px_rgba(15,23,42,0.08)] flex flex-col sm:flex-row gap-2">
+                    <div className="mt-3 flex flex-col sm:flex-row gap-2">
                         <button
                             onClick={() => setShowLots(true)}
                             className="flex-1 min-h-[44px] flex items-center justify-center gap-1.5 py-2 bg-gradient-to-r from-indigo-500 to-violet-500
@@ -613,6 +632,141 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
                             </button>
                         )}
                     </div>
+                </div>
+
+                {/* ═══ RIGHT COLUMN: VENTAS ═══ */}
+                <div className="space-y-3">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                        <ShoppingCart className="w-3 h-3" /> Ventas
+                    </h3>
+
+                    {/* Summary cards */}
+                    {reservation && (() => {
+                        const available = stock - (reservation.reservedQty || 0);
+                        const pickedOrders = (reservation.orders || []).filter(o => (o.scannedQty || 0) > 0);
+                        const pendingOrders = (reservation.orders || []).filter(o => (o.scannedQty || 0) === 0);
+                        const pickedQty = pickedOrders.reduce((s, o) => s + (o.scannedQty || 0), 0);
+                        const pendingQty = pendingOrders.reduce((s, o) => s + (o.pendingQty || 0), 0);
+                        const dbStock = reservation.dbStock;
+                        const siigoStock = reservation.siigoStock;
+                        const stockMatch = siigoStock !== null && dbStock !== null && Math.round(siigoStock) === Math.round(dbStock);
+                        const stockDiff = siigoStock !== null && dbStock !== null ? Math.round(siigoStock - dbStock) : null;
+
+                        return (
+                            <>
+                                {/* DB vs Siigo comparison */}
+                                {(() => {
+                                    const bothNegative = dbStock < 0 || (siigoStock !== null && siigoStock < 0);
+                                    const hasDiff = stockDiff !== null && stockDiff !== 0;
+                                    const borderColor = bothNegative ? 'bg-red-50 border-red-300' : hasDiff ? 'bg-amber-50 border-amber-300' : 'bg-gray-50 border-gray-200';
+                                    return (
+                                        <div className={`rounded-lg p-2.5 border ${borderColor}`}>
+                                            {bothNegative && (
+                                                <div className="text-[10px] font-bold text-red-600 text-center mb-1.5">⚠ Stock negativo — requiere conteo físico</div>
+                                            )}
+                                            <div className="grid grid-cols-3 gap-2 text-center">
+                                                <div>
+                                                    <div className="text-[9px] font-bold text-gray-500 uppercase">Sistema</div>
+                                                    <div className={`text-lg font-black ${dbStock < 0 ? 'text-red-600' : 'text-gray-800'}`}>{dbStock !== null ? Math.round(dbStock) : '—'}</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[9px] font-bold text-gray-500 uppercase">Siigo</div>
+                                                    <div className={`text-lg font-black ${siigoStock !== null && siigoStock < 0 ? 'text-red-600' : 'text-gray-800'}`}>{siigoStock !== null ? Math.round(siigoStock) : '...'}</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[9px] font-bold text-gray-500 uppercase">Diferencia</div>
+                                                    {stockDiff !== null ? (
+                                                        <div className={`text-lg font-black ${stockDiff === 0 ? 'text-gray-400' : 'text-red-600'}`}>
+                                                            {stockDiff === 0 ? '0' : (stockDiff > 0 ? `+${stockDiff}` : stockDiff)}
+                                                        </div>
+                                                    ) : (
+                                                        <div className="text-lg font-black text-gray-400">—</div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="p-2 bg-orange-50 rounded-lg border border-orange-200 text-center">
+                                        <div className="text-[9px] font-bold text-orange-600 uppercase">Comprometido</div>
+                                        <div className="text-lg font-black text-orange-600">{Math.round(reservation.reservedQty)}</div>
+                                    </div>
+                                    <div className={`p-2 rounded-lg border text-center ${available >= 0 ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+                                        <div className="text-[9px] font-bold uppercase text-gray-500">Libre</div>
+                                        <div className={`text-lg font-black ${available >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>{Math.round(available)}</div>
+                                    </div>
+                                    <div className="p-2 bg-blue-50 rounded-lg border border-blue-100 text-center">
+                                        <div className="text-[9px] font-bold text-blue-500 uppercase">Piqueado</div>
+                                        <div className="text-lg font-black text-blue-900">{Math.round(pickedQty)}</div>
+                                    </div>
+                                </div>
+
+                                {/* Picking section */}
+                                {pickedOrders.length > 0 && (
+                                    <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h4 className="text-xs font-bold text-blue-700 uppercase">Piqueado</h4>
+                                            <span className="text-sm font-black text-blue-700">{Math.round(pickedQty)} uds</span>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            {pickedOrders.map((o, i) => (
+                                                <div key={i} className="bg-white/80 rounded-lg px-3 py-2">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-sm font-black text-blue-800">{Math.round(o.scannedQty)} / {Math.round(o.requestedQty)} uds</span>
+                                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-200 text-blue-800">PIQUEADO</span>
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-600 mt-0.5 truncate">{o.orderNumber}</div>
+                                                    {o.distributor && <div className="text-[10px] text-gray-400">{o.distributor}</div>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Pending/Approved section */}
+                                {pendingOrders.length > 0 && (
+                                    <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <h4 className="text-xs font-bold text-amber-700 uppercase">Solo Pedido</h4>
+                                            <span className="text-sm font-black text-amber-700">{Math.round(pendingQty)} uds</span>
+                                        </div>
+                                        <div className="space-y-1.5">
+                                            {pendingOrders.map((o, i) => (
+                                                <div key={i} className="bg-white/80 rounded-lg px-3 py-2">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-sm font-black text-amber-800">{Math.round(o.pendingQty)} uds</span>
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                            o.status === 'APPROVED' ? 'bg-green-200 text-green-800' : 'bg-gray-200 text-gray-700'
+                                                        }`}>{o.status === 'APPROVED' ? 'APROBADO' : 'PENDIENTE'}</span>
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-600 mt-0.5 truncate">{o.orderNumber}</div>
+                                                    {o.distributor && <div className="text-[10px] text-gray-400">{o.distributor}</div>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {(!reservation.orders || reservation.orders.length === 0) && reservation.reservedQty === 0 && (
+                                    <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-100 text-center">
+                                        <div className="text-sm font-bold text-emerald-600">Sin pedidos activos</div>
+                                        <div className="text-[10px] text-emerald-500 mt-0.5">Todo el stock está disponible</div>
+                                    </div>
+                                )}
+                            </>
+                        );
+                    })()}
+
+                    {!reservation && (
+                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-100 text-center">
+                            <div className="text-[11px] text-gray-400">Cargando información de ventas...</div>
+                        </div>
+                    )}
+                </div>
+
+                </div>
                 </div>
             </div>
             {showLots && (

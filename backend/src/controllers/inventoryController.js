@@ -400,3 +400,70 @@ exports.getPickedSummary = async (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to fetch picked summary' });
     }
 };
+
+exports.getProductReservation = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const product = await prisma.product.findUnique({
+            where: { id },
+            select: { currentStock: true, siigoId: true }
+        });
+
+        let siigoStock = null;
+        if (product?.siigoId) {
+            try {
+                const siigoService = require('../services/siigoService');
+                const siigoProduct = await siigoService.getProduct(product.siigoId);
+                siigoStock = siigoProduct?.available_quantity ?? null;
+            } catch (e) {
+                console.warn(`[getProductReservation] Siigo fetch failed: ${e.message}`);
+            }
+        }
+
+        const alt = await prisma.inventoryAlternate.findUnique({ where: { productId: id } });
+        const reservedQty = alt?.reservedQty || 0;
+
+        const orderItems = await prisma.orderItem.findMany({
+            where: {
+                productId: id,
+                order: { status: { in: ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'] } }
+            },
+            select: {
+                pendingQty: true,
+                requestedQty: true,
+                allocatedQty: true,
+                pickingItems: { select: { scannedQty: true } },
+                order: {
+                    select: {
+                        orderNumber: true,
+                        status: true,
+                        distributor: { select: { name: true } }
+                    }
+                }
+            }
+        });
+
+        const orders = orderItems.map(i => {
+            const scannedQty = i.pickingItems.reduce((s, p) => s + (p.scannedQty || 0), 0);
+            return {
+                orderNumber: i.order.orderNumber,
+                status: i.order.status,
+                distributor: i.order.distributor?.name,
+                pendingQty: i.pendingQty,
+                requestedQty: i.requestedQty,
+                scannedQty
+            };
+        });
+
+        res.json({
+            reservedQty,
+            orders,
+            dbStock: product?.currentStock ?? null,
+            siigoStock
+        });
+    } catch (error) {
+        console.error('Error fetching product reservation:', error);
+        res.status(500).json({ error: 'Error al consultar reservas' });
+    }
+};
