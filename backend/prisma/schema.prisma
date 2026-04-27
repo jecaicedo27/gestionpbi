@@ -43,6 +43,7 @@ model User {
   inventoryCountSessions   InventoryCountSession[]   @relation("InventoryCountCreator")
   lotConsumptions          LotConsumption[]          @relation("LotConsumer")
   microInternalLogs        MicroInternalLog[]        @relation("MicroInternalLogRecorder")
+  materialLotFiles         MaterialLotAttachment[]   @relation("MaterialLotAttachmentUploader")
   microSamples             MicroSample[]             @relation("MicroSampleTaker")
   microScheduleEntries     MicroScheduleEntry[]      @relation("MicroScheduleEntryCreator")
   scannedItems             OrderPickingItem[]        @relation("OrderScanner")
@@ -1308,34 +1309,55 @@ model ReceptionItem {
 }
 
 model MaterialLot {
-  id                  String               @id @default(uuid())
+  id                  String                  @id @default(uuid())
   purchaseOrderItemId String?
   siigoProductCode    String
   siigoProductName    String
   lotNumber           String
   initialQuantity     Int
   currentQuantity     Int
-  unit                String               @default("gramo")
+  unit                String                  @default("gramo")
   qrData              String?
-  receivedAt          DateTime             @default(now())
+  receivedAt          DateTime                @default(now())
   expiresAt           DateTime?
-  status              LotStatus            @default(AVAILABLE)
+  status              LotStatus               @default(AVAILABLE)
   productId           String?
-  zone                String               @default("WAREHOUSE")
-  labelPrinted        Boolean              @default(false)
+  zone                String                  @default("WAREHOUSE")
+  labelPrinted        Boolean                 @default(false)
   labelPrintedAt      DateTime?
-  inventoryCountLines InventoryCountLine[] @relation("InventoryCountLot")
+  inventoryCountLines InventoryCountLine[]    @relation("InventoryCountLot")
+  attachments         MaterialLotAttachment[]
   consumptions        LotConsumption[]
-  packageLabels       PackageLabel[]        @relation("PackageLabelMaterialLot")
-  product             Product?             @relation("LotProduct", fields: [productId], references: [id])
-  purchaseOrderItem   PurchaseOrderItem?   @relation(fields: [purchaseOrderItemId], references: [id])
-  zoneTransfers       ZoneTransfer[]       @relation("ZoneTransferLot")
+  packageLabels       PackageLabel[]          @relation("PackageLabelMaterialLot")
+  product             Product?                @relation("LotProduct", fields: [productId], references: [id])
+  purchaseOrderItem   PurchaseOrderItem?      @relation(fields: [purchaseOrderItemId], references: [id])
+  zoneTransfers       ZoneTransfer[]          @relation("ZoneTransferLot")
 
   @@index([siigoProductCode])
   @@index([status])
   @@index([receivedAt])
   @@index([lotNumber])
   @@map("material_lots")
+}
+
+model MaterialLotAttachment {
+  id            String      @id @default(uuid())
+  materialLotId String      @map("material_lot_id")
+  type          String
+  originalName  String      @map("original_name")
+  storedName    String      @map("stored_name")
+  mimeType      String?     @map("mime_type")
+  sizeBytes     Int?        @map("size_bytes")
+  url           String
+  uploadedById  String?     @map("uploaded_by_id")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  materialLot   MaterialLot @relation(fields: [materialLotId], references: [id], onDelete: Cascade)
+  uploadedBy    User?       @relation("MaterialLotAttachmentUploader", fields: [uploadedById], references: [id])
+
+  @@index([materialLotId])
+  @@index([materialLotId, type])
+  @@index([uploadedById])
+  @@map("material_lot_attachments")
 }
 
 model LotConsumption {

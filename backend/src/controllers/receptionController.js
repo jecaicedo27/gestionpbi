@@ -8,6 +8,10 @@ const {
     buildPurchaseOrderWorkflowAlert,
     emitPurchaseOrderWorkflowAlert
 } = require('../services/purchaseOrderAlertService');
+const {
+    storeMaterialLotAttachment,
+    cleanupStoredMaterialLotFiles
+} = require('../services/materialLotAttachmentService');
 
 const normalizeDigits = (value) => String(value || '').replace(/\D/g, '');
 const extractTrailingNumber = (value) => {
@@ -20,6 +24,42 @@ const supplierNamesMatch = (left, right) => {
     const b = String(right || '').trim().toUpperCase();
     if (!a || !b) return false;
     return a.includes(b) || b.includes(a) || a.split(' ')[0] === b.split(' ')[0];
+};
+const parseLotsPayload = (value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    }
+    return [];
+};
+const normalizeAttachmentType = (value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    return normalized === 'FICHA_TECNICA' ? 'FICHA_TECNICA' : 'CERTIFICADO_CALIDAD';
+};
+const isRawMaterialSku = (sku) => String(sku || '').toUpperCase().startsWith('MP');
+
+let materialLotAttachmentTableAvailableCache = null;
+const hasMaterialLotAttachmentTable = async () => {
+    if (typeof materialLotAttachmentTableAvailableCache === 'boolean') {
+        return materialLotAttachmentTableAvailableCache;
+    }
+
+    try {
+        const result = await prisma.$queryRawUnsafe(
+            "SELECT to_regclass('public.material_lot_attachments') AS table_name"
+        );
+        materialLotAttachmentTableAvailableCache = Boolean(result?.[0]?.table_name);
+    } catch (error) {
+        logger.warn(`No se pudo validar material_lot_attachments: ${error.message}`);
+        materialLotAttachmentTableAvailableCache = false;
+    }
+
+    return materialLotAttachmentTableAvailableCache;
 };
 
 /**
@@ -283,8 +323,11 @@ exports.validate = async (req, res) => {
  * POST /procurement/lots — Create material lots from reception
  */
 exports.createLots = async (req, res) => {
+    const storedFiles = [];
     try {
-        const { purchaseOrderItemId, lots } = req.body;
+        const attachmentsTableAvailable = await hasMaterialLotAttachmentTable();
+        const purchaseOrderItemId = req.body.purchaseOrderItemId;
+        const lots = parseLotsPayload(req.body.lots);
 
         if (!lots?.length) return res.status(400).json({ error: 'No se proporcionaron lotes' });
 
@@ -298,6 +341,18 @@ exports.createLots = async (req, res) => {
             }
         });
         if (!orderItem) return res.status(404).json({ error: 'Item de OC no encontrado' });
+
+        const resolvedProduct = orderItem.productId
+            ? await prisma.product.findUnique({
+                where: { id: orderItem.productId },
+                select: { id: true, type: true, unit: true }
+            })
+            : await prisma.product.findFirst({
+                where: { sku: orderItem.siigoProductCode },
+                select: { id: true, type: true, unit: true }
+            });
+
+        const requiresTechnicalSupport = resolvedProduct?.type === 'MATERIA_PRIMA' || isRawMaterialSku(orderItem.siigoProductCode);
 
         const accountedReceived = await prisma.receptionItem.aggregate({
             where: {
@@ -326,35 +381,35 @@ exports.createLots = async (req, res) => {
             });
         }
 
+        const filesByField = new Map();
+        for (const file of req.files || []) {
+            const current = filesByField.get(file.fieldname) || [];
+            current.push(file);
+            filesByField.set(file.fieldname, current);
+        }
+
         // Validate individual lots have valid data
-        for (const lot of lots) {
+        for (let index = 0; index < lots.length; index += 1) {
+            const lot = lots[index];
+            const attachmentFiles = filesByField.get(`lotAttachments_${index}`) || [];
             if (!lot.lotNumber?.trim()) return res.status(400).json({ error: 'Todos los lotes deben tener número de lote' });
             if (!lot.quantity || lot.quantity <= 0) return res.status(400).json({ error: 'La cantidad de cada lote debe ser mayor a 0' });
+            if (!lot.expiresAt?.trim()) return res.status(400).json({ error: 'Todos los lotes deben tener fecha de vencimiento' });
+            if (requiresTechnicalSupport && attachmentFiles.length === 0) {
+                return res.status(400).json({ error: 'Cada lote de materia prima debe incluir certificado de calidad o ficha técnica.' });
+            }
         }
 
         // Resolve productId by SKU (so lot appears in inventory)
-        let resolvedProductId = orderItem.productId || null;
-        if (!resolvedProductId && orderItem.siigoProductCode) {
-            const product = await prisma.product.findFirst({
-                where: { sku: orderItem.siigoProductCode },
-                select: { id: true }
-            });
-            if (product) resolvedProductId = product.id;
-        }
+        let resolvedProductId = resolvedProduct?.id || orderItem.productId || null;
 
         // Resolve product unit for correct lot creation
-        let productUnit = 'gramo';
-        if (resolvedProductId) {
-            const prod = await prisma.product.findUnique({
-                where: { id: resolvedProductId },
-                select: { unit: true }
-            });
-            if (prod?.unit) productUnit = prod.unit;
-        }
+        const productUnit = resolvedProduct?.unit || 'gramo';
 
         const created = await prisma.$transaction(async (tx) => {
             const materialLots = [];
-            for (const lot of lots) {
+            for (let index = 0; index < lots.length; index += 1) {
+                const lot = lots[index];
                 const materialLot = await tx.materialLot.create({
                     data: {
                         purchaseOrderItemId,
@@ -375,6 +430,29 @@ exports.createLots = async (req, res) => {
                         })
                     }
                 });
+
+                const attachmentFiles = filesByField.get(`lotAttachments_${index}`) || [];
+                if (attachmentFiles.length > 0 && attachmentsTableAvailable) {
+                    for (const file of attachmentFiles) {
+                        const stored = await storeMaterialLotAttachment(materialLot.id, file);
+                        storedFiles.push(stored);
+                        await tx.materialLotAttachment.create({
+                            data: {
+                                materialLotId: materialLot.id,
+                                type: normalizeAttachmentType(lot.attachmentType),
+                                originalName: stored.originalName,
+                                storedName: stored.storedName,
+                                mimeType: stored.mimeType,
+                                sizeBytes: stored.sizeBytes,
+                                url: stored.url,
+                                uploadedById: req.user?.id || null
+                            }
+                        });
+                    }
+                } else if (attachmentFiles.length > 0 && !attachmentsTableAvailable) {
+                    logger.warn(`material_lot_attachments no existe; se omite persistencia de adjuntos para lote ${materialLot.id}`);
+                }
+
                 materialLots.push(materialLot);
             }
             return materialLots;
@@ -383,6 +461,7 @@ exports.createLots = async (req, res) => {
         logger.info(`🏷️ ${created.length} lotes creados para ${orderItem.siigoProductName} — Total: ${(newLotsTotal / 1000).toFixed(1)} kg`);
         res.status(201).json(created);
     } catch (error) {
+        await cleanupStoredMaterialLotFiles(storedFiles);
         logger.error('Error creating lots:', error.message, error.stack);
         res.status(500).json({ error: 'Error creando lotes: ' + error.message });
     }
@@ -393,6 +472,7 @@ exports.createLots = async (req, res) => {
  */
 exports.listLots = async (req, res) => {
     try {
+        const attachmentsTableAvailable = await hasMaterialLotAttachmentTable();
         const { sku, status = 'AVAILABLE' } = req.query;
         const where = {};
         if (sku) where.siigoProductCode = sku;
@@ -402,6 +482,11 @@ exports.listLots = async (req, res) => {
             where,
             orderBy: { receivedAt: 'asc' }, // FIFO order
             include: {
+                ...(attachmentsTableAvailable ? {
+                    attachments: {
+                        orderBy: { createdAt: 'asc' }
+                    }
+                } : {}),
                 purchaseOrderItem: {
                     select: {
                         purchaseOrder: { select: { orderNumber: true, supplierName: true } }

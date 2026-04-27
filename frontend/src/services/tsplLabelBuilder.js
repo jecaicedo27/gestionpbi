@@ -56,6 +56,42 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
         expDate = exp.toLocaleDateString('es-CO');
     }
 
+    const truncateText = (value, maxChars) => {
+        const text = String(value || '').trim();
+        if (!text || text.length <= maxChars) return text;
+        return `${text.slice(0, Math.max(0, maxChars - 2)).trim()}..`;
+    };
+
+    const splitPlainName = (value, targetChars = 16) => {
+        const text = String(value || '').trim();
+        if (!text) return [ '', '' ];
+
+        const words = text.split(/\s+/).filter(Boolean);
+        if (words.length < 2 || text.length <= targetChars) {
+            return [ truncateText(text, targetChars), '' ];
+        }
+
+        let line1 = '';
+        let line2 = '';
+        for (let i = 0; i < words.length; i += 1) {
+            const candidate = line1 ? `${line1} ${words[i]}` : words[i];
+            if (candidate.length <= targetChars || !line1) {
+                line1 = candidate;
+            } else {
+                line2 = words.slice(i).join(' ');
+                break;
+            }
+        }
+
+        if (!line2 && words.length > 1) {
+            const mid = Math.ceil(words.length / 2);
+            line1 = words.slice(0, mid).join(' ');
+            line2 = words.slice(mid).join(' ');
+        }
+
+        return [ truncateText(line1, targetChars), truncateText(line2, targetChars) ];
+    };
+
     // ── Smart product name split into 3 lines ──
     // "LIQUIPOPS SABOR A MANGO BICHE CON SAL X 1150 GR"
     //  → Line 1: "LIQUIPOPS SABOR A"
@@ -80,18 +116,15 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
             // Fallback: split by "X \d"
             const sizeMatch = productName.match(/^(.+?)(\s+X\s+\d+.*)$/i);
             if (sizeMatch) {
-                nameLine1 = sizeMatch[1].trim().substring(0, 22);
+                const [plainLine1, plainLine2] = splitPlainName(sizeMatch[1], 16);
+                nameLine1 = plainLine1;
+                nameLine2 = plainLine2;
                 nameLine3 = sizeMatch[2].trim();
             } else {
-                // No size spec — split long names (e.g. premixes) into 2 lines
-                const words = productName.split(/\s+/);
-                if (words.length >= 3 && productName.length > 16) {
-                    const mid = Math.ceil(words.length / 2);
-                    nameLine1 = words.slice(0, mid).join(' ');
-                    nameLine2 = words.slice(mid).join(' ');
-                } else {
-                    nameLine1 = productName.substring(0, 22);
-                }
+                // No size spec — split long names to keep them inside the left column
+                const [plainLine1, plainLine2] = splitPlainName(productName, 16);
+                nameLine1 = plainLine1;
+                nameLine2 = plainLine2;
             }
         }
     }
@@ -138,7 +171,7 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
         ]),
 
         // ── Product Name — line1 normal, FLAVOR (line2) 2x, line3 normal ──
-        `TEXT 14,${y},"2",0,1,1,"${escapeTspl(nameLine1)}"`,
+        `TEXT 14,${y},"2",0,1,1,"${escapeTspl(truncateText(nameLine1, 16))}"`,
     ];
 
     y += 22;
@@ -148,21 +181,21 @@ export function buildLotLabel(data, copies = 1, { maquila = false } = {}) {
             // Split into 2 lines at last space before char 12, or at 12
             const cutAt = nameLine2.lastIndexOf(' ', 13);
             const splitPos = cutAt > 4 ? cutAt : 12;
-            const flavorL1 = nameLine2.substring(0, splitPos).trim();
-            const flavorL2 = nameLine2.substring(splitPos).trim();
+            const flavorL1 = truncateText(nameLine2.substring(0, splitPos).trim(), 12);
+            const flavorL2 = truncateText(nameLine2.substring(splitPos).trim(), 12);
             cmds.push(`TEXT 14,${y},"3",0,2,2,"${escapeTspl(flavorL1)}"`);
             y += 40;
             if (flavorL2) {
-                cmds.push(`TEXT 14,${y},"3",0,2,2,"${escapeTspl(flavorL2.substring(0, 12))}"`);
+                cmds.push(`TEXT 14,${y},"3",0,2,2,"${escapeTspl(flavorL2)}"`);
                 y += 40;
             }
         } else {
-            cmds.push(`TEXT 14,${y},"3",0,2,2,"${escapeTspl(nameLine2)}"`);
+            cmds.push(`TEXT 14,${y},"3",0,2,2,"${escapeTspl(truncateText(nameLine2, 12))}"`);
             y += 44;
         }
     }
     if (nameLine3) {
-        cmds.push(`TEXT 14,${y},"2",0,1,1,"${escapeTspl(nameLine3)}"`);
+        cmds.push(`TEXT 14,${y},"2",0,1,1,"${escapeTspl(truncateText(nameLine3, 16))}"`);
         y += 22;
     }
 

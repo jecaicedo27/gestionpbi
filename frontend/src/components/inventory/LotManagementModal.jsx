@@ -524,6 +524,11 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
         return String((normalizedUnits * quantityPerPackage) + normalizedPartial);
     }, [newLot.packOptionId, packOptions, product]);
 
+    const effectiveNewLotQuantity = parseInventoryNumberInput(
+        recalculateNewLotQuantity(newLot.packageUnits, newLot.partialQuantity, newLot.packOptionId) || newLot.quantity,
+        0
+    );
+
     const applyDistributionToNewLot = useCallback((patch) => {
         setNewLot(prev => {
             const next = { ...prev, ...patch };
@@ -814,7 +819,7 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
     };
 
     const handleAdd = async () => {
-        const lotQuantity = parseInventoryNumberInput(newLot.quantity, 0);
+        const lotQuantity = effectiveNewLotQuantity;
         if (!newLot.lotNumber.trim() || lotQuantity <= 0) return;
         if (!newLot.expiresAt) {
             alert('La fecha de vencimiento es obligatoria');
@@ -1670,7 +1675,7 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                                 </div>
                             )}
 
-                            {parseInventoryNumberInput(newLot.quantity, 0) > unassigned && (
+                            {effectiveNewLotQuantity > unassigned && (
                                 <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 p-2 rounded-lg">
                                     <AlertCircle className="w-4 h-4 flex-shrink-0" />
                                     La cantidad excede el stock sin asignar ({fmtQty(unassigned)})
@@ -1696,7 +1701,7 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                                 </button>
                                 <button
                                     onClick={handleAdd}
-                                    disabled={saving || !newLot.lotNumber || !newLot.expiresAt || parseInventoryNumberInput(newLot.quantity, 0) <= 0 || parseInventoryNumberInput(newLot.quantity, 0) > unassigned}
+                                    disabled={saving || !newLot.lotNumber || !newLot.expiresAt || effectiveNewLotQuantity <= 0 || effectiveNewLotQuantity > unassigned}
                                     className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {saving ? 'Guardando...' : 'Guardar Lote'}
