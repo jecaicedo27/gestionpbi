@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Camera, CheckCircle, Thermometer } from 'lucide-react';
+import { Camera, CheckCircle, Thermometer, X } from 'lucide-react';
 import api from '../../../services/api';
 
 /**
@@ -29,6 +29,9 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
     const noteId = noteData?.id;
     const draft = noteData?.processParameters?.formacion_qc_draft;
 
+    // Foto en pantalla completa al hacer click sobre cualquier miniatura.
+    const [modalPhoto, setModalPhoto] = useState(null);
+
     // ── Section 1: Alginato Temperature ──
     const [alginatoTemp, setAlginatoTemp] = useState(draft?.alginatoTemp ?? '');
     const [alginatoPhoto, setAlginatoPhoto] = useState(draft?.alginatoPhoto ?? '');
@@ -45,6 +48,11 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
     // ── Section 3: Tween 20 ──
     const [tweenUsed, setTweenUsed] = useState(draft?.tweenUsed ?? null);
     const [tweenQty, setTweenQty] = useState(draft?.tweenQty ?? '');
+
+    // ── Section 3b: Cambio de agua del sistema de lavado (control real
+    //    del cambio que antes era programado y se complicaba). El operario
+    //    debe marcar obligatoriamente SI/NO en cada bache para llevar registro.
+    const [waterSystemChanged, setWaterSystemChanged] = useState(draft?.waterSystemChanged ?? null);
 
     // ── Section 4: Pearl Wash + Citrosan ──
     const [washChanged, setWashChanged] = useState(draft?.washChanged ?? false);
@@ -82,13 +90,14 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
     const tweenValid = tweenUsed === false || (tweenUsed === true && parseFloat(tweenQty) > 0);
     const flavorChangeDecided = flavorChange !== null;
     const flavorChangeValid = flavorChange === false || (flavorChange === true && cabezoteWashed && disinfectant !== '' && !!flavorChangePhoto);
+    const waterSystemDecided = waterSystemChanged !== null;
 
     const isComplete =
         alginatoOk && !!alginatoPhoto &&
         allEquipChecked &&
         flavorChangeDecided && flavorChangeValid &&
         tweenDecided && tweenValid &&
-        washChanged && citrosanOk && !!citrosanPhoto &&
+        waterSystemDecided &&
         marmitaOk && !!marmitaPhoto &&
         brixPostWash !== '' && !!brixPostWashPhoto &&
         brixPostCook !== '' && !!brixPostCookPhoto &&
@@ -103,6 +112,7 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
             alginatoTemp, alginatoPhoto, equipChecks,
             flavorChange, cabezoteWashed, disinfectant, flavorChangePhoto,
             tweenUsed, tweenQty, washChanged, citrosanQty, citrosanPhoto,
+            waterSystemChanged,
             marmitaTemp, marmitaPhoto, brixPostWash, brixPostWashPhoto,
             brixPostCook, brixPostCookPhoto, pearlWeight, pearlWeightPhoto,
             machinePhoto,
@@ -120,6 +130,7 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
     }, [noteId, alginatoTemp, alginatoPhoto, equipChecks,
         flavorChange, cabezoteWashed, disinfectant, flavorChangePhoto,
         tweenUsed, tweenQty, washChanged, citrosanQty, citrosanPhoto,
+        waterSystemChanged,
         marmitaTemp, marmitaPhoto, brixPostWash, brixPostWashPhoto,
         brixPostCook, brixPostCookPhoto, pearlWeight, pearlWeightPhoto, machinePhoto]);
 
@@ -139,6 +150,7 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
             flavorChange, cabezoteWashed, disinfectant, flavorChangePhoto,
             tweenUsed, tweenQty,
             washChanged, citrosanQty, citrosanPhoto,
+            waterSystemChanged,
             marmitaTemp, marmitaPhoto,
             brixPostWash, brixPostWashPhoto,
             brixPostCook, brixPostCookPhoto,
@@ -148,7 +160,9 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
     }, [isComplete, alginatoTemp, alginatoPhoto, equipChecks,
         flavorChange, cabezoteWashed, disinfectant, flavorChangePhoto,
         tweenUsed, tweenQty,
-        washChanged, citrosanQty, citrosanPhoto, marmitaTemp, marmitaPhoto,
+        washChanged, citrosanQty, citrosanPhoto,
+        waterSystemChanged,
+        marmitaTemp, marmitaPhoto,
         brixPostWash, brixPostWashPhoto, brixPostCook, brixPostCookPhoto,
         pearlWeight, pearlWeightPhoto, machinePhoto]);
 
@@ -171,7 +185,8 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
         <div className="mt-3">
             {photo && (
                 <img src={photo} alt={label}
-                    className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm" />
+                    onClick={() => setModalPhoto(photo)}
+                    className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm cursor-pointer hover:opacity-90 active:scale-[0.98] transition-all" />
             )}
             <label className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95 text-sm
                 ${photo
@@ -437,45 +452,40 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
                         </div>
                     </div>
 
-                    {/* ═══ 6. LAVADO DE PERLAS + CITROSÁN ═══ */}
-                    <div className="rounded-2xl border-2 border-cyan-300 overflow-hidden">
-                        <div className="bg-gradient-to-r from-cyan-600 to-sky-500 p-3 text-center">
+                    {/* ═══ 6. CAMBIO DE AGUA DEL SISTEMA DE LAVADO ═══ */}
+                    <div className={`rounded-2xl border-2 overflow-hidden ${waterSystemDecided ? (waterSystemChanged ? 'border-emerald-300' : 'border-slate-300') : 'border-amber-300'}`}>
+                        <div className={`${waterSystemDecided ? (waterSystemChanged ? 'bg-gradient-to-r from-emerald-600 to-teal-500' : 'bg-gradient-to-r from-slate-500 to-slate-400') : 'bg-gradient-to-r from-amber-500 to-orange-500'} p-3 text-center`}>
                             <span className="text-white font-extrabold text-sm uppercase tracking-widest">
-                                🫧 LAVADO DE PERLAS + CITROSÁN
+                                💧 Cambio de agua del sistema de lavado
                             </span>
                         </div>
-                        <div className="p-4 space-y-4 bg-cyan-50/50">
-                            <label className={`flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer transition-all ${washChanged ? 'bg-green-50 border-green-300' : 'bg-white border-slate-200'
-                                }`}>
-                                <input
-                                    type="checkbox" checked={washChanged}
-                                    onChange={(e) => setWashChanged(e.target.checked)}
-                                    className="w-7 h-7 rounded-lg border-2 border-slate-300 text-green-600 focus:ring-green-200 cursor-pointer flex-shrink-0"
-                                />
-                                <div>
-                                    <span className="font-bold text-slate-800">Lavado cambiado este bache</span>
-                                    <div className="text-xs text-slate-500">Confirmar que el agua de lavado fue renovada</div>
-                                </div>
-                            </label>
-
-                            <div>
-                                <div className="flex items-center justify-between mb-2">
-                                    <label className="text-xs font-bold text-cyan-600 uppercase">Cantidad de Citrosán (ml)</label>
-                                    <span className="text-xs font-bold bg-white/80 px-2 py-1 rounded-full text-slate-500">
-                                        Rango: 30–40 ml / 80 kg agua
-                                    </span>
-                                </div>
-                                <input
-                                    type="number" inputMode="decimal" step="1"
-                                    value={citrosanQty}
-                                    onChange={(e) => setCitrosanQty(e.target.value)}
-                                    placeholder="Ej: 40"
-                                    className={`w-full text-center text-2xl font-black py-3 px-4 rounded-xl border-2 focus:outline-none focus:ring-2 transition-all ${citrosanOk ? 'border-green-300 bg-white text-green-700 focus:ring-green-200' : 'border-cyan-200 bg-white text-cyan-700 focus:ring-cyan-200'
-                                        }`}
-                                />
+                        <div className="p-4 bg-cyan-50/50">
+                            <div className="text-sm text-slate-600 mb-3">
+                                ¿En este bache se hizo cambio de agua del sistema de lavado?
                             </div>
-
-                            <PhotoButton photo={citrosanPhoto} setPhoto={setCitrosanPhoto} context="citrosan_lavado" label="Foto del lavado + Citrosán" />
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setWaterSystemChanged(true)}
+                                    className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${waterSystemChanged === true
+                                        ? 'bg-emerald-600 text-white shadow-md'
+                                        : 'bg-white border-2 border-emerald-200 text-emerald-600 hover:bg-emerald-50'
+                                    }`}>
+                                    ✅ SÍ se cambió
+                                </button>
+                                <button
+                                    onClick={() => setWaterSystemChanged(false)}
+                                    className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${waterSystemChanged === false
+                                        ? 'bg-slate-600 text-white shadow-md'
+                                        : 'bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-50'
+                                    }`}>
+                                    ❌ NO se cambió
+                                </button>
+                            </div>
+                            {!waterSystemDecided && (
+                                <div className="mt-2 text-center text-xs text-amber-600 font-bold">
+                                    ⚠️ Marcar SÍ o NO es obligatorio para este bache
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -494,9 +504,9 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
                     <div className={`rounded-2xl p-4 border-2 ${brixPostWash ? 'bg-blue-50 border-blue-300' : 'bg-blue-50/50 border-blue-200'}`}>
                         <div className="flex items-center gap-2 mb-3">
                             <span className="text-lg">🔬</span>
-                            <span className="text-sm font-bold text-blue-700 uppercase">°Brix — Post-Lavado (agua + Citrosán)</span>
+                            <span className="text-sm font-bold text-blue-700 uppercase">°Brix — Post-Lavado</span>
                         </div>
-                        <div className="text-xs text-slate-500 mb-3">Medición de grados Brix después del lavado con agua y citrosán</div>
+                        <div className="text-xs text-slate-500 mb-3">Medición de grados Brix después del lavado de las perlas</div>
                         <input
                             type="number" inputMode="decimal" step="0.1"
                             value={brixPostWash}
@@ -569,9 +579,7 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
                                 {flavorChangeDecided && !flavorChangeValid && <li>❌ Cambio de sabor (falta lavado, desinfectante o foto)</li>}
                                 {!tweenDecided && <li>❌ Tween 20 (seleccione SÍ o NO)</li>}
                                 {tweenDecided && !tweenValid && <li>❌ Tween 20 (ingrese cantidad en gramos)</li>}
-                                {!washChanged && <li>❌ Lavado de perlas (confirmar cambio de bache)</li>}
-                                {!citrosanOk && <li>❌ Citrosán (ingrese cantidad en ml)</li>}
-                                {washChanged && citrosanOk && !citrosanPhoto && <li>❌ Citrosán (falta foto)</li>}
+                                {!waterSystemDecided && <li>❌ Cambio de agua del sistema de lavado (seleccione SÍ o NO)</li>}
                                 {(!marmitaOk || !marmitaPhoto) && <li>❌ Marmita {!marmitaOk ? '(valor fuera de rango o vacío)' : '(falta foto)'}</li>}
                                 {(brixPostWash === '' || !brixPostWashPhoto) && <li>❌ °Brix Post-Lavado {brixPostWash === '' ? '(ingrese valor)' : '(falta foto)'}</li>}
                                 {(brixPostCook === '' || !brixPostCookPhoto) && <li>❌ °Brix Post-Cocción {brixPostCook === '' ? '(ingrese valor)' : '(falta foto)'}</li>}
@@ -582,6 +590,20 @@ const FormacionQCStep = ({ stepData, onFormacionQcChange }) => {
                     )}
                 </div>
             </div>
+
+            {/* Modal foto ampliada */}
+            {modalPhoto && (
+                <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4"
+                    onClick={() => setModalPhoto(null)}>
+                    <button onClick={() => setModalPhoto(null)}
+                        className="absolute top-4 right-4 bg-white/20 hover:bg-white/40 rounded-full p-2 transition-all">
+                        <X size={28} className="text-white" />
+                    </button>
+                    <img src={modalPhoto} alt="Foto ampliada"
+                        onClick={(e) => e.stopPropagation()}
+                        className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl" />
+                </div>
+            )}
         </div>
     );
 };

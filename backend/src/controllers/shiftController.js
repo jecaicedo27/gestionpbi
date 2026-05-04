@@ -391,7 +391,36 @@ const saveWeekSchedule = async (req, res) => {
             include: { assignments: { include: { employee: true } } }
         });
 
-        res.json(updated);
+        let handoverSync = null;
+        if (week.status === 'PUBLISHED') {
+            try {
+                const handoverEnabled = await isHandoverEnabled();
+                if (handoverEnabled) {
+                    const result = await generateHandoversForWeek(week.id);
+                    handoverSync = {
+                        regenerated: true,
+                        generated: result.generated
+                    };
+                    logger.info(`[saveWeekSchedule] Handover records regenerated for published week ${week.id}: ${result.generated}`);
+                } else {
+                    handoverSync = {
+                        regenerated: false,
+                        reason: 'handover_disabled'
+                    };
+                }
+            } catch (handoverErr) {
+                logger.error('[saveWeekSchedule] Handover regeneration failed:', handoverErr);
+                handoverSync = {
+                    regenerated: false,
+                    reason: 'handover_regeneration_failed'
+                };
+            }
+        }
+
+        res.json({
+            ...updated,
+            handoverSync
+        });
     } catch (err) {
         logger.error('saveWeekSchedule error:', err);
         res.status(500).json({ error: err.message });

@@ -38,6 +38,27 @@ const createSiigoAssemblyNote = async (req, res) => {
             }
         }
 
+        // ── Double-click guard for allowMultiple (partial shipments) ──
+        if (assemblyNoteId && allowMultiple) {
+            const thirtySecsAgo = new Date(Date.now() - 30000);
+            const recentDup = await prisma.rpaExecution.findFirst({
+                where: {
+                    assemblyNoteId,
+                    quantity: Number(quantity),
+                    status: { in: ['RUNNING', 'SUCCESS'] },
+                    startedAt: { gte: thirtySecsAgo }
+                }
+            });
+            if (recentDup) {
+                return res.status(409).json({
+                    success: false,
+                    status: recentDup.status,
+                    executionId: recentDup.id,
+                    error: `RPA duplicado detectado: misma nota y cantidad (${quantity}) enviada hace menos de 30s.`
+                });
+            }
+        }
+
 
         // Resolve SKU if not provided
         let resolvedSku = productSku || null;

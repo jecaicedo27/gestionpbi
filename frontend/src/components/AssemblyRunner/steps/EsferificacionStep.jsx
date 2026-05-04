@@ -72,46 +72,111 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
     // Event log
     const [events, setEvents] = useState([]);
 
+    // Concurrency gate — set when another FORMACION note has its esferificación
+    // RUNNING/PAUSED. While set, the timer must NOT auto-start; the operator is
+    // forced to FINALIZAR the other bache first.
+    const [blockedBy, setBlockedBy] = useState(null);
+
     const intervalRef = useRef(null);
     const pauseIntervalRef = useRef(null);
 
     // ── Restore timer state from backend on mount ──────────────────────────
+    // If no saved timer exists but the note already has `startedAt` (chained
+    // from PROTECCION_GATE.completedAt), auto-initialize the chronometer from
+    // that timestamp — eliminates manual "INICIAR" step and prevents operator
+    // from manipulating the start moment.
     const restoredRef = useRef(false);
     useEffect(() => {
-        if (restoredRef.current || !savedTimer) return;
-        restoredRef.current = true;
+        if (restoredRef.current) return;
 
-        setStartTime(savedTimer.startTime || null);
-        setEndTime(savedTimer.endTime || null);
-        setEvents(savedTimer.events || []);
-        setPauseElapsedMs(savedTimer.pauseElapsedMs || 0);
+        // Case A: timer state already persisted — restore it
+        if (savedTimer) {
+            restoredRef.current = true;
 
-        if (savedTimer.status === STATUS.FINISHED) {
-            setElapsedMs(savedTimer.elapsedMs || 0);
-            setStatus(STATUS.FINISHED);
-        } else if (savedTimer.status === STATUS.RUNNING && savedTimer.segmentStartedAt) {
-            // Recalculate elapsed: saved base + time since segment started
-            const now = Date.now();
-            const segStart = new Date(savedTimer.segmentStartedAt).getTime();
-            const liveElapsed = Math.max(0, now - segStart);
-            setElapsedMs((savedTimer.elapsedMs || 0) + liveElapsed);
-            setSegmentStart(now); // reset segment to now (tick will add from here)
-            setStatus(STATUS.RUNNING);
-        } else if (savedTimer.status === STATUS.PAUSED) {
-            setElapsedMs(savedTimer.elapsedMs || 0);
-            // Recalculate pause time: saved + time since pause started
-            if (savedTimer.pauseStartedAt) {
+            setStartTime(savedTimer.startTime || null);
+            setEndTime(savedTimer.endTime || null);
+            setEvents(savedTimer.events || []);
+            setPauseElapsedMs(savedTimer.pauseElapsedMs || 0);
+
+            if (savedTimer.status === STATUS.FINISHED) {
+                setElapsedMs(savedTimer.elapsedMs || 0);
+                setStatus(STATUS.FINISHED);
+            } else if (savedTimer.status === STATUS.RUNNING && savedTimer.segmentStartedAt) {
+                // Recalculate elapsed: saved base + time since segment started
                 const now = Date.now();
-                const pStart = new Date(savedTimer.pauseStartedAt).getTime();
-                const livePause = Math.max(0, now - pStart);
-                setPauseElapsedMs((savedTimer.pauseElapsedMs || 0) + livePause);
-                setPauseSegmentStart(now);
+                const segStart = new Date(savedTimer.segmentStartedAt).getTime();
+                const liveElapsed = Math.max(0, now - segStart);
+                setElapsedMs((savedTimer.elapsedMs || 0) + liveElapsed);
+                setSegmentStart(now); // reset segment to now (tick will add from here)
+                setStatus(STATUS.RUNNING);
+            } else if (savedTimer.status === STATUS.PAUSED) {
+                setElapsedMs(savedTimer.elapsedMs || 0);
+                // Recalculate pause time: saved + time since pause started
+                if (savedTimer.pauseStartedAt) {
+                    const now = Date.now();
+                    const pStart = new Date(savedTimer.pauseStartedAt).getTime();
+                    const livePause = Math.max(0, now - pStart);
+                    setPauseElapsedMs((savedTimer.pauseElapsedMs || 0) + livePause);
+                    setPauseSegmentStart(now);
+                }
+                setStatus(STATUS.PAUSED);
             }
-            setStatus(STATUS.PAUSED);
+            return;
         }
-    }, [savedTimer]);
+
+        // Case B: no persisted timer but note.startedAt exists — auto-start
+        // from the chained timestamp (PROTECCION_GATE.completedAt → note.startedAt)
+        // BUT only if there is no other esferificación already RUNNING/PAUSED.
+        // The planta supports a single esferificación at a time; if another is
+        // open, the operator must FINALIZAR it manually before this one can begin.
+        if (noteData?.startedAt) {
+            restoredRef.current = true; // claim the slot synchronously to avoid double-fires
+            (async () => {
+                let activeOther = null;
+                try {
+                    const r = await api.get('/assembly-notes/active-esferificacion');
+                    if (r.data?.active && r.data.noteId && r.data.noteId !== noteId) {
+                        activeOther = r.data;
+                    }
+                } catch (e) {
+                    console.warn('No se pudo verificar esferificación activa:', e.message);
+                }
+
+                if (activeOther) {
+                    setBlockedBy(activeOther);
+                    return; // queda IDLE hasta que el otro bache se cierre
+                }
+
+                const autoStartIso = noteData.startedAt;
+                const autoStartMs = new Date(autoStartIso).getTime();
+                const now = Date.now();
+                const elapsed = Math.max(0, now - autoStartMs);
+                const newEvent = {
+                    type: 'INICIO',
+                    detail: `Esferificación iniciada automáticamente al finalizar Protección — ${formatDateTime(autoStartIso)}`,
+                    timestamp: autoStartIso,
+                };
+                setStartTime(autoStartIso);
+                setSegmentStart(now);
+                setElapsedMs(elapsed);
+                setStatus(STATUS.RUNNING);
+                setEvents([newEvent]);
+                saveTimerState({
+                    status: STATUS.RUNNING,
+                    startTime: autoStartIso,
+                    elapsedMs: elapsed,
+                    pauseElapsedMs: 0,
+                    segmentStartedAt: new Date(now).toISOString(),
+                    events: [newEvent],
+                });
+            })();
+        }
+    }, [savedTimer, noteData?.startedAt, noteId]);
 
     // ── Persist timer state to backend ─────────────────────────────────────
+    // El backend valida exclusividad de esferificación: si ya hay otra activa
+    // y este intento de RUNNING/PAUSED choca, devuelve 409 con info del bloqueador.
+    // En ese caso, revertimos el status local y mostramos el banner.
     const saveTimerState = async (overrides = {}) => {
         if (!noteId) return;
         try {
@@ -124,7 +189,6 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
                 endTime: overrides.endTime ?? endTime,
                 elapsedMs: overrides.elapsedMs ?? elapsedMs,
                 pauseElapsedMs: overrides.pauseElapsedMs ?? pauseElapsedMs,
-                // Preserve existing timestamps unless explicitly overridden
                 segmentStartedAt: 'segmentStartedAt' in overrides ? overrides.segmentStartedAt : existing.segmentStartedAt || null,
                 pauseStartedAt: 'pauseStartedAt' in overrides ? overrides.pauseStartedAt : existing.pauseStartedAt || null,
                 events: overrides.events ?? events,
@@ -133,9 +197,44 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
                 processParameters: { ...currentParams, esferificacion_timer: payload }
             });
         } catch (e) {
+            // 409 = bloqueado por otra esferificación activa
+            if (e.response?.status === 409 && e.response?.data?.blockingNoteId) {
+                const d = e.response.data;
+                setBlockedBy({
+                    noteId: d.blockingNoteId,
+                    batchNumber: d.blockingBatchNumber,
+                    flavor: d.blockingFlavor,
+                    operatorName: d.blockingOperator,
+                });
+                // Revertir status local: no quedó RUNNING ni PAUSED en BD
+                setStatus(STATUS.IDLE);
+                setStartTime(null);
+                setSegmentStart(null);
+                setElapsedMs(0);
+                setEvents([]);
+                return;
+            }
             console.warn('Could not save timer state:', e.message);
         }
     };
+
+    // While the auto-start is blocked by another active esferificación, poll
+    // the backend every 10s. As soon as the other bache is FINALIZADO, kick
+    // off the normal Case B auto-start path by clearing blockedBy and resetting
+    // the restored flag so the main effect can re-run.
+    useEffect(() => {
+        if (!blockedBy) return;
+        const tick = setInterval(async () => {
+            try {
+                const r = await api.get('/assembly-notes/active-esferificacion');
+                if (!r.data?.active || r.data.noteId === noteId) {
+                    setBlockedBy(null);
+                    restoredRef.current = false; // permitir re-evaluación
+                }
+            } catch { /* swallow */ }
+        }, 10_000);
+        return () => clearInterval(tick);
+    }, [blockedBy, noteId]);
 
     // Tick timer for running state
     useEffect(() => {
@@ -175,24 +274,6 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
     };
 
     // ── Actions ──
-    const handleStart = () => {
-        const now = new Date();
-        const nowIso = now.toISOString();
-        const newEvent = { type: 'INICIO', detail: `Esferificación iniciada a las ${formatDateTime(now)}`, timestamp: nowIso };
-        setStartTime(nowIso);
-        setSegmentStart(Date.now());
-        setStatus(STATUS.RUNNING);
-        setEvents([newEvent]);
-        saveTimerState({
-            status: STATUS.RUNNING,
-            startTime: nowIso,
-            elapsedMs: 0,
-            pauseElapsedMs: 0,
-            segmentStartedAt: nowIso,
-            events: [newEvent],
-        });
-    };
-
     const handlePause = () => {
         clearInterval(intervalRef.current);
         setSegmentStart(null);
@@ -302,6 +383,36 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
 
                 <div className="flex-1 flex flex-col p-6 gap-5 overflow-auto">
 
+                    {/* ═══ BLOCKED BANNER (otra esferificación en curso) ═══ */}
+                    {blockedBy && status === STATUS.IDLE && (
+                        <div className="rounded-2xl border-4 border-red-400 bg-red-50 p-5">
+                            <div className="flex items-start gap-3">
+                                <AlertTriangle size={28} className="text-red-600 flex-shrink-0 mt-0.5" />
+                                <div className="flex-1">
+                                    <div className="font-extrabold text-red-700 text-base mb-1">
+                                        ⛔ No puedes iniciar esta esferificación
+                                    </div>
+                                    <div className="text-sm text-red-700 mb-3">
+                                        Hay otra esferificación en curso:&nbsp;
+                                        <b>{blockedBy.batchNumber || blockedBy.flavor || 'bache desconocido'}</b>
+                                        {blockedBy.operatorName && <> · Op. <b>{blockedBy.operatorName}</b></>}
+                                        {typeof blockedBy.elapsedMinutes === 'number' && <> · {blockedBy.elapsedMinutes} min</>}
+                                        {blockedBy.timerStatus === 'PAUSED' && <> · ⏸️ EN PAUSA</>}
+                                        .<br />
+                                        Debes pulsar <b>FINALIZAR</b> en ese bache antes de iniciar este.
+                                    </div>
+                                    {blockedBy.noteId && (
+                                        <button
+                                            onClick={() => { window.location.href = `/assembly-execution/${blockedBy.noteId}`; }}
+                                            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm uppercase tracking-wider shadow active:scale-95">
+                                            Ir al bache en curso →
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* ═══ DATE/TIME INFO ═══ */}
                     {startTime && (
                         <div className="grid grid-cols-2 gap-3">
@@ -366,14 +477,13 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
                     </div>
 
                     {/* ═══ CONTROL BUTTONS ═══ */}
+                    {/* Auto-start from note.startedAt — no manual INICIAR button.
+                        IDLE only appears when the note has no startedAt (edge case). */}
                     <div className="flex gap-3">
-                        {status === STATUS.IDLE && (
-                            <button
-                                onClick={handleStart}
-                                className="flex-1 flex items-center justify-center gap-3 py-5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-extrabold text-lg uppercase tracking-wider shadow-lg hover:shadow-xl transition-all active:scale-95">
-                                <Play size={28} fill="white" />
-                                INICIAR ESFERIFICACIÓN
-                            </button>
+                        {status === STATUS.IDLE && !blockedBy && (
+                            <div className="flex-1 flex items-center justify-center gap-3 py-5 rounded-2xl bg-slate-100 border-2 border-slate-300 text-slate-500 font-bold text-sm text-center px-4">
+                                ⏳ Esperando finalización del paso PROTECCIÓN para auto-iniciar el cronómetro…
+                            </div>
                         )}
 
                         {status === STATUS.RUNNING && (
@@ -456,7 +566,9 @@ const EsferificacionStep = ({ stepData, onEsferificacionChange }) => {
                         {status === STATUS.FINISHED
                             ? `✅ Esferificación completada — Tiempo: ${formatTime(elapsedMs)} (Pausas: ${formatTime(pauseElapsedMs)})`
                             : status === STATUS.IDLE
-                                ? '⏳ Presione INICIAR para comenzar la esferificación'
+                                ? (blockedBy
+                                    ? `⛔ Bloqueado — finalice el bache ${blockedBy.batchNumber || 'en curso'} para continuar`
+                                    : '⏳ El cronómetro arrancará automáticamente al pasar al paso de esferificación')
                                 : '⚠️ Debe FINALIZAR la esferificación para continuar'
                         }
                     </div>

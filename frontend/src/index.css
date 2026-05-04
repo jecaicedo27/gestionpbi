@@ -20,25 +20,47 @@
     opacity: 0.8;
 }
 
-/* Calendar Visual Fixes */
+/* ── Calendar (react-big-calendar) — Re-skin ───────────────────────────── */
 .rbc-allday-cell {
     display: none !important;
 }
 
+/* Cabecera de días: tipografía clara, fondo gris muy claro, separador grueso */
+.rbc-time-header {
+    background: #f8fafc !important;
+}
 .rbc-time-view .rbc-header {
-    border-bottom: 1px solid #e5e7eb !important;
+    border-bottom: 2px solid #e2e8f0 !important;
+    padding: 10px 6px !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    color: #0f172a !important;
+    text-transform: capitalize !important;
+    letter-spacing: 0.2px;
 }
 
 .rbc-time-header-content {
-    border-left: 1px solid #e5e7eb !important;
+    border-left: 1px solid #e2e8f0 !important;
 }
 
 .rbc-day-slot {
-    border-left: 1px solid #e5e7eb !important;
+    border-left: 1px solid #f1f5f9 !important;
 }
 
 .rbc-time-header-content>.rbc-row>.rbc-header {
     border-bottom: none !important;
+}
+
+/* Día actual destacado en la cabecera y la columna */
+.rbc-today {
+    background-color: #eff6ff !important;
+}
+.rbc-time-header .rbc-today {
+    background-color: #dbeafe !important;
+}
+.rbc-time-header .rbc-today .rbc-button-link,
+.rbc-time-header-content .rbc-today {
+    color: #1d4ed8 !important;
 }
 
 /* Calendar: force wider columns — horizontal scroll on tablet */
@@ -46,23 +68,126 @@
     min-width: 1400px;
 }
 
+/* Columna de horas (gutter): más ancha, más legible, con corte permanente */
 .rbc-time-gutter {
-    min-width: 60px !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
+    min-width: 80px !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    color: #475569 !important;
+    padding-right: 8px !important;
+    background: #ffffff !important;
+}
+.rbc-time-gutter .rbc-timeslot-group {
+    border-bottom: 1px solid #f1f5f9 !important;
+}
+.rbc-time-gutter .rbc-time-slot {
+    padding-right: 6px !important;
 }
 
-/* Taller time slots for readability on touch devices */
+/* Gutter sticky (controlado por JS en ProductionScheduler).
+   Aquí solo aseguramos fondo blanco y un borde derecho permanente para que
+   el corte con el resto del calendario siempre se vea, no solo cuando hay
+   scroll. El JS sobreescribe z-index y transform en runtime. */
+.rbc-time-gutter,
+.rbc-time-header-gutter {
+    background: #ffffff !important;
+    border-right: 1px solid #e2e8f0 !important;
+}
+
+/* Indicador de hora actual: más fino, color rojo Tailwind, por encima de la
+   gutter sticky (que el JS sube a z-index 11). */
+.rbc-current-time-indicator {
+    background-color: #ef4444 !important;
+    height: 2px !important;
+    z-index: 15 !important;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.45);
+}
+
+/* Slots de hora: más altos para respiración, líneas internas muy suaves */
 .rbc-timeslot-group {
-    min-height: 80px !important;
+    min-height: 96px !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+}
+.rbc-time-slot {
+    border-top: 1px solid #f1f5f9 !important;
 }
 
-/* Events: readable text, no shadow */
+/* Eliminar el scroll interno de rbc-time-content. El wrapper externo del
+   ProductionScheduler controla los 2 scrolls (vertical y horizontal) del
+   calendario. Así el operador tiene UNA sola barra vertical y UNA sola
+   horizontal, dentro del calendario, y la página NO scrollea. */
+.rbc-time-content {
+    overflow: visible !important;
+}
+
+/* Cabecera de días sticky en top — pegada al borde superior del wrapper
+   durante scroll vertical, sin desfase. */
+.rbc-time-view .rbc-time-header {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 10 !important;
+    background: #f8fafc !important;
+    box-shadow: 0 4px 8px -3px rgba(15, 23, 42, 0.12);
+}
+
+/* Columna de horas sticky en left — pegada al borde izquierdo del wrapper
+   durante scroll horizontal. La esquina superior izquierda (intersección)
+   tiene z-index mayor para mantenerse encima de ambos. */
+.rbc-time-view .rbc-time-gutter {
+    position: sticky !important;
+    left: 0 !important;
+    z-index: 11 !important;
+    background: #ffffff !important;
+    box-shadow: 4px 0 8px -3px rgba(15, 23, 42, 0.12);
+}
+.rbc-time-view .rbc-time-header-gutter {
+    position: sticky !important;
+    left: 0 !important;
+    z-index: 12 !important;
+    background: #f8fafc !important;
+}
+
+/* Botones de navegación del Calendar (Hoy / Ant. / Sig.) — sin sticky-left
+   para no tapar los headers de las primeras columnas del calendario. Si en
+   el futuro se quieren "siempre visibles" hay que sacarlos a un toolbar
+   custom externo al wrapper scrollable (con `components={{ toolbar: ... }}`). */
+.rbc-toolbar {
+    padding: 8px !important;
+    margin-bottom: 6px !important;
+}
+.rbc-toolbar button {
+    padding: 4px 12px !important;
+    font-weight: 600 !important;
+    color: #475569 !important;
+    border: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+}
+.rbc-toolbar button.rbc-active {
+    background: #3b82f6 !important;
+    color: #ffffff !important;
+    border-color: #3b82f6 !important;
+}
+.rbc-toolbar-label {
+    font-weight: 700 !important;
+    color: #0f172a !important;
+}
+
+
+/* Eventos: bordes redondeados, mejor padding, hover sutil */
 .rbc-event {
     min-height: 28px !important;
     font-size: 12px !important;
     line-height: 1.3 !important;
-    box-shadow: none !important;
+    border-radius: 8px !important;
+    padding: 4px 6px !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+    border: 1px solid rgba(15, 23, 42, 0.06) !important;
+    cursor: pointer;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.rbc-event:hover {
+    box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.18) !important;
+    transform: translateY(-1px);
 }
 
 .rbc-event-content {

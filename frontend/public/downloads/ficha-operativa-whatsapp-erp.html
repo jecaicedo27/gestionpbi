@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ficha Operativa - WhatsApp ERP</title>
+    <style>
+        :root {
+            --ink: #0f172a;
+            --muted: #475569;
+            --line: #d9e2ec;
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --blue: #1d4ed8;
+            --blue-soft: #dbeafe;
+            --green: #047857;
+            --green-soft: #d1fae5;
+            --amber: #b45309;
+            --amber-soft: #fef3c7;
+            --red: #b91c1c;
+            --red-soft: #fee2e2;
+        }
+
+        * { box-sizing: border-box; }
+
+        @page {
+            size: A4;
+            margin: 14mm;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            color: var(--ink);
+            background: var(--bg);
+            line-height: 1.45;
+        }
+
+        .page {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            background: var(--panel);
+            padding: 16mm 16mm 18mm;
+        }
+
+        .hero {
+            border: 1px solid var(--line);
+            background: linear-gradient(135deg, #eff6ff 0%, #ffffff 55%, #ecfeff 100%);
+            border-radius: 8px;
+            padding: 16px 18px;
+            margin-bottom: 16px;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            color: var(--blue);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 26px;
+            line-height: 1.08;
+        }
+
+        .hero p {
+            margin: 10px 0 0;
+            color: var(--muted);
+            font-size: 13.5px;
+        }
+
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .meta-card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #fff;
+        }
+
+        .meta-label {
+            display: block;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 700;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+
+        .meta-value {
+            display: block;
+            font-size: 12.5px;
+            font-weight: 700;
+        }
+
+        h2 {
+            margin: 16px 0 10px;
+            font-size: 16px;
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 6px;
+        }
+
+        h3 {
+            margin: 0 0 8px;
+            font-size: 13px;
+        }
+
+        p, li, td, th, code {
+            font-size: 11.5px;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px 14px;
+            background: #fff;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .4px;
+            margin-bottom: 8px;
+        }
+
+        .badge-blue { background: var(--blue-soft); color: var(--blue); }
+        .badge-green { background: var(--green-soft); color: var(--green); }
+        .badge-amber { background: var(--amber-soft); color: var(--amber); }
+        .badge-red { background: var(--red-soft); color: var(--red); }
+
+        ul {
+            margin: 8px 0 0 18px;
+            padding: 0;
+        }
+
+        li + li { margin-top: 4px; }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        .table th,
+        .table td {
+            border: 1px solid var(--line);
+            padding: 8px 9px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .table th {
+            background: #f8fafc;
+            text-transform: uppercase;
+            letter-spacing: .4px;
+            font-size: 10px;
+        }
+
+        .message-box {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px 13px;
+            background: #fcfdff;
+            white-space: pre-line;
+            font-family: Arial, Helvetica, sans-serif;
+            margin-top: 8px;
+        }
+
+        .decision {
+            border-left: 4px solid var(--blue);
+            background: #f8fbff;
+            padding: 10px 12px;
+            border-radius: 0 8px 8px 0;
+            margin-top: 10px;
+        }
+
+        .footer {
+            margin-top: 18px;
+            padding-top: 10px;
+            border-top: 1px solid var(--line);
+            color: #64748b;
+            font-size: 10px;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <section class="hero">
+            <p class="eyebrow">GestionPBI - Siguiente paso aprobado</p>
+            <h1>Ficha Operativa<br>Mensajeria WhatsApp del ERP</h1>
+            <p>
+                Este documento define el contenido exacto, la frecuencia, los destinatarios y las reglas
+                de negocio para los tres mensajes que saldran desde el ERP hacia WhatsApp.
+            </p>
+            <div class="meta">
+                <div class="meta-card">
+                    <span class="meta-label">Empresa</span>
+                    <span class="meta-value">Popping Boba International</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Fecha</span>
+                    <span class="meta-value">20 de abril de 2026</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Objetivo</span>
+                    <span class="meta-value">Definir mensajes antes de implementar</span>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>1. Decision operativa</h2>
+            <div class="card">
+                <p>
+                    La salida de informacion por WhatsApp se construira en tres mensajes diferentes:
+                    <strong>Resumen Ejecutivo</strong>, <strong>Resumen Operativo por Turno</strong> y
+                    <strong>Alertas Criticas</strong>. Cada uno tendra destinatarios, horarios y longitud propia.
+                </p>
+            </div>
+        </section>
+
+        <section>
+            <h2>2. Capa 1 - Resumen Ejecutivo</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <span class="badge badge-blue">Diseno</span>
+                    <ul>
+                        <li>Objetivo: dar fotografia general del dia.</li>
+                        <li>Destinatarios sugeridos: gerente general, administracion, direccion operativa.</li>
+                        <li>Frecuencia sugerida: 11:30 am y 6:30 pm.</li>
+                        <li>Longitud objetivo: maximo 12 lineas.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <span class="badge badge-green">Contenido obligatorio</span>
+                    <ul>
+                        <li>Produccion cerrada del dia.</li>
+                        <li>Cumplimiento vs programado.</li>
+                        <li>Compras pendientes por pagar o contabilizar.</li>
+                        <li>Inventario critico MP/PT.</li>
+                        <li>Pedidos pendientes por despachar.</li>
+                        <li>PQR o novedades criticas.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="message-box">📊 Resumen Ejecutivo - 20/04/2026
+
+Produccion hoy: 11 baches cerrados
+Cumplimiento: 11/13 programados
+Total producido: 2.480 kg
+
+Compras:
+- 3 OCs pendientes por pagar
+- 2 OCs pendientes por contabilizar
+
+Inventario critico:
+- 4 materias primas en rojo
+- 2 referencias PT por debajo del minimo
+
+Despachos pendientes: 5 pedidos
+Calidad: 1 novedad critica / 0 recall activos</div>
+        </section>
+
+        <section>
+            <h2>3. Capa 2 - Resumen Operativo por Turno</h2>
+            <div class="grid-3">
+                <div class="card">
+                    <span class="badge badge-amber">Turno</span>
+                    <p><strong>Manana:</strong> 06:00 a 13:59</p>
+                    <p><strong>Tarde:</strong> 14:00 a 21:59</p>
+                    <p><strong>Noche:</strong> 22:00 a 05:59</p>
+                </div>
+                <div class="card">
+                    <span class="badge badge-blue">Destinatarios</span>
+                    <p>Lideres de Produccion, Empaque, Siropes, Logistica y quien defina gerencia.</p>
+                </div>
+                <div class="card">
+                    <span class="badge badge-green">Frecuencia</span>
+                    <p>Una vez por cierre de turno:</p>
+                    <p>06:05, 14:05 y 22:05</p>
+                </div>
+            </div>
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Bloque</th>
+                        <th>Dato exacto que debe salir</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Baches cerrados</td>
+                        <td>Numero de baches que terminaron dentro de la ventana del turno, con lote o batch visible.</td>
+                    </tr>
+                    <tr>
+                        <td>Baches abiertos</td>
+                        <td>Los que siguen ejecutandose o se pasan al siguiente turno.</td>
+                    </tr>
+                    <tr>
+                        <td>Pendientes de relevo</td>
+                        <td>Novedades, firmas faltantes o tareas entregadas al turno siguiente.</td>
+                    </tr>
+                    <tr>
+                        <td>Bloqueos</td>
+                        <td>Faltantes de material, fallas, compras o temas de calidad con impacto directo.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="message-box">🏭 Resumen Turno Tarde - 20/04/2026
+
+Baches cerrados: 5
+Cumplimiento del turno: 5/6
+
+Cerrados:
+1. FRESA-200426-01
+2. MANGO-200426-02
+3. LYCHEE-200426-03
+
+Siguen en proceso: 2
+Pendientes para noche: 1 cambio de agua
+Relevo: completo
+Novedad principal: falta una MP critica para el siguiente lote</div>
+        </section>
+
+        <section>
+            <h2>4. Capa 3 - Alertas Criticas</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <span class="badge badge-red">Disparo</span>
+                    <ul>
+                        <li>Stock critico real.</li>
+                        <li>Relevo bloqueado.</li>
+                        <li>OC detenida con impacto operativo.</li>
+                        <li>PQR grave o riesgo de recall.</li>
+                        <li>Falla importante del sistema o integracion.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <span class="badge badge-amber">Regla</span>
+                    <ul>
+                        <li>Mensajes cortos, sin detalle innecesario.</li>
+                        <li>Solo una accion concreta por alerta.</li>
+                        <li>No deben usarse para reportes largos.</li>
+                        <li>Deben identificar el area responsable.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="message-box">🚨 Alerta Critica
+
+Inventario critico detectado
+Producto: Acido Citrico MP
+Stock disponible: 18 kg
+Minimo operativo: 60 kg
+Impacto: compromete programacion del siguiente turno
+Responsable: Compras / Produccion</div>
+        </section>
+
+        <section>
+            <h2>5. Fuentes de datos dentro del ERP</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Area</th>
+                        <th>Fuente principal</th>
+                        <th>Uso en mensajes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Produccion</td>
+                        <td>Batch history, production batches, KPI de produccion.</td>
+                        <td>Resumen Ejecutivo y Resumen Turno.</td>
+                    </tr>
+                    <tr>
+                        <td>Compras</td>
+                        <td>Ordenes de compra, estados de pago y contabilizacion.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Inventario</td>
+                        <td>Inventario general, lotes y materiales criticos.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Turnos</td>
+                        <td>Cuadro de turnos, ausencias y relevo.</td>
+                        <td>Resumen Turno y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Calidad</td>
+                        <td>PQR, recall, microbiologia y trazabilidad.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Pedidos</td>
+                        <td>Orders / logistica / despachos.</td>
+                        <td>Resumen Ejecutivo.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>6. Reglas de negocio que deben quedar aprobadas</h2>
+            <div class="card">
+                <ul>
+                    <li>Un bache cuenta para un turno por su <strong>hora real de cierre</strong>, no por la programada.</li>
+                    <li>Los mensajes ejecutivos no deben superar 12 lineas.</li>
+                    <li>Los mensajes de turno deben ser descriptivos, pero cortos.</li>
+                    <li>Las alertas criticas salen solo por excepcion y con destinatarios limitados.</li>
+                    <li>Primero debe existir boton de prueba manual; despues se activa el envio automatico.</li>
+                    <li>Todos los envios deben quedar guardados en historial.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section>
+            <h2>7. Decisiones pendientes para pasar a implementacion</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Decision</th>
+                        <th>Propuesta base</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Quien recibe Resumen Ejecutivo</td>
+                        <td>Gerencia general + administracion + direccion operativa.</td>
+                    </tr>
+                    <tr>
+                        <td>Quien recibe Resumen Turno</td>
+                        <td>Lideres por area y operacion clave.</td>
+                    </tr>
+                    <tr>
+                        <td>Quien recibe Alertas Criticas</td>
+                        <td>Solo responsables de reaccion inmediata.</td>
+                    </tr>
+                    <tr>
+                        <td>Canal de salida inicial</td>
+                        <td>Piloto manual y luego automatico.</td>
+                    </tr>
+                    <tr>
+                        <td>WhatsApp productivo</td>
+                        <td>Definir numero, proveedor y aprobacion del canal.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="decision">
+                <strong>Siguiente paso recomendado:</strong>
+                cerrar la matriz de destinatarios reales y los horarios definitivos.
+                Con eso ya se puede entrar a implementacion tecnica.
+            </div>
+        </section>
+
+        <div class="footer">
+            <span>GestionPBI - Ficha operativa previa a implementacion</span>
+            <span>Popping Boba International S.A.S.</span>
+        </div>
+    </div>
+</body>
+</html>

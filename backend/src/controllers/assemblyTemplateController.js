@@ -227,7 +227,7 @@ async function createAssemblyTemplate(req, res) {
                         action: 'CREATE',
                         entity: 'AssemblyTemplate',
                         entityId: newTemplate.id,
-                        details: `Created template ${templateCode.toUpperCase()}`
+                        changes: { note: `Created template ${templateCode.toUpperCase()}` }
                     }
                 });
             }
@@ -330,7 +330,7 @@ async function updateAssemblyTemplate(req, res) {
                             action: 'DELETE',
                             entity: 'AssemblyTemplateStage',
                             entityId: id,
-                            details: `ALERTA DE BORRADO DE ETAPAS: Plantilla reducida de ${oldStages.length} a ${stages.length} etapas. Antes: [${oldNames}], Ahora: [${newNames}]`
+                            changes: { note: `ALERTA DE BORRADO DE ETAPAS: Plantilla reducida de ${oldStages.length} a ${stages.length} etapas. Antes: [${oldNames}], Ahora: [${newNames}]` }
                         }
                     });
                 }
@@ -378,7 +378,7 @@ async function updateAssemblyTemplate(req, res) {
                             action: 'UPDATE',
                             entity: 'AssemblyTemplate',
                             entityId: id,
-                            details: `Updated template with ${stages.length} stages`
+                            changes: { note: `Updated template with ${stages.length} stages` }
                         }
                     });
                 }
@@ -429,7 +429,7 @@ async function updateAssemblyTemplate(req, res) {
                         action: 'UPDATE',
                         entity: 'AssemblyTemplate',
                         entityId: id,
-                        details: 'Updated template header'
+                        changes: { note: 'Updated template header' }
                     }
                 });
             }

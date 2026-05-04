@@ -316,22 +316,32 @@ exports.scanItem = async (req, res) => {
                 error: 'Se requiere número de lote para registrar el escaneo'
             });
         }
-        let lotExists = await prisma.finishedLotStock.findFirst({
-            where: {
-                productId: targetItem.productId,
-                lotNumber: scannedLot,
-                currentQuantity: { gt: 0 }
-            },
-            select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+        // Helper: prioriza PRODUCTO_TERMINADO sobre cualquier otra zona (NO_CONFORME, PRODUCCION, etc).
+        // Antes el findFirst podía traer NO_CONFORME (con stock>0) y bloquear el scan, aunque
+        // hubiera stock disponible en PRODUCTO_TERMINADO.
+        const findLotPreferringPT = async (where) => {
+            // 1. Buscar primero en PRODUCTO_TERMINADO con stock disponible
+            let lot = await prisma.finishedLotStock.findFirst({
+                where: { ...where, zone: 'PRODUCTO_TERMINADO', currentQuantity: { gt: 0 } },
+                select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+            });
+            if (lot) return lot;
+            // 2. Si no hay en PT, buscar en cualquier zona (igual al comportamiento previo)
+            return prisma.finishedLotStock.findFirst({
+                where: { ...where, currentQuantity: { gt: 0 } },
+                select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
+            });
+        };
+
+        let lotExists = await findLotPreferringPT({
+            productId: targetItem.productId,
+            lotNumber: scannedLot,
         });
         // Fallback: strip flavor prefix (e.g. "MARACUYA-260331-0722" → "260331-0722")
         if (!lotExists) {
             const strippedLot = scannedLot.replace(/^[A-Z-]+?(\d{6}-\d+)$/i, '$1');
             if (strippedLot !== scannedLot) {
-                lotExists = await prisma.finishedLotStock.findFirst({
-                    where: { productId: targetItem.productId, lotNumber: strippedLot, currentQuantity: { gt: 0 } },
-                    select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
-                });
+                lotExists = await findLotPreferringPT({ productId: targetItem.productId, lotNumber: strippedLot });
                 if (lotExists) {
                     qrData.lotNumber = strippedLot;
                 }
@@ -339,10 +349,7 @@ exports.scanItem = async (req, res) => {
         }
         // Fallback: try with flavor prefix if lot was stored with it
         if (!lotExists) {
-            lotExists = await prisma.finishedLotStock.findFirst({
-                where: { productId: targetItem.productId, lotNumber: { endsWith: scannedLot }, currentQuantity: { gt: 0 } },
-                select: { id: true, lotNumber: true, currentQuantity: true, zone: true }
-            });
+            lotExists = await findLotPreferringPT({ productId: targetItem.productId, lotNumber: { endsWith: scannedLot } });
             if (lotExists) {
                 qrData.lotNumber = lotExists.lotNumber;
             }

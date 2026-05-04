@@ -14,6 +14,11 @@ const SHIFT_TRANSITIONS = [
     { outgoing: 'NOCHE',  incoming: 'MANANA', endHour: 6,  endMinute: 0 },
 ];
 
+const SATURDAY_TRANSITIONS = [
+    { outgoing: 'MANANA', incoming: 'TARDE',  endHour: 12, endMinute: 0 },
+    { outgoing: 'NOCHE',  incoming: 'MANANA', endHour: 6,  endMinute: 0 },
+];
+
 const HANDOVER_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE'];
 const PRE_ALERT_MINUTES = 15;
 const PRE_BLOCK_MINUTES = 10;
@@ -40,6 +45,20 @@ function formatLocalDate(d) {
     return `${y}-${m}-${day}`;
 }
 
+function shiftDateString(dateInput, daysToAdd = 0) {
+    let value = dateInput;
+    if (value instanceof Date) {
+        value = value.toISOString().slice(0, 10);
+    }
+    if (typeof value === 'string' && value.length === 10) {
+        value += 'T12:00:00';
+    }
+
+    const date = new Date(value);
+    date.setDate(date.getDate() + daysToAdd);
+    return formatLocalDate(date);
+}
+
 function getColombiaDateString() {
     const col = getColombiaTime();
     return formatLocalDate(col);
@@ -63,9 +82,37 @@ function getWeekStartUTC(dateInput) {
     return new Date(dateStr + 'T05:00:00.000Z');
 }
 
+// ── Saturday detection ───────────────────────────────────────────────────────
+function isColombiaSaturday() {
+    return getColombiaTime().getDay() === 6;
+}
+
+function isDateSaturday(dateStr) {
+    return new Date(dateStr + 'T12:00:00').getDay() === 6;
+}
+
+function getEffectiveTransition(outgoingShift, saturday = null) {
+    const isSat = saturday !== null ? saturday : isColombiaSaturday();
+    if (isSat) {
+        const satT = SATURDAY_TRANSITIONS.find(t => t.outgoing === outgoingShift);
+        if (satT) return satT;
+        return null;
+    }
+    return SHIFT_TRANSITIONS.find(t => t.outgoing === outgoingShift) || null;
+}
+
+function getTransitionsForDate(dateStr) {
+    return isDateSaturday(dateStr) ? SATURDAY_TRANSITIONS : SHIFT_TRANSITIONS;
+}
+
 // ── Get current active shift (no grace period) ────────────────────────────────
 function getCurrentActiveShift() {
     const mins = getColombiaMinutes();
+    if (isColombiaSaturday()) {
+        if (mins >= 360 && mins < 720) return 'MANANA';   // 06:00–11:59
+        if (mins >= 720 && mins < 1080) return 'TARDE';    // 12:00–17:59
+        return 'NOCHE';                                     // 22:00–05:59 (Friday→Sat) or post-18 no shift
+    }
     if (mins >= 360 && mins < 840) return 'MANANA';   // 06:00–13:59
     if (mins >= 840 && mins < 1320) return 'TARDE';    // 14:00–21:59
     return 'NOCHE';                                     // 22:00–05:59
@@ -74,8 +121,9 @@ function getCurrentActiveShift() {
 // ── Get current transition being processed ────────────────────────────────────
 function getCurrentTransition() {
     const mins = getColombiaMinutes();
+    const transitions = isColombiaSaturday() ? SATURDAY_TRANSITIONS : SHIFT_TRANSITIONS;
 
-    for (const t of SHIFT_TRANSITIONS) {
+    for (const t of transitions) {
         const endMins = t.endHour * 60 + t.endMinute;
         const preStart = (24 * 60 + endMins - PRE_ALERT_MINUTES) % (24 * 60);
         const graceEnd = (endMins + GRACE_MINUTES) % (24 * 60);
@@ -105,14 +153,24 @@ function getOperationalDate(shift) {
     return formatLocalDate(col);
 }
 
+function getOutgoingParticipantDate(operationalDate) {
+    return shiftDateString(operationalDate);
+}
+
+function getIncomingParticipantDate(operationalDate, outgoingShift) {
+    return outgoingShift === 'NOCHE'
+        ? shiftDateString(operationalDate, 1)
+        : shiftDateString(operationalDate);
+}
+
 // ── Minutes until a shift ends ────────────────────────────────────────────────
 function getMinutesUntilShiftEnd(shift) {
     const mins = getColombiaMinutes();
-    const transition = SHIFT_TRANSITIONS.find(t => t.outgoing === shift);
+    const transition = getEffectiveTransition(shift);
     if (!transition) return Infinity;
 
     let endMins = transition.endHour * 60 + transition.endMinute;
-    if (shift === 'NOCHE' && mins >= 1320) endMins += 1440; // past 22:00 → end tomorrow
+    if (shift === 'NOCHE' && mins >= 1320) endMins += 1440;
     return endMins - mins;
 }
 
@@ -156,16 +214,40 @@ function getHandoverSignatureState(handover) {
         outgoing: {
             signedCount: outgoingOperators.length - outgoingMissing.length,
             expectedCount: outgoingOperators.length,
-            allSigned: outgoingOperators.length > 0 && outgoingMissing.length === 0,
+            allSigned: outgoingMissing.length === 0,
             missingParticipants: outgoingMissing
         },
         incoming: {
             signedCount: incomingOperators.length - incomingMissing.length,
             expectedCount: incomingOperators.length,
-            allSigned: incomingOperators.length > 0 && incomingMissing.length === 0,
+            allSigned: incomingMissing.length === 0,
             missingParticipants: incomingMissing
         }
     };
+}
+
+function filterParticipantsByAbsentIds(handover, { outgoingAbsentIds = new Set(), incomingAbsentIds = new Set() } = {}) {
+    if (!handover) return handover;
+
+    return {
+        ...handover,
+        outgoingParticipants: (handover.outgoingParticipants || []).filter(participant => !outgoingAbsentIds.has(participant.employeeId)),
+        incomingParticipants: (handover.incomingParticipants || []).filter(participant => !incomingAbsentIds.has(participant.employeeId))
+    };
+}
+
+async function getAbsentParticipantSetsForHandover(handover) {
+    if (!handover?.operationalDate) {
+        return { outgoingAbsentIds: new Set(), incomingAbsentIds: new Set() };
+    }
+
+    const operationalDate = shiftDateString(handover.operationalDate);
+    const [outgoingAbsentIds, incomingAbsentIds] = await Promise.all([
+        getAbsentEmployeeIds(getOutgoingParticipantDate(operationalDate)),
+        getAbsentEmployeeIds(getIncomingParticipantDate(operationalDate, handover.outgoingShift))
+    ]);
+
+    return { outgoingAbsentIds, incomingAbsentIds };
 }
 
 function getHandoverPendingSteps(handover) {
@@ -322,19 +404,23 @@ async function generateHandoversForWeek(weekId) {
 
                 // Skip Sunday daytime shifts (no MANANA→TARDE or TARDE→NOCHE on Sunday)
                 if (dayOfWeek === 0 && (transition.outgoing === 'MANANA' || transition.outgoing === 'TARDE')) continue;
+                // Skip TARDE→NOCHE on Saturday (no night shift starts Saturday)
+                if (dayOfWeek === 6 && transition.outgoing === 'TARDE') continue;
 
                 // Filter out absent employees for THIS specific date
+                const outgoingDateStr = getOutgoingParticipantDate(dateStr);
+                const incomingDateStr = getIncomingParticipantDate(dateStr, transition.outgoing);
                 const outgoing = (participantMap[area]?.[transition.outgoing] || [])
-                    .filter(p => !isAbsentOnDate(p.employeeId, dateStr));
+                    .filter(p => !isAbsentOnDate(p.employeeId, outgoingDateStr));
                 const incoming = (participantMap[area]?.[transition.incoming] || [])
-                    .filter(p => !isAbsentOnDate(p.employeeId, dateStr));
+                    .filter(p => !isAbsentOnDate(p.employeeId, incomingDateStr));
                 if (outgoing.length === 0 && incoming.length === 0) continue;
 
-                // Calculate grace deadline
+                // Calculate grace deadline (use Saturday times if applicable)
+                const effectiveT = getEffectiveTransition(transition.outgoing, dayOfWeek === 6) || transition;
                 let graceDate = new Date(dateStr + 'T00:00:00.000Z');
-                graceDate.setUTCHours(transition.endHour + 5, transition.endMinute + GRACE_MINUTES); // UTC = Colombia + 5
+                graceDate.setUTCHours(effectiveT.endHour + 5, effectiveT.endMinute + GRACE_MINUTES); // UTC = Colombia + 5
                 if (transition.outgoing === 'NOCHE') {
-                    // NOCHE ends next day at 06:00, grace until 06:10
                     graceDate = new Date(dateStr + 'T00:00:00.000Z');
                     graceDate.setDate(graceDate.getDate() + 1);
                     graceDate.setUTCHours(6 + 5, GRACE_MINUTES);
@@ -394,7 +480,7 @@ async function getCurrentHandover(area) {
     const week = await prisma.shiftWeek.findUnique({ where: { weekStart: weekStartDate } });
     if (!week) return null;
 
-    return prisma.shiftHandoverRecord.findUnique({
+    const handover = await prisma.shiftHandoverRecord.findUnique({
         where: {
             weekId_operationalDate_area_outgoingShift: {
                 weekId: week.id,
@@ -415,6 +501,10 @@ async function getCurrentHandover(area) {
             supervisor: { select: { id: true, name: true } }
         }
     });
+
+    if (!handover) return null;
+    const absentSets = await getAbsentParticipantSetsForHandover(handover);
+    return filterParticipantsByAbsentIds(handover, absentSets);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -453,6 +543,14 @@ async function getAlarmInfo(userId) {
     if (dayOfWeek === 0 && (activeShift === 'MANANA' || activeShift === 'TARDE')) {
         return { shouldAlert: false };
     }
+    // Saturday: no alert for TARDE (no NOCHE after) or after 18:00 (no shift)
+    if (dayOfWeek === 6 && (activeShift === 'TARDE' || getColombiaMinutes() >= 1080)) {
+        return { shouldAlert: false };
+    }
+    // Sunday early morning (no NOCHE carryover from Saturday)
+    if (dayOfWeek === 0 && activeShift === 'NOCHE' && getColombiaMinutes() < 1320) {
+        return { shouldAlert: false };
+    }
 
     const shouldAlert = minsUntilEnd <= PRE_ALERT_MINUTES && minsUntilEnd > -GRACE_MINUTES;
 
@@ -485,6 +583,14 @@ async function getBlockInfo(userId) {
     // Sunday daytime → no block
     const dayOfWeek = new Date(todayDate + 'T12:00:00').getDay();
     if (dayOfWeek === 0 && (activeShift === 'MANANA' || activeShift === 'TARDE')) {
+        return { blocked: false };
+    }
+    // Saturday: no block for TARDE (no NOCHE after) or after 18:00 (no shift)
+    if (dayOfWeek === 6 && (activeShift === 'TARDE' || getColombiaMinutes() >= 1080)) {
+        return { blocked: false };
+    }
+    // Sunday early morning / all day until 22:00 (no NOCHE carryover from Saturday)
+    if (dayOfWeek === 0 && activeShift === 'NOCHE' && getColombiaMinutes() < 1320) {
         return { blocked: false };
     }
 
@@ -538,26 +644,29 @@ async function getBlockInfo(userId) {
         });
         if (!handover || COMPLETED_STATUSES.includes(handover.status)) continue;
 
+        const absentSets = await getAbsentParticipantSetsForHandover(handover);
+        const filteredHandover = filterParticipantsByAbsentIds(handover, absentSets);
+
         const participants = candidate.participantSide === 'OUTGOING'
-            ? handover.outgoingParticipants
-            : handover.incomingParticipants;
+            ? filteredHandover.outgoingParticipants
+            : filteredHandover.incomingParticipants;
         if (!isParticipant(participants, user.shiftEmployee.id)) continue;
 
-        const pending = getParticipantPendingSteps(handover, candidate.participantSide);
-        const signatureState = getHandoverSignatureState(handover);
+        const pending = getParticipantPendingSteps(filteredHandover, candidate.participantSide);
+        const signatureState = getHandoverSignatureState(filteredHandover);
         const minutesUntilEnd = getMinutesUntilShiftEnd(candidate.transition.outgoing);
 
         return {
             blocked: true,
-            handoverId: handover.id,
-            handoverStatus: handover.status,
+            handoverId: filteredHandover.id,
+            handoverStatus: filteredHandover.status,
             blockPhase: candidate.phase,
             participantSide: candidate.participantSide,
             pendingSteps: pending.steps,
             missingSigners: pending.missingSigners,
             signatureState,
             minutesUntilEnd,
-            graceDeadline: handover.graceDeadline,
+            graceDeadline: filteredHandover.graceDeadline,
             requiresAdminRelease: candidate.phase === 'POST_GRACE' && pending.missingSigners.length > 0,
             area,
             outgoingShift: candidate.transition.outgoing,
@@ -586,6 +695,7 @@ async function getAbsentEmployeeIds(dateStr) {
 module.exports = {
     HANDOVER_AREAS,
     SHIFT_TRANSITIONS,
+    SATURDAY_TRANSITIONS,
     PRE_ALERT_MINUTES,
     GRACE_MINUTES,
     getColombiaTime,
@@ -593,13 +703,20 @@ module.exports = {
     getColombiaDateString,
     getMonday,
     getWeekStartUTC,
+    getEffectiveTransition,
+    isColombiaSaturday,
+    isDateSaturday,
     getCurrentActiveShift,
     getCurrentTransition,
     getOperationalDate,
+    getOutgoingParticipantDate,
+    getIncomingParticipantDate,
     getMinutesUntilShiftEnd,
     getHandoverSignatureState,
     getHandoverPendingSteps,
     getParticipantPendingSteps,
+    filterParticipantsByAbsentIds,
+    getAbsentParticipantSetsForHandover,
     isHandoverEnabled,
     generateHandoversForWeek,
     getCurrentHandover,

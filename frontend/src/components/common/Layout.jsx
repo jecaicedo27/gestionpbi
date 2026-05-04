@@ -83,6 +83,7 @@ const Layout = () => {
         if (path === '/admin/reports') return 'Reportes';
         if (path === '/shift-schedule') return 'Cuadro de Turnos';
         if (path === '/attendance') return 'Control de Ingreso';
+        if (path === '/labor-management') return 'Gestión Laboral';
         if (path === '/recovery/forensic') return 'Validacion de Recuperacion';
         if (path.includes('analytics')) return 'Análisis';
         return 'Dashboard';

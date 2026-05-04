@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LayoutDashboard, Package, Factory, ShoppingCart, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search, FileSpreadsheet, Building2 } from 'lucide-react';
+import { LayoutDashboard, Package, Factory, ShoppingCart, Users as UsersIcon, FileText, LineChart, Calendar, Settings, PlayCircle, AlertCircle, Activity, BarChart2, Microscope, Truck, Layers, FlaskConical, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Warehouse, Printer, Network, Search, FileSpreadsheet, Building2, WalletCards, GraduationCap, Award, Sparkles } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -10,6 +10,8 @@ const sectionIcons = {
     'Calidad': AlertCircle,
     'Compras': Truck,
     'Reportes': BarChart2,
+    'Talento': GraduationCap,
+    'Aseo': Sparkles,
 };
 
 const isPathActive = (pathname, path) => {
@@ -63,6 +65,15 @@ const Sidebar = () => {
         { icon: Printer, label: 'Impresión Etiquetas', path: '/labeling', roles: ['ADMIN', 'PRODUCCION', 'OPERARIO_PICKING'] },
         { icon: ClipboardList, label: 'Reg. de Lavado POES', path: '/sanitation/operator', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
         { icon: Calendar,   label: 'Cuadro de Turnos',   path: '/shift-schedule', roles: ['ADMIN'] },
+        { icon: ClipboardList, label: 'Historial Disciplinador', path: '/shift-discipline/history', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
+        { icon: BarChart2, label: 'Bonificación Líderes', path: '/admin/leader-bonus', roles: ['ADMIN'] },
+
+        // ── Talento (Academia Popping Boba) ──
+        { icon: GraduationCap, label: 'Academia', path: '/academia', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO', 'LOGISTICA', 'CALIDAD', 'RECURSOS_HUMANOS'], section: 'Talento' },
+        { icon: UsersIcon, label: 'Seguimiento Líderes', path: '/academia/admin/seguimiento', roles: ['ADMIN'] },
+        { icon: Award, label: 'Evaluaciones Prácticas', path: '/academia/admin/evaluaciones', roles: ['ADMIN'] },
+        { icon: FileText, label: 'Editor de Contenido', path: '/academia/admin/contenido', roles: ['ADMIN'] },
+        { icon: BarChart2, label: 'Ranking Academia', path: '/academia/ranking', roles: ['ADMIN'] },
 
         // ── Calidad ──
         { icon: FileText, label: 'Gestión PQR', path: '/pqr/manage', roles: ['ADMIN', 'CALIDAD', 'CONTABILIDAD', 'COMERCIAL', 'LOGISTICA', 'QUIMICO'], section: 'Calidad' },
@@ -85,12 +96,19 @@ const Sidebar = () => {
         // ── Reportes & Admin ──
         { icon: Building2,  label: 'Control de Ingreso', path: '/attendance', roles: ['ADMIN', 'RECURSOS_HUMANOS'], section: 'Reportes' },
         { icon: Search, label: 'Conciliación Siigo', path: '/reconciliation', roles: ['ADMIN'] },
+        { icon: ClipboardList, label: 'Auditoría Inventario', path: '/inventory/audit', roles: ['ADMIN'] },
         { icon: FileSpreadsheet, label: 'Validación Recuperación', path: '/recovery/forensic', roles: ['ADMIN', 'QUIMICO'] },
         { icon: LineChart, label: 'Análisis Ejecutivo', path: '/analytics/executive', roles: ['ADMIN'] },
         { icon: BarChart2, label: 'Ventas por Cliente', path: '/analytics/sales', roles: ['ADMIN'] },
         { icon: FileText, label: 'Movimientos', path: '/admin/movements', roles: ['ADMIN'] },
         { icon: UsersIcon, label: 'Usuarios', path: '/admin/users', roles: ['ADMIN'] },
         { icon: Settings, label: 'Configuración', path: '/admin/config', roles: ['ADMIN'] },
+
+        // ── Aseo (Servicios Generales) ──
+        { icon: Sparkles, label: 'Mis Tareas de Aseo', path: '/aseo', roles: [], flag: 'isCleaningStaff', section: 'Aseo' },
+        { icon: Package, label: 'Insumos de Aseo', path: '/aseo/insumos', roles: [], flag: 'isCleaningStaff' },
+        { icon: ClipboardList, label: 'Supervisión Aseo', path: '/aseo/supervisor', roles: ['ADMIN'], flag: 'isCleaningSupervisor' },
+        { icon: Settings, label: 'Admin Tareas Aseo', path: '/aseo/admin', roles: ['ADMIN'] },
     ];
 
     // ADMIN sees ALL items; other roles see only their allowed items
@@ -102,7 +120,9 @@ const Sidebar = () => {
 
     allItems.forEach((item) => {
         if (item.section) currentSection = item.section;
-        const canSeeItem = isAdmin || item.roles.includes(user?.role);
+        const matchesRole = item.roles.includes(user?.role);
+        const matchesFlag = item.flag && user?.[item.flag] === true;
+        const canSeeItem = isAdmin || matchesRole || matchesFlag;
         if (!canSeeItem) return;
 
         flatItems.push(item);

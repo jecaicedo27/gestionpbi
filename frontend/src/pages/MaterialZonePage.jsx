@@ -7,7 +7,7 @@ import {
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useZebra } from '../context/ZebraContext';
-import { buildLotLabelZPL } from '../services/zplLabelBuilder';
+import { buildLotLabelZPL, toInitials } from '../services/zplLabelBuilder';
 
 // Define the exact group names retrieved from the backend
 const C_GROUP_NAMES = {
@@ -156,7 +156,8 @@ export default function MaterialZonePage() {
                 quantity: isNaN(qtyNum) ? selectedLot.currentQuantity : qtyNum,
                 unit: selectedLot.unit,
                 receivedAt: selectedLot.receivedAt,
-                statusText: 'MATERIA PRIMA'
+                statusText: 'MATERIA PRIMA',
+                printedBy: toInitials(user?.name)
             };
 
             let finalZpl = '';

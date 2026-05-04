@@ -280,17 +280,12 @@ function GenialityTemplateEditorPage() {
             return;
         }
 
-        // quantityPerUnit MUST be a ratio: ingredient_qty / formula_output_qty
-        // The backend does: plannedQuantity = quantityPerUnit × targetQuantity
-        // So we need fractions, NOT absolute grams
-        const formulaTotalOutputQty = formula.items.reduce((sum, i) => sum + (parseFloat(i.quantity) || 0), 0) || 1;
-
         const newInputs = formula.items.map((item, idx) => ({
             id: `input-${Date.now()}-${idx}`,
             inputType: 'RAW_MATERIAL',
             productId: item.ingredientId,
             product: item.ingredient,
-            quantityPerUnit: (parseFloat(item.quantity) || 0) / formulaTotalOutputQty, // ← ratio, not absolute
+            quantityPerUnit: parseFloat(item.quantity) || 0,
             unit: item.unit,
             displayOrder: idx + 1
         }));

@@ -13,6 +13,27 @@
 import { buildQrString } from './qrService';
 
 /**
+ * Convierte un nombre completo a iniciales (ej: "JOHN EDISSON CAICEDO" → "JEC").
+ * Disponible como helper público para cualquier componente que imprima.
+ */
+export const toInitials = (name) => {
+    if (!name) return '';
+    return String(name).trim().split(/\s+/).map(w => w[0] || '').join('').toUpperCase().slice(0, 4);
+};
+
+/**
+ * Lee las iniciales del usuario logueado desde localStorage (persistidas por AuthContext).
+ * Sirve como fallback automático si un componente no pasa explícitamente `printedBy`.
+ */
+const getStoredUserInitials = () => {
+    try {
+        return localStorage.getItem('userInitials') || '';
+    } catch {
+        return '';
+    }
+};
+
+/**
  * Render one label's content at a given X offset.
  * Fits in ~48mm wide × 38mm tall (384 × 304 dots usable).
  */
@@ -23,7 +44,8 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
         receivedAt = '', expiresAt = '',
         barcode = '', packageId = '', containerType = '',
         boxNumber = 1, totalBoxes = 1,
-        statusText = null
+        statusText = null,
+        printedBy = ''
     } = data;
 
     // Format quantity
@@ -136,18 +158,23 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
         y += 3;
     }
 
+    // Flavor abbreviation should only apply to actual flavor products.
+    // Packaging/material items like "TAPA LIQUIPOPS 1150 GR - 1000ML"
+    // must keep their real name instead of being rewritten to "... SABOR".
+    const isFlavorProduct = /\bSABOR A\b/i.test(productName);
+
     // ── LEFT SIDE: Same order as SAT label ──
 
     // 2. Brand line — smart abbreviation to fit 50mm column
     if (nameLine2) {
         let brandLine = nameLine1;
-        // Shorten known brands to fit label width (~16 chars at 18pt)
-        if (/SIROPE GENIALITY/i.test(brandLine))        brandLine = 'GENIALITY SABOR';
-        else if (/LIQUIPOPS/i.test(brandLine))           brandLine = 'LIQUIPOPS SABOR';
-        else if (/ESSKISIMO/i.test(brandLine))           brandLine = 'ESSKISIMO SABOR';
-        else if (/BLACK/i.test(brandLine))               brandLine = 'BLACK SABOR';
-        else if (/WOW/i.test(brandLine))                 brandLine = 'WOW SABOR';
-        else                                             brandLine = brandLine.substring(0, 18);
+        // Shorten known brands only for real flavor products.
+        if (isFlavorProduct && /SIROPE GENIALITY/i.test(brandLine)) brandLine = 'GENIALITY SABOR';
+        else if (isFlavorProduct && /LIQUIPOPS/i.test(brandLine))   brandLine = 'LIQUIPOPS SABOR';
+        else if (isFlavorProduct && /ESSKISIMO/i.test(brandLine))   brandLine = 'ESSKISIMO SABOR';
+        else if (isFlavorProduct && /BLACK/i.test(brandLine))       brandLine = 'BLACK SABOR';
+        else if (isFlavorProduct && /WOW/i.test(brandLine))         brandLine = 'WOW SABOR';
+        else                                                        brandLine = brandLine.substring(0, 18);
         fields += `^FO${x},${y}^A0N,18,16^FD${esc(brandLine)}^FS\n`;
         y += 22;
     }
@@ -200,7 +227,8 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
     }
 
     // 6. Lote — FULL number, no truncation
-    fields += `^FO${x},${y}^A0N,20,18^FDLote: ${esc(lotDisplay.substring(0, 16))}^FS\n`;
+    const lotSuffix = (totalBoxes && totalBoxes > 1) ? ` (${boxNumber}/${totalBoxes})` : '';
+    fields += `^FO${x},${y}^A0N,20,18^FDLote: ${esc(lotDisplay.substring(0, 16))}${lotSuffix}^FS\n`;
     y += 24;
 
     // 7. Quantity — bold
@@ -213,10 +241,13 @@ function renderLabel(data, xOff, { maquila = false } = {}) {
     fields += `^FO${x},${y}^A0N,18,16^FDVence: ${expDate}^FS\n`;
     y += 20;
 
-    // 9. Timestamp (bottom, tiny — like SAT)
+    // 9. Timestamp + iniciales del operario (bottom, tiny)
+    // Si printedBy no llegó explícito, fallback a localStorage del último usuario logueado
     const now = new Date();
     const ts = `${now.toLocaleDateString('es-CO')} ${now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`;
-    fields += `^FO${x},${y}^A0N,12,12^FD${ts}^FS\n`;
+    const opInitials = printedBy || getStoredUserInitials();
+    const tsLine = opInitials ? `${ts}  Op:${esc(opInitials)}` : ts;
+    fields += `^FO${x},${y}^A0N,12,12^FD${tsLine}^FS\n`;
 
     // ── VERTICAL SEPARATOR ──
     fields += `^FO${sepX},20^GB2,290,2^FS\n`;
@@ -305,7 +336,8 @@ function renderCarritoLabel(data, xOff) {
         quantity = 0,
         unit = 'unidad',
         totalBoxes = 1,
-        boxNumber = 1
+        boxNumber = 1,
+        printedBy = ''
     } = data;
 
     const qtyText = (unit === 'kg' || unit === 'gramo' || unit === 'g')
@@ -349,8 +381,12 @@ function renderCarritoLabel(data, xOff) {
     fields += `^FO${x},${y}^A0N,30,28^FD${esc(qtyText)}^FS\n`;
     y += 34;
 
-    // 5. Sequence
-    fields += `^FO${x},${y}^A0N,18,16^FDCart ${boxNumber} de ${totalBoxes}^FS\n`;
+    // 5. Sequence + iniciales del operario que imprimió (con fallback a localStorage)
+    const opInitials = printedBy || getStoredUserInitials();
+    const seqLine = opInitials
+        ? `Cart ${boxNumber} de ${totalBoxes}  -  Op: ${esc(opInitials)}`
+        : `Cart ${boxNumber} de ${totalBoxes}`;
+    fields += `^FO${x},${y}^A0N,18,16^FD${seqLine}^FS\n`;
 
     // 6. Vertical separator
     fields += `^FO${sepX},20^GB2,290,2^FS\n`;

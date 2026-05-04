@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
+const allowedIpsService = require('../services/allowedIpsService');
 const prisma = new PrismaClient();
 
 /**
@@ -31,9 +32,11 @@ const isInternalNetwork = (ip) => {
     if (['127.0.0.1', '::1', 'localhost'].includes(clean)) return true;
     // Private ranges (in case the server is on the same LAN)
     if (clean.startsWith('192.168.') || clean.startsWith('10.') || clean.startsWith('172.')) return true;
-    // Configured allowed IPs
+    // Configured allowed IPs (env)
     const allowedIps = (process.env.ALLOWED_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
-    return allowedIps.includes(clean);
+    if (allowedIps.includes(clean)) return true;
+    // Dynamic allowed IPs (admin-managed, JSON file — hot-reloaded)
+    return allowedIpsService.isAllowed(clean);
 };
 
 const auth = async (req, res, next) => {

@@ -123,6 +123,41 @@ pool.query('SELECT NOW()', (err, res) => {
             } catch (e) { logger.error(`⏰ SHIFT RESCHEDULE error: ${e.message}`); }
         }, { timezone: 'America/Bogota' });
         logger.info('⏰ CRON: Shift reschedule programado a las 6:00, 14:00, 22:00 COT');
+
+        // ═══ CRON: Cierra el run de disciplina del turno saliente y crea el del entrante ═══
+        const { _closeRun } = require('./controllers/shiftDisciplineController');
+        const prismaCron = new (require('@prisma/client').PrismaClient)();
+        cron.schedule('0 6,14,22 * * *', async () => {
+            try {
+                // Buscar el run sin cerrar más reciente (el que acaba de terminar)
+                const open = await prismaCron.shiftDisciplineRun.findFirst({
+                    where: { closedAt: null },
+                    orderBy: { shiftStart: 'desc' },
+                });
+                if (open) {
+                    const closed = await _closeRun(open.id);
+                    logger.info(`⏰ DISCIPLINA: Cerrado run ${open.shiftDate} ${open.shiftCode} → score ${closed?.finalScore} (${closed?.finalGrade})`);
+                }
+            } catch (e) { logger.error(`⏰ DISCIPLINA cron error: ${e.message}`); }
+        }, { timezone: 'America/Bogota' });
+        logger.info('⏰ CRON: Cierre de turno disciplinador programado a las 6:00, 14:00, 22:00 COT');
+
+        // ═══ CRON: Cada 5 min revisa retrasos > 15 min y envía push al líder ═══
+        const { checkRetrasos } = require('./controllers/shiftDisciplineController');
+        cron.schedule('*/5 * * * *', async () => {
+            try { await checkRetrasos(); } catch (e) { logger.warn(`⏰ checkRetrasos error: ${e.message}`); }
+        }, { timezone: 'America/Bogota' });
+        logger.info('⏰ CRON: Revisión de retrasos disciplinador cada 5 min');
+
+        // ═══ CRON: Generación diaria de tareas de aseo a las 5:00 AM Colombia ═══
+        const cleaningService = require('./services/cleaningService');
+        cron.schedule('0 5 * * *', async () => {
+            try {
+                const result = await cleaningService.generateExecutionsForDate(new Date());
+                logger.info(`🧹 ASEO: ${result.created} ejecuciones generadas para ${result.date.toISOString().slice(0,10)}`);
+            } catch (e) { logger.error(`🧹 ASEO cron error: ${e.message}`); }
+        }, { timezone: 'America/Bogota' });
+        logger.info('🧹 CRON: Generación diaria de tareas de aseo a las 5:00 AM COT');
     });
 });
 

@@ -2,7 +2,8 @@ import React, { useState, useRef } from 'react';
 import { ShoppingCart, Trash2, Printer, Camera, Loader2, Pencil, Check, X } from 'lucide-react';
 import { compressImage } from '../../../utils/imageCompression';
 import { useZebra } from '../../../context/ZebraContext';
-import { buildCarritoLabelZPL } from '../../../services/zplLabelBuilder';
+import { buildCarritoLabelZPL, toInitials } from '../../../services/zplLabelBuilder';
+import { useAuth } from '../../../context/AuthContext';
 import api from '../../../services/api';
 
 
@@ -88,6 +89,8 @@ const GConteoCarritosStep = ({
     const [editingCarritoId, setEditingCarritoId] = useState(null);
     const [editQtyMap, setEditQtyMap] = useState({});
     const { zebraStatus, printZPL } = useZebra();
+    const { user } = useAuth();
+    const userInitials = toInitials(user?.name);
     
     const outputTargets = note?.productionBatch?.outputTargets || [];
     
@@ -102,21 +105,26 @@ const GConteoCarritosStep = ({
         }
     }
 
-    const handlePrintCarrito = async (carrito, targetName) => {
+    const handlePrintCarrito = async (carrito, targetName, displayNum) => {
         if (zebraStatus !== 'connected') {
             alert('La impresora Zebra no está conectada o está cargando. Si sigue sin conectar, configure la IP en el icono superior derecho.');
             return;
         }
 
         try {
+            // Usar el MISMO número que se muestra en pantalla (índice filtrado por producto, 1-based).
+            // Antes se usaba carriots.indexOf(carrito) que es el índice GLOBAL (mezclando productos)
+            // y por eso al imprimir el #1 de un producto salía con otro número.
+            const carritoIdToPrint = carrito.carritoNum || displayNum || carrito.id || '';
             const zpl = buildCarritoLabelZPL({
-                carritoId: carrito.carritoNum || (carriots.indexOf(carrito) + 1) || carrito.id || '',
+                carritoId: carritoIdToPrint,
                 productName: targetName || 'GENIALITY SIROPE',
                 lotNumber: note?.productionBatch?.batchNumber || '',
                 quantity: carrito.qty || 0,
                 unit: 'und',
                 totalBoxes: 1,
-                boxNumber: 1
+                boxNumber: 1,
+                printedBy: userInitials
             });
 
             const result = await printZPL(zpl);
@@ -474,8 +482,8 @@ const GConteoCarritosStep = ({
                                                                     <img src={c.productionPhotoUrl} alt="Produccion" className="w-full h-full object-cover" />
                                                                 </button>
                                                             )}
-                                                            <button 
-                                                                onClick={() => handlePrintCarrito(c, t.product?.name)} 
+                                                            <button
+                                                                onClick={() => handlePrintCarrito(c, t.product?.name, i + 1)}
                                                                 className={`p-3 -m-3 relative rounded-full hover:bg-slate-200 active:scale-95 transition-all ${c.printed ? 'text-emerald-500 bg-emerald-50 hover:text-emerald-700' : 'text-slate-400 bg-slate-50 hover:text-slate-700'}`}
                                                             >
                                                                 <Printer size={18} />

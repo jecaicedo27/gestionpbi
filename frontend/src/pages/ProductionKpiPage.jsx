@@ -267,25 +267,272 @@ const ProductionKpiPage = () => {
                                 if (dateCmp !== 0) return dateCmp;
                                 return SHIFT_ORDER[a.shift] - SHIFT_ORDER[b.shift];
                             });
-                            const PER_PAGE = 6;
+                            // 21 turnos = 7 días × 3 turnos (semana completa visible sin paginar)
+                            const PER_PAGE = 21;
                             const totalPages = Math.ceil(sorted.length / PER_PAGE);
                             const page = shiftPage || 0;
                             const visible = sorted.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
                             const target = adherenceData.meta?.shiftBatchTarget || 5;
 
+                            // Monthly consolidation + per-leader breakdown (líder + cuadrilla cruzan turnos)
+                            // Mapeo bache → líder a partir de los turnos (un bache lo lidera quien lo tuvo en su turno)
+                            const batchToLeader = {};
+                            sorted.forEach(s => {
+                                if (!s.leader) return;
+                                (s.batches || []).forEach(b => {
+                                    if (b.batchNumber && !batchToLeader[b.batchNumber]) {
+                                        batchToLeader[b.batchNumber] = s.leader;
+                                    }
+                                });
+                            });
+
+                            const monthlyMap = {};
+                            const initLeader = (key) => ({
+                                leader: key, completed: 0, target: 0, shifts: 0,
+                                team: new Set(), shiftBreakdown: { MANANA: 0, TARDE: 0, NOCHE: 0 },
+                                scheduled: 0, executed: 0,
+                                adhSum: 0, adhCount: 0,
+                                spherSum: 0, spherCount: 0,
+                                intermediates: { ALGINATO: 0, BASE: 0, PROTECCION: 0, PREMEZCLA: 0, SIROPE: 0, OTROS: 0, total: 0 },
+                                disciplineSum: 0, disciplineCount: 0,
+                            });
+
+                            sorted.forEach(s => {
+                                const month = s.date.slice(0, 7); // YYYY-MM
+                                if (!monthlyMap[month]) monthlyMap[month] = {
+                                    month, totalCompleted: 0, totalTarget: 0, shifts: 0,
+                                    scheduled: 0, executed: 0,
+                                    adhSum: 0, adhCount: 0,
+                                    spherSum: 0, spherCount: 0,
+                                    intermediates: { ALGINATO: 0, BASE: 0, PROTECCION: 0, PREMEZCLA: 0, SIROPE: 0, OTROS: 0, total: 0 },
+                                    leaderMap: {},
+                                };
+                                monthlyMap[month].totalCompleted += s.completed || 0;
+                                monthlyMap[month].totalTarget += target;
+                                monthlyMap[month].shifts += 1;
+
+                                // Sumar intermedios preparados en el turno
+                                const ip = s.intermediatesPrepared || {};
+                                ['ALGINATO', 'BASE', 'PROTECCION', 'PREMEZCLA', 'SIROPE', 'OTROS', 'total'].forEach(k => {
+                                    monthlyMap[month].intermediates[k] += ip[k] || 0;
+                                });
+
+                                const leaderKey = s.leader || '— Sin líder —';
+                                if (!monthlyMap[month].leaderMap[leaderKey]) monthlyMap[month].leaderMap[leaderKey] = initLeader(leaderKey);
+                                const lm = monthlyMap[month].leaderMap[leaderKey];
+                                lm.completed += s.completed || 0;
+                                lm.target += target;
+                                lm.shifts += 1;
+                                lm.shiftBreakdown[s.shift] = (lm.shiftBreakdown[s.shift] || 0) + 1;
+                                if (s.team?.length) s.team.forEach(t => lm.team.add(t));
+                                ['ALGINATO', 'BASE', 'PROTECCION', 'PREMEZCLA', 'SIROPE', 'OTROS', 'total'].forEach(k => {
+                                    lm.intermediates[k] += ip[k] || 0;
+                                });
+                                if (s.disciplineScore != null) {
+                                    lm.disciplineSum += s.disciplineScore;
+                                    lm.disciplineCount += 1;
+                                }
+                            });
+
+                            // Adherencia + tiempos de esferificación desde adherenceData.batches
+                            (adherenceData?.batches || []).forEach(b => {
+                                if (!b.scheduledStart) return;
+                                const month = b.scheduledStart.slice(0, 7);
+                                if (!monthlyMap[month]) return; // solo meses con turnos
+                                const mm = monthlyMap[month];
+                                mm.scheduled += 1;
+                                if (b.status === 'completed') mm.executed += 1;
+                                if (b.adherenceScore != null) { mm.adhSum += b.adherenceScore; mm.adhCount += 1; }
+                                if (b.actualMin != null) { mm.spherSum += b.actualMin; mm.spherCount += 1; }
+
+                                const lk = batchToLeader[b.batchNumber];
+                                if (lk && mm.leaderMap[lk]) {
+                                    const ld = mm.leaderMap[lk];
+                                    ld.scheduled += 1;
+                                    if (b.status === 'completed') ld.executed += 1;
+                                    if (b.adherenceScore != null) { ld.adhSum += b.adherenceScore; ld.adhCount += 1; }
+                                    if (b.actualMin != null) { ld.spherSum += b.actualMin; ld.spherCount += 1; }
+                                }
+                            });
+
+                            const monthly = Object.values(monthlyMap)
+                                .map(m => ({
+                                    ...m,
+                                    avgAdherence: m.adhCount > 0 ? Math.round(m.adhSum / m.adhCount) : null,
+                                    avgSpherMin: m.spherCount > 0 ? Math.round(m.spherSum / m.spherCount) : null,
+                                    leaders: Object.values(m.leaderMap).map(ld => ({
+                                        ...ld,
+                                        avgAdherence: ld.adhCount > 0 ? Math.round(ld.adhSum / ld.adhCount) : null,
+                                        avgSpherMin: ld.spherCount > 0 ? Math.round(ld.spherSum / ld.spherCount) : null,
+                                        avgDiscipline: ld.disciplineCount > 0 ? Math.round(ld.disciplineSum / ld.disciplineCount) : null,
+                                    })).sort((a, b) => b.completed - a.completed),
+                                }))
+                                .sort((a, b) => b.month.localeCompare(a.month));
+
                             return (
                             <section>
+                                {/* Consolidado Mensual + Desglose por Líder (para bonificaciones) */}
+                                {monthly.length > 0 && (
+                                    <div className="mb-4">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <span className="text-base">📊</span>
+                                            <h3 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Consolidado Mensual por Líder</h3>
+                                            <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">Bonificación grupal</span>
+                                        </div>
+                                        <div className="space-y-4">
+                                            {monthly.map(m => {
+                                                const pct = m.totalTarget > 0 ? Math.round((m.totalCompleted / m.totalTarget) * 100) : 0;
+                                                const monthLabel = format(new Date(m.month + '-01'), "MMMM yyyy", { locale: es });
+                                                return (
+                                                    <div key={m.month} className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-4">
+                                                        {/* Encabezado del mes */}
+                                                        <div className="flex items-center justify-between mb-3 pb-3 border-b border-blue-200">
+                                                            <div>
+                                                                <div className="text-sm font-bold text-blue-800 uppercase capitalize">{monthLabel}</div>
+                                                                <div className="text-xs text-slate-600 mt-0.5">
+                                                                    <span className="font-bold text-slate-800">{m.totalCompleted}</span> / {m.totalTarget} baches · {m.shifts} turnos · {m.leaders.length} líderes
+                                                                </div>
+                                                            </div>
+                                                            <div className="text-right">
+                                                                <div className={`text-3xl font-black ${pct >= 90 ? 'text-emerald-600' : pct >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{pct}%</div>
+                                                                <div className="w-32 mt-1 h-1.5 bg-white rounded-full overflow-hidden">
+                                                                    <div className={`h-full rounded-full ${pct >= 90 ? 'bg-emerald-500' : pct >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* KPIs mensuales del mes */}
+                                                        <div className="grid grid-cols-4 gap-2 mb-3">
+                                                            <div className="bg-white rounded-lg px-3 py-2 border border-indigo-100">
+                                                                <div className="text-[10px] text-slate-500 uppercase font-bold">Adherencia horario</div>
+                                                                <div className={`text-lg font-bold ${(m.avgAdherence ?? 0) >= 80 ? 'text-emerald-600' : (m.avgAdherence ?? 0) >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                                                                    {m.avgAdherence != null ? `${m.avgAdherence}%` : '—'}
+                                                                </div>
+                                                            </div>
+                                                            <div className="bg-white rounded-lg px-3 py-2 border border-indigo-100">
+                                                                <div className="text-[10px] text-slate-500 uppercase font-bold">Ejecutados / programados</div>
+                                                                <div className="text-lg font-bold text-slate-800">
+                                                                    {m.executed} <span className="text-slate-400 text-sm font-normal">/ {m.scheduled}</span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="bg-white rounded-lg px-3 py-2 border border-indigo-100">
+                                                                <div className="text-[10px] text-slate-500 uppercase font-bold">T. esferificación prom.</div>
+                                                                <div className="text-lg font-bold text-blue-600">{m.avgSpherMin != null ? fmtMin(m.avgSpherMin) : '—'}</div>
+                                                            </div>
+                                                            <div className="bg-white rounded-lg px-3 py-2 border border-emerald-200" title="Intermedios completados (ALGINATO + BASE + PROTECCIÓN + PREMEZCLA + SIROPE) — preparación dejada para los siguientes turnos">
+                                                                <div className="text-[10px] text-emerald-600 uppercase font-bold">🤝 Preparación entregada</div>
+                                                                <div className="text-lg font-bold text-emerald-700">{m.intermediates.total}</div>
+                                                                <div className="text-[9px] text-slate-500 leading-tight">
+                                                                    Alg:{m.intermediates.ALGINATO} · Base:{m.intermediates.BASE} · Prot:{m.intermediates.PROTECCION}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Desglose por líder */}
+                                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                            {m.leaders.map((ld, li) => {
+                                                                const lpct = ld.target > 0 ? Math.round((ld.completed / ld.target) * 100) : 0;
+                                                                // Bonificación: rendimiento + compañerismo (deja >= 1 intermedio por turno trabajado)
+                                                                const teamworkRatio = ld.shifts > 0 ? (ld.intermediates.total / ld.shifts) : 0;
+                                                                // Bono = rendimiento ≥90% + compañerismo (≥1 intermedio/turno) + disciplina ≥75 (si hay datos)
+                                                                const disciplineOK = ld.avgDiscipline == null || ld.avgDiscipline >= 75;
+                                                                const bonusEligible = lpct >= 90 && teamworkRatio >= 1 && disciplineOK;
+                                                                const teamworkLevel = teamworkRatio >= 1.5 ? 'high' : teamworkRatio >= 0.5 ? 'mid' : 'low';
+                                                                const shiftMix = Object.entries(ld.shiftBreakdown)
+                                                                    .filter(([, c]) => c > 0)
+                                                                    .map(([sh, c]) => `${sh === 'MANANA' ? '🌅' : sh === 'TARDE' ? '☀️' : '🌙'}${c}`)
+                                                                    .join(' ');
+                                                                return (
+                                                                    <div key={li} className={`bg-white rounded-lg p-3 border ${bonusEligible ? 'border-emerald-300 ring-1 ring-emerald-100' : 'border-slate-200'}`}>
+                                                                        <div className="flex items-center justify-between mb-1">
+                                                                            <div className="flex items-center gap-1.5">
+                                                                                <span className="text-xs font-bold text-blue-700">👤 {ld.leader}</span>
+                                                                                {bonusEligible && <span className="text-[9px] bg-emerald-100 text-emerald-700 font-bold px-1.5 py-0.5 rounded-full" title="Cumple rendimiento (≥90%) Y compañerismo (≥1 intermedio/turno)">✓ BONO</span>}
+                                                                                {!bonusEligible && lpct >= 90 && teamworkRatio < 1 && (
+                                                                                    <span className="text-[9px] bg-amber-100 text-amber-700 font-bold px-1.5 py-0.5 rounded-full" title="Buen rendimiento pero baja preparación entregada al siguiente turno">⚠ Sin compañerismo</span>
+                                                                                )}
+                                                                            </div>
+                                                                            <span className={`text-base font-black ${lpct >= 90 ? 'text-emerald-600' : lpct >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{lpct}%</span>
+                                                                        </div>
+                                                                        <div className="text-[11px] text-slate-600">
+                                                                            <span className="font-bold">{ld.completed}</span> / {ld.target} baches · {ld.shifts} turnos
+                                                                        </div>
+                                                                        <div className="text-[10px] text-slate-400 mt-0.5">{shiftMix}</div>
+                                                                        <div className="mt-1.5 h-1 bg-slate-100 rounded-full overflow-hidden">
+                                                                            <div className={`h-full rounded-full ${lpct >= 90 ? 'bg-emerald-500' : lpct >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${Math.min(100, lpct)}%` }} />
+                                                                        </div>
+
+                                                                        {/* Mini KPIs por líder */}
+                                                                        <div className="grid grid-cols-4 gap-1 mt-2">
+                                                                            <div className="bg-slate-50 rounded px-1.5 py-1">
+                                                                                <div className="text-[8px] text-slate-500 uppercase font-bold">Adherencia</div>
+                                                                                <div className={`text-xs font-bold ${(ld.avgAdherence ?? 0) >= 80 ? 'text-emerald-600' : (ld.avgAdherence ?? 0) >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                                                                                    {ld.avgAdherence != null ? `${ld.avgAdherence}%` : '—'}
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="bg-slate-50 rounded px-1.5 py-1">
+                                                                                <div className="text-[8px] text-slate-500 uppercase font-bold">Ejec/Prog</div>
+                                                                                <div className="text-xs font-bold text-slate-700">{ld.executed}/{ld.scheduled}</div>
+                                                                            </div>
+                                                                            <div className="bg-slate-50 rounded px-1.5 py-1">
+                                                                                <div className="text-[8px] text-slate-500 uppercase font-bold">T. Esfer.</div>
+                                                                                <div className="text-xs font-bold text-blue-600">{ld.avgSpherMin != null ? fmtMin(ld.avgSpherMin) : '—'}</div>
+                                                                            </div>
+                                                                            <div className="bg-slate-50 rounded px-1.5 py-1" title="Score promedio del time-line disciplinador del turno (cumplimiento de horarios ideales)">
+                                                                                <div className="text-[8px] text-slate-500 uppercase font-bold">⏱ Disciplina</div>
+                                                                                <div className={`text-xs font-bold ${(ld.avgDiscipline ?? 0) >= 90 ? 'text-emerald-600' : (ld.avgDiscipline ?? 0) >= 75 ? 'text-blue-600' : (ld.avgDiscipline ?? 0) >= 60 ? 'text-amber-600' : 'text-red-600'}`}>
+                                                                                    {ld.avgDiscipline != null ? ld.avgDiscipline : '—'}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+
+                                                                        {/* Compañerismo: preparación entregada */}
+                                                                        <div className={`mt-2 rounded px-2 py-1.5 border ${teamworkLevel === 'high' ? 'bg-emerald-50 border-emerald-200' : teamworkLevel === 'mid' ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+                                                                            <div className="flex items-center justify-between">
+                                                                                <span className={`text-[9px] uppercase font-bold ${teamworkLevel === 'high' ? 'text-emerald-700' : teamworkLevel === 'mid' ? 'text-amber-700' : 'text-red-700'}`}>
+                                                                                    🤝 Compañerismo
+                                                                                </span>
+                                                                                <span className={`text-xs font-black ${teamworkLevel === 'high' ? 'text-emerald-700' : teamworkLevel === 'mid' ? 'text-amber-700' : 'text-red-700'}`}>
+                                                                                    {ld.intermediates.total} intermedios ({teamworkRatio.toFixed(1)}/turno)
+                                                                                </span>
+                                                                            </div>
+                                                                            <div className="text-[9px] text-slate-500 mt-0.5">
+                                                                                Alg:{ld.intermediates.ALGINATO} · Base:{ld.intermediates.BASE} · Prot:{ld.intermediates.PROTECCION} · Premz:{ld.intermediates.PREMEZCLA}
+                                                                            </div>
+                                                                        </div>
+
+                                                                        {ld.team.size > 0 && (
+                                                                            <div className="mt-2 pt-2 border-t border-slate-100">
+                                                                                <div className="text-[9px] text-slate-400 uppercase font-bold mb-1">Cuadrilla ({ld.team.size})</div>
+                                                                                <div className="flex flex-wrap gap-1">
+                                                                                    {[...ld.team].map((t, ti) => (
+                                                                                        <span key={ti} className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full">{t}</span>
+                                                                                    ))}
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="flex items-center justify-between mb-3">
                                     <div className="flex items-center gap-2">
                                         <TrendingUp size={15} className="text-amber-500" />
                                         <h2 className="text-sm font-bold text-slate-600 uppercase tracking-wider">Cumplimiento por Turno</h2>
-                                        <span className="text-xs text-slate-400">(meta: {target} baches)</span>
+                                        <span className="text-xs text-slate-400">(meta: {target} baches · semana completa)</span>
                                     </div>
                                     {totalPages > 1 && (
                                         <div className="flex items-center gap-1">
                                             <button onClick={() => setShiftPage(Math.max(0, page - 1))} disabled={page === 0}
                                                 className="px-2 py-1 text-xs font-semibold rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">← Recientes</button>
-                                            <span className="text-xs text-slate-400 px-2">{page + 1}/{totalPages}</span>
+                                            <span className="text-xs text-slate-400 px-2">Sem {page + 1}/{totalPages}</span>
                                             <button onClick={() => setShiftPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
                                                 className="px-2 py-1 text-xs font-semibold rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">Anteriores →</button>
                                         </div>

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informe Gerencial — Centro de Resúmenes por WhatsApp</title>
+    <style>
+        :root {
+            --ink: #0f172a;
+            --muted: #475569;
+            --line: #dbe4ee;
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --blue: #1d4ed8;
+            --blue-soft: #dbeafe;
+            --green: #047857;
+            --green-soft: #d1fae5;
+            --amber: #b45309;
+            --amber-soft: #fef3c7;
+            --red: #b91c1c;
+            --red-soft: #fee2e2;
+            --slate-soft: #e2e8f0;
+        }
+
+        * { box-sizing: border-box; }
+
+        @page {
+            size: A4;
+            margin: 16mm;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            color: var(--ink);
+            background: var(--bg);
+            line-height: 1.45;
+        }
+
+        .page {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            background: var(--panel);
+            padding: 18mm 18mm 20mm;
+        }
+
+        .hero {
+            border: 1px solid var(--line);
+            background: linear-gradient(135deg, #eff6ff 0%, #ffffff 60%, #ecfeff 100%);
+            border-radius: 8px;
+            padding: 18px 20px;
+            margin-bottom: 18px;
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1.3px;
+            text-transform: uppercase;
+            color: var(--blue);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 28px;
+            line-height: 1.08;
+        }
+
+        .hero p {
+            margin: 12px 0 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .meta-card {
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px 12px;
+        }
+
+        .meta-label {
+            display: block;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+
+        .meta-value {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        h2 {
+            margin: 18px 0 10px;
+            font-size: 17px;
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 6px;
+        }
+
+        h3 {
+            margin: 0 0 8px;
+            font-size: 14px;
+        }
+
+        p, li {
+            font-size: 12.5px;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 8px;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px 14px;
+            background: #fff;
+        }
+
+        .tone-blue { background: #f8fbff; }
+        .tone-green { background: #f7fffb; }
+        .tone-amber { background: #fffdf7; }
+        .tone-red { background: #fffafa; }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .4px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .badge-blue { background: var(--blue-soft); color: var(--blue); }
+        .badge-green { background: var(--green-soft); color: var(--green); }
+        .badge-amber { background: var(--amber-soft); color: var(--amber); }
+        .badge-red { background: var(--red-soft); color: var(--red); }
+
+        .summary-box {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .summary-item {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #fff;
+        }
+
+        .summary-item strong {
+            display: block;
+            font-size: 18px;
+            margin-bottom: 3px;
+        }
+
+        .summary-item span {
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .layer {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 12px 14px;
+            background: #fff;
+            margin-bottom: 10px;
+        }
+
+        .layer-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .layer-head small {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        ul {
+            margin: 8px 0 0 18px;
+            padding: 0;
+        }
+
+        li + li { margin-top: 4px; }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        .table th,
+        .table td {
+            border: 1px solid var(--line);
+            padding: 8px 9px;
+            text-align: left;
+            vertical-align: top;
+            font-size: 11.5px;
+        }
+
+        .table th {
+            background: #f8fafc;
+            font-size: 10.5px;
+            text-transform: uppercase;
+            letter-spacing: .5px;
+        }
+
+        .decision {
+            border-left: 4px solid var(--blue);
+            background: #f8fbff;
+            padding: 12px 14px;
+            border-radius: 0 8px 8px 0;
+            margin-top: 10px;
+        }
+
+        .footer {
+            margin-top: 18px;
+            padding-top: 10px;
+            border-top: 1px solid var(--line);
+            color: #64748b;
+            font-size: 10.5px;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <section class="hero">
+            <p class="eyebrow">GestionPBI · Informe Gerencial</p>
+            <h1>Centro de Resumenes por WhatsApp<br>para la Direccion Operativa y Administrativa</h1>
+            <p>
+                Documento ejecutivo para aprobar el modelo de informacion que saldra del ERP hacia WhatsApp.
+                El objetivo no es enviar "todo el sistema" en un solo mensaje, sino convertir la informacion
+                critica del aplicativo en tres flujos claros, accionables y medibles.
+            </p>
+
+            <div class="meta">
+                <div class="meta-card">
+                    <span class="meta-label">Empresa</span>
+                    <span class="meta-value">Popping Boba International</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Fecha</span>
+                    <span class="meta-value">20 de abril de 2026</span>
+                </div>
+                <div class="meta-card">
+                    <span class="meta-label">Estado</span>
+                    <span class="meta-value">Propuesta previa a implementacion</span>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>1. Objetivo Gerencial</h2>
+            <div class="card tone-blue">
+                <p>
+                    Implementar una salida de informacion por WhatsApp que convierta los datos mas importantes del ERP
+                    en mensajes de alto valor para direccion, operacion y control, sin saturar a los usuarios y sin
+                    mezclar informacion estrategica con alertas urgentes.
+                </p>
+                <div class="summary-box">
+                    <div class="summary-item">
+                        <strong>3</strong>
+                        <span>capas de mensaje</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>1</strong>
+                        <span>motor central de resumen</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>6+</strong>
+                        <span>modulos del ERP integrados</span>
+                    </div>
+                    <div class="summary-item">
+                        <strong>2</strong>
+                        <span>fases: piloto y produccion</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>2. Problema Actual</h2>
+            <div class="grid-2">
+                <div class="card tone-amber">
+                    <span class="badge badge-amber">Situacion</span>
+                    <h3>La informacion existe, pero esta dispersa</h3>
+                    <ul>
+                        <li>Produccion, inventario, compras, turnos, calidad y pedidos viven en modulos separados.</li>
+                        <li>El ERP tiene datos utiles, pero no un canal ejecutivo resumido para lectura rapida.</li>
+                        <li>WhatsApp hoy solo se usa de manera manual en algunos puntos del sistema.</li>
+                    </ul>
+                </div>
+                <div class="card tone-red">
+                    <span class="badge badge-red">Impacto</span>
+                    <h3>Riesgo de reaccion tardia</h3>
+                    <ul>
+                        <li>Las novedades importantes pueden perderse entre pantallas, llamadas o mensajes sueltos.</li>
+                        <li>Un solo mensaje muy largo no seria util: nadie distingue lo urgente de lo informativo.</li>
+                        <li>Sin estructura, se genera ruido operativo en lugar de control gerencial.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>3. Propuesta de Modelo en 3 Capas</h2>
+
+            <div class="layer">
+                <div class="layer-head">
+                    <h3>Resumen Ejecutivo</h3>
+                    <small>1 o 2 veces al dia</small>
+                </div>
+                <p>Mensaje para direccion y administracion. Debe concentrar la fotografia general del negocio.</p>
+                <ul>
+                    <li>Baches terminados del dia y cumplimiento vs programado.</li>
+                    <li>Inventario critico de materias primas y producto terminado.</li>
+                    <li>Ordenes de compra pendientes por pagar o contabilizar.</li>
+                    <li>Pedidos pendientes por despachar.</li>
+                    <li>PQR criticos, recall o novedades de calidad.</li>
+                    <li>Ausencias, novedades de turno y bloqueos operativos importantes.</li>
+                </ul>
+            </div>
+
+            <div class="layer">
+                <div class="layer-head">
+                    <h3>Resumen Operativo por Turno</h3>
+                    <small>al cierre de Manana, Tarde y Noche</small>
+                </div>
+                <p>Mensaje para lideres y responsables de operacion. Debe cerrar el turno y preparar el siguiente.</p>
+                <ul>
+                    <li>Baches cerrados dentro de la ventana del turno.</li>
+                    <li>Baches que siguen ejecutandose o quedaron pendientes.</li>
+                    <li>Novedades del relevo y pendientes para el proximo turno.</li>
+                    <li>Faltantes materiales o bloqueos que afecten continuidad.</li>
+                    <li>Incidencias de calidad, empaque o siropes relevantes.</li>
+                </ul>
+            </div>
+
+            <div class="layer">
+                <div class="layer-head">
+                    <h3>Alertas Criticas</h3>
+                    <small>en tiempo real, solo por excepcion</small>
+                </div>
+                <p>Mensaje corto y accionable. No informa; obliga a reaccionar.</p>
+                <ul>
+                    <li>Stock por debajo del minimo.</li>
+                    <li>Relevo bloqueado o firma faltante con impacto operativo.</li>
+                    <li>Orden detenida en Cartera o Contabilidad.</li>
+                    <li>PQR grave, lote comprometido o riesgo de recall.</li>
+                    <li>Caida de integracion critica o novedad mayor del dia.</li>
+                </ul>
+            </div>
+        </section>
+
+        <section>
+            <h2>4. Modulos del ERP que alimentaran el resumen</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Modulo</th>
+                        <th>Informacion gerencial esperada</th>
+                        <th>Uso dentro del resumen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Produccion</td>
+                        <td>Baches terminados, cumplimiento, historico, KPI y estado por turno.</td>
+                        <td>Resumen Ejecutivo y Resumen Turno.</td>
+                    </tr>
+                    <tr>
+                        <td>Inventario y Logistica</td>
+                        <td>Stock critico, movimientos, lotes, despachos pendientes.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Compras</td>
+                        <td>OC pendientes, pago, contabilizacion y urgencias de abastecimiento.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Turnos y Relevo</td>
+                        <td>Ausencias, firmas, bloqueos, novedades y continuidad operativa.</td>
+                        <td>Resumen Turno y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Calidad / PQR / Recall</td>
+                        <td>PQR abiertos, incidentes de lote, tendencias y alertas mayores.</td>
+                        <td>Resumen Ejecutivo y Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Pedidos / Comercial</td>
+                        <td>Pedidos pendientes por despachar y presion comercial del dia.</td>
+                        <td>Resumen Ejecutivo.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>5. Arquitectura Propuesta</h2>
+            <div class="grid-2">
+                <div class="card tone-green">
+                    <span class="badge badge-green">Backend</span>
+                    <h3>Motor central de resumen</h3>
+                    <ul>
+                        <li>Crear un servicio unico que lea los modulos clave y arme mensajes consistentes.</li>
+                        <li>Clasificar la informacion por capa: ejecutivo, turno y critica.</li>
+                        <li>Guardar configuracion y destinatarios en <strong>system_settings</strong>.</li>
+                        <li>Registrar historial de mensajes enviados y errores.</li>
+                    </ul>
+                </div>
+                <div class="card tone-blue">
+                    <span class="badge badge-blue">Canal</span>
+                    <h3>Integracion WhatsApp</h3>
+                    <ul>
+                        <li>Fase piloto con Sandbox para validar formato y contenido.</li>
+                        <li>Fase productiva con numero formal y plantillas aprobadas.</li>
+                        <li>Boton manual de prueba antes del envio automatico.</li>
+                        <li>Separacion clara entre mensajes informativos y mensajes urgentes.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="decision">
+                <strong>Decision recomendada:</strong>
+                construir primero el motor de resumen y la vista previa interna. Despues conectar WhatsApp.
+                Esto evita aprobar plantillas o mensajes sin antes validar que los datos realmente sirven para direccion.
+            </div>
+        </section>
+
+        <section>
+            <h2>6. Lo que la empresa debe definir para arrancar</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Definicion</th>
+                        <th>Decision requerida</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Canal</td>
+                        <td>Arrancar por Sandbox de prueba o ir directo a numero productivo.</td>
+                    </tr>
+                    <tr>
+                        <td>Destinatarios</td>
+                        <td>Quienes reciben Resumen Ejecutivo, quienes reciben Resumen Turno y quienes reciben Alertas Criticas.</td>
+                    </tr>
+                    <tr>
+                        <td>Horarios</td>
+                        <td>Horas exactas de envio ejecutivo y politica de cierre por turno.</td>
+                    </tr>
+                    <tr>
+                        <td>Contenido minimo</td>
+                        <td>Que indicadores son obligatorios y cuales quedan por fuera para no saturar.</td>
+                    </tr>
+                    <tr>
+                        <td>Gobierno del canal</td>
+                        <td>Quien autoriza cambios de mensaje, numeros y reglas de disparo.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>7. Fases de Implementacion Recomendadas</h2>
+            <div class="grid-2">
+                <div class="card">
+                    <span class="badge badge-blue">Fase 1</span>
+                    <h3>Diseno y validacion</h3>
+                    <ul>
+                        <li>Definir indicadores por capa.</li>
+                        <li>Construir vista previa del informe dentro del ERP.</li>
+                        <li>Validar con gerencia el texto exacto de cada mensaje.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <span class="badge badge-green">Fase 2</span>
+                    <h3>Piloto controlado</h3>
+                    <ul>
+                        <li>Conectar WhatsApp de prueba.</li>
+                        <li>Enviar solo mensajes manuales durante validacion.</li>
+                        <li>Ajustar longitud, tono y datos segun uso real.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <span class="badge badge-amber">Fase 3</span>
+                    <h3>Automatizacion</h3>
+                    <ul>
+                        <li>Programar envios ejecutivos y de turno.</li>
+                        <li>Activar alertas criticas en tiempo real.</li>
+                        <li>Dejar trazabilidad de envios y fallos.</li>
+                    </ul>
+                </div>
+                <div class="card">
+                    <span class="badge badge-red">Fase 4</span>
+                    <h3>Escalamiento</h3>
+                    <ul>
+                        <li>Agregar nuevas metricas sin reescribir el sistema.</li>
+                        <li>Separar destinatarios por area o comite.</li>
+                        <li>Versionar plantillas gerenciales futuras.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>8. Riesgos y Controles</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Riesgo</th>
+                        <th>Control propuesto</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Mensaje demasiado largo y poco leible.</td>
+                        <td>Separar en 3 capas y limitar cada capa a decisiones concretas.</td>
+                    </tr>
+                    <tr>
+                        <td>Datos inconsistentes entre modulos.</td>
+                        <td>Construir el resumen desde fuentes definidas y con reglas unicas de negocio.</td>
+                    </tr>
+                    <tr>
+                        <td>Enviar ruido a personas que no deben recibirlo.</td>
+                        <td>Configurar destinatarios por capa y mantener permisos administrados.</td>
+                    </tr>
+                    <tr>
+                        <td>Dependencia total del canal WhatsApp.</td>
+                        <td>Dejar vista previa interna e historial en el ERP como respaldo.</td>
+                    </tr>
+                    <tr>
+                        <td>Problemas de cumplimiento del canal.</td>
+                        <td>Usar plantillas aprobadas y gobierno central del contenido.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section>
+            <h2>9. Recomendacion Final</h2>
+            <div class="card tone-blue">
+                <p>
+                    La implementacion es conveniente y tiene alto valor gerencial, siempre que se haga con enfoque
+                    de direccion: <strong>informacion breve, capas separadas, criterios claros y gobierno del canal</strong>.
+                </p>
+                <p>
+                    La propuesta recomendada es aprobar primero el modelo de contenido y despues la integracion con WhatsApp.
+                    De esa forma, la empresa asegura que el canal no sera un chat de ruido sino un sistema real de seguimiento ejecutivo.
+                </p>
+                <p>
+                    En terminos de priorizacion, el orden ideal es:
+                    <strong>Resumen Ejecutivo</strong>, luego <strong>Resumen Turno</strong>, y despues
+                    <strong>Alertas Criticas</strong>.
+                </p>
+            </div>
+        </section>
+
+        <div class="footer">
+            <span>GestionPBI · Documento preparado para aprobacion previa a implementacion</span>
+            <span>Popping Boba International S.A.S.</span>
+        </div>
+    </div>
+</body>
+</html>

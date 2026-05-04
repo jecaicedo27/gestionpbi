@@ -3,8 +3,9 @@ import { Search, Bluetooth, BluetoothOff, Printer, TestTube, Package, Hash, Cale
 import api from '../services/api';
 import printer from '../services/bluetoothPrinter';
 import { buildLotLabel, buildTestLabel } from '../services/tsplLabelBuilder';
-import { buildLotLabelZPL, buildTestLabelZPL } from '../services/zplLabelBuilder';
+import { buildLotLabelZPL, buildTestLabelZPL, toInitials } from '../services/zplLabelBuilder';
 import { useZebra } from '../context/ZebraContext';
+import { useAuth } from '../context/AuthContext';
 
 
 const Labeling = () => {
@@ -18,6 +19,7 @@ const Labeling = () => {
     const [printing, setPrinting] = useState(false);
     const [printMsg, setPrintMsg] = useState(null);
 
+    const { user } = useAuth();
     // Zebra state from global context
     const { zebraStatus, zebraIp, printZPL, recheckNow, isRechecking, configIp, relayIp, updateConfig } = useZebra();
     const [showZebraSettings, setShowZebraSettings] = useState(false);
@@ -164,6 +166,7 @@ const Labeling = () => {
                 receivedAt: selectedLot.receivedAt,
                 expiresAt: selectedLot.expiresAt,
                 orderNumber: selectedLot.purchaseOrderItem?.purchaseOrder?.orderNumber || '',
+                printedBy: toInitials(user?.name),
             };
             if (mode === 'bluetooth') {
                 await printer.sendTSPL(buildLotLabel(data, copies));

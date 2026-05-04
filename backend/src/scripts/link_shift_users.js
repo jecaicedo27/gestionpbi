@@ -21,7 +21,7 @@ async function main() {
         { shiftName: 'Drilly Ramírez',     userEmail: 'drillym@pbi.com' },
         { shiftName: 'Andrés Melgizo',     userEmail: 'andresm@pbi.com' },
         { shiftName: 'Juan Carlos Muñoz',  userEmail: 'juanm@pbi.com' },
-        { shiftName: 'David Vergara',      userEmail: 'davidb@pbi.com' },
+        { shiftName: 'David Vergara',      userEmail: 'davidv@pbi.com' },
         { shiftName: 'Karen Dahiana',      userEmail: 'karen@pbi.com' },
         { shiftName: 'Ximena Benavides',   userEmail: 'ximena@pbi.com' },
         { shiftName: 'Hugo Armando',       userEmail: 'hugo@pbi.com' },

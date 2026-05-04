@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Camera, CheckCircle, Thermometer, Beaker, Eye, Droplets } from 'lucide-react';
+import { Camera, CheckCircle, Thermometer, Beaker, Eye, Droplets, X } from 'lucide-react';
 import api from '../../../services/api';
 
 /**
@@ -23,10 +23,16 @@ const QC_PARAMS_PROTECCION = [
     { key: 'ph', label: 'pH', min: 2.8, max: 3.2, step: 0.01, unit: '', icon: '🧪' },
 ];
 
+const QC_PARAMS_SABORIZACION = [
+    { key: 'brix', label: '°Brix', min: 60, max: 65, step: 0.1, unit: '°Bx', icon: '🔬' },
+    { key: 'ph', label: 'pH', min: 2.8, max: 3.5, step: 0.01, unit: '', icon: '🧪' },
+];
+
 const getQcParams = (productName) => {
     const name = (productName || '').toUpperCase();
     if (name.startsWith('PROTECCION')) return QC_PARAMS_PROTECCION;
     if (name.startsWith('COMPUESTO')) return QC_PARAMS_COMPUESTO;
+    if (name.startsWith('SABORIZACION')) return QC_PARAMS_SABORIZACION;
     return [];
 };
 
@@ -131,6 +137,9 @@ const OutputStep = ({
     // Photo evidence state
     const [verificationPhoto, setVerificationPhoto] = useState(draft.verificationPhoto || '');
     const [tempPhoto, setTempPhoto] = useState(draft.tempPhoto || '');
+
+    // Photo modal state
+    const [modalPhoto, setModalPhoto] = useState(null);
 
     // ═══ PERSISTENCE: Save on blur / after photo upload ═══
     const stateRef = useRef({});
@@ -245,30 +254,17 @@ const OutputStep = ({
     };
 
     return (
-        <div className="flex flex-col h-full max-w-4xl mx-auto pt-2 pb-24 px-4">
-            {/* Badge */}
-            <div className="flex items-center gap-2 mb-3">
-                <div className="h-8 w-8 rounded-full bg-gradient-to-br from-green-600 to-emerald-500 text-white flex items-center justify-center text-base shadow">
-                    ✅
-                </div>
-                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Paso Final — Resultado</div>
-            </div>
-
+        <div className="flex flex-col h-full max-w-4xl mx-auto pt-1 pb-24 px-3">
             {/* Main card */}
-            <div className="bg-white rounded-2xl shadow-lg border-2 border-green-400 overflow-hidden flex-1 flex flex-col animate-in zoom-in duration-300">
-                <div className="bg-gradient-to-r from-green-600 to-emerald-500 py-2 px-4 text-center flex items-center justify-center gap-2">
-                    <span className="text-white font-extrabold text-sm uppercase tracking-widest">
-                        ✅ Verificación de Producción
+            <div className="bg-white rounded-xl shadow border-2 border-green-400 overflow-hidden flex-1 flex flex-col">
+                <div className="bg-gradient-to-r from-green-600 to-emerald-500 py-1.5 px-3 flex items-center justify-between gap-2">
+                    <span className="text-white font-extrabold text-xs uppercase tracking-wider">
+                        ✅ {noteData.product?.name}
                     </span>
-                    <span className="text-white/60 text-[10px] hidden sm:inline">· Registra la cantidad real producida</span>
+                    <span className="text-white/80 text-[10px] font-bold">PASO FINAL</span>
                 </div>
 
-                <div className="flex-1 flex flex-col p-4 gap-3 overflow-auto">
-                    {/* Product name */}
-                    <div>
-                        <div className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">Producto de Salida</div>
-                        <div className="text-base font-black text-slate-800">{noteData.product?.name}</div>
-                    </div>
+                <div className="flex-1 flex flex-col p-3 gap-2.5 overflow-auto">
 
                     {/* Metric chips */}
                     {isPesajeSimple ? (
@@ -389,7 +385,8 @@ const OutputStep = ({
                                 <div className="mt-3">
                                     {tempPhoto && (
                                         <img src={tempPhoto} alt="Temperatura"
-                                            className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm" />
+                                            onClick={() => setModalPhoto(tempPhoto)}
+                                            className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm cursor-pointer hover:opacity-90 active:scale-[0.98] transition-all" />
                                     )}
                                     <label className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95 text-sm
                                 ${tempPhoto
@@ -407,30 +404,30 @@ const OutputStep = ({
                         )}
 
                         {/* ═══ QUALITY CONTROL PARAMETERS ═══ */}
-                        <div className="rounded-2xl border-2 border-indigo-300 overflow-hidden">
-                            <div className="bg-gradient-to-r from-indigo-600 to-violet-500 p-3 text-center">
-                                <span className="text-white font-extrabold text-sm uppercase tracking-widest">
-                                    🔬 CONTROL DE CALIDAD — Parámetros Clave
+                        <div className="rounded-xl border-2 border-indigo-300 overflow-hidden">
+                            <div className="bg-gradient-to-r from-indigo-600 to-violet-500 py-1.5 px-3 text-center">
+                                <span className="text-white font-extrabold text-xs uppercase tracking-wider">
+                                    🔬 Control de Calidad
                                 </span>
                             </div>
-                            <div className="p-4 space-y-4 bg-indigo-50/50">
+                            <div className={`p-2 grid gap-2 bg-indigo-50/50 ${qcParamResults.length === 2 ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'}`}>
                                 {qcParamResults.map((param) => (
-                                    <div key={param.key} className={`rounded-xl p-4 border-2 transition-all ${param.filled
+                                    <div key={param.key} className={`rounded-lg p-2 border-2 transition-all ${param.filled
                                         ? param.inRange
                                             ? 'bg-green-50 border-green-300'
                                             : 'bg-red-50 border-red-300'
                                         : 'bg-white border-slate-200'
                                         }`}>
-                                        <div className="flex items-center justify-between mb-2">
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-lg">{param.icon}</span>
-                                                <span className="font-bold text-slate-700">{param.label}</span>
+                                        <div className="flex items-center justify-between mb-1">
+                                            <div className="flex items-center gap-1">
+                                                <span className="text-sm">{param.icon}</span>
+                                                <span className="font-bold text-slate-700 text-xs">{param.label}</span>
                                             </div>
-                                            <span className="text-xs font-bold bg-white/80 px-2 py-1 rounded-full text-slate-500">
-                                                Rango: {param.min} – {param.max} {param.unit}
+                                            <span className="text-[9px] font-bold bg-white/80 px-1.5 py-0.5 rounded-full text-slate-500">
+                                                {param.min}–{param.max}
                                             </span>
                                         </div>
-                                        <div className="flex items-center gap-3">
+                                        <div className="flex items-center gap-1.5">
                                             <input
                                                 type="number"
                                                 inputMode="decimal"
@@ -439,60 +436,75 @@ const OutputStep = ({
                                                 onChange={(e) => setQcValues(prev => ({ ...prev, [param.key]: e.target.value }))}
                                                 onBlur={saveDraft}
                                                 placeholder={`${param.min}`}
-                                                className={`flex-1 text-center text-2xl font-black py-3 px-4 rounded-xl border-2 focus:outline-none focus:ring-2 transition-all ${param.filled
+                                                className={`flex-1 text-center text-xl font-black py-1.5 px-2 rounded-lg border-2 focus:outline-none focus:ring-2 transition-all ${param.filled
                                                     ? param.inRange
                                                         ? 'border-green-300 bg-white text-green-700 focus:ring-green-200'
                                                         : 'border-red-300 bg-white text-red-700 focus:ring-red-200'
                                                     : 'border-slate-200 bg-white text-slate-700 focus:ring-indigo-200'
                                                     }`}
                                             />
-                                            <span className="text-sm font-bold text-slate-400 min-w-[50px]">{param.unit}</span>
+                                            {param.unit && <span className="text-[10px] font-bold text-slate-400 shrink-0">{param.unit}</span>}
                                         </div>
-                                        {param.filled && !param.inRange && (
-                                            <div className="mt-2 text-sm font-bold text-red-600 text-center">
-                                                ❌ FUERA DE RANGO — No puede continuar (debe estar entre {param.min} y {param.max})
-                                            </div>
-                                        )}
-                                        {param.filled && param.inRange && (
-                                            <div className="mt-2 text-sm font-bold text-green-600 text-center">
-                                                ✅ Dentro del rango permitido
-                                            </div>
-                                        )}
-                                        {/* Photo evidence for this parameter */}
-                                        <div className="mt-3">
+                                        {/* Photo evidence — compact */}
+                                        <div className="mt-1.5">
                                             {qcPhotos[param.key] && (
                                                 <img src={qcPhotos[param.key]} alt={`QC ${param.label}`}
-                                                    className="w-full max-h-32 object-cover rounded-xl border border-emerald-200 mb-2 shadow-sm" />
+                                                    onClick={() => setModalPhoto(qcPhotos[param.key])}
+                                                    className="w-full max-h-20 object-cover rounded-md border border-emerald-200 mb-1 shadow-sm cursor-pointer hover:opacity-90 active:scale-[0.98] transition-all" />
                                             )}
-                                            <label className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95 text-sm
+                                            <label className={`flex items-center justify-center gap-1 w-full py-1 rounded-md border border-dashed cursor-pointer transition-all active:scale-95 text-[10px]
                                             ${qcPhotos[param.key]
                                                     ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
                                                     : 'border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
                                                 {qcPhotos[param.key]
-                                                    ? <><CheckCircle size={18} /> <span className="font-bold">Foto ✓ — Cambiar</span></>
-                                                    : <><Camera size={18} /> <span className="font-bold">📷 Foto de evidencia ({param.label})</span></>
+                                                    ? <><CheckCircle size={12} /> <span className="font-bold">Foto ✓</span></>
+                                                    : <><Camera size={12} /> <span className="font-bold">📷 Evidencia</span></>
                                                 }
                                                 <input type="file" accept="image/*" capture="environment" className="sr-only"
                                                     onChange={(e) => handleQcPhotoCapture(param.key, e)} />
                                             </label>
                                         </div>
+                                        {param.filled && !param.inRange && (
+                                            <div className="mt-1 text-[10px] font-bold text-red-600 text-center">
+                                                ❌ Fuera de rango
+                                            </div>
+                                        )}
                                     </div>
                                 ))}
-
-                                {/* QC summary */}
                                 {allQcFilled && (
-                                    <div className={`text-center py-3 rounded-xl font-bold text-sm ${allQcInRange && allQcPhotos
+                                    <div className={`col-span-full text-center py-1.5 rounded-md font-bold text-[11px] ${allQcInRange && allQcPhotos
                                         ? 'bg-green-100 text-green-700 border border-green-300'
                                         : 'bg-red-100 text-red-700 border border-red-300'
                                         }`}>
                                         {allQcInRange && allQcPhotos
-                                            ? '✅ Todos los parámetros dentro del rango con evidencia fotográfica'
+                                            ? '✅ Parámetros OK con evidencia'
                                             : !allQcInRange
-                                                ? '❌ HAY PARÁMETROS FUERA DE RANGO — No puede continuar'
-                                                : '📷 Falta evidencia fotográfica en algún parámetro'
+                                                ? '❌ Hay parámetros fuera de rango'
+                                                : '📷 Falta evidencia fotográfica'
                                         }
                                     </div>
                                 )}
+                                {/* Foto general del producto — dentro del bloque de QC */}
+                                <div className="col-span-full mt-1">
+                                    <div className="text-[10px] font-bold text-indigo-600 uppercase mb-1">
+                                        📷 Foto general del producto
+                                    </div>
+                                    {verificationPhoto && (
+                                        <img src={verificationPhoto} alt="Verificación"
+                                            onClick={() => setModalPhoto(verificationPhoto)}
+                                            className="w-full max-h-24 object-cover rounded-md border border-emerald-200 mb-1 shadow-sm cursor-pointer hover:opacity-90 active:scale-[0.98] transition-all" />
+                                    )}
+                                    <label className={`flex items-center justify-center gap-1 w-full py-1.5 rounded-md border border-dashed cursor-pointer transition-all active:scale-95 text-xs ${verificationPhoto
+                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                                        : 'border-indigo-300 bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
+                                        {verificationPhoto
+                                            ? <><CheckCircle size={14} /> <span className="font-bold">Foto ✓ — Cambiar</span></>
+                                            : <><Camera size={14} /> <span className="font-bold">Tomar foto del producto</span></>
+                                        }
+                                        <input type="file" accept="image/*" capture="environment" className="sr-only"
+                                            onChange={handleVerificationPhoto} />
+                                    </label>
+                                </div>
                             </div>
                         </div>
 
@@ -546,32 +558,35 @@ const OutputStep = ({
                         )}
                     </>/* End showPesajeQC */}
 
-                    {/* Photo evidence */}
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">
-                            📷 Verificación Fotográfica del Producto
-                        </label>
-                        {verificationPhoto && (
-                            <img src={verificationPhoto} alt="Verificación"
-                                className="w-full max-h-32 object-cover rounded-xl border-2 border-emerald-200 mb-2 shadow-sm" />
-                        )}
-                        <label className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95
-                            ${verificationPhoto
-                                ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
-                                : 'border-green-300 bg-green-50 text-green-600 hover:bg-green-100'}`}>
-                            {verificationPhoto
-                                ? <><CheckCircle size={18} /> <span className="font-bold text-xs">Foto tomada — Cambiar</span></>
-                                : <><Camera size={18} /> <span className="font-bold text-xs">Tomar foto de verificación</span></>
-                            }
-                            <input
-                                type="file"
-                                accept="image/*"
-                                capture="environment"
-                                className="sr-only"
-                                onChange={handleVerificationPhoto}
-                            />
-                        </label>
-                    </div>
+                    {/* Photo evidence (solo si NO hay QC; con QC ya está adentro) */}
+                    {!showPesajeQC && (
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">
+                                📷 Verificación Fotográfica del Producto
+                            </label>
+                            {verificationPhoto && (
+                                <img src={verificationPhoto} alt="Verificación"
+                                    onClick={() => setModalPhoto(verificationPhoto)}
+                                    className="w-full max-h-32 object-cover rounded-xl border-2 border-emerald-200 mb-2 shadow-sm cursor-pointer hover:opacity-90 active:scale-[0.98] transition-all" />
+                            )}
+                            <label className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border-2 border-dashed cursor-pointer transition-all active:scale-95
+                                ${verificationPhoto
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-600'
+                                    : 'border-green-300 bg-green-50 text-green-600 hover:bg-green-100'}`}>
+                                {verificationPhoto
+                                    ? <><CheckCircle size={18} /> <span className="font-bold text-xs">Foto tomada — Cambiar</span></>
+                                    : <><Camera size={18} /> <span className="font-bold text-xs">Tomar foto de verificación</span></>
+                                }
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    capture="environment"
+                                    className="sr-only"
+                                    onChange={handleVerificationPhoto}
+                                />
+                            </label>
+                        </div>
+                    )}
 
                     {/* Observations */}
                     <div>
@@ -587,38 +602,22 @@ const OutputStep = ({
                         />
                     </div>
 
-                    {/* Materials used summary */}
-                    {noteData.items?.length > 0 && (
-                        <div>
-                            <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Materiales utilizados</div>
-                            <div className="space-y-1">
-                                {noteData.items.map((item, i) => {
-                                    const actual = actualQuantities?.[item.id];
-                                    const scaledPlanned = item.plannedQuantity || 0;
-                                    const dev = actual && scaledPlanned > 0
-                                        ? ((actual - scaledPlanned) / scaledPlanned * 100).toFixed(1) : null;
-                                    return (
-                                        <div key={i} className="flex justify-between bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                                            <span className="text-xs text-slate-600 font-medium pr-2">{item.component?.name}</span>
-                                            <span className="text-xs font-bold flex items-center gap-1.5 whitespace-nowrap flex-shrink-0">
-                                                {actual
-                                                    ? Number(actual).toLocaleString('es-CO')
-                                                    : scaledPlanned.toLocaleString('es-CO', { maximumFractionDigits: 2 })}
-                                                <span className="text-slate-400">{item.unit}</span>
-                                                {dev !== null && (
-                                                    <span className={`text-[10px] font-bold px-1 py-0.5 rounded-full ${Math.abs(parseFloat(dev)) > 5 ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
-                                                        {parseFloat(dev) > 0 ? `+${dev}%` : `${dev}%`}
-                                                    </span>
-                                                )}
-                                            </span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
                 </div>
             </div>
+
+            {/* ═══ PHOTO MODAL ═══ */}
+            {modalPhoto && (
+                <div className="fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center p-4"
+                    onClick={() => setModalPhoto(null)}>
+                    <button onClick={() => setModalPhoto(null)}
+                        className="absolute top-4 right-4 bg-white/20 hover:bg-white/40 rounded-full p-2 transition-all">
+                        <X size={28} className="text-white" />
+                    </button>
+                    <img src={modalPhoto} alt="Foto ampliada"
+                        onClick={(e) => e.stopPropagation()}
+                        className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl" />
+                </div>
+            )}
         </div>
     );
 };

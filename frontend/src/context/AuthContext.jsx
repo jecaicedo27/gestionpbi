@@ -3,6 +3,22 @@ import api from '../services/api';
 
 const AuthContext = createContext(null);
 
+// Helper que persiste las iniciales del usuario en localStorage para que
+// las impresiones Zebra puedan tomarlas como fallback aunque algún componente
+// olvide pasarlas explícitamente.
+const persistUserInitials = (userObj) => {
+    try {
+        if (userObj?.name) {
+            const initials = String(userObj.name).trim().split(/\s+/).map(w => w[0] || '').join('').toUpperCase().slice(0, 4);
+            localStorage.setItem('userInitials', initials);
+            localStorage.setItem('userName', userObj.name);
+        } else {
+            localStorage.removeItem('userInitials');
+            localStorage.removeItem('userName');
+        }
+    } catch {}
+};
+
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'touchstart', 'keydown', 'scroll', 'click'];
 
@@ -13,6 +29,13 @@ export const AuthProvider = ({ children }) => {
     const inactivityTimer = useRef(null);
     const lastUserRef = useRef(null); // Keep reference to last user for lock screen
 
+    // Persistir iniciales en localStorage cada vez que el user cambie.
+    // Cubre el caso de operarios YA logueados que entran a la app sin pasar por login
+    // (ej: tablet con sesión persistente desde hace días).
+    useEffect(() => {
+        persistUserInitials(user);
+    }, [user]);
+
     // ── Initial auth check ──────────────────────────────────────
     useEffect(() => {
         const checkAuth = async () => {
@@ -21,6 +44,7 @@ export const AuthProvider = ({ children }) => {
                 try {
                     const res = await api.get('/auth/me');
                     setUser(res.data.user);
+                    persistUserInitials(res.data.user);
                     lastUserRef.current = res.data.user;
 
                     // Check if session was locked before page refresh
@@ -104,6 +128,7 @@ export const AuthProvider = ({ children }) => {
         if (res.data.success) {
             localStorage.setItem('token', res.data.token);
             setUser(res.data.user);
+            persistUserInitials(res.data.user);
             lastUserRef.current = res.data.user;
             setIsLocked(false);
             sessionStorage.removeItem('pinLocked');
@@ -117,6 +142,7 @@ export const AuthProvider = ({ children }) => {
         localStorage.removeItem('token');
         sessionStorage.removeItem('pinLocked');
         setUser(null);
+        persistUserInitials(null);
         setIsLocked(false);
         lastUserRef.current = null;
     };
@@ -141,6 +167,7 @@ export const AuthProvider = ({ children }) => {
                 // Update token and user
                 localStorage.setItem('token', newToken);
                 setUser(newUser);
+                persistUserInitials(newUser);
                 lastUserRef.current = newUser;
                 setIsLocked(false);
                 sessionStorage.removeItem('pinLocked');

@@ -11,14 +11,16 @@ import {
     Camera, RefreshCw, Download, Search, Filter, ChevronDown,
     Calendar, MapPin, Fingerprint, Hash, Edit2, Save,
     Loader2, TrendingUp, TrendingDown, Timer, Building2, Plus,
-    Eye, ArrowRightLeft, ArrowRight, ArrowLeft, Image
+    Eye, ArrowRightLeft, ArrowRight, ArrowLeft, Image, WalletCards
 } from 'lucide-react';
+import LaborManagementPage from './LaborManagementPage';
 
 // ── Constantes ───────────────────────────────────────────────────────────────
 
 const TABS = [
     { id: 'dashboard',    label: 'En Planta Ahora', icon: Building2 },
     { id: 'employees',    label: 'Empleados',        icon: Users },
+    { id: 'operation',    label: 'Operación',        icon: WalletCards },
     { id: 'history',      label: 'Historial',        icon: Clock },
     { id: 'reports',      label: 'Reportes',         icon: BarChart2 },
     { id: 'shifts',       label: 'Turnos',           icon: Settings },
@@ -181,6 +183,7 @@ function TabEmployees() {
     const [search, setSearch]       = useState('');
     const [selected, setSelected]   = useState(null); // empleado seleccionado para editar
     const [enrolling, setEnrolling] = useState(false);
+    const panelRef = useRef(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -193,12 +196,19 @@ function TabEmployees() {
 
     useEffect(() => { load(); }, [load]);
 
+    // Auto-scroll al panel cuando se selecciona un empleado en pantallas pequeñas (tablet/móvil).
+    useEffect(() => {
+        if (selected && panelRef.current && window.innerWidth < 1024) {
+            setTimeout(() => panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+        }
+    }, [selected]);
+
     const filtered = employees; // ya filtrado en backend
 
     return (
-        <div className="grid lg:grid-cols-5 gap-6">
+        <div className="grid md:grid-cols-5 gap-6">
             {/* Lista */}
-            <div className="lg:col-span-3 space-y-4">
+            <div className="md:col-span-3 space-y-4">
                 <div className="relative">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                     <input
@@ -258,7 +268,7 @@ function TabEmployees() {
             </div>
 
             {/* Panel derecho */}
-            <div className="lg:col-span-2">
+            <div ref={panelRef} className="md:col-span-2 md:sticky md:top-4 md:self-start">
                 {selected?.pending
                     ? <PendingUserPanel
                         user={selected}
@@ -467,11 +477,30 @@ function EmployeePanel({ employee, enrolling, setEnrolling, onSaved }) {
 }
 
 // ── Componente de enrollment facial ─────────────────────────────────────────
+// Helpers para cargar face-api.js dinámicamente (no se asume preinstalada).
+function loadFaceApiScriptAttendance() {
+    return new Promise((resolve, reject) => {
+        if (window.faceapi) return resolve(window.faceapi);
+        const existing = document.getElementById('face-api-script');
+        if (existing) {
+            existing.addEventListener('load', () => resolve(window.faceapi));
+            existing.addEventListener('error', () => reject(new Error('Falló carga de face-api.js')));
+            return;
+        }
+        const s = document.createElement('script');
+        s.id = 'face-api-script';
+        s.src = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
+        s.onload = () => resolve(window.faceapi);
+        s.onerror = () => reject(new Error('Falló carga de face-api.js (verifica internet)'));
+        document.head.appendChild(s);
+    });
+}
+
 function FaceEnroller({ employeeId, onDone, onCancel }) {
     const videoRef  = useRef(null);
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
-    const [status, setStatus] = useState('Cargando modelos de IA...');
+    const [status, setStatus] = useState('Cargando librería de reconocimiento...');
     const [phase, setPhase]   = useState('loading'); // loading | scanning | captured | saving
     const [descriptor, setDescriptor] = useState(null);
     const [photoDataUrl, setPhotoDataUrl] = useState(null);
@@ -481,15 +510,35 @@ function FaceEnroller({ employeeId, onDone, onCancel }) {
         let cancelled = false;
         (async () => {
             try {
+                // 1) Asegurar que face-api.js está cargada en window
+                await loadFaceApiScriptAttendance();
+                if (cancelled) return;
+                if (!window.faceapi) throw new Error('face-api.js no disponible');
+
+                // 2) Cargar modelos (con fallback si CDN principal falla)
+                setStatus('Cargando modelos de IA...');
                 const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
-                if (!window.faceapi?.nets?.tinyFaceDetector?.isLoaded) {
-                    await Promise.all([
-                        window.faceapi.nets.tinyFaceDetector.loadFromUri(CDN),
-                        window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN),
-                        window.faceapi.nets.faceRecognitionNet.loadFromUri(CDN),
-                    ]);
+                const FALLBACK = 'https://raw.githubusercontent.com/nicolo-ribaudo/face-api.js-models/refs/heads/master/';
+                const needsLoad = !window.faceapi.nets.tinyFaceDetector.params;
+                if (needsLoad) {
+                    try {
+                        await Promise.all([
+                            window.faceapi.nets.tinyFaceDetector.loadFromUri(CDN),
+                            window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN),
+                            window.faceapi.nets.faceRecognitionNet.loadFromUri(CDN),
+                        ]);
+                    } catch {
+                        await Promise.all([
+                            window.faceapi.nets.tinyFaceDetector.loadFromUri(FALLBACK),
+                            window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(FALLBACK),
+                            window.faceapi.nets.faceRecognitionNet.loadFromUri(FALLBACK),
+                        ]);
+                    }
                 }
                 if (cancelled) return;
+
+                // 3) Activar cámara
+                setStatus('Activando cámara...');
                 const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480} } });
                 streamRef.current = stream;
                 videoRef.current.srcObject = stream;
@@ -598,16 +647,22 @@ function TabHistory() {
     const [from, setFrom]         = useState(todayISO());
     const [to, setTo]             = useState(todayISO());
     const [typeFilter, setType]   = useState('');
+    const [employeeId, setEmployeeId] = useState('');
+    const [employees, setEmployees]   = useState([]);
+
+    useEffect(() => {
+        api.get('/attendance/employees').then(r => setEmployees(r.data || [])).catch(() => {});
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const r = await api.get('/attendance/history', { params: { from, to, type: typeFilter||undefined, page, limit:50 } });
+            const r = await api.get('/attendance/history', { params: { from, to, type: typeFilter||undefined, employeeId: employeeId||undefined, page, limit:50 } });
             setRecords(r.data.records);
             setTotal(r.data.total);
         } catch { /* ignore */ }
         finally { setLoading(false); }
-    }, [from, to, typeFilter, page]);
+    }, [from, to, typeFilter, employeeId, page]);
 
     useEffect(() => { load(); }, [load]);
 
@@ -633,6 +688,16 @@ function TabHistory() {
                             <option value="">Todos</option>
                             <option value="ENTRY">Entradas</option>
                             <option value="EXIT">Salidas</option>
+                        </select>
+                    </div>
+                    <div className="min-w-[220px]">
+                        <label className="block text-xs text-neutral-500 mb-1">Empleado</label>
+                        <select value={employeeId} onChange={e=>{setEmployeeId(e.target.value);setPage(1);}}
+                            className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300">
+                            <option value="">Todos</option>
+                            {employees.filter(e => !e.pending).map(emp => (
+                                <option key={emp.id} value={emp.id}>{emp.name} ({emp.area})</option>
+                            ))}
                         </select>
                     </div>
                     <button onClick={load} className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-semibold hover:bg-primary-700 flex items-center gap-1">
@@ -1173,7 +1238,11 @@ function TabSurveillance() {
 //  PÁGINA PRINCIPAL
 // ══════════════════════════════════════════════════════════════════════════════
 export default function AttendancePage() {
-    const [tab, setTab] = useState('dashboard');
+    const [tab, setTab] = useState(() => {
+        const params = new URLSearchParams(window.location.search);
+        const initial = params.get('tab');
+        return TABS.some(t => t.id === initial) ? initial : 'dashboard';
+    });
 
     // Cargar face-api.js si no está cargado (necesario para FaceEnroller)
     useEffect(() => {
@@ -1213,6 +1282,7 @@ export default function AttendancePage() {
             {/* Contenido del tab activo */}
             {tab === 'dashboard'  && <TabDashboard />}
             {tab === 'employees'  && <TabEmployees />}
+            {tab === 'operation'  && <LaborManagementPage />}
             {tab === 'history'    && <TabHistory />}
             {tab === 'reports'    && <TabReports />}
             {tab === 'shifts'       && <TabShifts />}

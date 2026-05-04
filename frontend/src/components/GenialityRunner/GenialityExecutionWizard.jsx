@@ -112,6 +112,7 @@ const GenialityExecutionWizard = () => {
     const [weighingPhotos, setWeighingPhotos] = useState({});
     const [selectedLotIds, setSelectedLotIds] = useState({});
     const [coccionData, setCoccionData] = useState(null);
+    const [adicionData, setAdicionData] = useState(null);
     const [medicionData, setMedicionData] = useState(null);
     const [qcData, setQcData] = useState(null);
     const [formacionQcData, setFormacionQcData] = useState(null);
@@ -149,6 +150,50 @@ const GenialityExecutionWizard = () => {
         if (draft && draft.defective_qty > 0) {
             restoreEmpaqueDraft(draft);
         }
+    }, [note?.id]); // eslint-disable-line
+
+    // ── Auto-complete invisible para G_ENSAMBLE de BASE SIROPE/SABORIZACION ─
+    useEffect(() => {
+        if (!note?.id || note.status === 'COMPLETED') return;
+        const productNameUpper = (note.product?.name || '').toUpperCase();
+        const isAutoCloseProduct = productNameUpper.startsWith('BASE SIROPE') ||
+                                    productNameUpper.startsWith('SABORIZACION');
+        const code = note.processType?.code;
+        const isEnsambleNote = code === 'ENSAMBLE' || code === 'G_ENSAMBLE';
+        if (!isAutoCloseProduct || !isEnsambleNote) return;
+
+        let cancelled = false;
+        (async () => {
+            try {
+                if (note.status === 'PENDING') {
+                    await api.post(`/assembly-notes/${note.id}/start`, { operatorId: user?.id });
+                }
+                await api.post(`/assembly-notes/${note.id}/complete`, {
+                    operatorId: user?.id,
+                    actualQuantity: note.targetQuantity,
+                    observations: 'Auto-completado (G_ENSAMBLE invisible)'
+                });
+                if (cancelled) return;
+                const batchId = note.productionBatchId;
+                const refreshed = await api.get(`/assembly-notes?batchId=${batchId}`);
+                const fresh = refreshed.data || [];
+                const nextNote = fresh.find(n => n.stageOrder > note.stageOrder && n.status !== 'COMPLETED');
+                if (cancelled) return;
+                if (nextNote) {
+                    message.info(`Avanzando a Etapa ${nextNote.stageOrder}: ${nextNote.stageName}`);
+                    setTimeout(() => {
+                        navigate(`/geniality/assembly-execution/${nextNote.id}`, { replace: true });
+                        window.location.reload();
+                    }, 800);
+                } else {
+                    message.success('🎉 ¡Bache completado!');
+                    setShowCompletionPanel(true);
+                }
+            } catch (e) {
+                console.warn('[G_ENSAMBLE invisible on-mount]', e.response?.data?.error || e.message);
+            }
+        })();
+        return () => { cancelled = true; };
     }, [note?.id]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
@@ -431,6 +476,67 @@ const GenialityExecutionWizard = () => {
 
     // ── Auto-advance EMPAQUE INPUT steps (operator doesn't interact) ─────────
     // When auto-assignment fills weight + lot for EMPAQUE items, skip past them
+    // ── Debounced auto-save de PESAJE para Geniality (PESAJE_BATCH e INPUT) ──
+    // Mismo patrón que Liquipops: persiste actualQuantity, lotNumber, foto y
+    // lot_selections al backend cada 2s sin esperar "Confirmar". Si el operario
+    // sale o recarga, los datos persistidos vuelven a cargarse al volver.
+    const savePesajeDraftTimeoutGen = useRef(null);
+    useEffect(() => {
+        if (!note?.id || submitting) {
+            if (savePesajeDraftTimeoutGen.current) clearTimeout(savePesajeDraftTimeoutGen.current);
+            return;
+        }
+        const currentStep = wizardSteps[currentStepIndex];
+        if (!currentStep) return;
+        let batchItems = [];
+        if (currentStep.type === 'PESAJE_BATCH') batchItems = currentStep.data || [];
+        else if (currentStep.type === 'INPUT' && currentStep.data?.id) batchItems = [currentStep.data];
+        else return;
+
+        const hasAnyData = batchItems.some(item =>
+            (actualQuantities[item.id] !== undefined && actualQuantities[item.id] !== '') ||
+            lotNumbers[item.id]?.trim() ||
+            weighingPhotos[item.id] ||
+            (lotSelections[item.id] && lotSelections[item.id].length > 0)
+        );
+        if (!hasAnyData) return;
+
+        if (savePesajeDraftTimeoutGen.current) clearTimeout(savePesajeDraftTimeoutGen.current);
+        savePesajeDraftTimeoutGen.current = setTimeout(async () => {
+            try {
+                for (const item of batchItems) {
+                    const qty = actualQuantities[item.id];
+                    const lot = lotNumbers[item.id];
+                    if ((qty !== undefined && qty !== '') || lot?.trim()) {
+                        await api.patch(`/assembly-notes/${note.id}/items/${item.id}`, {
+                            actualQuantity: parseFloat(qty) || 0,
+                            lotNumber: lot || null,
+                            operatorId: user?.id
+                        }).catch(() => {});
+                    }
+                }
+                const updatedParams = { ...(note.processParameters || {}) };
+                const allPhotos = { ...(updatedParams.weighing_photos || {}) };
+                const allLotSel = { ...(updatedParams.lot_selections || {}) };
+                batchItems.forEach(item => {
+                    if (weighingPhotos[item.id]) allPhotos[item.id] = weighingPhotos[item.id];
+                    const itemSel = lotSelections[item.id];
+                    if (itemSel?.length > 0) allLotSel[item.id] = itemSel[0]?.lotId || null;
+                });
+                updatedParams.weighing_photos = allPhotos;
+                updatedParams.lot_selections = allLotSel;
+                await api.patch(`/assembly-notes/${note.id}`, { processParameters: updatedParams }).catch(() => {});
+                if (note.processParameters) {
+                    note.processParameters.weighing_photos = allPhotos;
+                    note.processParameters.lot_selections = allLotSel;
+                }
+            } catch (e) {
+                console.warn(`[Geniality ${currentStep.type}] save draft error:`, e.message);
+            }
+        }, 2000);
+        return () => clearTimeout(savePesajeDraftTimeoutGen.current);
+    }, [actualQuantities, lotNumbers, weighingPhotos, lotSelections, currentStepIndex, note?.id, submitting]); // eslint-disable-line
+
     const autoAdvanceRef = useRef(null);
     useEffect(() => {
         if (!note || wizardSteps.length === 0) return;
@@ -1559,9 +1665,31 @@ const GenialityExecutionWizard = () => {
             }
 
             // ── Standard next-note navigation (non-EMPAQUE wizard) ───────────────
-            const nextNote = allBatchNotesFresh.find(n =>
+            let nextNote = allBatchNotesFresh.find(n =>
                 n.stageOrder > note.stageOrder && n.status !== 'COMPLETED'
             );
+
+            // Auto-complete G_ENSAMBLE invisible para BASE SIROPE/SABORIZACION
+            try {
+                const productNameUpperGen = (note.product?.name || '').toUpperCase();
+                const isAutoCloseGenProduct = productNameUpperGen.startsWith('BASE SIROPE') ||
+                                              productNameUpperGen.startsWith('SABORIZACION');
+                while (nextNote && (nextNote.processType?.code === 'G_ENSAMBLE' || nextNote.processType?.code === 'ENSAMBLE') && isAutoCloseGenProduct) {
+                    if (nextNote.status === 'PENDING') {
+                        await api.post(`/assembly-notes/${nextNote.id}/start`, { operatorId: user?.id });
+                    }
+                    await api.post(`/assembly-notes/${nextNote.id}/complete`, {
+                        operatorId: user?.id,
+                        actualQuantity: parseFloat(outputQuantity) || nextNote.targetQuantity,
+                        observations: `Auto-completado tras cierre de ${note.stageName}`
+                    });
+                    const refreshed = await api.get(`/assembly-notes?batchId=${batchId}`);
+                    const fresh = refreshed.data || [];
+                    nextNote = fresh.find(n => n.stageOrder > nextNote.stageOrder && n.status !== 'COMPLETED');
+                }
+            } catch (autoErr) {
+                console.warn('[G_ENSAMBLE auto-complete invisible]', autoErr.response?.data?.error || autoErr.message);
+            }
 
             if (nextNote) {
                 const nextIsEmpaque = nextNote.processType?.code === 'EMPAQUE';
@@ -1696,11 +1824,44 @@ const GenialityExecutionWizard = () => {
         const lotVal = lotNumbers[currentItemId];
         const hasLot = typeof lotVal === 'string' && lotVal.trim().length > 0;
         const hasPhoto = !!weighingPhotos[currentItemId] || !!note?.processParameters?.weighing_photos?.[currentItemId];
-        
+
         // PESAJE notes: photo per ingredient is OPTIONAL (final verification photo is the gate)
         // All other process types: photo remains MANDATORY per ingredient
         const isPesajeProcess = ['PESAJE', 'G_PESAJE'].includes(note?.processType?.code);
         canAdvance = hasWeight && hasLot && (hasPhoto || isPesajeProcess);
+    }
+
+    // ADICION_BATCH (Geniality): bloquear COMPLETAR ETAPA hasta que el operario
+    // confirme la adición de TODOS los ingredientes (igual que en Liquipops).
+    if (currentStep.type === 'ADICION_BATCH') {
+        canAdvance = !!(adicionData?.allConfirmed);
+    }
+
+    // PESAJE_BATCH (Geniality): mismo gate que Liquipops — todos los items con
+    // peso, lote y foto (AGUA y los insumos intermedios del bache exentos).
+    if (currentStep.type === 'PESAJE_BATCH') {
+        const batchItems = currentStep.data || [];
+        canAdvance = batchItems.every(item => {
+            const nameU = (item.component?.name || '').toUpperCase();
+            const isAgua = nameU.includes('AGUA');
+            const isIntermediate = nameU.startsWith('BASE ') ||
+                nameU.startsWith('ALGINATO PREPARADO') ||
+                nameU.startsWith('COMPUESTO') ||
+                nameU.startsWith('PROTECCION') ||
+                nameU.startsWith('PREMEZCLA') ||
+                nameU.startsWith('PROTONICO') ||
+                nameU.startsWith('SABORIZACION');
+            const hasWeight = actualQuantities[item.id] !== undefined && actualQuantities[item.id] !== '';
+            const hasLot = typeof lotNumbers[item.id] === 'string' && lotNumbers[item.id].trim().length > 0;
+            const hasPhoto = isAgua || isIntermediate || !!weighingPhotos[item.id] || !!note?.processParameters?.weighing_photos?.[item.id];
+            const planned = item.plannedQuantity || 0;
+            const actual = parseFloat(actualQuantities[item.id]) || 0;
+            const tooLow = planned > 0 && actual > 0 && actual < planned * 0.80;
+            return hasWeight && hasLot && hasPhoto && !tooLow;
+        });
+    }
+
+    if (isInputStep && currentItemId) {
 
         // Multi-lot validation: if lots exist in inventory, block until coverage >= planned
         // Skip for EMPAQUE — lots are auto-assigned with whatever is available
@@ -2044,6 +2205,7 @@ const GenialityExecutionWizard = () => {
                     empaqueDefective={empaqueDefective}
                     onEmpaqueDefectiveChange={setEmpaqueDefective}
                     onCoccionChange={setCoccionData}
+                    onAdicionChange={setAdicionData}
                     onMedicionChange={setMedicionData}
                     onQcDataChange={setQcData}
                     onFormacionQcChange={setFormacionQcData}

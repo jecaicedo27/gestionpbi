@@ -60,7 +60,12 @@ exports.getById = async (req, res) => {
             include: {
                 items: {
                     include: {
-                        lots: { orderBy: { receivedAt: 'desc' } }
+                        lots: {
+                            orderBy: { receivedAt: 'desc' },
+                            include: {
+                                attachments: { orderBy: { createdAt: 'asc' } }
+                            }
+                        }
                     }
                 },
                 receptions: {
@@ -335,12 +340,32 @@ exports.updatePaymentMethod = async (req, res) => {
         if (!validMethods.includes(paymentMethod)) {
             return res.status(400).json({ error: 'Método de pago inválido' });
         }
-        
+
+        const order = await prisma.purchaseOrder.findUnique({
+            where: { id: req.params.id },
+            include: {
+                supplier: { select: { paymentTermDays: true } }
+            }
+        });
+        if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+
         let updateData = { paymentMethod };
         if (paymentMethod === 'CONTADO') {
             updateData.creditDueDate = null;
             updateData.creditPaid = false;
             updateData.creditPaidAt = null;
+        } else {
+            if (!order.creditDueDate) {
+                const days = order.supplier?.paymentTermDays || 30;
+                const baseDate = order.createdAt || new Date();
+                updateData.creditDueDate = new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000);
+            }
+
+            // Si la OC ya habia sido enviada a Cartera y luego cambia a credito,
+            // debe volver al flujo operativo de recepcion directa.
+            if (order.status === 'PAYMENT_PENDING') {
+                updateData.status = 'SENT';
+            }
         }
 
         const updated = await prisma.purchaseOrder.update({

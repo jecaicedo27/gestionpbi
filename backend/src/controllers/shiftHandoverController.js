@@ -7,12 +7,63 @@ const logger = require('../utils/logger');
 const { validatePin, buildAuditEntry } = require('../services/pinValidationService');
 const handoverService = require('../services/shiftHandoverService');
 const { buildShiftProductionSummary } = require('../services/shiftProductionSummaryService');
+const { recordHandoverAttendance } = require('./attendanceController');
 
 const prisma = new PrismaClient();
 const COMPLETED_HANDOVER_STATUSES = ['RECEIVED', 'WITH_INCIDENT', 'VALIDATED'];
 const PRODUCTION_VALIDATED_AREAS = ['SIROPES', 'EMPAQUE'];
 const AUTO_BATCH_SUMMARY_ID = 'AUTO_SHIFT_BATCH_SUMMARY';
 const REVIEWABLE_HANDOVER_STATUSES = ['PENDING', 'IN_PROGRESS'];
+
+async function getHandoverWithActiveParticipants(handover) {
+    if (!handover) return handover;
+    const absentSets = await handoverService.getAbsentParticipantSetsForHandover(handover);
+    return handoverService.filterParticipantsByAbsentIds(handover, absentSets);
+}
+
+function getHandoverWindowTimes(handover) {
+    if (!handover?.operationalDate) return null;
+    const operationalDate = new Date(handover.operationalDate);
+    const dateStr = `${operationalDate.getUTCFullYear()}-${String(operationalDate.getUTCMonth() + 1).padStart(2, '0')}-${String(operationalDate.getUTCDate()).padStart(2, '0')}`;
+    const isSat = handoverService.isDateSaturday(dateStr);
+    const transition = handoverService.getEffectiveTransition(handover.outgoingShift, isSat);
+    if (!transition) return null;
+
+    const endAt = new Date(`${dateStr}T${String(transition.endHour).padStart(2, '0')}:${String(transition.endMinute).padStart(2, '0')}:00-05:00`);
+
+    if (handover.outgoingShift === 'NOCHE') {
+        endAt.setUTCDate(endAt.getUTCDate() + 1);
+    }
+
+    return {
+        endAt,
+        preHandoverStartAt: new Date(endAt.getTime() - (handoverService.PRE_ALERT_MINUTES * 60 * 1000))
+    };
+}
+
+function ensureOutgoingWindowIsOpen(handover) {
+    const windowTimes = getHandoverWindowTimes(handover);
+    if (!windowTimes) {
+        return { allowed: false, error: `Turno saliente inválido: ${handover?.outgoingShift || 'desconocido'}` };
+    }
+
+    const now = new Date();
+    if (now < windowTimes.preHandoverStartAt) {
+        return {
+            allowed: false,
+            error: `La firma de salida solo se habilita desde ${windowTimes.preHandoverStartAt.toLocaleString('es-CO', {
+                timeZone: 'America/Bogota',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            })}`
+        };
+    }
+
+    return { allowed: true, windowTimes };
+}
 
 async function resolveCurrentHandoverForArea(area) {
     if (!area || !handoverService.HANDOVER_AREAS.includes(area)) {
@@ -55,8 +106,9 @@ async function resolveCurrentHandoverForArea(area) {
         return { handover, opDate, outgoingShift: transition.outgoing, incomingShift: transition.incoming };
     };
 
-    const previousTransition = handoverService.SHIFT_TRANSITIONS.find(t => t.incoming === activeShift);
-    const activeTransition = handoverService.SHIFT_TRANSITIONS.find(t => t.outgoing === activeShift);
+    const effectiveTransitions = handoverService.isColombiaSaturday() ? handoverService.SATURDAY_TRANSITIONS : handoverService.SHIFT_TRANSITIONS;
+    const previousTransition = effectiveTransitions.find(t => t.incoming === activeShift);
+    const activeTransition = effectiveTransitions.find(t => t.outgoing === activeShift);
     const candidates = currentTransition
         ? [currentTransition]
         : [previousTransition, activeTransition].filter(Boolean);
@@ -79,15 +131,7 @@ async function resolveCurrentHandoverForArea(area) {
     const { handover, opDate, outgoingShift, incomingShift } = selected;
     const minsUntilEnd = handoverService.getMinutesUntilShiftEnd(outgoingShift);
 
-    const absentIds = await handoverService.getAbsentEmployeeIds(opDate);
-    let filteredHandover = handover;
-    if (handover && absentIds.size > 0) {
-        filteredHandover = {
-            ...handover,
-            outgoingParticipants: (handover.outgoingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
-            incomingParticipants: (handover.incomingParticipants || []).filter(p => !absentIds.has(p.employeeId))
-        };
-    }
+    const filteredHandover = await getHandoverWithActiveParticipants(handover);
 
     const outgoingOps = (filteredHandover?.outgoingParticipants || []).filter(p => p.role !== 'LIDER');
     const signatureState = filteredHandover
@@ -116,6 +160,67 @@ function isLeaderParticipant(participants, user) {
         participant.role === 'LIDER' &&
         (participant.userId === user.id || participant.employeeId === user.shiftEmployee?.id)
     );
+}
+
+async function findAssignmentParticipant({ handover, user, participantSide }) {
+    if (!handover?.weekId || !user?.shiftEmployee?.id) return null;
+
+    const expectedShift = participantSide === 'INCOMING'
+        ? handover.incomingShift
+        : handover.outgoingShift;
+
+    const assignment = await prisma.shiftAssignment.findFirst({
+        where: {
+            weekId: handover.weekId,
+            employeeId: user.shiftEmployee.id,
+            area: handover.area,
+            shift: expectedShift
+        },
+        include: {
+            employee: {
+                select: {
+                    id: true,
+                    name: true,
+                    role: true,
+                    userId: true
+                }
+            }
+        }
+    });
+
+    if (!assignment?.employee) return null;
+
+    return {
+        employeeId: assignment.employee.id,
+        name: assignment.employee.name,
+        role: assignment.employee.role,
+        userId: assignment.employee.userId
+    };
+}
+
+async function syncParticipantFromAssignment({ handover, user, participantSide }) {
+    const assignmentParticipant = await findAssignmentParticipant({ handover, user, participantSide });
+    if (!assignmentParticipant) return { handover, participant: null };
+
+    const field = participantSide === 'INCOMING' ? 'incomingParticipants' : 'outgoingParticipants';
+    const currentParticipants = Array.isArray(handover[field]) ? handover[field] : [];
+    const alreadyPresent = currentParticipants.some(participant =>
+        participant.employeeId === assignmentParticipant.employeeId ||
+        participant.userId === assignmentParticipant.userId
+    );
+
+    if (alreadyPresent) {
+        return { handover, participant: assignmentParticipant };
+    }
+
+    const updatedParticipants = [...currentParticipants, assignmentParticipant];
+    const updatedHandover = await prisma.shiftHandoverRecord.update({
+        where: { id: handover.id },
+        data: { [field]: updatedParticipants },
+        include: { signatures: true }
+    });
+
+    return { handover: updatedHandover, participant: assignmentParticipant };
 }
 
 function isParticipantOrAdmin(handover, user) {
@@ -257,6 +362,8 @@ async function ensureLeaderCanValidateHandover({ user, handover, participantSide
         };
     }
 
+    validationSource = await getHandoverWithActiveParticipants(validationSource);
+
     const participants = participantSide === 'OUTGOING'
         ? validationSource.outgoingParticipants
         : validationSource.incomingParticipants;
@@ -309,7 +416,6 @@ const getTardeNocheSimulation = async (req, res) => {
             });
         }
 
-        const absentIds = await handoverService.getAbsentEmployeeIds(opDate);
         const records = await prisma.shiftHandoverRecord.findMany({
             where: {
                 weekId: week.id,
@@ -326,7 +432,9 @@ const getTardeNocheSimulation = async (req, res) => {
             orderBy: [{ area: 'asc' }, { sortOrder: 'asc' }]
         });
 
-        const simulationRecords = records.map(record => ({
+        const simulationRecords = await Promise.all(records.map(async (record) => {
+            const filteredRecord = await getHandoverWithActiveParticipants(record);
+            return {
             id: `SIM-${record.id}`,
             realHandoverId: record.id,
             actualStatus: record.status,
@@ -336,8 +444,8 @@ const getTardeNocheSimulation = async (req, res) => {
             incomingShift: record.incomingShift,
             graceDeadline: record.graceDeadline,
             status: 'PENDING',
-            outgoingParticipants: (record.outgoingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
-            incomingParticipants: (record.incomingParticipants || []).filter(p => !absentIds.has(p.employeeId)),
+            outgoingParticipants: filteredRecord.outgoingParticipants || [],
+            incomingParticipants: filteredRecord.incomingParticipants || [],
             signatures: [],
             outgoingLeader: null,
             outgoingLeaderAt: null,
@@ -347,6 +455,7 @@ const getTardeNocheSimulation = async (req, res) => {
             pendingTasks: null,
             incidents: null,
             observations: null
+        };
         }));
 
         res.json({
@@ -603,7 +712,7 @@ const signOperator = async (req, res) => {
             return res.status(403).json({ error: 'La firma de operarios es solo para personal operativo. Los líderes firman en su paso de autorización.' });
         }
 
-        const handover = await prisma.shiftHandoverRecord.findUnique({
+        let handover = await prisma.shiftHandoverRecord.findUnique({
             where: { id: req.params.id },
             include: { signatures: true }
         });
@@ -613,7 +722,18 @@ const signOperator = async (req, res) => {
             ? (handover.incomingParticipants || [])
             : (handover.outgoingParticipants || []);
 
-        const isParticipant = participants.some(p => p.role !== 'LIDER' && (p.userId === user.id || p.employeeId === user.shiftEmployee.id));
+        let isParticipant = participants.some(p => p.role !== 'LIDER' && (p.userId === user.id || p.employeeId === user.shiftEmployee.id));
+        if (!isParticipant && user.role !== 'ADMIN') {
+            const syncResult = await syncParticipantFromAssignment({
+                handover,
+                user,
+                participantSide: participantGroup
+            });
+            if (syncResult.participant && syncResult.participant.role !== 'LIDER') {
+                handover = syncResult.handover;
+                isParticipant = true;
+            }
+        }
         if (!isParticipant && user.role !== 'ADMIN') {
             return res.status(403).json({
                 error: participantGroup === 'INCOMING'
@@ -631,6 +751,12 @@ const signOperator = async (req, res) => {
         }
         if (participantGroup === 'INCOMING' && handover.status !== 'DELIVERED') {
             return res.status(409).json({ error: `No se puede firmar ingreso en estado: ${handover.status}` });
+        }
+        if (participantGroup === 'OUTGOING') {
+            const outgoingWindow = ensureOutgoingWindowIsOpen(handover);
+            if (!outgoingWindow.allowed) {
+                return res.status(409).json({ error: outgoingWindow.error });
+            }
         }
 
         const audit = buildAuditEntry(`${participantGroup}_OPERATOR_SIGNED`, user, req);
@@ -673,6 +799,14 @@ const signOperator = async (req, res) => {
 
         logger.info(`[Handover] ${participantGroup} operator signed: ${user.name} (${user.shiftEmployee.area}) | Handover: ${handover.id} | ${currentState.signedCount}/${currentState.expectedCount}`);
 
+        // Auto check-in/out from relevo signature (non-blocking)
+        recordHandoverAttendance({
+            userId: user.id,
+            eventType: participantGroup === 'INCOMING' ? 'IN' : 'OUT',
+            outgoingShift: handover.outgoingShift,
+            signatureTime: new Date()
+        }).catch(() => {});
+
         res.json({
             success: true,
             operatorName: user.name,
@@ -702,21 +836,29 @@ const authorizeOutgoing = async (req, res) => {
             include: { signatures: true }
         });
         if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
-        if (handover.status !== 'IN_PROGRESS') {
+        // Permite PENDING si no hay operarios esperados (líder solo). Si hay operarios, deben firmar antes (mueven a IN_PROGRESS).
+        if (!['PENDING', 'IN_PROGRESS'].includes(handover.status)) {
             return res.status(409).json({ error: `Estado actual no permite autorización: ${handover.status}` });
         }
 
+        const outgoingWindow = ensureOutgoingWindowIsOpen(handover);
+        if (!outgoingWindow.allowed) {
+            return res.status(409).json({ error: outgoingWindow.error });
+        }
+
+        const filteredHandover = await getHandoverWithActiveParticipants(handover);
+
         const authorization = await ensureLeaderCanValidateHandover({
             user,
-            handover,
+            handover: filteredHandover,
             participantSide: 'OUTGOING'
         });
         if (!authorization.allowed) {
             return res.status(403).json({ error: authorization.error });
         }
 
-        // Verify all operators have signed
-        const signatureState = handoverService.getHandoverSignatureState(handover);
+        // Verify all operators have signed (si hay operarios)
+        const signatureState = handoverService.getHandoverSignatureState(filteredHandover);
         if (signatureState.outgoing.expectedCount > 0 && !signatureState.outgoing.allSigned) {
             return res.status(409).json({
                 error: `Faltan firmas de operarios salientes: ${signatureState.outgoing.signedCount}/${signatureState.outgoing.expectedCount}`,
@@ -747,6 +889,15 @@ const authorizeOutgoing = async (req, res) => {
         });
 
         logger.info(`[Handover] Outgoing leader authorized: ${user.name} | Handover: ${handover.id}`);
+
+        // Auto check-out from relevo signature (non-blocking)
+        recordHandoverAttendance({
+            userId: user.id,
+            eventType: 'OUT',
+            outgoingShift: handover.outgoingShift,
+            signatureTime: new Date()
+        }).catch(() => {});
+
         res.json({ success: true, handover: updated });
     } catch (err) {
         logger.error('[Handover] authorizeOutgoing error:', err);
@@ -764,23 +915,26 @@ const acceptIncoming = async (req, res) => {
         if (!user) return res.status(401).json({ error: 'PIN inválido' });
 
         const handover = await prisma.shiftHandoverRecord.findUnique({
-            where: { id: req.params.id }
+            where: { id: req.params.id },
+            include: { signatures: true }
         });
         if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
         if (handover.status !== 'DELIVERED') {
             return res.status(409).json({ error: `Estado actual no permite aceptación: ${handover.status}` });
         }
 
+        const filteredHandover = await getHandoverWithActiveParticipants(handover);
+
         const authorization = await ensureLeaderCanValidateHandover({
             user,
-            handover,
+            handover: filteredHandover,
             participantSide: 'INCOMING'
         });
         if (!authorization.allowed) {
             return res.status(403).json({ error: authorization.error });
         }
 
-        const signatureState = handoverService.getHandoverSignatureState(handover);
+        const signatureState = handoverService.getHandoverSignatureState(filteredHandover);
         if (signatureState.incoming.expectedCount > 0 && !signatureState.incoming.allSigned) {
             return res.status(409).json({
                 error: `Faltan firmas de operarios entrantes: ${signatureState.incoming.signedCount}/${signatureState.incoming.expectedCount}`,
@@ -808,6 +962,15 @@ const acceptIncoming = async (req, res) => {
         });
 
         logger.info(`[Handover] Incoming leader accepted: ${user.name} | Handover: ${handover.id}`);
+
+        // Auto check-in from relevo signature (non-blocking)
+        recordHandoverAttendance({
+            userId: user.id,
+            eventType: 'IN',
+            outgoingShift: handover.outgoingShift,
+            signatureTime: new Date()
+        }).catch(() => {});
+
         res.json({ success: true, handover: updated });
     } catch (err) {
         logger.error('[Handover] acceptIncoming error:', err);
@@ -902,6 +1065,32 @@ const forceComplete = async (req, res) => {
 
         const handover = await prisma.shiftHandoverRecord.findUnique({ where: { id: req.params.id } });
         if (!handover) return res.status(404).json({ error: 'Relevo no encontrado' });
+
+        const transition = handoverService.SHIFT_TRANSITIONS.find(t => t.outgoing === handover.outgoingShift);
+        if (!transition) {
+            return res.status(400).json({ error: `Turno saliente inválido: ${handover.outgoingShift}` });
+        }
+
+        const opDate = new Date(handover.operationalDate);
+        const opDateStr = `${opDate.getUTCFullYear()}-${String(opDate.getUTCMonth() + 1).padStart(2, '0')}-${String(opDate.getUTCDate()).padStart(2, '0')}`;
+        const handoverEndAt = new Date(`${opDateStr}T${String(transition.endHour).padStart(2, '0')}:${String(transition.endMinute).padStart(2, '0')}:00-05:00`);
+        if (handover.outgoingShift === 'NOCHE') {
+            handoverEndAt.setUTCDate(handoverEndAt.getUTCDate() + 1);
+        }
+
+        const forceWindowStartAt = new Date(handoverEndAt.getTime() - (handoverService.PRE_ALERT_MINUTES * 60 * 1000));
+        if (new Date() < forceWindowStartAt) {
+            return res.status(409).json({
+                error: `No se puede forzar este relevo antes de ${forceWindowStartAt.toLocaleString('es-CO', {
+                    timeZone: 'America/Bogota',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })}`
+            });
+        }
 
         const prevLog = Array.isArray(handover.auditLog) ? handover.auditLog : [];
         const audit = {

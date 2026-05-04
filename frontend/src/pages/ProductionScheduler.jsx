@@ -11,7 +11,7 @@ CUIDADO AL MODIFICAR: Cualquier cambio de escalado o de fracciones hecho aquí
 afectará drásticamente la capacidad matemática del modelo productivo de Liquipops. 
 =============================================================================
 */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import { format, parse, startOfWeek, getDay, addDays } from 'date-fns';
 import { enUS, es } from 'date-fns/locale';
@@ -37,6 +37,89 @@ const localizer = dateFnsLocalizer({
 });
 
 const DnDCalendar = withDragAndDrop(Calendar);
+
+/**
+ * Custom dayLayoutAlgorithm — adaptiveWidth.
+ * Asigna lane a cada batch (algoritmo greedy first-fit), pero el ANCHO de cada batch
+ * se calcula según el max overlap LOCAL (en su momento puntual), no el global del día.
+ * Resultado: cuando hay 2 simultáneos cada uno toma 50%; cuando hay 3, 33%; cuando solo
+ * 1, toma 100%. Los detalles del batch siempre son legibles cuando hay espacio.
+ */
+function equalWidthLayout({ events, accessors, slotMetrics }) {
+    if (!events || events.length === 0) return [];
+
+    // Sort by start time
+    const sorted = [...events].sort((a, b) => {
+        const sa = accessors.start(a).getTime();
+        const sb = accessors.start(b).getTime();
+        return sa - sb || accessors.end(b).getTime() - accessors.end(a).getTime();
+    });
+
+    // Assign each event a "lane" (column index) based on overlap (greedy first-fit)
+    const lanes = []; // each lane stores the latest end time
+    const eventLane = new Map();
+    for (const ev of sorted) {
+        const start = accessors.start(ev).getTime();
+        const end = accessors.end(ev).getTime();
+        let assigned = -1;
+        for (let i = 0; i < lanes.length; i++) {
+            if (lanes[i] <= start) {
+                lanes[i] = end;
+                assigned = i;
+                break;
+            }
+        }
+        if (assigned === -1) {
+            lanes.push(end);
+            assigned = lanes.length - 1;
+        }
+        eventLane.set(ev, assigned);
+    }
+
+    // For each event, compute the LOCAL max overlap during its time range.
+    // This is the number of concurrent events in any moment of [start, end].
+    const computeLocalMaxOverlap = (target) => {
+        const targetStart = accessors.start(target).getTime();
+        const targetEnd = accessors.end(target).getTime();
+        // Collect all unique time points within target's range
+        const timePoints = new Set([targetStart]);
+        for (const e of sorted) {
+            const s = accessors.start(e).getTime();
+            const en = accessors.end(e).getTime();
+            if (s >= targetStart && s < targetEnd) timePoints.add(s);
+            if (en > targetStart && en <= targetEnd) timePoints.add(en);
+        }
+        let maxOverlap = 1;
+        for (const t of timePoints) {
+            let count = 0;
+            for (const e of sorted) {
+                const s = accessors.start(e).getTime();
+                const en = accessors.end(e).getTime();
+                if (s <= t && en > t) count++;
+            }
+            if (count > maxOverlap) maxOverlap = count;
+        }
+        return maxOverlap;
+    };
+
+    return sorted.map(ev => {
+        const lane = eventLane.get(ev) || 0;
+        const start = accessors.start(ev);
+        const end = accessors.end(ev);
+        const range = slotMetrics.getRange(start, end, false, true);
+        const localOverlap = computeLocalMaxOverlap(ev);
+        const widthPct = 100 / localOverlap;
+        return {
+            event: ev,
+            style: {
+                top: range.top,
+                height: range.height,
+                width: widthPct,
+                xOffset: lane * widthPct,
+            },
+        };
+    });
+}
 
 // Custom 3-day view: yesterday, today, tomorrow
 class ThreeDayView extends React.Component {
@@ -84,6 +167,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
     const [selectedTemplateId, setSelectedTemplateId] = useState('');
     const [isLaunching, setIsLaunching] = useState(false);
     const [config, setConfig] = useState({ targetDays: 8 });
+    const [operationalMeta, setOperationalMeta] = useState({ handoverWindows: [], alginatoEveryN: 3, baseDurationMin: 30, alginatoDurationMin: 35 });
 
     // "Already started" warning modal
     const [alreadyStartedModal, setAlreadyStartedModal] = useState(null); // { batchTitle, noteId }
@@ -92,8 +176,23 @@ const ProductionScheduler = ({ readOnly = false }) => {
     // Line State: 'liquipops' or 'geniality'
     const [activeLine, setActiveLine] = useState('liquipops');
 
+    // Wrapper ref — los stickies (gutter X, header Y) ahora se manejan por CSS
+    // (`position: sticky`) ya que el wrapper es el único scroller real del
+    // calendario. Solo guardamos el ref para integraciones futuras.
+    const calendarWrapperRef = useRef(null);
+
     // Ingredient lot counts for Geniality sidebar
     const [ingredientLots, setIngredientLots] = useState({});
+
+    // Visible date range for fetching schedule history
+    const [visibleRange, setVisibleRange] = useState(null);
+
+    // MRP Forecast
+    const [mrpData, setMrpData] = useState(null);
+    const [showMrpModal, setShowMrpModal] = useState(false);
+    const [mrpLoading, setMrpLoading] = useState(false);
+    const [mrpFilter, setMrpFilter] = useState('all');
+    const [mrpSearch, setMrpSearch] = useState('');
 
     // Multi-select for bulk delete
     const [bulkSelectMode, setBulkSelectMode] = useState(false);
@@ -317,11 +416,57 @@ const ProductionScheduler = ({ readOnly = false }) => {
     };
 
     // Fetch Suggestions & Config & Existing Events
+    const handleRangeChange = (rangeOrDates) => {
+        let from, to;
+        if (Array.isArray(rangeOrDates)) {
+            if (rangeOrDates.length === 0) return;
+            from = new Date(rangeOrDates[0]);
+            to = new Date(rangeOrDates[rangeOrDates.length - 1]);
+            to.setHours(23, 59, 59, 999);
+        } else if (rangeOrDates && rangeOrDates.start && rangeOrDates.end) {
+            from = new Date(rangeOrDates.start);
+            to = new Date(rangeOrDates.end);
+        }
+        if (from && to) {
+            from.setDate(from.getDate() - 7);
+            to.setDate(to.getDate() + 7);
+            // Skip refetch if new range is fully covered by existing
+            if (visibleRange?.from && visibleRange?.to &&
+                from.getTime() >= visibleRange.from.getTime() &&
+                to.getTime() <= visibleRange.to.getTime()) {
+                return;
+            }
+            const newRange = { from, to };
+            setVisibleRange(newRange);
+            fetchEvents(newRange);
+        }
+    };
+
     useEffect(() => {
         fetchSuggestions();
         fetchConfig();
-        fetchEvents();
+        fetchOperationalMeta();
+        // Initial load: 30 days back, 60 days ahead — covers all relevant scheduling
+        const from = new Date();
+        from.setDate(from.getDate() - 30);
+        from.setHours(0, 0, 0, 0);
+        const to = new Date();
+        to.setDate(to.getDate() + 60);
+        to.setHours(23, 59, 59, 999);
+        const initRange = { from, to };
+        setVisibleRange(initRange);
+        fetchEvents(initRange);
     }, [activeLine]); // Refresh when line changes
+
+    const fetchOperationalMeta = async () => {
+        if (activeLine === 'geniality') return; // solo Liquipops
+        try {
+            const { data } = await api.get('/production/liquipops/operational-meta');
+            if (data) setOperationalMeta(data);
+        } catch (e) {
+            console.error('Error fetching operational meta', e);
+        }
+    };
 
     const fetchConfig = async () => {
         try {
@@ -345,10 +490,15 @@ const ProductionScheduler = ({ readOnly = false }) => {
         }
     };
 
-    const fetchEvents = async () => {
+    const fetchEvents = async (range) => {
         try {
             const schBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
-            const { data } = await api.get(`${schBase}/schedule?line=${activeLine}`);
+            let rangeParams = '';
+            const r = range || visibleRange;
+            if (r?.from && r?.to) {
+                rangeParams = `&from=${r.from.toISOString()}&to=${r.to.toISOString()}`;
+            }
+            const { data } = await api.get(`${schBase}/schedule?line=${activeLine}${rangeParams}`);
             // Convert strings back to Date objects and adjust for timezone
             // Backend stores in UTC, so we need to shift back to local time
             const allEvents = [];
@@ -410,6 +560,13 @@ const ProductionScheduler = ({ readOnly = false }) => {
             });
 
             setEvents(allEvents);
+
+            const byDay = {};
+            allEvents.forEach(e => {
+                const day = e.start.toLocaleDateString('es-CO');
+                byDay[day] = (byDay[day] || 0) + 1;
+            });
+            console.log('[Schedule] Events received:', data.length, '→ rendered:', allEvents.length, '| by day:', byDay);
         } catch (e) {
             console.error('Error fetching schedule', e);
         }
@@ -480,7 +637,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
             // CONSTANTS Based on Line
             const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : (config.batchDuration || 90);
+            // Liquipops: el backend fija la duración (esferificación 60 min). Geniality usa config.
+            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : 60;
 
             // === LIQUIPOPS: Use pre-calculated batch suggestions (skip scaling) ===
             if (res.data.suggestedBatches && res.data.suggestedBatches.length > 0) {
@@ -781,7 +939,8 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
             // DYNAMIC BATCH SIZE
             const BATCH_SIZE = activeLine === 'geniality' ? 100 : 120;
-            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : (config.batchDuration || 90);
+            // Liquipops: el backend fija la duración (esferificación 60 min). Geniality usa config.
+            const DURATION = activeLine === 'geniality' ? (config.geniality_batchDuration || 240) : 60;
 
             let numBatches = modalData.targetBatchCount || 1;
             if (numBatches === 0) numBatches = 1;
@@ -894,6 +1053,10 @@ const ProductionScheduler = ({ readOnly = false }) => {
             // LIQUIPOPS: Batch creation (with auto water change every 2 batches)
             // ═══════════════════════════════════════════════════════
             const WATER_CHANGE_DURATION = 30; // minutes
+            // STAGGER = 60 min — limitado por la ESFERIFICACIÓN (cuello de botella real, 60 min/batch).
+            // Capacidad física: 2 marmitas enfriamiento + 1 cocción = 3 baches simultáneos máximo.
+            // 24h / 60 min = 24 baches max por día (limitar manualmente si excede).
+            const STAGGER = activeLine === 'geniality' ? DURATION : 60;
             const eventsToAdd = [];
             let currentStartDate = new Date(modalData.scheduledStart);
 
@@ -933,38 +1096,10 @@ const ProductionScheduler = ({ readOnly = false }) => {
 
             let batchesSinceWater = priorBatchCount;
             let batchesCreatedThisSession = 0;
+            let latestBatchEnd = new Date(modalData.scheduledStart);
             const liqBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
 
             for (const batch of batchPlan) {
-                // Insert CAMBIO DE AGUA if 2 batches have passed — but never before the first batch of this session
-                if (batchesSinceWater >= 2 && batchesCreatedThisSession > 0) {
-                    const wcStart = new Date(currentStartDate);
-                    const wcEnd = new Date(wcStart.getTime() + WATER_CHANGE_DURATION * 60000);
-
-                    const wcRes = await api.post(`${liqBase}/schedule`, {
-                        flavor: 'CAMBIO DE AGUA',
-                        scheduledStart: wcStart,
-                        scheduledEnd: wcEnd,
-                        baseWeight: 0,
-                        mix: [],
-                        notes: 'Cambio de agua automático (cada 2 baches)'
-                    });
-
-                    eventsToAdd.push({
-                        id: wcRes.data.id,
-                        title: 'CAMBIO DE AGUA',
-                        start: new Date(wcStart),
-                        end: new Date(wcEnd),
-                        flavor: 'CAMBIO DE AGUA',
-                        mix: [],
-                        status: 'PENDING',
-                        baseWeight: 0
-                    });
-
-                    currentStartDate = new Date(wcEnd);
-                    batchesSinceWater = 0;
-                }
-
                 let currentEndDate = new Date(currentStartDate.getTime() + DURATION * 60000);
 
                 // Backend handles overlap detection and auto-adjustment
@@ -979,7 +1114,6 @@ const ProductionScheduler = ({ readOnly = false }) => {
                 });
 
                 const batchLabel = batch.label ? ` ${batch.label}` : '';
-                // Use server-adjusted times (backend may have shifted to avoid overlap)
                 const serverStart = new Date(res.data.scheduledStart || currentStartDate);
                 const serverEnd = new Date(res.data.scheduledEnd || currentEndDate);
                 eventsToAdd.push({
@@ -993,27 +1127,17 @@ const ProductionScheduler = ({ readOnly = false }) => {
                     baseWeight: BATCH_SIZE
                 });
 
-                currentStartDate = new Date(serverEnd);
+                latestBatchEnd = serverEnd > latestBatchEnd ? serverEnd : latestBatchEnd;
+                const nextStaggerStart = new Date(serverStart.getTime() + STAGGER * 60000);
+                currentStartDate = nextStaggerStart;
                 batchesSinceWater++;
                 batchesCreatedThisSession++;
+
+                // (CAMBIO DE AGUA automático eliminado — el operario lo registra manualmente
+                //  desde el Panel de Producción con el botón 💧 cuando lo hace en planta)
             }
 
-            // Final water change — leave clean water for next session
-            if (batchesCreatedThisSession > 0 && batchesSinceWater > 0) {
-                const wcStart = new Date(currentStartDate);
-                const wcEnd = new Date(wcStart.getTime() + WATER_CHANGE_DURATION * 60000);
-                const wcRes = await api.post(`${liqBase}/schedule`, {
-                    flavor: 'CAMBIO DE AGUA',
-                    scheduledStart: wcStart, scheduledEnd: wcEnd,
-                    baseWeight: 0, mix: [],
-                    notes: 'Cambio de agua final (limpieza)'
-                });
-                eventsToAdd.push({
-                    id: wcRes.data.id, title: 'CAMBIO DE AGUA',
-                    start: new Date(wcStart), end: new Date(wcEnd),
-                    flavor: 'CAMBIO DE AGUA', mix: [], status: 'PENDING', baseWeight: 0
-                });
-            }
+            // (Cambio de agua final eliminado — el operador lo hace manualmente al cierre si es necesario)
 
             setIsSaving(false);
             setModalData(null);
@@ -1284,9 +1408,11 @@ const ProductionScheduler = ({ readOnly = false }) => {
                 targetBatchCount: event.totalBatches,
                 totalPlannedKg: total,
                 totalSyrupKg: event.baseWeight,
+                baseWeight: event.baseWeight,
                 mix: event.mix,
                 scheduledStart: event.start,
                 scheduledEnd: event.end,
+                templateCode: event.templateCode,
                 readOnly: true,
                 status,
                 ...demandData,
@@ -1315,13 +1441,13 @@ const ProductionScheduler = ({ readOnly = false }) => {
                         status: res.data.status,
                         startedAt: res.data.startedAt,
                         completedAt: res.data.completedAt,
+                        start: new Date(res.data.scheduledStart),
+                        end: new Date(res.data.scheduledEnd),
                     };
                 }
                 return e;
             }));
-            if (action === 'start') {
-                fetchEvents();
-            }
+            fetchEvents();
         } catch (error) {
             console.error('Error aux action:', error);
             alert(`Error: ${error.response?.data?.error || error.message}`);
@@ -1387,10 +1513,40 @@ const ProductionScheduler = ({ readOnly = false }) => {
         fetchSuggestions();
     };
 
+    const fetchMrpForecast = async () => {
+        setMrpLoading(true);
+        setShowMrpModal(true);
+        try {
+            const res = await api.get(`/mrp-forecast?line=${activeLine}`);
+            setMrpData(res.data);
+        } catch (err) {
+            alert('Error al cargar pronóstico: ' + (err.response?.data?.error || err.message));
+            setShowMrpModal(false);
+        } finally {
+            setMrpLoading(false);
+        }
+    };
+
+    const downloadMrpCsv = () => {
+        if (!mrpData?.materials?.length) return;
+        const header = 'Ingrediente,SKU,Necesito,Tengo,Falta,Unidad,Estado';
+        const rows = mrpData.materials.map(m =>
+            `"${m.name}","${m.sku || ''}",${m.needed},${m.stock},${m.deficit},"${m.unit}","${m.status}"`
+        );
+        const csv = [header, ...rows].join('\n');
+        const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `mrp-forecast-${activeLine}-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     return (
-        <div className={`flex bg-gray-50 min-h-screen ${readOnly ? 'flex-col' : ''}`}>
+        <div className={`flex bg-gray-50 ${readOnly ? 'flex-col min-h-screen' : 'h-[calc(100vh-64px)] overflow-hidden'}`}>
             {/* Sidebar: Suggestions - only visible for ADMIN (not readOnly) */}
-            {!readOnly && <div className="w-80 bg-white border-r border-gray-200 p-4 overflow-y-auto fixed left-64 top-16 z-10" style={{ height: 'calc(100vh - 64px)' }}>
+            {!readOnly && <div className="w-80 shrink-0 bg-white border-r border-gray-200 p-4 overflow-y-auto sticky top-16 self-start z-20" style={{ height: 'calc(100vh - 64px)' }}>
                 {/* LINE SELECTOR TABS */}
                 <div className="flex space-x-2 mb-4 p-1 bg-gray-100 rounded-lg">
                     <button
@@ -1442,6 +1598,12 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             </div>
                         ))}
                     </div>
+                    <button
+                        onClick={fetchMrpForecast}
+                        className="w-full mt-3 py-2 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all flex items-center justify-center gap-2"
+                    >
+                        <span>📦</span> Materia Prima Requerida
+                    </button>
                 </div>
 
                 {/* Insumos Intermedios — only in Geniality */}
@@ -1631,10 +1793,20 @@ const ProductionScheduler = ({ readOnly = false }) => {
             </div>}
 
             {/* Calendar Area */}
-            <div className="flex-1 p-4 flex flex-col" style={readOnly ? {} : { marginLeft: '320px' }}>
+            <div className="flex-1 min-w-0 min-h-0 p-4 flex flex-col overflow-hidden">
                 {/* Toolbar — only for admin */}
                 {!readOnly && (
-                    <div className="flex justify-end gap-2 mb-2">
+                    <div className="flex shrink-0 justify-end items-center gap-2 mb-2 py-2">
+                        {activeLine !== 'geniality' && operationalMeta?.capacity?.batchesPerDay > 0 && (
+                            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg text-xs"
+                                title={operationalMeta.capacity.note}>
+                                <span className="font-bold text-blue-700">Capacidad teórica:</span>
+                                <span className="text-blue-900 font-bold">{operationalMeta.capacity.batchesPerShift}/turno</span>
+                                <span className="text-slate-400">·</span>
+                                <span className="text-blue-900 font-bold">{operationalMeta.capacity.batchesPerDay}/día</span>
+                                <span className="text-[10px] text-slate-500">(60min esfer + LAVADO/ALGINATO cada {operationalMeta.alginatoEveryN})</span>
+                            </div>
+                        )}
                         <button
                             onClick={async () => {
                                 const hourStr = prompt('¿Desde qué hora recorrer los baches pendientes?\n(formato 24h, ej: 14 para 2PM)', new Date().getHours().toString());
@@ -1732,7 +1904,7 @@ const ProductionScheduler = ({ readOnly = false }) => {
                         <span className="text-sm text-gray-400">Vista de producción programada</span>
                     </div>
                 )}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 overflow-x-auto" style={{ width: '100%' }}>
+                <div ref={calendarWrapperRef} className="flex-1 min-h-0 bg-white rounded-xl shadow-sm border border-gray-200 overflow-auto" style={{ width: '100%' }}>
                   <div style={{ minWidth: '2450px' }}>
                     {readOnly ? (
                         <Calendar
@@ -1742,19 +1914,20 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             endAccessor="end"
                             defaultView="week"
                             views={['week', 'day']}
-                            min={new Date(new Date().setHours(0, 0, 0, 0))}
-                            max={new Date(new Date().setHours(23, 59, 59))}
+                            min={new Date(2020, 0, 1, 0, 0, 0)}
+                            max={new Date(2020, 0, 1, 23, 59, 59)}
                             step={15}
                             timeslots={4}
-                            scrollToTime={new Date(new Date().setHours(8, 0, 0, 0))}
+                            scrollToTime={new Date(2020, 0, 1, 8, 0, 0)}
                             formats={{
                                 timeGutterFormat: (date, culture, localizer) =>
                                     localizer.format(date, 'HH:mm', culture),
                             }}
                             culture='es'
-                            dayLayoutAlgorithm="no-overlap"
+                            dayLayoutAlgorithm={equalWidthLayout}
                             messages={{ week: 'Semana', day: 'Día', today: 'Hoy', previous: 'Ant.', next: 'Sig.' }}
-                            style={{ height: readOnly ? 'calc(100vh - 140px)' : '1600px' }}
+                            style={{ height: readOnly ? 'calc(100vh - 140px)' : 'auto', minHeight: readOnly ? undefined : '2400px' }}
+                            onRangeChange={handleRangeChange}
                             onSelectEvent={handleSelectEvent}
                             components={{
                                 event: ({ event }) => {
@@ -1801,18 +1974,18 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                 <button
                                                     className="ml-1 w-5 h-5 flex items-center justify-center rounded shrink-0 z-10 transition-all hover:scale-110"
                                                     style={{
-                                                        background: auxStarted ? 'rgba(239, 68, 68, 0.95)' : 'rgba(255,255,255,0.9)',
-                                                        color: auxStarted ? 'white' : '#06B6D4',
+                                                        background: 'rgba(255,255,255,0.9)',
+                                                        color: '#06B6D4',
                                                         fontSize: '10px', fontWeight: 'bold'
                                                     }}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleAuxAction(cleanId, auxStarted ? 'finish' : 'start');
+                                                        handleAuxAction(cleanId, 'execute');
                                                     }}
-                                                    title={auxStarted ? 'Finalizar lavado' : 'Iniciar lavado'}
+                                                    title="Marcar como ejecutado"
                                                 >
-                                                    {auxStarted ? '⏹' : '▶'}
+                                                    ▶
                                                 </button>
                                             )}
                                             {!isViewOnly && !isAuxEvent && !isCompleted && (
@@ -1894,24 +2067,44 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             endAccessor="end"
                             defaultView="week"
                             views={['week', 'day']}
-                            // FIX: Explicitly set min/max to current day start/end
-                            min={new Date(new Date().setHours(0, 0, 0, 0))}
-                            max={new Date(new Date().setHours(23, 59, 59))}
+                            min={new Date(2020, 0, 1, 0, 0, 0)}
+                            max={new Date(2020, 0, 1, 23, 59, 59)}
                             step={15}
                             timeslots={4}
-                            scrollToTime={new Date(new Date().setHours(8, 0, 0, 0))}
+                            scrollToTime={new Date(2020, 0, 1, 8, 0, 0)}
                             formats={{
                                 timeGutterFormat: (date, culture, localizer) =>
                                     localizer.format(date, 'HH:mm', culture),
                             }}
                             culture='es'
-                            dayLayoutAlgorithm="no-overlap"
+                            dayLayoutAlgorithm={equalWidthLayout}
                             messages={{ week: 'Semana', day: 'Día', today: 'Hoy', previous: 'Ant.', next: 'Sig.' }}
                             resizable
-                            style={{ height: '2600px' }}
+                            style={{ height: '2600px' }} /* Suficiente para 24h × 96px slot + header sin scroll interno */
+                            onRangeChange={handleRangeChange}
                             onEventDrop={handleEventChange}
                             onEventResize={handleEventChange}
                             onSelectEvent={handleSelectEvent}
+                            slotPropGetter={(date) => {
+                                if (activeLine === 'geniality') return {};
+                                const h = date.getHours();
+                                const m = date.getMinutes();
+                                const inHandover = (operationalMeta.handoverWindows || []).some(w => {
+                                    const startMin = w.startH * 60 + w.startM;
+                                    const endMin = w.endH * 60 + w.endM;
+                                    const slotMin = h * 60 + m;
+                                    return slotMin >= startMin && slotMin < endMin;
+                                });
+                                if (inHandover) {
+                                    return {
+                                        style: {
+                                            backgroundColor: 'rgba(251, 191, 36, 0.10)',
+                                            borderTop: '1px dashed rgba(217, 119, 6, 0.4)',
+                                        },
+                                    };
+                                }
+                                return {};
+                            }}
                             droppable={true}
                             onDropFromOutside={onDropFromOutside}
                             dragFromOutsideItem={() => ({
@@ -1930,25 +2123,25 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                     const auxStarted = isAuxEvent && isInProgress;
                                     const auxPending = isAuxEvent && !isInProgress && !isCompleted;
                                     return (
-                                        <div className="relative h-full px-2 py-1.5 overflow-hidden" title={event.title}>
+                                        <div className="relative h-full px-1.5 py-1 overflow-hidden" title={`${event.title}${event.mix?.length ? ' — ' + event.mix.filter(m=>m.plannedUnits>0).map(m=>{const kg=parseFloat(m.sizeLabel);const lbl=kg&&kg<10?`${Math.round(kg*1000)}g`:m.sizeLabel;return `${lbl}:${m.plannedUnits}`;}).join(' · ') : ''}`}>
                                             {isAuxEvent && !isCompleted && (
                                                 <button
                                                     className="absolute flex items-center justify-center rounded z-10 transition-all hover:scale-110"
                                                     style={{
                                                         top: 2, right: 4, width: 20, height: 20,
-                                                        background: auxStarted ? 'rgba(239, 68, 68, 0.95)' : 'rgba(255,255,255,0.95)',
-                                                        color: auxStarted ? 'white' : '#06B6D4',
+                                                        background: 'rgba(255,255,255,0.95)',
+                                                        color: '#06B6D4',
                                                         fontSize: '10px', fontWeight: 'bold'
                                                     }}
                                                     onMouseDown={(e) => e.stopPropagation()}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleAuxAction(cleanId, auxStarted ? 'finish' : 'start');
+                                                        handleAuxAction(cleanId, 'execute');
                                                     }}
-                                                    title={auxStarted ? 'Finalizar lavado' : 'Iniciar lavado'}
+                                                    title="Marcar como ejecutado"
                                                 >
-                                                    {auxStarted ? '⏹' : '▶'}
+                                                    ▶
                                                 </button>
                                             )}
                                             {!isAuxEvent && !isCompleted && (
@@ -1977,35 +2170,25 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                 </button>
                                             )}
                                             <div className="font-bold pr-9" style={{ fontSize: '12px', lineHeight: 1.3 }}>{event.title}</div>
-                                            {!isAuxEvent && (
-                                                <div className="text-[10px] mt-1" style={{ opacity: 0.9 }}>
-                                                    {isCompleted ? '🏁 Finalizado' : isInProgress ? (
-                                                        <span className="flex items-center gap-0.5">
-                                                            <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#34d399', boxShadow: '0 0 6px #34d399', animation: 'pulse 1.5s ease-in-out infinite' }} />
-                                                            {` ${statusLabel}`}
-                                                        </span>
-                                                    ) : `⏸ ${event.mix?.length || 0} ingredientes`}
-                                                </div>
-                                            )}
-                                            {!isAuxEvent && event.startedAt && (
-                                                <div className="text-[10px] mt-0.5" style={{ opacity: 0.85 }}>
-                                                    Inicio: {new Date(event.startedAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true })}
-                                                </div>
-                                            )}
                                             {!isAuxEvent && !isCompleted && event.mix?.length > 0 && (() => {
                                                 const sizes = event.mix.filter(m => m.plannedUnits > 0);
                                                 if (sizes.length === 0) return null;
                                                 const toGR = (label) => { const kg = parseFloat(label); return kg && kg < 10 ? `${Math.round(kg * 1000)}g` : label; };
                                                 return (
-                                                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
-                                                        {sizes.map((m, i) => (
-                                                            <span key={i} className="text-[11px] font-black" style={{ opacity: 0.95 }}>
-                                                                {toGR(m.sizeLabel)}: {m.plannedUnits}
-                                                            </span>
-                                                        ))}
+                                                    <div className="text-[10px] font-bold leading-tight truncate mt-0.5" style={{ opacity: 0.95 }}>
+                                                        {sizes.map((m, i) => <span key={i}>{i > 0 && ' · '}{toGR(m.sizeLabel)}:{m.plannedUnits}</span>)}
                                                     </div>
                                                 );
                                             })()}
+                                            {!isAuxEvent && isInProgress && (
+                                                <div className="text-[9px] mt-0.5 flex items-center gap-0.5" style={{ opacity: 0.9 }}>
+                                                    <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: '#34d399', boxShadow: '0 0 4px #34d399', animation: 'pulse 1.5s ease-in-out infinite' }} />
+                                                    {statusLabel}
+                                                </div>
+                                            )}
+                                            {!isAuxEvent && isCompleted && (
+                                                <div className="text-[10px] mt-0.5" style={{ opacity: 0.9 }}>🏁 Finalizado</div>
+                                            )}
                                             {isAuxEvent && isCompleted && (
                                                 <div className="text-[10px] mt-1" style={{ opacity: 0.9 }}>Finalizado</div>
                                             )}
@@ -2599,12 +2782,14 @@ const ProductionScheduler = ({ readOnly = false }) => {
                                                         try {
                                                             const realId = String(modalData.originalId || modalData.id).split('-p')[0].split(':')[0];
                                                             const updBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+                                                            const newBaseWeight = modalData.totalSyrupKg || modalData.totalPlannedKg || modalData.baseWeight;
                                                             await api.put(`${updBase}/${realId}`, {
                                                                 mix: modalData.mix.map(m => ({
                                                                     productId: m.productId,
                                                                     plannedUnits: m.plannedUnits,
                                                                     plannedWeightKg: m.plannedWeightKg
-                                                                }))
+                                                                })),
+                                                                baseWeight: newBaseWeight
                                                             });
                                                             alert('✅ Mix actualizado correctamente');
                                                             setModalData(null);
@@ -2809,6 +2994,170 @@ const ProductionScheduler = ({ readOnly = false }) => {
                             >
                                 Entendido
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ===== MRP FORECAST MODAL ===== */}
+            {showMrpModal && (
+                <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+                        <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center shrink-0">
+                            <div>
+                                <h3 className="text-lg font-bold text-gray-800">
+                                    Materia Prima Requerida — <span className="text-emerald-600">{activeLine === 'geniality' ? 'Geniality' : 'Liquipops'}</span>
+                                </h3>
+                                {mrpData && (
+                                    <p className="text-xs text-gray-500 mt-0.5">
+                                        {mrpData.totalBatches} baches pendientes · {mrpData.totalFlavors} sabores
+                                    </p>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {mrpData?.materials?.length > 0 && (
+                                    <button
+                                        onClick={downloadMrpCsv}
+                                        className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all"
+                                    >
+                                        Descargar CSV
+                                    </button>
+                                )}
+                                <button onClick={() => { setShowMrpModal(false); setMrpFilter('all'); setMrpSearch(''); }} className="text-gray-400 hover:text-gray-600 text-xl font-bold">✕</button>
+                            </div>
+                        </div>
+                        <div className="overflow-y-auto flex-1 p-4">
+                            {mrpLoading ? (
+                                <div className="flex justify-center py-20"><Loader className="animate-spin text-emerald-500 w-8 h-8" /></div>
+                            ) : !mrpData?.materials?.length ? (
+                                <div className="text-center py-20 text-gray-400">No hay baches pendientes para calcular</div>
+                            ) : (
+                                <>
+                                <div className="flex items-center gap-2 mb-3">
+                                    <input
+                                        type="text"
+                                        placeholder="Buscar ingrediente..."
+                                        value={mrpSearch}
+                                        onChange={e => setMrpSearch(e.target.value)}
+                                        className="flex-1 px-3 py-1.5 text-xs border border-gray-200 rounded-lg outline-none focus:border-emerald-400"
+                                    />
+                                    <div className="flex gap-1">
+                                        {[
+                                            { key: 'all', label: 'Todos', color: 'gray' },
+                                            { key: 'PEDIR', label: 'Por Pedir', color: 'red' },
+                                            { key: 'OK', label: 'Suficiente', color: 'green' }
+                                        ].map(f => (
+                                            <button
+                                                key={f.key}
+                                                onClick={() => setMrpFilter(f.key)}
+                                                className={`px-2 py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                                                    mrpFilter === f.key
+                                                        ? f.color === 'red' ? 'bg-red-100 text-red-700 border-red-300'
+                                                        : f.color === 'green' ? 'bg-green-100 text-green-700 border-green-300'
+                                                        : 'bg-gray-200 text-gray-700 border-gray-300'
+                                                        : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                                                }`}
+                                            >
+                                                {f.label} ({f.key === 'all' ? mrpData.materials.length : mrpData.materials.filter(m => m.status === f.key).length})
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <table className="w-full text-sm border-collapse">
+                                    <thead className="sticky top-0 bg-white">
+                                        <tr className="border-b-2 border-gray-200">
+                                            <th className="text-left py-2 px-3 font-bold text-gray-600">Ingrediente</th>
+                                            <th className="text-right py-2 px-3 font-bold text-gray-600">Necesito</th>
+                                            <th className="text-right py-2 px-3 font-bold text-gray-600">Tengo</th>
+                                            <th className="text-right py-2 px-3 font-bold text-gray-600">Falta</th>
+                                            <th className="text-center py-2 px-3 font-bold text-gray-600">Unidad</th>
+                                            <th className="text-center py-2 px-3 font-bold text-gray-600">Estado</th>
+                                            <th className="text-center py-2 px-3 font-bold text-gray-600">Acción</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {mrpData.materials
+                                            .filter(m => mrpFilter === 'all' || m.status === mrpFilter)
+                                            .filter(m => !mrpSearch || m.name.toLowerCase().includes(mrpSearch.toLowerCase()))
+                                            .map((m, i) => (
+                                            <tr key={m.productId} className={`border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'} ${m.status === 'PEDIR' ? 'bg-red-50/30' : ''}`}>
+                                                <td className="py-2 px-3 font-semibold text-gray-800 text-xs">
+                                                    {m.name}
+                                                    {m.sku && <span className="text-gray-400 ml-1 text-[10px]">{m.sku}</span>}
+                                                </td>
+                                                <td className="py-2 px-3 text-right font-bold text-blue-700">{m.needed.toLocaleString('es-CO', { maximumFractionDigits: 2 })}</td>
+                                                <td className="py-2 px-3 text-right font-bold text-gray-700">{m.stock.toLocaleString('es-CO', { maximumFractionDigits: 2 })}</td>
+                                                <td className={`py-2 px-3 text-right font-bold ${m.deficit > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                    {m.deficit > 0 ? m.deficit.toLocaleString('es-CO', { maximumFractionDigits: 2 }) : 'OK'}
+                                                </td>
+                                                <td className="py-2 px-3 text-center text-xs text-gray-500">{m.unit}</td>
+                                                <td className="py-2 px-3 text-center">
+                                                    {m.status === 'PEDIR' ? (
+                                                        <span className="px-2 py-0.5 text-[10px] font-bold bg-red-100 text-red-700 rounded-full">PEDIR</span>
+                                                    ) : (
+                                                        <span className="px-2 py-0.5 text-[10px] font-bold bg-green-100 text-green-700 rounded-full">OK</span>
+                                                    )}
+                                                </td>
+                                                <td className="py-2 px-3 text-center">
+                                                    <button
+                                                        onClick={async () => {
+                                                            const defSugg = m.deficit > 0 ? Math.ceil(m.deficit) : Math.ceil(m.needed * 0.5);
+                                                            const qty = prompt(`Cantidad a solicitar de ${m.name} (${m.unit}):`, defSugg);
+                                                            if (!qty) return;
+                                                            try {
+                                                                const suppRes = await api.get('/procurement/suppliers');
+                                                                const suppliers = suppRes.data || [];
+                                                                let supplier = suppliers.find(s => s.products?.some(p => p.productId === m.productId));
+                                                                if (!supplier && suppliers.length > 0) {
+                                                                    const names = suppliers.map((s, i) => `${i + 1}. ${s.name}`).join('\n');
+                                                                    const pick = prompt(`Selecciona proveedor:\n${names}`, '1');
+                                                                    if (!pick) return;
+                                                                    supplier = suppliers[parseInt(pick) - 1];
+                                                                }
+                                                                if (!supplier) { alert('No hay proveedores registrados'); return; }
+                                                                await api.post('/procurement/purchase-orders', {
+                                                                    supplierId: supplier.siigoId || supplier.id,
+                                                                    supplierName: supplier.name,
+                                                                    supplierNit: supplier.nit || '',
+                                                                    notes: `Generado desde MRP Forecast - ${activeLine}`,
+                                                                    items: [{
+                                                                        siigoProductCode: m.sku || '',
+                                                                        siigoProductName: m.name,
+                                                                        quantityOrdered: parseFloat(qty),
+                                                                    }]
+                                                                });
+                                                                alert(`Orden de compra creada para ${m.name}`);
+                                                            } catch (err) {
+                                                                alert('Error: ' + (err.response?.data?.error || err.message));
+                                                            }
+                                                        }}
+                                                        className={`px-2 py-1 text-[10px] font-bold rounded transition-all ${
+                                                            m.status === 'PEDIR'
+                                                                ? 'text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100'
+                                                                : 'text-gray-500 bg-gray-50 border border-gray-200 hover:bg-gray-100'
+                                                        }`}
+                                                    >
+                                                        Solicitar
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr className="border-t-2 border-gray-300 bg-gray-50 font-bold">
+                                            <td className="py-2 px-3 text-gray-700">
+                                                TOTAL: {mrpData.materials.length} ingredientes
+                                            </td>
+                                            <td colSpan="2"></td>
+                                            <td className="py-2 px-3 text-right text-red-600">
+                                                {mrpData.materials.filter(m => m.status === 'PEDIR').length} por pedir
+                                            </td>
+                                            <td colSpan="3"></td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>

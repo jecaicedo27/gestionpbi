@@ -383,11 +383,27 @@ async function updateFormula(req, res) {
                     });
                 }
 
-                // Update each template stage input that matches a formula ingredient
-                // SKIP ENSAMBLE and CONTEO stages — ENSAMBLE uses per-gram ratios, CONTEO has no inputs
-                for (const tmpl of templates) {
+                // FULL SYNC: update existing inputs + ADD missing + REMOVE obsolete
+                // Refetch templates with stage IDs so we can manipulate inputs
+                const tmplsFull = formulaRecord ? await prisma.assemblyTemplate.findMany({
+                    where: { productId: formulaRecord.productId },
+                    include: {
+                        stages: {
+                            include: {
+                                processType: true,
+                                inputs: { select: { id: true, productId: true, unit: true, aggregateOnRepeat: true } }
+                            }
+                        }
+                    }
+                }) : [];
+
+                for (const tmpl of tmplsFull) {
                     for (const stage of tmpl.stages) {
-                        if (stage.processType?.code === 'ENSAMBLE' || stage.processType?.code === 'CONTEO') continue;
+                        if (stage.processType?.code === 'CONTEO') continue;
+                        const formulaIngredientIds = new Set(items.map(it => it.ingredientId));
+                        const stageInputIds = new Set(stage.inputs.map(i => i.productId));
+
+                        // 1. UPDATE existing inputs that match formula ingredients
                         const syncConsumed = {};
                         for (const inp of stage.inputs) {
                             const arr = ingredientMap[inp.productId];
@@ -395,19 +411,40 @@ async function updateFormula(req, res) {
                                 const consumedIdx = syncConsumed[inp.productId] || 0;
                                 const match = arr[consumedIdx] || arr[arr.length - 1];
                                 syncConsumed[inp.productId] = consumedIdx + 1;
-
                                 await prisma.assemblyTemplateStageInput.update({
                                     where: { id: inp.id },
+                                    data: { quantityPerUnit: match.quantity, displayOrder: match.displayOrder }
+                                });
+                            }
+                        }
+
+                        // 2. ADD ingredients that exist in formula but not in stage
+                        for (let i = 0; i < items.length; i++) {
+                            const item = items[i];
+                            if (!stageInputIds.has(item.ingredientId)) {
+                                await prisma.assemblyTemplateStageInput.create({
                                     data: {
-                                        quantityPerUnit: match.quantity,
-                                        displayOrder: match.displayOrder
+                                        stageId: stage.id,
+                                        productId: item.ingredientId,
+                                        inputType: item.ingredientType || 'RAW_MATERIAL',
+                                        quantityPerUnit: Number(item.quantity) || 0,
+                                        unit: item.unit || 'gramo',
+                                        displayOrder: i + 1,
+                                        aggregateOnRepeat: false
                                     }
                                 });
                             }
                         }
+
+                        // 3. DELETE stage inputs that no longer exist in formula
+                        for (const inp of stage.inputs) {
+                            if (!formulaIngredientIds.has(inp.productId)) {
+                                await prisma.assemblyTemplateStageInput.delete({ where: { id: inp.id } });
+                            }
+                        }
                     }
                 }
-                console.log(`[Formula Sync] Updated template inputs for product ${formulaRecord?.productId}`);
+                console.log(`[Formula Sync] FULL sync template inputs for product ${formulaRecord?.productId} (${tmplsFull.length} templates)`);
             } catch (syncErr) {
                 console.warn('Template sync warning:', syncErr.message);
             }

@@ -196,6 +196,9 @@ const assemblyNoteController = {
                         } else {
                             item._sortOrder = 999;
                         }
+                        // Exponer al frontend para que respete el orden de la
+                        // fórmula al renderizar (PesajeBatchStep / AdicionBatchStep).
+                        item.displayOrder = item._sortOrder === 999 ? null : item._sortOrder;
                     });
                     note.items.sort((a, b) => a._sortOrder - b._sortOrder);
                 }
@@ -227,6 +230,9 @@ const assemblyNoteController = {
                     } else {
                         item._formulaOrder = 999;
                     }
+                    // Exponer al frontend para que respete el orden de la
+                    // fórmula al renderizar (PesajeBatchStep / AdicionBatchStep).
+                    item.displayOrder = item._formulaOrder === 999 ? null : item._formulaOrder;
                 });
                 note.items.sort((a, b) => (a._formulaOrder) - (b._formulaOrder));
             }
@@ -1317,6 +1323,33 @@ const assemblyNoteController = {
             let batch;
 
             if (existingBatchId) {
+                // Validate sequential start: block if ANY prior production batch on the same line hasn't been started
+                const thisBatch = await prisma.productionBatch.findUnique({
+                    where: { id: existingBatchId },
+                    select: { flavor: true, scheduledStart: true, outputTargets: { select: { product: { select: { group: { select: { name: true } } } } } } }
+                });
+                if (thisBatch?.scheduledStart) {
+                    const AUX_FLAVORS = ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'];
+                    const lineGroup = 'GENIALITY';
+                    const priorPending = await prisma.productionBatch.findFirst({
+                        where: {
+                            id: { not: existingBatchId },
+                            status: 'PENDING',
+                            startedAt: null,
+                            flavor: { notIn: AUX_FLAVORS },
+                            scheduledStart: { lt: thisBatch.scheduledStart },
+                            outputTargets: { some: { product: { group: { name: lineGroup } } } },
+                        },
+                        orderBy: { scheduledStart: 'asc' },
+                        select: { batchNumber: true, flavor: true, scheduledStart: true }
+                    });
+                    if (priorPending) {
+                        return res.status(400).json({
+                            error: `Debes iniciar el bache anterior primero (${priorPending.flavor || priorPending.batchNumber}). No puedes saltar baches en la secuencia.`
+                        });
+                    }
+                }
+
                 // Reuse the existing batch (from scheduler) — regenerate batchNumber with actual start date
                 batch = await prisma.productionBatch.update({
                     where: { id: existingBatchId },

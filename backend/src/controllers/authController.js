@@ -179,8 +179,9 @@ const pinLogin = async (req, res) => {
             return res.status(401).json({ error: 'PIN incorrecto' });
         }
 
-        // ── Network Access Control: external PIN login only for admins ──
-        if (!isInternal && !isExternalAdminUser(matchedUser)) {
+        // ── Network Access Control: PIN login is INTERNAL ONLY (no exceptions) ──
+        // PINs are 4 digits → easy to brute-force from outside. Admins must use email+password externally.
+        if (!isInternal) {
             logger.warn(`⛔ External PIN login blocked: ${matchedUser.email} (${matchedUser.role}) from IP ${clientIp}`);
             saveLoginAudit({
                 email: matchedUser.email,
@@ -191,7 +192,7 @@ const pinLogin = async (req, res) => {
                 userAgent
             });
             return res.status(403).json({
-                error: '⛔ Acceso externo por PIN solo disponible para administradores.'
+                error: '⛔ El acceso por PIN solo está disponible desde la red interna. Use email y contraseña.'
             });
         }
 
@@ -210,7 +211,7 @@ const pinLogin = async (req, res) => {
 
         const { password: _, pin: _p2, ...userData } = matchedUser;
 
-        const reason = isInternal ? 'PIN_INTERNAL' : 'PIN_ADMIN_EXTERNAL';
+        const reason = 'PIN_INTERNAL';
         saveLoginAudit({
             email: matchedUser.email,
             role: matchedUser.role,

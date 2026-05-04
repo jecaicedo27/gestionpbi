@@ -256,11 +256,12 @@ const InputStep = ({
     };
 
     const fmtQty = (q, unit) => {
+        const n = Number(q) || 0;
         const weightUnits = ['g', 'gramo', 'gramos', 'kg'];
-        if (unit && !weightUnits.includes(unit.toLowerCase())) {
-            return `${q.toLocaleString()} ${unit}`;
+        if (unit && !weightUnits.includes((unit || '').toLowerCase())) {
+            return `${n.toLocaleString()} ${unit}`;
         }
-        return q >= 1000 ? `${(q / 1000).toFixed(1)} kg` : `${q.toLocaleString()} g`;
+        return `${n.toLocaleString()} g`;
     };
 
     return (
@@ -530,7 +531,7 @@ const InputStep = ({
                                         <select
                                             value=""
                                             onChange={handleLotSelect}
-                                            className="w-full text-center text-base font-bold py-3 px-4 rounded-xl border-2 
+                                            className="w-full text-center text-base font-bold py-3 px-4 rounded-xl border-2
                                                 border-indigo-300 bg-indigo-50 focus:ring-2 focus:ring-indigo-200 focus:outline-none
                                                 text-indigo-700 transition-all appearance-none cursor-pointer"
                                         >

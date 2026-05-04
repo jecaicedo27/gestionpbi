@@ -78,6 +78,23 @@ model User {
   packageLabelsCreated     PackageLabel[]            @relation("PackageLabelCreator")
   packageLabelsPrinted     PackageLabel[]            @relation("PackageLabelPrinter")
   packageLabelScans        PackageLabelScan[]        @relation("PackageLabelScanner")
+  approvedOvertimes        OvertimeApproval[]
+  academiaEnrollments      AcademiaEnrollment[]      @relation("AcademiaStudent")
+  academiaQuizAttempts     AcademiaQuizAttempt[]     @relation("AcademiaQuizUser")
+  academiaPracticalEvals   AcademiaPracticalEval[]   @relation("AcademiaPracticalStudent")
+  academiaEvaluatedEvals   AcademiaPracticalEval[]   @relation("AcademiaPracticalEvaluator")
+  academiaCertifications   AcademiaCertification[]   @relation("AcademiaCertifiedUser")
+  academiaCreatedCourses   AcademiaCourse[]          @relation("AcademiaCourseCreator")
+  academiaBonuses          AcademiaBonus[]           @relation("AcademiaBonusUser")
+  academiaBonusesAwarded   AcademiaBonus[]           @relation("AcademiaBonusAwarder")
+  isCleaningStaff          Boolean                   @default(false)
+  isCleaningSupervisor     Boolean                   @default(false)
+  cleaningTasksAssigned    CleaningTask[]            @relation("CleaningTaskAssignee")
+  cleaningTasksCreated     CleaningTask[]            @relation("CleaningTaskCreator")
+  cleaningExecutions       CleaningExecution[]       @relation("CleaningExecutionUser")
+  cleaningVerified         CleaningExecution[]       @relation("CleaningExecutionVerifier")
+  cleaningSuppliesUpdated  CleaningSupply[]          @relation("CleaningSupplyUpdater")
+  cleaningAlertsReported   CleaningSupplyAlert[]     @relation("CleaningAlertReporter")
 
   @@index([email])
   @@index([role, active])
@@ -283,6 +300,10 @@ model Order {
   destinationCity      String?     @map("destination_city")
   packingMode          String?     @map("packing_mode")
   readyPhotosUrls      String[]    @default([]) @map("ready_photos_urls")
+  // Consolidation fields
+  isConsolidation         Boolean   @default(false) @map("is_consolidation")
+  consolidatedIntoOrderId String?   @map("consolidated_into_order_id")
+  consolidatedFromOrderIds String[] @default([]) @map("consolidated_from_order_ids")
   items                OrderItem[]
   approver             User?       @relation("OrderApprover", fields: [approvedBy], references: [id])
   distributor          User        @relation("DistributorOrders", fields: [distributorId], references: [id])
@@ -292,6 +313,7 @@ model Order {
   @@index([distributorId])
   @@index([status, createdAt])
   @@index([approvedBy])
+  @@index([consolidatedIntoOrderId])
   @@map("orders")
 }
 
@@ -1926,6 +1948,7 @@ model ShiftEmployee {
   absences           ShiftAbsence[]
   assignments        ShiftAssignment[]
   attendances        AttendanceRecord[]
+  overtimeApprovals  OvertimeApproval[]
   handoverSignatures ShiftHandoverSignature[] @relation("HandoverEmployee")
   user               User?                    @relation("ShiftUser", fields: [userId], references: [id])
 
@@ -2062,6 +2085,30 @@ enum AttendanceSubtype {
 enum AttendanceSource {
   KIOSK
   MANUAL
+  HANDOVER
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Overtime Approval (admin approves extra hours per day per employee)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model OvertimeApproval {
+  id           String        @id @default(uuid())
+  employeeId   String        @map("employee_id")
+  date         DateTime      @db.Date
+  dayHours     Float         @default(0) @map("day_hours")
+  nightHours   Float         @default(0) @map("night_hours")
+  reason       String
+  approvedById String        @map("approved_by_id")
+  approvedAt   DateTime      @default(now()) @map("approved_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  employee     ShiftEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  approvedBy   User          @relation(fields: [approvedById], references: [id])
+
+  @@index([employeeId, date])
+  @@index([date])
+  @@map("overtime_approvals")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2162,6 +2209,25 @@ enum ShiftHandoverParticipantGroup {
   INCOMING
 }
 
+model ShiftDisciplineRun {
+  id            String    @id @default(uuid())
+  shiftDate     String    @map("shift_date")
+  shiftCode     String    @map("shift_code")
+  shiftStart    DateTime  @map("shift_start")
+  shiftEnd      DateTime  @map("shift_end")
+  leaderId      String?   @map("leader_id")
+  steps         Json
+  alertedSteps  Json?     @map("alerted_steps")  // claves de steps ya notificados por push
+  finalScore    Int?      @map("final_score")
+  finalGrade    String?   @map("final_grade")
+  closedAt      DateTime? @map("closed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([shiftDate, shiftCode])
+  @@map("shift_discipline_runs")
+}
+
 model SiigoAccountCode {
   id        String   @id @default(uuid())
   code      String   @unique
@@ -2229,6 +2295,107 @@ view pg_stat_statements {
   jit_emission_time      Float?
 
   @@ignore
+}
+
+model CleaningZone {
+  id          String         @id @default(uuid())
+  code        String         @unique
+  name        String
+  description String?
+  active      Boolean        @default(true)
+  sortOrder   Int            @default(0)
+  createdAt   DateTime       @default(now())
+  tasks       CleaningTask[]
+
+  @@map("cleaning_zones")
+}
+
+model CleaningTask {
+  id           String              @id @default(uuid())
+  zoneId       String
+  title        String
+  description  String?
+  instructions String?
+  frequency    String
+  daysOfWeek   Int[]               @default([])
+  timeSlot     String?
+  estimatedMin Int                 @default(15)
+  requirePhoto Boolean             @default(false)
+  requireNotes Boolean             @default(false)
+  active       Boolean             @default(true)
+  assignedToId String?
+  createdById  String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  zone         CleaningZone        @relation(fields: [zoneId], references: [id])
+  assignedTo   User?               @relation("CleaningTaskAssignee", fields: [assignedToId], references: [id])
+  createdBy    User?               @relation("CleaningTaskCreator", fields: [createdById], references: [id])
+  executions   CleaningExecution[]
+
+  @@index([zoneId, active])
+  @@index([assignedToId, active])
+  @@map("cleaning_tasks")
+}
+
+model CleaningExecution {
+  id           String       @id @default(uuid())
+  taskId       String
+  userId       String
+  scheduledFor DateTime
+  status       String       @default("PENDING")
+  startedAt    DateTime?
+  completedAt  DateTime?
+  durationMin  Int?
+  notes        String?
+  photoBefore  String?
+  photoAfter   String?
+  verifiedById String?
+  verifiedAt   DateTime?
+  verifyStatus String?
+  verifyNotes  String?
+  createdAt    DateTime     @default(now())
+  task         CleaningTask @relation(fields: [taskId], references: [id])
+  user         User         @relation("CleaningExecutionUser", fields: [userId], references: [id])
+  verifiedBy   User?        @relation("CleaningExecutionVerifier", fields: [verifiedById], references: [id])
+
+  @@unique([taskId, scheduledFor])
+  @@index([userId, scheduledFor])
+  @@index([status])
+  @@map("cleaning_executions")
+}
+
+model CleaningSupply {
+  id          String                @id @default(uuid())
+  name        String
+  unit        String                @default("unidad")
+  currentQty  Float                 @default(0)
+  minQty      Float                 @default(1)
+  status      String                @default("OK")
+  notes       String?
+  active      Boolean               @default(true)
+  lastUpdate  DateTime              @updatedAt
+  updatedById String?
+  createdAt   DateTime              @default(now())
+  updatedBy   User?                 @relation("CleaningSupplyUpdater", fields: [updatedById], references: [id])
+  alerts      CleaningSupplyAlert[]
+
+  @@map("cleaning_supplies")
+}
+
+model CleaningSupplyAlert {
+  id             String         @id @default(uuid())
+  supplyId       String
+  reportedById   String
+  message        String?
+  status         String         @default("OPEN")
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  supply         CleaningSupply @relation(fields: [supplyId], references: [id])
+  reportedBy     User           @relation("CleaningAlertReporter", fields: [reportedById], references: [id])
+
+  @@index([status, createdAt])
+  @@map("cleaning_supply_alerts")
 }
 
 enum UserRole {
@@ -2391,4 +2558,308 @@ enum PhysicalCountStatus {
 enum InventoryCountStatus {
   IN_PROGRESS
   CLOSED
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Academia Popping Boba — Escuela de Líderes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum AcademiaPilarType {
+  TECNICO
+  LIDERAZGO
+  GESTION
+  ERP
+}
+
+enum AcademiaLessonType {
+  VIDEO
+  TEXTO
+  INFOGRAFIA
+  CASO_ESTUDIO
+  PRACTICA
+}
+
+enum AcademiaQuestionType {
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+  SHORT_ANSWER
+}
+
+enum AcademiaCertificationLevel {
+  BRONCE
+  PLATA
+  ORO
+  MAESTRO
+}
+
+enum AcademiaEnrollmentStatus {
+  ACTIVO
+  COMPLETADO
+  PAUSADO
+  RETIRADO
+}
+
+enum AcademiaPracticalEvalStatus {
+  PENDIENTE
+  EN_PROCESO
+  APROBADA
+  RECHAZADA
+}
+
+enum AcademiaBonusStatus {
+  PENDIENTE
+  APROBADO
+  PAGADO
+  CANCELADO
+}
+
+model AcademiaCourse {
+  id          String              @id @default(uuid())
+  pilar       AcademiaPilarType
+  code        String              @unique
+  title       String
+  description String?
+  sortOrder   Int                 @default(0) @map("sort_order")
+  active      Boolean             @default(true)
+  createdById String?             @map("created_by_id")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  createdBy User?              @relation("AcademiaCourseCreator", fields: [createdById], references: [id])
+  modules   AcademiaModule[]
+
+  @@index([pilar, active])
+  @@map("academia_courses")
+}
+
+model AcademiaModule {
+  id              String   @id @default(uuid())
+  courseId        String   @map("course_id")
+  code            String   @unique
+  title           String
+  description     String?
+  estimatedHours  Float    @default(2) @map("estimated_hours")
+  sortOrder       Int      @default(0) @map("sort_order")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  course      AcademiaCourse    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons     AcademiaLesson[]
+  quiz        AcademiaQuiz?
+  practicals  AcademiaPracticalEval[]
+  rubrics     AcademiaRubric[]
+  progress    AcademiaProgress[]
+
+  @@index([courseId, sortOrder])
+  @@map("academia_modules")
+}
+
+model AcademiaLesson {
+  id            String              @id @default(uuid())
+  moduleId      String              @map("module_id")
+  title         String
+  type          AcademiaLessonType  @default(TEXTO)
+  contentText   String?             @map("content_text")
+  videoUrl      String?             @map("video_url")
+  attachmentUrl String?             @map("attachment_url")
+  durationMin   Int?                @map("duration_min")
+  sortOrder     Int                 @default(0) @map("sort_order")
+  active        Boolean             @default(true)
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+
+  module   AcademiaModule          @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress AcademiaLessonProgress[]
+
+  @@index([moduleId, sortOrder])
+  @@map("academia_lessons")
+}
+
+model AcademiaQuiz {
+  id            String   @id @default(uuid())
+  moduleId      String   @unique @map("module_id")
+  title         String
+  passingScore  Int      @default(80) @map("passing_score")
+  timeLimitMin  Int?     @map("time_limit_min")
+  maxAttempts   Int      @default(3) @map("max_attempts")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  module    AcademiaModule         @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  questions AcademiaQuestion[]
+  attempts  AcademiaQuizAttempt[]
+
+  @@map("academia_quizzes")
+}
+
+model AcademiaQuestion {
+  id          String                @id @default(uuid())
+  quizId      String                @map("quiz_id")
+  type        AcademiaQuestionType  @default(MULTIPLE_CHOICE)
+  prompt      String
+  options     Json?
+  correctAnswer Json                @map("correct_answer")
+  explanation String?
+  points      Int                   @default(10)
+  sortOrder   Int                   @default(0) @map("sort_order")
+  createdAt   DateTime              @default(now()) @map("created_at")
+
+  quiz AcademiaQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([quizId, sortOrder])
+  @@map("academia_questions")
+}
+
+model AcademiaQuizAttempt {
+  id          String   @id @default(uuid())
+  quizId      String   @map("quiz_id")
+  userId      String   @map("user_id")
+  startedAt   DateTime @default(now()) @map("started_at")
+  submittedAt DateTime? @map("submitted_at")
+  answers     Json?
+  score       Float?
+  passed      Boolean  @default(false)
+  attemptNo   Int      @default(1) @map("attempt_no")
+
+  quiz AcademiaQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user User         @relation("AcademiaQuizUser", fields: [userId], references: [id])
+
+  @@index([userId, quizId])
+  @@index([quizId])
+  @@map("academia_quiz_attempts")
+}
+
+model AcademiaEnrollment {
+  id           String                    @id @default(uuid())
+  userId       String                    @map("user_id")
+  status       AcademiaEnrollmentStatus  @default(ACTIVO)
+  startedAt    DateTime                  @default(now()) @map("started_at")
+  completedAt  DateTime?                 @map("completed_at")
+  notes        String?
+  createdAt    DateTime                  @default(now()) @map("created_at")
+  updatedAt    DateTime                  @updatedAt @map("updated_at")
+
+  user User @relation("AcademiaStudent", fields: [userId], references: [id])
+
+  @@unique([userId])
+  @@index([status])
+  @@map("academia_enrollments")
+}
+
+model AcademiaProgress {
+  id                  String    @id @default(uuid())
+  userId              String    @map("user_id")
+  moduleId            String    @map("module_id")
+  lessonsCompleted    Int       @default(0) @map("lessons_completed")
+  totalLessons        Int       @default(0) @map("total_lessons")
+  quizPassed          Boolean   @default(false) @map("quiz_passed")
+  quizBestScore       Float?    @map("quiz_best_score")
+  practicalApproved   Boolean   @default(false) @map("practical_approved")
+  practicalBestScore  Float?    @map("practical_best_score")
+  moduleCompleted     Boolean   @default(false) @map("module_completed")
+  completedAt         DateTime? @map("completed_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  module AcademiaModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId])
+  @@index([userId])
+  @@map("academia_progress")
+}
+
+model AcademiaLessonProgress {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  lessonId    String    @map("lesson_id")
+  viewedAt    DateTime  @default(now()) @map("viewed_at")
+  completedAt DateTime? @map("completed_at")
+  timeSpentSec Int      @default(0) @map("time_spent_sec")
+
+  lesson AcademiaLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@map("academia_lesson_progress")
+}
+
+model AcademiaRubric {
+  id          String   @id @default(uuid())
+  moduleId    String   @map("module_id")
+  criterion   String
+  description String?
+  maxPoints   Int      @default(10) @map("max_points")
+  sortOrder   Int      @default(0) @map("sort_order")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  module AcademiaModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@index([moduleId, sortOrder])
+  @@map("academia_rubrics")
+}
+
+model AcademiaPracticalEval {
+  id            String                       @id @default(uuid())
+  userId        String                       @map("user_id")
+  moduleId      String                       @map("module_id")
+  evaluatorId   String                       @map("evaluator_id")
+  status        AcademiaPracticalEvalStatus  @default(PENDIENTE)
+  scoreTotal    Float?                       @map("score_total")
+  scoreMax      Float?                       @map("score_max")
+  scorePct      Float?                       @map("score_pct")
+  scoreDetail   Json?                        @map("score_detail")
+  observations  String?
+  evidenceUrl   String?                      @map("evidence_url")
+  evaluatedAt   DateTime?                    @map("evaluated_at")
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  updatedAt     DateTime                     @updatedAt @map("updated_at")
+
+  module    AcademiaModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  user      User           @relation("AcademiaPracticalStudent", fields: [userId], references: [id])
+  evaluator User           @relation("AcademiaPracticalEvaluator", fields: [evaluatorId], references: [id])
+
+  @@index([userId, moduleId])
+  @@index([status])
+  @@map("academia_practical_evals")
+}
+
+model AcademiaCertification {
+  id           String                      @id @default(uuid())
+  userId       String                      @map("user_id")
+  level        AcademiaCertificationLevel
+  totalScore   Float                       @map("total_score")
+  scoreBreakdown Json?                     @map("score_breakdown")
+  awardedAt    DateTime                    @default(now()) @map("awarded_at")
+  validUntil   DateTime?                   @map("valid_until")
+  certificateUrl String?                   @map("certificate_url")
+  notes        String?
+
+  user User @relation("AcademiaCertifiedUser", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([level])
+  @@map("academia_certifications")
+}
+
+model AcademiaBonus {
+  id           String              @id @default(uuid())
+  userId       String              @map("user_id")
+  awardedById  String              @map("awarded_by_id")
+  reason       String
+  amountCop    Float               @map("amount_cop")
+  status       AcademiaBonusStatus @default(PENDIENTE)
+  periodFrom   DateTime?           @map("period_from")
+  periodTo     DateTime?           @map("period_to")
+  metricSnapshot Json?             @map("metric_snapshot")
+  paidAt       DateTime?           @map("paid_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  user      User @relation("AcademiaBonusUser", fields: [userId], references: [id])
+  awardedBy User @relation("AcademiaBonusAwarder", fields: [awardedById], references: [id])
+
+  @@index([userId, status])
+  @@map("academia_bonuses")
 }

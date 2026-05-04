@@ -99,6 +99,60 @@ const assemblyNoteController = {
                 note.template = tmpl;
             }
 
+            // Enriquecer cada item con su `displayOrder` para que el wizard
+            // respete el orden de la fórmula. Estrategia (en orden):
+            //   1) lookup por stageId + productId en assemblyTemplateStageInput
+            //   2) fallback: stage por templateId + stageOrder (Geniality y
+            //      otras notas con stageId=null pero templateId+stageOrder set)
+            //   3) último fallback: formula.items[].additionOrder
+            if (note.items?.length > 0) {
+                try {
+                    let orderMap = null;
+                    if (note.stageId) {
+                        const stageInputsForOrder = await prisma.assemblyTemplateStageInput.findMany({
+                            where: { stageId: note.stageId },
+                            select: { productId: true, displayOrder: true }
+                        });
+                        if (stageInputsForOrder.length > 0) {
+                            orderMap = new Map(stageInputsForOrder.map(si => [si.productId, si.displayOrder]));
+                        }
+                    }
+                    if (!orderMap && note.templateId && note.stageOrder != null) {
+                        const stage = await prisma.assemblyTemplateStage.findFirst({
+                            where: { templateId: note.templateId, stageOrder: note.stageOrder },
+                            select: { id: true }
+                        });
+                        if (stage) {
+                            const stageInputsForOrder = await prisma.assemblyTemplateStageInput.findMany({
+                                where: { stageId: stage.id },
+                                select: { productId: true, displayOrder: true }
+                            });
+                            if (stageInputsForOrder.length > 0) {
+                                orderMap = new Map(stageInputsForOrder.map(si => [si.productId, si.displayOrder]));
+                            }
+                        }
+                    }
+                    if (!orderMap && note.productId) {
+                        const formula = await prisma.formula.findFirst({
+                            where: { productId: note.productId, isActive: true },
+                            include: { items: { select: { ingredientId: true, additionOrder: true } } },
+                            orderBy: { version: 'desc' }
+                        });
+                        if (formula?.items?.length > 0) {
+                            orderMap = new Map(formula.items.map(fi => [fi.ingredientId, fi.additionOrder]));
+                        }
+                    }
+                    if (orderMap) {
+                        note.items = note.items.map(it => ({
+                            ...it,
+                            displayOrder: orderMap.has(it.componentId) ? orderMap.get(it.componentId) : null
+                        }));
+                    }
+                } catch (e) {
+                    console.warn('[getNoteById] No se pudo enriquecer displayOrder:', e.message);
+                }
+            }
+
             // ── Live recalculation for PENDING notes ──────────────────────────────
             // If the note is pending AND we know the template stage, recalculate
             // plannedQuantity from the current template inputs so template changes
@@ -428,8 +482,47 @@ const assemblyNoteController = {
                 // Merge with existing processParameters to avoid overwriting
                 // other keys (empaqueRef, lot_selections, carriots, etc.)
                 const existing = await prisma.assemblyNote.findUnique({
-                    where: { id }, select: { processParameters: true }
+                    where: { id }, select: { processParameters: true, processType: { select: { code: true } } }
                 });
+
+                // ── Bloqueo de exclusividad de esferificación (sólo FORMACION) ──
+                // Si esta nota está intentando arrancar (status RUNNING) y YA hay
+                // otra esferificación RUNNING/PAUSED en la planta, rechazar con
+                // 409. Esto evita race conditions del frontend cuando 2 operarios
+                // abren wizards simultáneos.
+                const incomingTimer = processParameters?.esferificacion_timer;
+                const isStartingRun = incomingTimer
+                    && (incomingTimer.status === 'RUNNING' || incomingTimer.status === 'PAUSED')
+                    && existing?.processType?.code === 'FORMACION';
+                if (isStartingRun) {
+                    const otherCandidates = await prisma.assemblyNote.findMany({
+                        where: {
+                            id: { not: id },
+                            status: 'EXECUTING',
+                            processType: { code: 'FORMACION' },
+                        },
+                        select: {
+                            id: true,
+                            processParameters: true,
+                            productionBatch: { select: { batchNumber: true, flavor: true } },
+                            executedBy: { select: { name: true } },
+                        },
+                    });
+                    const blocker = otherCandidates.find(o => {
+                        const t = o.processParameters?.esferificacion_timer;
+                        return t && (t.status === 'RUNNING' || t.status === 'PAUSED');
+                    });
+                    if (blocker) {
+                        return res.status(409).json({
+                            error: `Ya hay una esferificación en curso (bache ${blocker.productionBatch?.batchNumber || blocker.id}). Debes pulsar FINALIZAR en ese bache antes de iniciar este.`,
+                            blockingNoteId: blocker.id,
+                            blockingBatchNumber: blocker.productionBatch?.batchNumber || null,
+                            blockingFlavor: blocker.productionBatch?.flavor || null,
+                            blockingOperator: blocker.executedBy?.name || null,
+                        });
+                    }
+                }
+
                 const merged = { ...(existing?.processParameters || {}), ...processParameters };
                 const updated = await prisma.assemblyNote.update({
                     where: { id },
@@ -523,16 +616,47 @@ const assemblyNoteController = {
                 return res.status(403).json({ error: `Solo el rol EMPAQUE (OPERARIO_PICKING) puede finalizar etapas de ${stageCodeRaw}` });
             }
 
-            // ── Hard cap: actualQuantity on each item must not exceed 120% of plannedQuantity ──
-            const noteItems = await prisma.assemblyNoteItem.findMany({ where: { assemblyNoteId: id } });
-            for (const item of noteItems) {
-                const planned = item.plannedQuantity || 0;
-                const actual = item.actualQuantity || 0;
-                if (planned > 0 && actual > planned * 1.20) {
-                    console.log(`[completeNote] 🚫 HARD CAP — item ${item.id} actual=${actual} exceeds 120% of planned=${planned}`);
-                    return res.status(422).json({
-                        error: `🚫 BLOQUEADO: Cantidad registrada (${actual}) supera el 120% de lo planificado (${planned.toFixed(1)}) para el ingrediente ${item.componentName || item.id}. Corrija el pesaje antes de continuar.`
+            // Hard cap removido: la validación de 120% bloqueaba flujos
+            // legítimos donde el plannedQuantity quedó desfasado por escalado
+            // de baches (0.5/1/etc) o por aggregateOnRepeat. La validación de
+            // 80% ya se hace en el frontend al pesar.
+
+            // Auto-cierre del cronómetro de esferificación si la nota FORMACION
+            // se está completando con el timer aún en RUNNING/PAUSED. El operario
+            // pulsó "Siguiente" en el wizard sin haber pulsado FINALIZAR del
+            // cronómetro — fijamos endTime = now y status = FINISHED para que
+            // no quede "huérfano" eternamente.
+            if (stageCode(stageCodeRaw) === 'FORMACION') {
+                try {
+                    const formNote = await prisma.assemblyNote.findUnique({
+                        where: { id }, select: { processParameters: true }
                     });
+                    const t = formNote?.processParameters?.esferificacion_timer;
+                    if (t && (t.status === 'RUNNING' || t.status === 'PAUSED')) {
+                        const nowIso = new Date().toISOString();
+                        // Calcular elapsedMs final
+                        let elapsedMsFinal = t.elapsedMs || 0;
+                        if (t.status === 'RUNNING' && t.segmentStartedAt) {
+                            elapsedMsFinal += Math.max(0, Date.now() - new Date(t.segmentStartedAt).getTime());
+                        }
+                        const closedTimer = {
+                            ...t,
+                            status: 'FINISHED',
+                            endTime: nowIso,
+                            elapsedMs: elapsedMsFinal,
+                            events: [
+                                ...(Array.isArray(t.events) ? t.events : []),
+                                { type: 'FINALIZACION', detail: 'Auto-cierre al completar la nota FORMACION (operario no pulsó FINALIZAR del cronómetro)', timestamp: nowIso }
+                            ]
+                        };
+                        await prisma.assemblyNote.update({
+                            where: { id },
+                            data: { processParameters: { ...formNote.processParameters, esferificacion_timer: closedTimer } }
+                        });
+                        console.log(`[completeNote] ⏱️ Auto-cierre del cronómetro esferificación para nota ${id} (timer estaba ${t.status})`);
+                    }
+                } catch (e) {
+                    console.warn(`[completeNote] No se pudo auto-cerrar cronómetro: ${e.message}`);
                 }
             }
 
@@ -738,7 +862,7 @@ const assemblyNoteController = {
                 data: { status: 'EXECUTING', completedAt: null, completedById: null }
             });
 
-            console.log(`[reopenNote] ✅ ADMIN ${req.user.name} reopened ${note.processType?.code} for batch ${note.productionBatch?.batchNumber}`);
+            console.log(`[reopenNote] ✅ ${req.user.role} ${req.user.name} reopened ${note.processType?.code} for batch ${note.productionBatch?.batchNumber}`);
             res.json({ success: true, message: `${note.processType?.name || note.processType?.code} reabierto para ${note.productionBatch?.batchNumber}` });
         } catch (error) {
             console.error('[reopenNote] ERROR:', error.message);
@@ -1302,6 +1426,40 @@ const assemblyNoteController = {
             let batch;
 
             if (existingBatchId) {
+                // Ingredients (GLUCOSA, FRUCTOSA, etc.) are intermediate inputs and don't follow
+                // the flavor sequence — they should be startable at any time.
+                const INGREDIENT_SKUS = ['PROCELIQUIPOPS26', 'PROCELIQUIPOPS43'];
+                // Validate sequential start: block if ANY prior production batch on the same line hasn't been started
+                const thisBatch = await prisma.productionBatch.findUnique({
+                    where: { id: existingBatchId },
+                    select: { flavor: true, scheduledStart: true, outputTargets: { select: { product: { select: { sku: true, group: { select: { name: true } } } } } } }
+                });
+                const thisIsIngredient = thisBatch?.outputTargets?.some(t => INGREDIENT_SKUS.includes(t.product?.sku));
+                if (thisBatch?.scheduledStart && !thisIsIngredient) {
+                    const AUX_FLAVORS = ['LAVADO', 'PAUSA ACTIVA', 'MANTENIMIENTO', 'REUNIÓN', 'REUNION', 'CAMBIO DE AGUA'];
+                    const lineGroup = thisBatch.outputTargets?.some(t => t.product?.group?.name === 'GENIALITY') ? 'GENIALITY' : 'LIQUIPOPS';
+                    // Find the FIRST pending batch in the queue (by current scheduledStart),
+                    // excluding aux events AND ingredient batches.
+                    const firstPending = await prisma.productionBatch.findFirst({
+                        where: {
+                            status: 'PENDING',
+                            startedAt: null,
+                            flavor: { notIn: AUX_FLAVORS },
+                            outputTargets: {
+                                some: { product: { group: { name: lineGroup } } },
+                                none: { product: { sku: { in: INGREDIENT_SKUS } } }
+                            },
+                        },
+                        orderBy: { scheduledStart: 'asc' },
+                        select: { id: true, batchNumber: true, flavor: true, scheduledStart: true }
+                    });
+                    if (firstPending && firstPending.id !== existingBatchId) {
+                        return res.status(400).json({
+                            error: `Debes iniciar el bache anterior primero (${firstPending.flavor || firstPending.batchNumber}). No puedes saltar baches en la secuencia.`
+                        });
+                    }
+                }
+
                 // Reuse the existing batch (from scheduler) — regenerate batchNumber with actual start date
                 batch = await prisma.productionBatch.update({
                     where: { id: existingBatchId },
@@ -1398,15 +1556,18 @@ const assemblyNoteController = {
                         noteUnit = stageFormula.baseUnit || 'gramo';
                         // Detect if inputs are per-gram ratios or absolute quantities
                         const maxInputQty = Math.max(...(stage.inputs || []).map(i => Math.abs(i.quantityPerUnit || 0)), 0);
+                        // targetQuantity refleja el peso real producido (baseQuantity × baseQty).
+                        // Antes era solo baseQuantity → para baches fraccionarios (0.5) la
+                        // ficha mostraba el doble del peso real.
                         if (maxInputQty > 0 && maxInputQty < 2) {
                             // Per-gram ratios → scale by formula.baseQuantity
                             pesajeBaseQuantity = stageFormula.baseQuantity;
-                            noteQty = stageFormula.baseQuantity || 1;
-                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are per-gram ratios (max=${maxInputQty.toFixed(4)}), scaling by ${stageFormula.baseQuantity}`);
+                            noteQty = (stageFormula.baseQuantity || 1) * baseQty;
+                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are per-gram ratios (max=${maxInputQty.toFixed(4)}), scaling by ${stageFormula.baseQuantity} × ${baseQty}`);
                         } else {
                             // Absolute quantities → use as-is
-                            noteQty = stageFormula.baseQuantity || 1;
-                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are absolute (max=${maxInputQty}), no scaling`);
+                            noteQty = (stageFormula.baseQuantity || 1) * baseQty;
+                            console.log(`[quickStart] PESAJE "${stage.stageName}" — inputs are absolute (max=${maxInputQty}), scaling by ${baseQty}`);
                         }
                     }
                 }
@@ -1692,6 +1853,65 @@ const assemblyNoteController = {
             });
         } catch (error) {
             console.error('Error in quickStart:', error);
+            res.status(500).json({ error: error.message });
+        }
+    },
+
+    // ──────────────────────────────────────────────────────────────────────
+    // GET /api/assembly-notes/active-esferificacion
+    //
+    // Returns the FORMACION note (Liquipops) whose internal esferificacion
+    // chronometer is currently RUNNING or PAUSED, if any. Used by the wizard
+    // to block starting a second esferificación while one is still open —
+    // the operator must FINALIZAR manually before launching another bache.
+    //
+    // Response shape:
+    //   { active: false }                              // ningún cronómetro abierto
+    //   { active: true, noteId, batchNumber, flavor,
+    //     operatorName, startedAt, elapsedMinutes,
+    //     timerStatus }                                // hay uno corriendo o en pausa
+    // ──────────────────────────────────────────────────────────────────────
+    async getActiveEsferificacion(req, res) {
+        try {
+            // Look for any FORMACION note in EXECUTING with a running/paused timer.
+            // We scope to FORMACION (Liquipops) — Geniality flow uses a different
+            // process. Filtering on processParameters JSON requires a path query,
+            // and Prisma's Json filtering syntax varies by DB; cheaper to fetch
+            // candidates and filter in JS, since the cardinality is tiny (≤ a few).
+            const candidates = await prisma.assemblyNote.findMany({
+                where: {
+                    status: 'EXECUTING',
+                    processType: { code: 'FORMACION' }
+                },
+                include: {
+                    productionBatch: { select: { batchNumber: true, flavor: true } },
+                    executedBy: { select: { id: true, name: true } }
+                }
+            });
+
+            for (const note of candidates) {
+                const timer = note.processParameters?.esferificacion_timer;
+                if (!timer) continue;
+                if (timer.status === 'RUNNING' || timer.status === 'PAUSED') {
+                    const startMs = timer.startTime ? new Date(timer.startTime).getTime() : null;
+                    const elapsedMinutes = startMs ? Math.floor((Date.now() - startMs) / 60000) : null;
+                    return res.json({
+                        active: true,
+                        noteId: note.id,
+                        batchNumber: note.productionBatch?.batchNumber || null,
+                        flavor: note.productionBatch?.flavor || null,
+                        operatorName: note.executedBy?.name || null,
+                        operatorId: note.executedBy?.id || null,
+                        startedAt: timer.startTime || null,
+                        elapsedMinutes,
+                        timerStatus: timer.status
+                    });
+                }
+            }
+
+            return res.json({ active: false });
+        } catch (error) {
+            console.error('[getActiveEsferificacion]', error);
             res.status(500).json({ error: error.message });
         }
     }

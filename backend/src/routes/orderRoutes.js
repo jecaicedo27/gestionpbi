@@ -35,6 +35,9 @@ router.post('/:id/reject', auth, roles(['ADMIN', 'LOGISTICA']), orderController.
 router.delete('/:id', auth, roles(['ADMIN']), orderController.deleteOrder);
 router.post('/:id/mark-ready', auth, roles(['LOGISTICA']), orderController.markReady);
 
+// Consolidate multiple READY orders from same distributor into one (for unified invoicing)
+router.post('/consolidate', auth, roles(['ADMIN', 'LOGISTICA']), orderController.consolidateOrders);
+
 // Invoicing — creates invoice directly in Siigo
 router.post('/:id/invoice', auth, roles(['ADMIN', 'COMERCIAL']), orderController.invoiceOrder);
 

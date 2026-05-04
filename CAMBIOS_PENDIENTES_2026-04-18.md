@@ -23,7 +23,7 @@ Necesito reaplicar los siguientes cambios criticos que se hicieron entre el 14 y
 **Fix:** Cambiar la prioridad para preferir `conteoEntry?.planned` sobre `target.plannedUnits`:
 
 Buscar donde se calcula `planned` para cada target (cerca de linea 370-380):
-- ANTES: `const planned = (target.plannedUnits > 0 ? target.plannedUnits : undefined) ?? conteoEntry?.planned ?? ...`
+
 - DESPUES: `const planned = conteoEntry?.planned ?? empRef.planned_qty ?? empData.planned_qty ?? (target.plannedUnits > 0 ? target.plannedUnits : undefined) ?? null;`
 
 Tambien donde se muestra en la tabla resumen (cerca de linea 598):
@@ -1354,6 +1354,1194 @@ Estos archivos aparecen dentro de `/var/www/gestionpbi`, pero por nombre/context
 - El lanzamiento usa la plantilla directa (TMPL-AZINV-001 / TMPL-FRUCT-001), NO BATCH-GENIALITY.
 
 
+## CAMBIOS 27 DE ABRIL 2026
+
+## CAMBIO 42: MRP Forecast — modal de materia prima requerida con filtros
+
+**Archivos:**
+- `frontend/src/pages/ProductionScheduler.jsx` — agregado modal MRP con buscador, filtros (Todos/Por Pedir/Suficiente), tabla con conteos y botón "Solicitar" en todos los items
+- `backend/src/controllers/mrpForecastController.js` — usa Siigo `warehouses` como fuente principal de stock, fallback a `currentStock + productionZoneStock`
+- `backend/src/routes/index.js` línea 263 — ruta `GET /mrp-forecast?line=<liquipops|geniality>`
+
+**Detalles:**
+- MRP expande recursivamente fórmulas (COMPUESTO → BASE → AZUCAR INVERTIDA → AZUCAR)
+- Filtra productos intermedios PROCELIQUIPOPS / PROCEGENIALITY del resultado final (solo MP raw)
+- Stock display: Siigo first, app stock fallback
+- Modal con 3 estados visuales (Todos / Por Pedir / Suficiente) y conteos por estado
+- Botón "Solicitar" crea purchase order en `/procurement/purchase-orders`
+
+## CAMBIO 43: ProductionScheduler — fix pérdida de eventos al cambiar semana
+
+**Problema:** `handleRangeChange` recargaba eventos cada vez que el usuario navegaba el calendario, reemplazando el state. Si el fetch nuevo era más pequeño o tardaba, los eventos viejos desaparecían.
+
+**Fix en `frontend/src/pages/ProductionScheduler.jsx`:**
+- Carga inicial con rango grande (30 días atrás, 60 adelante) — todos los baches programados disponibles desde primer render
+- `handleRangeChange`: skip refetch si el nuevo rango está cubierto por el actual
+- Padding de ±7 días (antes ±3) para evitar refetches innecesarios
+- Validación de array vacío al inicializar
+
+**Cambios calendario:**
+- `dayLayoutAlgorithm`: probado "overlap" pero regresado a "no-overlap" para mantener escalera visual
+- `min` / `max` cambiados a `new Date(2020, 0, 1, ...)` con solo componente de tiempo (antes usaba `new Date()` que mezclaba fecha de hoy)
+- Log de eventos por día agregado para debugging
+
+## CAMBIO 44: BASE LIQUIPOPS DIOXIDO — color y dióxido integrados en la BASE
+
+**Cambio de proceso productivo (no código):**
+- Fórmula `FORM074` (BASE LIQUIPOPS DIOXIDO) ahora incluye COLOR EN POLVO VERDE LIMON NOVA COLOR (64.2g) — antes solo lo tenía el COMPUESTO
+- Fórmula `FORM085` (COMPUESTO MANGO BICHE CON SAL) eliminado el COLOR (ya viene en BASE)
+- Plantilla `TMPL063` (COMPUESTO MANGO BICHE CON SAL) actualizada: usa BASE LIQUIPOPS DIOXIDO (97kg) en lugar de BASE LIQUIPOPS (118kg) + DIOXIDO + COLOR sueltos
+- Fórmula `FORM084` (ESFERAS MANGO BICHE CON SAL) — actualizada cantidad: COMPUESTO 96000g (antes 120385g), ALGINATO 44160g, baseQty 130000g
+
+**Solo aplica a MANGO BICHE CON SAL** (es el único sabor que usa BASE LIQUIPOPS DIOXIDO).
+
+**Implicación de merge:**
+- No hay cambios de código, solo data (formulas, templates) en BD
+- Backups de fórmulas FORM074, FORM085, FORM084 y plantilla TMPL063 antes del merge si se va a sobreescribir BD
+
+## CAMBIO 45: Shift de timezone batches programados
+
+**Acción puntual (no código):** se desplazaron +4 horas los 149 batches PENDING del 27 abr al 3 may por bug previo de timezone que dejaba el primer batch de MANGO BICHE CON SAL a las 22:00 dom en lugar de 02:00 lun.
+
+**Sospecha de bug:** el handler `onDropFromOutside` en `ProductionScheduler.jsx` posiblemente guarda Date sin convertir correctamente local→UTC. No se identificó el lugar exacto, pendiente de investigar si vuelve a ocurrir.
+
+## CAMBIO 46: PREMEZCLA GOMAS ESPECIAL — fix unit, AZUCAR ensamble y BASE LIQUIPOPS DIOXIDO
+
+**Cambios de data (BD), no código:**
+
+1. Producto **PREMEZCLA GOMAS ESPECIAL** (sku PROCELIQUIPOPS55) — `unit: gramo` → `unit: unidad`
+   - Razón: todas las otras premezclas tienen unit "unidad" (CALCIO DIOXIDO, GOMAS PARA PERLAS, CONSERVANTES PERLAS, FUENTE DE CALCIO PERLAS)
+   - El runner usa el unit del producto para decidir si muestra opción de impresión Zebra del lote
+
+2. **TMPL048** (Producción PREMEZCLA GOMAS ESPECIAL) — Stage 2 Ensamble Siigo: AZUCAR 6,000g → 1,500g
+   - Estaba inconsistente con Stage 1 y con FORM073 (que dice 1,500g)
+
+3. **FORM074** (BASE LIQUIPOPS DIOXIDO) — item PREMEZCLA GOMAS ESPECIAL: `1 gramo` → `1 unidad`
+   - Coherente con el cambio de unit del producto
+
+**Implicación de merge:**
+- No hay cambios de código, solo data en BD
+- Si el equipo externo trae cambios sobre estos mismos products/templates/formulas, validar después del merge
+
+## CAMBIO 47: TMPL049 (BASE LIQUIPOPS DIOXIDO) sincronizada con FORM074
+
+**Cambio de data (BD):** TMPL049 stages 1 y 2 actualizadas con:
+- Agregado COLOR EN POLVO VERDE LIMON NOVA COLOR (64.2g)
+- PREMEZCLA GOMAS ESPECIAL: gramo → unidad
+
+**Razón:** El sistema crea baches a partir de la **PLANTILLA**, no de la fórmula. Cambiar la fórmula sin presionar "Guardar Plantilla" en el editor causa que los baches nuevos sigan tomando la versión vieja.
+
+**Comportamiento del sistema:**
+- Editor de plantillas: hace auto-sync visual de inputs desde la fórmula activa al cargar
+- Pero los inputs NO se persisten hasta presionar "Guardar Plantilla"
+- Al iniciar un batch (`assemblyNote`), el sistema lee de `AssemblyTemplateStageInput`, NO de `FormulaItem`
+
+**Recomendación post-merge:** Si el equipo externo cambió fórmulas, validar que las plantillas correspondientes estén sincronizadas.
+
+## CAMBIO 48: Nuevo proceso IMPRESION_LOTE para premezclas e intermedios
+
+**Backend (BD):**
+- Nuevo `ProcessType` con code `IMPRESION_LOTE`, name "Impresión Etiqueta Lote", category "TRANSFORMATION", icon 🖨️, color #6366f1, active true
+
+**Frontend (archivos nuevos/modificados):**
+
+1. **NUEVO** `frontend/src/components/AssemblyRunner/steps/PrintLotStep.jsx`
+   - Componente simple que muestra info del lote producido (producto, sku, lote, cantidad)
+   - Selector de copias (1-10)
+   - Estado Zebra (conectado/desconectado)
+   - Botón grande "Imprimir Etiqueta" usando `printZPL` + `buildLotLabelZPL`
+   - Persiste `lot_label_printed: true`, `lot_label_printed_at`, `lot_label_copies` en `processParameters`
+   - Marca `MaterialLot.labelPrinted: true` via `/finished-lots/mark-printed` (busca el lot por `/finished-lots/lot-summary/:lotNumber`)
+
+2. **MODIFICADO** `StepDisplay.jsx` — agregado import + `if (stepType === 'IMPRESION_LOTE') return <PrintLotStep />`
+
+3. **MODIFICADO** `hooks/useAssemblyNote.js` — agregado:
+   - `isImpresionLote = processCode === 'IMPRESION_LOTE'`
+   - Skip INTRO para IMPRESION_LOTE
+   - `else if (isImpresionLote) { steps.push({ type: 'IMPRESION_LOTE', data: noteData }); skipOutput = true; }`
+   - Excluye IMPRESION_LOTE del fallback OUTPUT
+
+4. **MODIFICADO** `AssemblyExecutionWizard.jsx` — agregado:
+   - State `printLotData = { printed: false, copies: 1 }`
+   - Guard en `handleNext`: si step es `IMPRESION_LOTE` y `!printLotData.printed`, modal "Debes imprimir la etiqueta" bloquea avance
+   - `onPrintChange={setPrintLotData}` pasado al StepDisplay
+
+**Uso:**
+- En el editor de plantillas, el proceso "Impresión Etiqueta Lote" aparece automáticamente en la biblioteca
+- Arrastrar como Stage final después del Ensamble Siigo en TMPL048, TMPL111, TMPL003, TMPL002, etc.
+- El operador completa Ensamble → ve pantalla de impresión → no puede avanzar sin imprimir
+
+## CAMBIO 49: PrintLotStep — numeración X/Y de grupo en etiqueta
+
+**Cambios:**
+
+1. **`frontend/src/services/zplLabelBuilder.js`** — `renderLabel`: si `totalBoxes > 1`, agrega ` (X/Y)` al final de la línea "Lote: ..." en la etiqueta ZPL.
+
+2. **`frontend/src/components/AssemblyRunner/steps/PrintLotStep.jsx`** — agregado:
+   - Estado `groupInfo: { index, total }`
+   - useEffect que llama `GET /production-batches?productId=X&active=true`, filtra siblings creados ±24h del batch actual, calcula posición e índice
+   - Pasa `boxNumber: groupInfo.index, totalBoxes: groupInfo.total` al `buildLotLabelZPL`
+   - UI: muestra "Lote del grupo: N de M" en el card de info cuando total > 1
+
+**Comportamiento:** Cuando el operador programa N baches del mismo flavor desde PremixQuickPanel, cada uno imprime su propia etiqueta con la numeración correspondiente (1/N, 2/N, ..., N/N). Pesaje sigue siendo individual por batch.
+
+## CAMBIO 50: rescheduleAfterBatchStart — sistema FIFO push para Liquipops
+
+**Problema:** Cuando un batch se iniciaba fuera de hora (ej. el 1/12 programado a las 04:00 se iniciaba a las 08:29), la lógica anterior solo comprimía hacia atrás los baches con `scheduledStart > realStart`. Los baches con `scheduledStart < realStart` (anteriores) quedaban flotando, causando solapamientos. Los CAMBIO DE AGUA viejos no se eliminaban, acumulándose mal posicionados.
+
+**Fix en `backend/src/controllers/productionSchedulerController.js` (rescheduleAfterBatchStart, bloque Liquipops):**
+
+Reemplazada la compresión simple por re-queue completo FIFO:
+
+1. Toma TODOS los baches PENDING (anteriores + posteriores al iniciado)
+2. Borra todos los CAMBIO DE AGUA PENDING (se re-crearán según regla)
+3. Ordena los baches de producción por `originalScheduledStart || scheduledStart`
+4. Cursor empieza al final del batch iniciado (`startedAt + 90min`)
+5. Para cada batch en cola:
+   - Si lleva 2 baches consecutivos, inserta nuevo CAMBIO DE AGUA (30 min)
+   - Asigna `scheduledStart = cursor`, avanza cursor
+6. AUX no-CAMBIO-DE-AGUA (LAVADO, MANTENIMIENTO) se reagendan al final
+
+**Constantes:**
+- `WATER_CHANGE_DURATION_MS = 30 * 60000`
+- `WATER_CHANGE_EVERY = 2` (cada 2 baches de producción)
+
+**Resultado:** Sistema FIFO con empuje. Cuando se inicia un batch fuera de hora, todos los demás se reorganizan en cola preservando el orden original (la "escalera"), con CAMBIOS DE AGUA correctamente intercalados sin duplicados.
+
+## CAMBIO 51: Eliminar CAMBIO DE AGUA final automático en programación Liquipops
+
+**Cambio en `frontend/src/pages/ProductionScheduler.jsx`** (línea ~1062):
+- Removido el bloque que creaba un CAMBIO DE AGUA al final de cada sesión de programación con nota "Cambio de agua final (limpieza)"
+- El operador ahora agrega el cambio de agua de cierre manualmente como evento auxiliar (arrastra desde sidebar "Eventos Auxiliares")
+- Los CAMBIOS DE AGUA automáticos cada 2 baches durante la programación se mantienen
+
+**Razón:** El cambio final causaba problemas — quedaba "suelto" sin batch siguiente y el reschedule debía limpiarlo. Mejor que el operario decida cuándo y dónde colocarlo.
+
+## CAMBIO 52: Eliminar TODOS los CAMBIOS DE AGUA automáticos + botón rápido en Panel de Producción
+
+**Frontend:**
+
+1. **`ProductionScheduler.jsx`** — eliminada la creación automática de CAMBIO DE AGUA cada 2 baches Y el cambio final. Ya no se programa NINGÚN cambio de agua automático.
+
+2. **`ProductionOperatorPage.jsx`** — agregado:
+   - Handler `handleQuickWaterChange()` que llama `POST /production/{line}/schedule` con flavor "CAMBIO DE AGUA", duración 30 min, scheduledStart=now
+   - Botón 💧 (icono Droplets) en el header móvil del Panel de Producción, junto a Warehouse y RefreshCw
+   - Pide confirmación antes de crear el evento
+
+**Razón:** Los cambios de agua automáticos causaban inconvenientes (aparecían sueltos, en horarios incorrectos, no respetaban cuándo el operario realmente lavaba). Mejor que el operario los registre cuando los hace en planta.
+
+**Reschedule preservado**: el global shift sigue desplazando los CAMBIOS DE AGUA junto con los baches sin duplicarlos.
+
+## CAMBIO 53: Sistema de FALLAS con desplazamiento automático del cronograma
+
+**Backend:**
+
+1. **`productionSchedulerController.js` `auxAction`**:
+   - `action: 'start'` ahora detecta `flavor === 'FALLA'` y usa duración placeholder de 1 min (no la fija de AUX_DUR)
+   - `action: 'finish'` para FALLA: calcula `realDurationMs = now - startedAt`, desplaza TODOS los PENDING posteriores (Liquipops o Geniality) `+realDurationMs`. Notas registran "Falla resuelta en X min — cronograma desplazado"
+
+2. **Nuevo endpoint `failureStats`**:
+   - `GET /production/{line}/failure-stats?from=...&to=...`
+   - Retorna `{ totalFailures, totalMinutesLost, totalHoursLost, avgDurationMin, longest, byDay, activeFailure }`
+   - Útil para KPIs y detectar fallas activas no resueltas
+
+3. **Ruta** en `productionSchedulerRoutes.js`: `router.get('/failure-stats', auth, ...)`
+
+**Frontend `ProductionOperatorPage.jsx`:**
+
+1. **Modal eventos auxiliares** (header móvil) — agregada opción "FALLA" (icono ⚠️ rojo)
+2. **Flujo FALLA distinto de otros AUX**:
+   - Pide nota descriptiva opcional (no duración)
+   - POST schedule con scheduledEnd placeholder + PATCH aux-action 'start'
+3. **Banner rojo persistente "FALLA ACTIVA"** — arriba del Panel de Producción cuando hay falla sin resolver. Muestra tiempo transcurrido y nota. Botón "Resolver Falla ✓"
+4. **Función `resolveFailure`** — pide nota de resolución, llama PATCH aux-action 'finish', muestra confirmación de minutos perdidos + cronograma desplazado
+5. **KPI de fallas hoy** — card roja con conteo + minutos perdidos, polling cada 30s
+6. **State `activeFailure`, `failureStats`, `fetchFailureStats`** con useEffect + interval
+
+**Razón:** Permite registrar paradas no planificadas con duración variable, desplaza automáticamente el cronograma al cerrarlas y genera estadística de tiempo perdido por fallas.
+
+## CAMBIO 54: MRP Forecast — incluir materiales de empaque
+
+**`backend/src/controllers/mrpForecastController.js`** — agregado bloque que itera sobre `batch.outputTargets`, busca el AssemblyTemplate del producto final y suma los inputs que matchean `/TARRO|TAPA|ETIQUETA|SELLO|LINER|CAJA/i` multiplicados por `target.plannedUnits`.
+
+Antes solo expandía COMPUESTO/PROTECCION/ESFERAS (raw materials). Ahora también incluye materiales de empaque por cada presentación (350g, 1150g, 3400g) de cada sabor.
+
+Resultado: el modal "Materia Prima Requerida" ahora muestra completas las necesidades para producir, incluidos packaging materials.
+
+## CAMBIO 55: Custom dayLayoutAlgorithm `equalWidthLayout` para calendario
+
+**`frontend/src/pages/ProductionScheduler.jsx`** — agregada función `equalWidthLayout` que reemplaza `dayLayoutAlgorithm="no-overlap"` en ambos calendarios.
+
+**Comportamiento:**
+1. Sort eventos por start time
+2. Asigna cada evento a un "lane" (carril) basado en overlap (algoritmo greedy first-fit)
+3. Calcula `maxLanes` del día
+4. Aplica `width = 100/maxLanes` a TODOS los eventos del día (incluso los que solo overlap con 1)
+
+**Razón:** El algoritmo "no-overlap" daba anchos variables — eventos con 2 simultáneos tomaban 50%, con 3 tomaban 33%. Ahora todos tienen el MISMO ancho consistente (basado en el peor caso del día).
+
+## CAMBIO 56: Guard CONTEO sin operario + fix olla grande PROTECCIONES
+
+**1. Guard CONTEO sin operatorId:**
+- `backend/src/services/genialityAssemblyService.js` línea ~870 — agregado: `if (note.processType?.code === 'CONTEO' && !operatorId) throw new Error(...)`
+- Igual en `backend/src/services/assemblyService.js` línea ~876
+- Razón: notas de CONTEO se cerraban automáticamente sin operario (startedAt:null, operatorId:null) por algún proceso automático no identificado
+
+**2. Olla Grande (aggregateOnRepeat) en PROTECCIONES:**
+- 286 inputs corregidos en 13 plantillas PROTECCION (todas: CHICLE, FRESA, CEREZA, MANZANA VERDE, CAFÉ, MARACUYA, LYCHE, SANDIA, ICE PINK, MANGO BICHE, CHAMOY, BLUEBERRY, MANGO BICHE CON SAL)
+- `aggregateOnRepeat: true` → cuando se programan N baches, se crea 1 sola nota con cantidad × N (no N notas separadas)
+- Modelo: SIROPES y PROTECCIONES van en olla grande (juntos), ALGINATO/BASE/PREMEZCLAS en olla chica (bache por bache)
+
+## CAMBIO 57: Eliminar MARCADO_CAJAS duplicado en flujo ENSAMBLE Siigo
+
+**Problema:** En BATCH-LIQUIPOPS hay etapas separadas EMPAQUE (6-8) y ENSAMBLE Siigo (9-11), una por cada tamaño (3400g, 1150g, 350g). Cuando el operario completaba el EMPAQUE (que ya marca cajas) y pasaba al ENSAMBLE Siigo, el wizard le pedía marcar las cajas de NUEVO. Resultado: 3 impresiones extras innecesarias por batch.
+
+**Fix en `frontend/src/components/AssemblyRunner/hooks/useAssemblyNote.js` (línea 251):**
+
+ANTES:
+```js
+} else if (isEnsamble) {
+    steps.push({ type: 'MARCADO_CAJAS', data: noteData });
+    steps.push({ type: 'OUTPUT', data: noteData });
+    steps.push({ type: 'ENSAMBLE', data: noteData });
+}
+```
+
+DESPUÉS:
+```js
+} else if (isEnsamble) {
+    // ENSAMBLE Siigo: solo registrar cantidad real y cerrar en Siigo (RPA).
+    // El marcado de cajas es responsabilidad del EMPAQUE, no del ENSAMBLE.
+    steps.push({ type: 'OUTPUT', data: noteData });
+    steps.push({ type: 'ENSAMBLE', data: noteData });
+}
+```
+
+**Resultado para BATCH-LIQUIPOPS con 3 tamaños:**
+- Etapas 6-8 (EMPAQUE de cada tamaño): inputs → empaque → **MARCADO_CAJAS (imprime)** → ensamble local
+- Etapas 9-11 (ENSAMBLE Siigo de cada tamaño): **OUTPUT + ENSAMBLE (RPA Siigo)** — sin re-imprimir
+- Total: **3 impresiones (no 6)** + 3 cierres en Siigo
+
+## CAMBIO 58: Maquila box size variable según línea (Liquipops 6, Geniality 12)
+
+**Problema:** En el step de MARCADO_CAJAS, `MAQUILA_UNITS_PER_BOX = 6` estaba hardcoded. Eso es correcto para Liquipops (cajas maquila de 6), pero **incorrecto para Geniality** donde toda la producción (incluida maquila) va en cajas de 12.
+
+**Fix en `frontend/src/components/AssemblyRunner/steps/MarcadoCajasStep.jsx` (línea 153):**
+
+```js
+// ANTES
+const MAQUILA_UNITS_PER_BOX = 6;
+
+// DESPUÉS
+const isGeniality = /sirope|geniality/i.test(product.name || '');
+const MAQUILA_UNITS_PER_BOX = isGeniality ? defaultUnitsPerBox : 6;
+```
+
+**Comportamiento:**
+- Liquipops MAQUILA: cajas de 6 (sin cambios)
+- Geniality MAQUILA: cajas de 12 (igual que regular)
+
+## CAMBIO 59: calculateBatchMix — fase 2 TOP UP (nunca dejar batch a medias)
+
+**Problema:** El algoritmo `calculateBatchMix` solo asignaba unidades hasta cubrir el déficit (vs stock de seguridad). Si la demanda ya estaba cubierta en otros baches, el sistema sugería un batch con muy pocas unidades (ej: 24 uds 1150 GR = 27 kg en un batch de 120 kg). Resultado: batches medio vacíos, desperdicio de capacidad.
+
+**Fix en `backend/src/controllers/productionSchedulerController.js` línea ~515 (loop GROUP A):**
+
+Refactor a 2 fases:
+
+1. **Fase 1 — Distribución por déficit**: como antes, respeta `mediumDeficitLeft` para distribuir entre items según necesidad real.
+
+2. **Fase 2 — TOP UP**: después de fase 1, si el batch no llegó a `cap`, sigue agregando packs del item de **mayor velocidad de venta** (`dailyVolumeKg`) hasta llenar la capacidad. Iterativo, intenta cada item en orden de velocidad y agrega 1 pack si cabe.
+
+**Resultado:** Cada batch se llena al máximo (~120 kg). El operador nunca produce baches medio vacíos. La sobreproducción va automáticamente al sabor que más rota.
+
+## CAMBIO 60: Doble syrupRatio (Normal + Dioxido) con detección automática
+
+**Problema:** Las Liquipops con BASE DIOXIDO (ej. MANGO BICHE CON SAL) tienen menos líquido de protección, rinden menos unidades por batch que las normales:
+- Normal (120 kg jarabe): 60 × 3400g o 160 × 1150g (ratio jarabe/producto ≈ 0.62)
+- Dioxido (120 kg jarabe): 40 × 3400g o 140 × 1150g (ratio jarabe/producto ≈ 0.81)
+
+Antes había un solo `syrupRatio: 0.70` que no diferenciaba.
+
+**Cambios:**
+
+1. **PRODUCTION_CONFIG (BD)** — agregado `syrupRatioDioxido: 0.81`, cambiado `syrupRatio: 0.62` (de 0.70)
+
+2. **`backend/src/controllers/productionSchedulerController.js`**:
+   - `calculateBatchMix` antes de calcular ratio: busca el COMPUESTO del sabor, si su fórmula incluye `BASE LIQUIPOPS DIOXIDO` (sku PROCELIQUIPOPS54), marca `usesDioxido = true`
+   - Aplica `syrupRatioDioxido` o `syrupRatio` según corresponda
+   - Default cambiado de 0.70 a 0.62
+
+3. **`frontend/src/pages/AdminConfig.jsx`**:
+   - Renombrado label original: "% Jarabe Producto Final — Liquipops NORMAL"
+   - Nuevo campo: "% Jarabe Producto Final — Liquipops DIOXIDO" (emerald)
+   - `syrupRatioDioxido` agregado a `floatFields` y a `getDisplayValue` defaults
+
+**Detección dinámica:** Cualquier sabor cuyo COMPUESTO use BASE LIQUIPOPS DIOXIDO se trata como dioxido automáticamente — no hay lista hardcoded.
+
+## CAMBIO 61: Numeración de baches X/Y excluye COMPLETED/FAILED
+
+**Problema:** En el calendario aparecía "FRESA 17/26" para el primer batch pendiente, porque la numeración contaba los 16 baches COMPLETED de días anteriores + los 10 PENDING actuales.
+
+**Fix en `backend/src/controllers/productionSchedulerController.js` (`getSchedule`):**
+
+```js
+const sortedBatches = [...batches]
+    .filter(b => !AUX_FLAVORS.includes(b.flavor))
+    .filter(b => b.status !== 'COMPLETED' && b.status !== 'FAILED')  // ← NUEVO
+    .sort(...);
+```
+
+**Resultado:** El primer PENDING ahora aparece como "1/N" donde N = total de baches activos del sabor (no incluye los ya terminados).
+
+## CAMBIO 62: Sincronización automática Fórmula → Plantilla (CRUD completo)
+
+**Problema:** Al editar una fórmula desde la UI, solo se actualizaban los inputs EXISTENTES de la plantilla. No se agregaban ingredientes nuevos ni se eliminaban los obsoletos. Esto causaba desfases (ej. agregar PROTONICO + CONSERVANTES a FORM085 no se reflejaba en TMPL063).
+
+**Fix en `backend/src/controllers/formulaController.js` `updateFormula` (línea ~349):**
+
+Antes solo hacía UPDATE de inputs existentes. Ahora hace los 3 niveles de sincronización:
+
+1. **UPDATE**: actualizar `quantityPerUnit` + `displayOrder` de inputs que matchean
+2. **CREATE**: agregar inputs nuevos cuando la fórmula tiene ingredientes que no están en la plantilla
+3. **DELETE**: borrar inputs obsoletos que ya no están en la fórmula
+
+**Excepción:** Stages CONTEO se siguen omitiendo (no tienen inputs de fórmula).
+
+**Beneficio:** El operador edita la fórmula y la plantilla queda sincronizada automáticamente — ya no hay que abrir el editor de plantilla y presionar "Guardar" manualmente.
+
+## CAMBIO 63: Consolidación de pedidos READY del mismo distribuidor
+
+**Schema (`prisma/schema.prisma`)** — agregados 3 campos a `Order`:
+- `isConsolidation: Boolean @default(false)`
+- `consolidatedIntoOrderId: String?` (FK a Order — para los originales)
+- `consolidatedFromOrderIds: String[]` (array IDs originales — para el consolidado)
+
+**Backend `orderController.js` `consolidateOrders`** (POST /api/orders/consolidate):
+- Valida: mismo distribuidor, status READY, no consolidados antes
+- Crea nuevo Order `CON-XXXX` con `isConsolidation: true`
+- Items: suma cantidades por productId
+- Notas: `"Consolidado de pedidos: ORD-001, ORD-002\n--- Notas originales ---\n[ORD-001] notas..."`
+- Copia OrderPickingItems (lotes ya asignados) al consolidado
+- Marca originales con `consolidatedIntoOrderId` (visibles pero referenciados)
+
+**Backend `orderControllerExtensions.js` `invoiceOrder`** (modificación):
+- Si `order.isConsolidation`: skip FIFO deduction (evita doble descuento de inventario)
+- Cascade: marca originales como INVOICED al facturar el consolidado
+
+**Frontend `OrderManagement.jsx`**:
+- State `selectedForConsolidation: Set<string>`
+- Checkboxes en pedidos READY (solo admin/logistica)
+- Barra superior con contador y validación visual (purple si mismo distribuidor, amber si distinto)
+- Botón "Consolidar N pedidos" con confirmación
+- Badges en cards: "CONSOLIDADO (N)" en el nuevo, "Consolidado en otro pedido" en originales
+
+**Razón:** Cuando varios pedidos del mismo distribuidor van a la misma estiba/dirección, el operador podía facturarlos en una sola factura en lugar de chulear lote por lote en N facturas distintas.
+
+## CAMBIO 64: KPI Mensual con desglose por Líder (bonificación + compañerismo)
+
+**Frontend `ProductionKpiPage.jsx`** — sección "Consolidado Mensual por Líder":
+- Aumentado `PER_PAGE` de 6 a 21 (semana completa visible sin paginar)
+- Agrega bloque mensual sobre la lista de turnos con desglose por líder
+- Métricas a nivel mes:
+  - Adherencia al horario promedio (de `adherenceData.batches`)
+  - Baches ejecutados / programados
+  - Tiempo promedio de esferificación
+  - Preparación entregada (intermedios completados: ALG, BASE, PROT, PREMZ, SIROPE)
+- Métricas a nivel líder (atribución por bache vía `batchToLeader` map de los turnos):
+  - mismas 4 métricas + cuadrilla agregada de todos los turnos del líder en el mes
+  - shift breakdown (mañana/tarde/noche) — porque líder y cuadrilla pueden trabajar en distintos turnos
+  - Badge "✓ BONO" si rendimiento ≥90% Y compañerismo ≥1 intermedio/turno
+  - Badge "⚠ Sin compañerismo" si rendimiento OK pero baja preparación entregada (consume sin dejar)
+
+**Backend `kpiController.js` `getScheduleAdherence`**:
+- Nueva query `intermediateBatches`: productionBatches sin nota FORMACION + COMPLETED en el periodo (= intermedios)
+- `classifyIntermediate(flavor)` — mapea por keywords del flavor (ALGINATO, BASE, PROTECCION, PREMEZCLA, SIROPE)
+- Acumula por `dateStr_shift` y agrega como `intermediatesPrepared` a cada item de `shiftCompletion`
+
+**Razón filosófica del usuario:**
+> "Un equipo puede rendir porque le dejan todo preparado pero no deja nada para el siguiente. Esto no es compañerismo. La empresa crece cuando todos preparan al siguiente."
+
+La bonificación grupal ahora exige doble condición: cumplir su meta Y dejar al siguiente turno con preparación. Penaliza al equipo que solo consume el inventario intermedio sin reponerlo.
+
+## CAMBIO 65: Modelo operativo Liquipops calibrado en el programador (FASE 1)
+
+Se calibró el programador con el modelo operativo real de Liquipops descrito por el usuario:
+- Turnos 06/14/22 con entrega de turno 06:00–06:20, 14:00–14:20, 22:00–22:20 (informativa, NO bloqueo)
+- BASE 30 min en marmita (líder)
+- Esferificación 60 min/bache (cuello de botella)
+- LAVADO de marmita: solo cuando cambia el sabor o cuando se hace ALGINATO
+- ALGINATO cada 3 baches FINALES consecutivos en la misma marmita (35 min)
+- Cambio de agua del tanque: lo registra el líder manualmente, NO se programa
+
+**Backend `productionSchedulerController.js`:**
+- Constantes nuevas: `LIQUIPOPS_BASE_DURATION_MIN=30`, `ALGINATO_DURATION_MIN=35`, `ALGINATO_EVERY_N_BATCHES=3`, `SHIFT_HANDOVER_WINDOWS`
+- `AUX_FLAVORS` y `AUX_DUR` ampliados: `['ALGINATO', 'BASE']` con duraciones 35 y 30
+- Helper `countConsecutiveFinalBatches(refTime)` — cuenta hacia atrás baches Liquipops finales (excluye AUX) con MAX_SESSION_GAP de 3h
+- Helper `getLastFinalBatchBefore(refTime)` — devuelve el último final no-AUX antes de refTime
+- Helper `createAuxEvent(flavor, start, end, notes)` — crea AUX simple sin outputTargets
+- `createBatch` extendido (Liquipops, no AUX):
+  - Si `lastFinal.flavor !== flavor` → inserta AUX `LAVADO` (60 min) ANTES del bache nuevo (encaja en el hueco si lo hay; sino empuja `adjStart`)
+  - Crea AUX `BASE` (30 min) en `[scheduledStart-30, scheduledStart]` para visualizar la carga del líder
+  - Si `(priorCount+1) % alginatoEveryN === 0` → tras el bache, encadena `LAVADO` (60min) + `ALGINATO` (35min) automáticamente
+
+**Backend `routes/productionSchedulerRoutes.js`:**
+- Nueva ruta `GET /production/liquipops/operational-meta` → devuelve `{ handoverWindows, alginatoEveryN, baseDurationMin, alginatoDurationMin }` para que el frontend pinte/configure
+
+**Backend `configController.js`:**
+- Defaults nuevos en `PRODUCTION_CONFIG`: `liquipops_baseDurationMin`, `liquipops_alginatoDurationMin`, `liquipops_alginatoEveryN`, `liquipops_handoverWindows`
+
+**Frontend `ProductionScheduler.jsx`:**
+- Estado `operationalMeta` cargado desde el endpoint en `useEffect`
+- `slotPropGetter` del calendario pinta las ventanas de entrega de turno con un fondo amarillo tenue (10% opacity) y línea punteada — solo informativo, el operario puede programar dentro
+
+**Razón:** los KPIs antes se medían contra una meta equivocada (BASE 40 min, sin lavados/alginato automáticos). Con esto el cronograma refleja el ritmo real y se sientan las bases para Fase 2 (KPIs por rol líder vs operarios) y Fase 3 (alertas anómalas).
+
+**FASE 1 NO incluye:**
+- Cambio de agua automático (decisión: el líder lo registra manualmente, ya causaba demasiados desplazamientos)
+- KPIs por rol líder vs operarios (Fase 2)
+- Alertas de comportamiento anómalo (Fase 3)
+- Programación del líder como recurso separado (no se modela; el líder supervisa)
+
+**REVISIÓN 2026-04-28 (después de probar):** se eliminaron los AUX automáticos LAVADO/ALGINATO/BASE creados en `createBatch`. El usuario reportó que generaban demasiados eventos en el calendario y complicaban los desplazamientos al correr baches adelante o atrás. Se mantienen las constantes y el endpoint `/operational-meta`, pero ahora el endpoint solo devuelve la **capacidad teórica diaria calculada** (ej. 5 baches/turno × 3 = 15/día con `alginatoEveryN=3`) que se muestra como badge informativo en el header del cronograma. Cero eventos AUX automáticos. El líder/operario sigue creando manualmente LAVADO/CAMBIO DE AGUA cuando los hace en planta.
+
+Eventos AUX auto-creados durante la prueba (9 en total: 6 BASE + 3 ALGINATO) fueron borrados con script de limpieza.
+
+## CAMBIO 66: FinishedProductZonePage — fallback de approved_qty=0 al stock real
+
+**Archivo:** `frontend/src/pages/FinishedProductZonePage.jsx` (función `openTransfer`)
+
+**Problema:** Cuando el operario completa la nota EMPAQUE sin diligenciar `conteo_qty` / `approved_qty` (queda en 0), el modal "Transferir entre zonas" mostraba `Cantidad (máx: 0 — 0 aprobadas)` y bloqueaba la transferencia a Producto Terminado, aunque hubiese stock real disponible en zona PRODUCCION.
+
+**Caso reportado:** lote `MANGO-BICHE-CON-SAL-260427-0829`, presentaciones LIQUIPP13 (82 uds) y LIQUIPM13 (29 uds) tenían `approved_qty=0` aunque el stock estaba en 82 y 29.
+
+**Fix:** En `openTransfer`, al recibir el lot-summary, si `match.approved===0 && match.defective===0` (señal de que no se diligenció), usar `stock.currentQuantity` como `approved` para no bloquear el botón. Si efectivamente hubo defectuosas o aprobadas reales, se respeta el dato.
+
+**Backfill datos:** se actualizaron las dos notas EMPAQUE del batch `c1142814-3ee7-459e-b42f-3e390ccc8ecf` poniendo `approved_qty` igual a `actualQuantity` para destrabar la transferencia.
+
+## CAMBIO 67: Rescheduling con cola compacta única (sin solapes ni saltos al final)
+
+**Archivo:** `backend/src/controllers/productionSchedulerController.js` función `rescheduleAfterBatchStart` (línea 1556-1597).
+
+**Problema previo:** cuando un bache se iniciaba tarde:
+1. Algunos baches se mandaban al "final de la cola" (días después) — split entre `afterBatches` y `skippedBatches` rompía la escalera.
+2. Cuando el reschedule corría con deltas distintos en momentos distintos, baches de cadenas diferentes (MANGO BICHE, MARACUYA, FRESA...) terminaban con drifts desiguales y se solapaban en el calendario.
+
+**Fix:** reescritura con algoritmo de **cola compacta**:
+- `cursor = realStart` del bache que se acaba de iniciar
+- Listar PENDING (no AUX) ordenados por `originalScheduledStart`
+- Asignar `scheduledStart = cursor + 60min`, avanzar cursor
+- Resultado: una sola cola física para todos los sabores, sin solapes, escalera de 60 min preservada
+
+**Razón filosófica del usuario:** "es coger todos los baches que están delante y sumarles la cantidad de tiempo para que se desplacen". Modelo: un solo tanque de esferificación = una sola cola física. El sabor no separa cadenas.
+
+**Limitaciones aceptadas:** AUX (LAVADO, CAMBIO DE AGUA) no se incluyen en la cola del cursor — el operario los coloca manualmente y se mantienen donde quedaron. Stagger asume esferificación ≤ 60 min.
+
+**Datos limpiados durante la migración:**
+- 3 baches MANGO BICHE PENDING que estaban en 1 mayo restaurados a su escalera del 28/04
+- 68 baches PENDING reordenados con cola compacta desde el último iniciado (1240, 12:40)
+
+## CAMBIO 68: Plantilla BASE LIQUIPOPS DIOXIDO ahora con 4 stages
+
+**Plantilla TMPL049** ampliada de 2 → 4 stages:
+1. PESAJE — 7 inputs
+2. **COCCION** "Cocción a 78°C" — sin inputs (control), `processParameters.targetTemperature: 78`
+3. **COCCION** "Enfriamiento a 34°C" — sin inputs (control), `processParameters.targetTemperature: 34`
+4. ENSAMBLE — 7 inputs
+
+Sigue el patrón de TMPL-BASELIQ-001 (BASE regular) que también usa 2 stages COCCION para representar Calentamiento + Enfriamiento (no existe processType `ENFRIAMIENTO` en el catálogo Liquipops, solo `GE_COCCION` que es de Geniality).
+
+**Razón:** la cocción de DIOXIDO es a 78°C (no 75°C como la regular) y debe enfriarse hasta 34°C antes de pasar al COMPUESTO. El `targetTemperature` se persiste en `processParameters` para que `CoccionStep.jsx` lo lea sin caer al default 105°C hardcodeado.
+
+**Migración batch activo:** la nota activa de la BASE LIQUIPOPS DIOXIDO dentro del batch `MANGO-BICHE-CON-SAL-260427-2354` también recibió los 2 stages nuevos en estado PENDING (PESAJE seguía EXECUTING al momento del cambio).
+
+**Pendiente:** cambiar el fallback `targetTemp = params.targetTemperature || 105` en `CoccionStep.jsx:12` por `null` o por parsing del `stageName`, para evitar que futuras plantillas sin temperatura definida muestren 105°C engañosamente.
+
+## CAMBIO 69: G_EMPAQUE Geniality — botón Finalizar ahora cierra correctamente
+
+**Archivo:** `frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx` (handleComplete).
+
+**Problema:** En notas G_EMPAQUE de Geniality (siropes), los `wizardSteps` construidos por [useAssemblyNote.js:238-244](frontend/src/components/AssemblyRunner/hooks/useAssemblyNote.js#L238-L244) son solo `G_CONTEO_CARRITOS` y `MARCADO_CAJAS`. Pero la lógica de cierre Geniality (auto-completar ENSAMBLE + ingest finished-lots) estaba dentro del branch `else if (currentStep?.type === 'CONTEO')`. Como CONTEO nunca aparece en wizardSteps de G_EMPAQUE, ese branch jamás se ejecutaba y el operario presionaba "Finalizar" sin que la nota se cerrara.
+
+**Caso reportado:** batch `ESCARCHADOR-260423-1641`, stage 8 (G_EMPAQUE 360 ML) llevaba 4 días en `EXECUTING` con `actualQuantity: null` aunque las 278 unidades ya estaban ingestadas en zona PRODUCTO_TERMINADO por otro flujo.
+
+**Fix:** nuevo branch en `handleComplete` antes del `else` genérico final, que detecta `note.processType?.code === 'G_EMPAQUE'` y replica el flujo del branch CONTEO:
+1. Calcula `totalRealQty` desde `empaqueCarriots` recibidos (fallback a outputTargets/targetQuantity)
+2. Persiste `processParameters.conteo` con los reales por producto
+3. Llama `/complete` de la nota G_EMPAQUE
+4. Auto-completa todas las G_ENSAMBLE/ENSAMBLE pending del batch con su qty correspondiente
+5. Dispara `/finished-lots/ingest` (idempotente: ignora `DUPLICATE_INGESTION`)
+
+Idempotente: si ENSAMBLE ya estaba COMPLETED o el stock ya estaba ingestado, los errores duplicados se suprimen.
+
+## CAMBIO 70: Botón "No producido" para presentaciones EMPAQUE con real=0
+
+**Archivo:** `frontend/src/components/AssemblyRunner/steps/IntroStep.jsx`.
+
+**Problema:** En el selector EMPAQUE multi-presentación, si una presentación tiene `REAL FABRICADO = 0` (porque no se produjo), el operario quedaba bloqueado: el sistema le exigía imprimir etiquetas y completar ENSAMBLE con 0 unidades, cosa que MARCADO_CAJAS no permitía ("Ajusta la distribución de cajas").
+
+**Caso reportado:** batch `MANGO-BICHE-CON-SAL-260427-1416`, presentación 1150g programó 144 uds pero real=0 (350g hizo 81 y 3400g hizo 40). El selector mostraba "1 pendiente" y bloqueaba avanzar.
+
+**Fix:**
+1. Nuevo handler `handleNoProducido(empaqueNote)` que pide confirmación y luego:
+   - START de la nota EMPAQUE si está PENDING
+   - COMPLETE con `actualQuantity = 0` y observación "No producido — presentación marcada como 0 unidades"
+   - START + COMPLETE con qty=0 de las G_ENSAMBLE/ENSAMBLE pendientes del mismo `productId`
+2. Botón **"❌ No se produjo esta presentación"** en cada tarjeta del selector cuando `!isCompleted && (actualConteo === 0 || null)`
+3. Texto explicativo: "Cierra con 0 unidades — no imprime etiquetas ni envía a Siigo"
+
+**Razón operativa del usuario:** "para Siigo no importa, pero para la adherencia del programa importa". Queda registrado el 0 (programó 144, real 0 = 0% adherencia para esa presentación) sin disparar RPA Siigo ni imprimir etiquetas innecesarias.
+
+## CAMBIO 71: Consolidación de pedidos — fix copia de pickingItems
+
+**Archivo:** `backend/src/controllers/orderController.js` función `consolidateOrders`.
+
+**Bug encontrado durante prueba:** la copia de OrderPickingItems al consolidado usaba `where: { orderId: { in: orderIds } }`, pero el modelo `OrderPickingItem` se relaciona con `OrderItem` por `orderItemId`, NO con `Order` por `orderId`. La query retornaba 0 silenciosamente y el consolidado quedaba sin lotes asignados → la factura Siigo saldría sin información de lotes.
+
+**Fix:**
+1. Buscar `OrderItem` (con sus pickingItems) de los originales
+2. Construir un `Map<productId, newOrderItemId>` del consolidado
+3. Para cada pickingItem original, copiar al `OrderItem` del consolidado con el mismo `productId`, ajustando el campo correcto `orderItemId`
+
+**Reparación del consolidado actual:** se copiaron los 122 pickingItems de los originales `ORD-TOPPING-17042026-1-BKO3` y `ORD-TOPPING-FROZEN-22042026-5-BKO3` al consolidado `CON-TOPPING-FROZEN-0001`. Verificado: scanned totals coinciden con los originales (incluyendo las diferencias de "Completado Parcial 22%/51%" que se preservan fielmente).
+
+**Otros bugs colaterales del flujo consolidación corregidos:**
+- `OrderItem.create` faltaba `pendingQty` (campo requerido en schema). Fix: `pendingQty = max(0, requestedQty - allocatedQty)`.
+- Frontend `OrderManagement.jsx` usaba `api.post` en lugar de `axios.post(API_URL, ..., AUTH())` — `api` no estaba importado en ese archivo.
+- Frontend `OrderManagement.jsx` llamaba `fetchOrders()` que no existe — el archivo usa `useQuery`. Cambiado a `queryClient.invalidateQueries(['admin-orders'])` y `['order-counts']`.
+
+## CAMBIO 72: Cascada DISPATCHED y DELIVERED para pedidos consolidados
+
+**Archivo:** `backend/src/controllers/orderControllerExtensions.js` (`dispatchOrder` y `deliverOrder`).
+
+**Problema:** El CAMBIO 67 cascadeó solo INVOICED de consolidado → originales. Al despachar, los originales quedaban en INVOICED mientras el consolidado pasaba a DISPATCHED — generaba botón "Despachar" pendiente sobre los originales en la UI cuando ya no aplica.
+
+**Fix:**
+1. **`dispatchOrder`**: si `order.isConsolidation`, después de actualizar el consolidado a DISPATCHED, hace `updateMany` sobre los `consolidatedFromOrderIds` con los mismos datos de despacho (driver, placa, destino, etc.) excepto `transportGuideNumber/trackingGuide` (únicos por order). Skip de la deducción de stock (ya se descontó en originales al alistar).
+2. **`deliverOrder`**: cascada DELIVERED a originales con `deliveredAt` cuando se confirma entrega del consolidado.
+
+**Reparación de datos:** los 2 originales del consolidado `CON-TOPPING-FROZEN-0001` que habían quedado en INVOICED tras el primer despacho fueron actualizados manualmente a DISPATCHED con los datos del consolidado (driver BRAYAN TOVAR, etc.).
+
+## CAMBIO 73: Ocultar pedidos originales consolidados del listado
+
+**Archivos:**
+- `backend/src/controllers/orderController.js` (`getOrders`)
+- `backend/src/controllers/orderControllerExtensions.js` (`getOrderCounts`)
+
+**Problema:** En la pantalla "Gestión de Pedidos" aparecían tanto el consolidado como los pedidos originales que ya fueron fusionados (cada uno con badge "Consolidado en otro pedido"). Generaba confusión: tanto admin como distribuidores podían pensar que eran pedidos diferentes pendientes y ejecutar acciones sobre los originales (despachar, confirmar entrega) cuando ya están representados por el consolidado.
+
+**Fix:** filtro por defecto `where.consolidatedIntoOrderId = null` en:
+1. `getOrders` (listado por status)
+2. `getOrderCounts` (contadores de pestañas)
+
+Para auditoría/debug, `getOrders` acepta el query param `?includeConsolidated=1` que omite el filtro y muestra los originales nuevamente.
+
+**Resultado en UI:** la pestaña Despachado de TOPPING FROZEN ahora muestra **solo** `CON-TOPPING-FROZEN-0001`, no los 2 originales (que siguen en BD con `consolidatedIntoOrderId` apuntando al consolidado, pero ya no se ven en el listado normal).
+
+## CAMBIO 74: Auto-save de PESAJE individual (INPUT) — persistencia al salir/recargar
+
+**Archivo:** `frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx` (efecto `savePesajeDraftTimeout`).
+
+**Problema:** En el flujo de PESAJE uno-a-uno (currentStep.type === 'INPUT', usado en plantillas como PROTECCION MANGO BICHE), el operario escribía el peso, tomaba foto y seleccionaba lote, pero la persistencia al backend SOLO ocurría cuando presionaba "Confirmar" (en `handleNext`). Si salía o recargaba antes, perdía todo.
+
+El auto-save por debounce que existía solo cubría `PESAJE_BATCH` (multi-item en una sola pantalla), no `INPUT`.
+
+**Fix:** extendí el efecto de auto-save para que también maneje `currentStep.type === 'INPUT'` (item individual). El efecto detecta cualquier cambio en `actualQuantities`, `lotNumbers`, `weighingPhotos` o `lotSelections`, espera 2s de debounce y persiste al backend:
+1. PATCH `/assembly-notes/:id/items/:itemId` con `actualQuantity` y `lotNumber`
+2. PATCH `/assembly-notes/:id` con `processParameters.weighing_photos` y `processParameters.lot_selections`
+
+La hidratación al recargar ya existía (en `useAssemblyNote.js:312-326` para items y en el wizard `:144-154` para photos/lot_selections), así que al volver a entrar al batch los valores se restauran automáticamente.
+
+**Caso reportado:** batch `PROTECCION-MANGO-BIC-260428-1602-S1-AGG`, ingrediente 2 de 12 (AGUA). El operario perdía el progreso al salir.
+
+## CAMBIO 75: Factura Siigo — observaciones con cada lote en línea separada
+
+**Archivo:** `backend/src/services/siigoService.js` función `createInvoice` (línea ~700).
+
+**Problema:** En las observaciones de la factura, cuando un producto se entregaba con varios lotes, todos iban en una sola línea separados por coma:
+```
+CHAMOY 3400GR: 164 uds - Lote: CHAMOY-260425-0414, CHAMOY-260425-1215, CHAMOY-260425-1131, CHAMOY-260425-0510
+```
+Difícil de leer y sin desglose de cuántas uds por lote.
+
+**Fix:** nuevo formato — producto en su propia línea con total y conteo de lotes, y cada lote en una línea separada con su cantidad real:
+```
+CHAMOY 3400GR: 164 uds (4 lotes)
+  • CHAMOY-260425-0414: 50 uds
+  • CHAMOY-260425-1215: 50 uds
+  • CHAMOY-260425-1131: 40 uds
+  • CHAMOY-260425-0510: 24 uds
+```
+
+Suma uds por lote (combinando pickingItems repetidos del mismo lote). Sigue respetando el límite de 5000 caracteres con `substring(0, 5000)`.
+
+## CAMBIO 76: Iniciales del operario en TODOS los rótulos Zebra
+
+**Archivo central:** `frontend/src/services/zplLabelBuilder.js`.
+
+Se exporta el helper `toInitials(name)` (ej: "JOHN EDISSON CAICEDO" → "JEC") y se agrega el campo opcional `printedBy` a:
+- `renderLabel` (etiquetas de lote estándar) — pinta `Op:JEC` junto al timestamp inferior
+- `renderCarritoLabel` (etiquetas de carrito Geniality) — pinta `Op: JEC` junto a `Cart 1 de 1`
+
+**Componentes actualizados** (todos importan `toInitials` y pasan `printedBy: toInitials(user?.name)` al builder):
+1. `pages/MaterialZonePage.jsx` — etiquetas de lotes de materia prima
+2. `pages/Labeling.jsx` — etiquetadora general
+3. `pages/FinishedProductZonePage.jsx` — 4 invocaciones (ingest, NC, modal print, NC del modal)
+4. `components/inventory/LotManagementModal.jsx` — etiquetas desde modal de gestión de lotes
+5. `components/Printers/ThermalPrintModal.jsx` — modal de impresión multi-pack
+6. `components/AssemblyRunner/steps/PrintLotStep.jsx` — etiqueta de lote intermedio en wizard
+7. `components/GenialityRunner/steps/GConteoCarritosStep.jsx` — etiquetas de carritos Geniality
+
+**Bug corregido en este componente:** `handlePrintCarrito` usaba `carriots.indexOf(carrito) + 1` (índice global) que devolvía un número distinto al display cuando había varios productos. Ahora recibe `displayNum` (el mismo `i + 1` filtrado por producto que se muestra en pantalla).
+
+**No modificado:** `ConteoStep.jsx` ya imprime el nombre del operario en su footer (formato propio, no ZPL standard), no necesita cambio.
+
+**Resultado en cada etiqueta:**
+```
+... resto del rótulo ...
+DD/MM/YYYY HH:MM  Op:JEC      ← nuevo
+```
+
+## CAMBIO 80: /marcaje multi-método (PIN/Cédula/Cara) + consolidación a Control de Ingreso
+
+### Backend
+
+**`attendanceController.js`** — agregados 2 endpoints nuevos siguiendo el patrón de `pinMark`:
+
+```
+POST /api/attendance/cedula-mark   body: { cedula: "1234567890", action: "IN"|"OUT" }
+POST /api/attendance/face-mark     body: { descriptor: [128 floats], action: "IN"|"OUT" }
+```
+
+Helper interno `_markEmployeeAttendance({ shiftEmployee, action, methodLabel })` reutilizado por las 3 variantes (PIN/CEDULA/FACE) — idempotencia 4h, source=HANDOVER, notes etiquetan método.
+
+`face-mark` compara descriptor recibido contra todos los empleados con `faceDescriptor` registrado, threshold euclidiana 0.5, retorna mejor match o 401 si nadie coincide.
+
+Rutas registradas como públicas en `attendanceRoutes.js` (sin auth, igual que pin-mark).
+
+### Frontend
+
+**`pages/MarcajePage.jsx`** — rediseñada con 3 pestañas (PIN/Cédula/Cara). Carga `face-api.js@0.22.2` desde CDN dinámicamente solo cuando se abre la pestaña Cara, modelos de @vladmandic con fallback. Detección continua cada 800ms; cuando hay cara, descriptor de 128 floats viaja al backend al tocar IN/OUT. Mismo flujo de feedback verde/rojo.
+
+### Refactor: consolidación de Gestión Laboral en Control de Ingreso
+
+**Razón:** 3 módulos (Cuadro de Turnos + Control de Ingreso + Gestión Laboral) producían cruces — ausencias se podían registrar en 2 lugares (`shiftAbsence`), reportes desconectados del marcaje real.
+
+**Cambios:**
+- `pages/AttendancePage.jsx`: agregada pestaña **"Operación"** que renderiza `<LaborManagementPage />` embebido. Tab state ahora soporta deep-link via `?tab=operation`.
+- `App.jsx`: Route `/labor-management` → `<Navigate to="/attendance?tab=operation" replace />` (preserva bookmarks).
+- `Sidebar.jsx`: entry "Gestión Laboral" eliminada del menú lateral.
+- `LaborManagementPage.jsx`: SIN cambios internos (sigue funcionando idéntico, solo cambia su contenedor).
+
+**Convención operativa final:**
+- Ausencias programadas → solo en Cuadro de Turnos.
+- Ausencias del día → solo en Cuadro de Turnos.
+- Marcaje real → `/marcaje` (PIN/Cédula/Cara) o firma de relevo.
+- Reportes/aprobación de extras/cierres → tab Operación de Control de Ingreso.
+
+**Validación en producción (29-abr 13:51-13:55):** primer relevo MAÑANA→TARDE generó 10 AttendanceRecord automáticos con source=HANDOVER (5 EXIT del turno saliente + 5 ENTRY del entrante). Cero firmas tardías, cero registros duplicados con kiosko.
+
+## CAMBIO 79: Control de horas — firma del relevo + marcaje por PIN + aprobación manual de extras
+
+Conjunto de cambios para que las horas trabajadas y horas extras de los 20 empleados activos queden registradas automáticamente sin doble paso (no kiosko + relevo, solo relevo).
+
+### 79.A — Schema (`prisma/schema.prisma`)
+
+**Nuevo enum value**: `AttendanceSource.HANDOVER` (existían KIOSK, MANUAL — agrega HANDOVER para distinguir registros generados por firma de relevo o marcaje por PIN).
+
+**Nuevo modelo `OvertimeApproval`**:
+```
+model OvertimeApproval {
+  id           String        @id @default(uuid())
+  employeeId   String
+  date         DateTime      @db.Date
+  dayHours     Float         @default(0)
+  nightHours   Float         @default(0)
+  reason       String
+  approvedById String
+  approvedAt   DateTime      @default(now())
+  ...
+  @@map("overtime_approvals")
+}
+```
+
+Migración: `prisma db push` (no requiere data migration). Relaciones inversas en `User.approvedOvertimes` y `ShiftEmployee.overtimeApprovals`.
+
+### 79.B — Helper `recordHandoverAttendance` (attendanceController.js)
+
+Cuando un operador firma el relevo, se llama de forma no-bloqueante para crear un `AttendanceRecord` con source=HANDOVER:
+
+- **Idempotencia**: si ya hay record (cualquier fuente) en últimas 4h, no duplica.
+- **Cap +10 min en OUT**: si saliente firma tarde, timestamp se topa en `endHourOfShift + 10 min`. Sábado usa horarios sabatinos (MANANA→TARDE 12:00, TARDE 18:00).
+- **No-bloqueante**: cualquier excepción se loguea, no propaga.
+
+Cableado en 4 endpoints de `shiftHandoverController.js`: `signOperator` (OUTGOING/INCOMING), `authorizeOutgoing`, `acceptIncoming`.
+
+### 79.C — Endpoint `/api/attendance/pin-mark` + página `/marcaje`
+
+Para personal de horario fijo (LOGISTICA, ASEO, EMPAQUE 8-17) que no pasa por el relevo.
+
+```
+POST /api/attendance/pin-mark   (público, sin auth)
+body: { pin: "1234", action: "IN" | "OUT" }
+```
+
+Frontend: ruta nueva `/marcaje` en `App.jsx` (fuera de `ProtectedRoute`). Componente `pages/MarcajePage.jsx`: teclado numérico estilo kiosko, dos botones grandes (verde ENTRADA / rojo SALIDA), reloj en tiempo real.
+
+### 79.D — Aprobación manual de horas extras (admin)
+
+Endpoints:
+- `GET    /api/attendance/overtime-approvals?employeeId&from&to` (auth)
+- `POST   /api/attendance/overtime-approvals` (auth + ADMIN_ROLES)
+- `DELETE /api/attendance/overtime-approvals/:id` (auth + ADMIN_ROLES)
+
+POST valida: empleado existe, fecha válida, horas día/noche 0-24 (al menos una >0), motivo ≥3 chars. Si empleado tiene `ShiftAbsence` ese día → graba pero retorna `warning` (no bloquea — admin puede aprobar parcial-day).
+
+UI nueva en `LaborManagementPage.jsx`: sección "Aprobar horas extra" (form: colaborador, fecha, horas día/noche, motivo) + tabla "Horas extra aprobadas" con motivo, aprobador, botón eliminar.
+
+### 79.E — Integración con `getLaborSummary` (laborSummaryService.js)
+
+Las aprobaciones manuales se cargan en paralelo con records/absences/assignments. En el loop por empleado, se suman a `dayMap` antes de `finalizeEmployeeSummary`:
+
+```js
+for (const approval of employeeApprovals) {
+    const row = ensureDayRow(dayMap, toDateKey(approval.date));
+    row.overtimeDayMinutes += Math.round((approval.dayHours || 0) * 60);
+    row.overtimeNightMinutes += Math.round((approval.nightHours || 0) * 60);
+}
+```
+
+Resultado: el reporte de quincena muestra `overtimeDayHours`/`overtimeNightHours` que solo incluyen lo aprobado manualmente (cap auto en OUT impide acumulación natural por demora).
+
+### 79.F — Turno DIURNO definido (data fix)
+
+Insertado en `shiftScheduleDefinition` el registro `DIURNO` (08:00-17:00 L-V, 08:00-13:00 sábado). Antes había asignaciones `shift='DIURNO'` para HUGO/LEDDY/ALBA pero sin definición → horas programadas salían 0.00. Ahora calcula correctamente.
+
+### Convención operativa
+
+- **Turnos rotativos** (17 personas) → firman relevo con PIN → check-in/out auto.
+- **Horario fijo DIURNO** (3 personas: LOGISTICA, ASEO, EMPAQUE 8-17) → marcan en `/marcaje` con PIN.
+- **Horas extras** → solo se acumulan si admin las aprueba en `Gestión Laboral → Aprobar horas extra`.
+- **Ausencias** → se registran en `Cuadro de Turnos → Ausencias` (programadas) o `Gestión Laboral → Novedad laboral` (mismo día). Ambas escriben en `ShiftAbsence`. Relevo y check-in/out auto las respetan.
+
+**Razón:** unificar registro de horas con el flujo del relevo que ya está en producción. Evita doble paso (kiosko + relevo) y errores humanos. Los 20 empleados activos tienen PIN registrado.
+
+## CAMBIO 77e: Ingredientes (GLUCOSA/FRUCTOSA) excluidos del check de secuencia obligatoria
+
+**Backend `assemblyNoteController.js` `quickStart`** (línea ~1304):
+
+La validación "Debes iniciar el bache anterior primero (X). No puedes saltar baches en la secuencia." obliga a iniciar los baches en orden cronológico dentro de cada línea (LIQUIPOPS o GENIALITY). Se aplicaba SIN distinguir entre baches de sabores y baches de ingredientes (GLUCOSA, FRUCTOSA — productos con SKU `PROCELIQUIPOPS26`/`PROCELIQUIPOPS43`).
+
+Resultado: si un sabor (ej. MARACUYA) estaba programado antes que GLUCOSA, el operador no podía iniciar GLUCOSA hasta arrancar MARACUYA — pero MARACUYA depende de GLUCOSA (la usa como insumo), creando un deadlock operacional.
+
+```js
+// Agregado al inicio de la validación:
+const INGREDIENT_SKUS = ['PROCELIQUIPOPS26', 'PROCELIQUIPOPS43'];
+const thisIsIngredient = thisBatch?.outputTargets?.some(t => INGREDIENT_SKUS.includes(t.product?.sku));
+if (thisBatch?.scheduledStart && !thisIsIngredient) {
+    // ... validación de secuencia (ahora también excluye ingredientes del firstPending lookup)
+    const firstPending = await prisma.productionBatch.findFirst({
+        where: {
+            ...,
+            outputTargets: {
+                some: { product: { group: { name: lineGroup } } },
+                none: { product: { sku: { in: INGREDIENT_SKUS } } }  // ← excluir ingredientes
+            },
+        },
+        ...
+    });
+}
+```
+
+**Razón:** ingredientes son insumos intermedios que se preparan en paralelo a sabores; no deben encolarse secuencialmente con ellos.
+
+## CAMBIO 77d: ProductionScheduler — propagar templateCode al modalData (real fix)
+
+**Frontend `pages/ProductionScheduler.jsx`** `handleSelectEvent` (línea ~1398):
+
+`ProductionScheduler.jsx` ES la página real que sirve la ruta `/production/view` para AMBAS líneas Liquipops y Geniality (la pestaña interna cambia `activeLine`). El archivo `pages/Geniality/GenialityScheduler.jsx` está huérfano (no está en el routing de App.jsx).
+
+El bug: `handleSelectEvent` no propagaba `event.templateCode` ni `event.baseWeight` al `setModalData`. Cuando el operador hacía click en un bache de ingrediente (GLUCOSA, FRUCTOSA) y presionaba "Iniciar Producción", el botón verificaba `modalData.templateCode` (que era undefined) y caía en `handleLaunchBatch` con `BATCH-GENIALITY` (flujo de SIROPES). Resultado: 9 etapas equivocadas (BASE SIROPE CLASICA → SABORIZACION → CONTEO → EMPAQUE) en lugar de las 6 correctas de `TMPL-AZINV-001` (Pesaje de Agua/Azúcar/Ácido → Adición → Cocción 105°C → Enfriamiento → Medición Brix/pH → Ensamble Siigo).
+
+```js
+// Antes:
+setModalData({
+    ...,
+    totalSyrupKg: event.baseWeight,
+    mix: event.mix,
+    // (sin templateCode ni baseWeight)
+});
+
+// Ahora:
+setModalData({
+    ...,
+    totalSyrupKg: event.baseWeight,
+    baseWeight: event.baseWeight,        // ← nuevo
+    mix: event.mix,
+    templateCode: event.templateCode,    // ← nuevo
+});
+```
+
+`handleLaunchIngredient` ya existía en ProductionScheduler.jsx (línea 203). El botón de "Iniciar Producción" (línea ~2802) ya verificaba `modalData.templateCode` para enrutarlo. Solo faltaba que `templateCode` llegara al modalData desde el evento.
+
+El `getSchedule` del `genialitySchedulerController.js` ya devolvía `templateCode='TMPL-AZINV-001'` para los baches con SKU `PROCELIQUIPOPS26`/`PROCELIQUIPOPS43` (`INGREDIENT_TEMPLATE_MAP`).
+
+**Caché de Vite**: importante limpiar `node_modules/.vite` antes del build cuando los cambios no se reflejen — el hash del bundle cambia solo si el contenido cambia, y Vite a veces deja el bundle viejo si su HMR cache tiene una versión previa.
+
+**Razón:** caso real visto el 28-abr — usuario inicia GLUCOSA dos veces seguidas y ambas veces el sistema lanza "Pesaje de BASE SIROPE CLASICA" con AGUA + AZUCAR + GOMA GUAR + GOMA XHANTAN + SUCRALOSA + SORBATO + ANTIESPUMANTE TECNAS (ingredientes de sirope, no de azúcar invertida glucosa). El fix anterior (CAMBIO 77c) en `GenialityScheduler.jsx` no aplicaba porque ese archivo está huérfano.
+
+## CAMBIO 77c: GenialityScheduler — usar plantilla de ingrediente para GLUCOSA/FRUCTOSA
+
+**Frontend `pages/Geniality/GenialityScheduler.jsx`**:
+
+En la vista Geniality, al iniciar producción de un bache de ingrediente (GLUCOSA, FRUCTOSA, SKU `PROCELIQUIPOPS26`/`PROCELIQUIPOPS43`), `handleLaunchBatch` siempre usaba la plantilla `BATCH-GENIALITY` (flujo completo de SIROPES: BASE SIROPE CLASICA → SABORIZACION → CONTEO → EMPAQUE), generando 9 etapas equivocadas. La plantilla correcta para GLUCOSA es `TMPL-AZINV-001` con 6 etapas (Pesaje, Adición, Cocción 105°C, Enfriamiento, Medición Brix/pH, Ensamble Siigo).
+
+```js
+// Agregado:
+const handleLaunchIngredient = async (batchId, templateCode, baseWeight) => {
+    const tmpl = (await api.get('/assembly-templates?all=true')).data
+        .find(t => t.isActive && t.templateCode === templateCode);
+    const lotCount = baseWeight ? Math.max(1, Math.round(baseWeight / 100)) : 1;
+    const res = await api.post('/assembly-notes/quick-start', {
+        templateId: tmpl.id, userId, quantity: lotCount, existingBatchId: batchId,
+    });
+    if (res.data?.firstNoteId) window.location.href = `/assembly-execution/${res.data.firstNoteId}`;
+};
+
+// handleLaunchBatch ahora redirige cuando hay templateCode:
+const handleLaunchBatch = async (batchId, title, flavor, mix, baseWeight, templateCode) => {
+    if (templateCode) return handleLaunchIngredient(batchId, templateCode, baseWeight);
+    // ... (BATCH-GENIALITY normal)
+};
+```
+
+Las 3 llamadas (calendar event button x2, modal "Iniciar Producción" button) ahora pasan `event.templateCode` / `modalData.templateCode` (ya viene del `getSchedule` del backend para baches con SKU de ingrediente).
+
+`handleSelectEvent` también propaga `templateCode` y `baseWeight` al modalData.
+
+**Razón:** caso real visto el 28-abr — usuario inicia producción de GLUCOSA, sistema lanza el flujo de "Pesaje de BASE SIROPE CLASICA" con AGUA + AZUCAR + GOMA GUAR + GOMA XHANTAN + SUCRALOSA + SORBATO + ANTIESPUMANTE (ingredientes de sirope, no de glucosa). En Liquipops esto ya funcionaba porque `ProductionScheduler.jsx` tenía `handleLaunchIngredient`; faltaba replicarlo en Geniality.
+
+## CAMBIO 77b: Geniality `updateBatch` ignoraba el campo `mix` — fix
+
+**Backend `genialitySchedulerController.js` `updateBatch`** (línea ~670):
+
+El endpoint `PUT /geniality/production/:id` apunta a `genialitySchedulerController.updateBatch` (NO al de productionScheduler). Ese handler **solo guardaba `scheduledStart/End/status/notes`** y no procesaba `mix` ni `baseWeight`. Resultado: el alert del frontend decía "Mix actualizado correctamente" pero los cambios al mix se perdían silenciosamente.
+
+```js
+// Antes:
+const { scheduledStart, scheduledEnd, status, notes } = req.body;
+// ... no manejaba mix ni baseWeight
+
+// Ahora: maneja mix (actualiza BatchOutputTarget), baseWeight, projectedTotalWeight
+// (mismo patrón que productionSchedulerController.updateBatch).
+```
+
+**Backend `genialitySchedulerController.js` `getSchedule`** (línea ~755):
+
+También se aplicó el fallback de `kgFactor = baseWeight/totalUnits` para ingredientes sin patrón de tamaño en el nombre (igual que en `productionSchedulerController`).
+
+**Razón:** caso real visto el 28-abr en GLUCOSA en vista Geniality — usuario cambia a 6 unidades, marmita correcta 600kg, guarda con éxito visible, reabre y vuelve a 700kg porque el backend ignoró silenciosamente el mix. Inicialmente arreglé el controller de Liquipops sin notar que Geniality tiene su propio controller separado.
+
+## CAMBIO 77: Editar mix de bache programado — sincronizar baseWeight
+
+**Backend `productionSchedulerController.js` `updateBatch`** (línea ~890):
+
+`updateBatch` solo actualizaba `batchOutputTarget.plannedUnits`/`plannedWeightKg` cuando se cambiaba el mix, pero **no actualizaba `productionBatch.baseWeight`**. Como el título del bache (`getSchedule` línea 1031: `${b.flavor} (${Math.round(b.baseWeight)}kg)`) y el "PESO TOTAL MARMITA" del modal (`totalSyrupKg = event.baseWeight`) se leen de `baseWeight`, al guardar y reabrir el modal mostraba el peso viejo aunque las unidades sí se hubieran guardado correctamente. UX: parecía que "no se guardó" cuando sí se guardó.
+
+```js
+// Antes (solo actualizaba scheduledStart/scheduledEnd/status/notes + outputTargets):
+const updateData = {};
+if (scheduledStart) updateData.scheduledStart = new Date(scheduledStart);
+// ... (no baseWeight)
+
+// Ahora:
+if (baseWeight !== undefined && !Number.isNaN(Number(baseWeight))) {
+    updateData.baseWeight = Number(baseWeight);
+}
+// + Si baseWeight no viene, recalcula desde sum(plannedWeightKg) de outputTargets
+// + También actualiza projectedTotalWeight = sum(plannedWeightKg)
+```
+
+**Frontend `ProductionScheduler.jsx`** (botón Guardar Cambios, línea ~2785):
+```js
+const newBaseWeight = modalData.totalSyrupKg || modalData.totalPlannedKg || modalData.baseWeight;
+await api.put(`${updBase}/${realId}`, {
+    mix: ...,
+    baseWeight: newBaseWeight  // ← nuevo
+});
+```
+
+**Razón:** caso real visto el 28-abr en GLUCOSA — usuario cambia 700kg → 600kg, el alert dice "Mix actualizado correctamente", pero al reabrir el bache el título sigue mostrando "(700kg)". El mix sí se guardaba pero `baseWeight` quedaba desincronizado.
+
+## CAMBIO 78: Cocción a 105°C en Azúcar Invertida y Fructosa — sin cronómetro de 10 min
+
+**Plantillas afectadas:** `TMPL-AZINV-001` (Azúcar Invertida Glucosa), `TMPL-AZINV-001-v2`, `TMPL-FRUCT-001` (Fructosa).
+
+**Cambio operativo:** apenas la mezcla alcanza 105°C, se inicia inmediatamente el enfriamiento. Antes había un cronómetro forzoso de 10 minutos a 105°C que el operario debía esperar antes de poder pasar al stage de enfriamiento.
+
+**Cambios en BD:**
+- `stageName`: "Cocción a 105°C — Mantener" → **"Cocción a 105°C"**
+- `processParameters.timerMinutes`: 10 → **0**
+- `processParameters.instruction`: actualizada para reflejar "apenas se alcance, pasar a enfriamiento"
+
+**Migración batches activos:** las notas en estado PENDING/EXECUTING que aún tenían el timer viejo también fueron actualizadas (ej. `AZUCAR-INVERTER-GLUC-260428-2112-S3` y `AZUCAR-INVERTER-GLUC-260428-2251-S3`).
+
+**Frontend** (`CoccionStep.jsx`): no requirió cambio — el componente ya respeta `timerMin === 0` (líneas 43, 49, 117, 512). Cuando el timer es 0, el botón "Completar Etapa" se habilita apenas haya foto + temperatura real registrada.
+
+## CAMBIO 79: Azúcar Invertida (Glucosa/Fructosa) clasificada como Geniality en Panel Operador
+
+**Archivo:** `frontend/src/pages/ProductionOperatorPage.jsx` función `isSirope` (línea ~929).
+
+**Problema:** Los baches de AZUCAR INVERTER GLUCOSA (PROCELIQUIPOPS26) y AZUCAR INVERTIDA FRUCTOSA (PROCELIQUIPOPS43) aparecían bajo el tab "Perlas" (Liquipops) en el Panel de Producción del operario, pero físicamente se preparan en la línea Geniality. Eso confundía al operario.
+
+**Fix:** se agregaron keywords a `isSirope`:
+- batchNumber: `AZUCAR-INVERT`, `FRUCTOSA`
+- product name: `AZUCAR INVERT`, `AZUCAR INVERTIDA`
+
+Ahora estos baches aparecen bajo el tab **"Siropes"** del Panel de Producción.
+
+**Razón operativa:** el SKU `PROCELIQUIPOPS43` (Fructosa) está en grupo `PRODUCTOS EN PROCESO LIQUIPOPS` por inconsistencia histórica de catálogo, pero ambos productos se ejecutan en marmita Geniality. La detección por keywords lo arregla sin tocar el grupo del producto.
+
+## CAMBIO 80: Time-line disciplinador del turno (agente que jalonea al operario)
+
+**Modelo nuevo:** `ShiftDisciplineRun` en `prisma/schema.prisma` (tabla `shift_discipline_runs`).
+- Una fila por cada turno (MANANA / TARDE / NOCHE × fecha)
+- `steps`: JSON con los 13 hitos del turno (BASES + ALGINATOS + PROTECCIONES)
+- `finalScore` 0-100 + `finalGrade` (EXCELENTE/BUENO/ACEPTABLE/DEFICIENTE) al cierre
+
+**Backend:** `controllers/shiftDisciplineController.js` + `routes/shiftDisciplineRoutes.js`
+- Tabla maestra `SHIFT_TEMPLATE` con offsets fijos desde inicio de turno (06/14/22):
+  - Base 1 (T+0), Base 2 (T+50), Base 3 (T+1:40), ALG #1 (T+2:10), PROT #1 (T+2:25),
+    Base 4 (T+3:10), Base 5 (T+4:00), Base 6 (T+4:50), ALG #2 (T+5:20), PROT #2 (T+5:35),
+    Base 7 (T+6:20), ALG #3 herencia (T+6:50), PROT #3 herencia (T+7:05)
+- Endpoints:
+  - `GET /shift-discipline/current` — devuelve/crea el run del turno actual + lo refresca cruzando con `productionBatch.startedAt`
+  - `GET /shift-discipline/previous` — último run cerrado (para modal de calificación)
+  - `POST /:id/refresh` — re-evaluar
+  - `POST /:id/close` — cierra y calcula score final
+- **Auto-detección**: cruza cada step con baches Liquipops iniciados ±60 min de la hora ideal. Asigna `doneBy = batch.executedById`, calcula `deltaMin` y `score`.
+- **Score por step**: ≤5min=100, ≤10min=85, ≤20min=65, ≤30min=40, >30min=0
+- **Score final**: promedio ponderado por `weight` de cada step (BASES=1.0, ALG=0.8/0.9, PROT=0.7/0.8)
+- **Cron** a las 6/14/22 COT (`server.js`): cierra el run anterior + el cron existente crea el nuevo al pedir `/current`
+
+**Frontend:** `components/ShiftDisciplineTimeline.jsx`
+- Barra horizontal arriba del Panel de Producción (sticky con el header)
+- Steps como pills con estado visual: ✅ done (color verde/amarillo/verde según tipo) · ⏰ now (azul pulsante) · 🟡 late · 🔴 very-late (rojo pulsante)
+- Mensaje motivacional contextual
+- **Alerta sonora** (Web Audio API): beep -2min (suave 700Hz), +5min (medio 500Hz), +15min (fuerte doble 350Hz)
+- Modal al inicio de turno con calificación del anterior (sessionStorage para mostrarlo solo una vez)
+- Re-sync cada 2 min con BD + tick local cada 30 s
+- Sobrevive refresh: el run se persiste en BD, el frontend solo lo lee
+
+**Razón filosófica del usuario:** "es más un agente que está puyando a los operarios para que se rijan al plan de fabricación, que veo muchos que no tienen capacidad de liderar y mucho menos de regirse al plan."
+
+**Capacidad teórica con este cronograma:** 21 BASES/día (7 por turno) + 9 ALG + 9 PROT. La rueda gira cada 8 horas y cada turno hereda ALG #3 + PROT #3 del anterior + deja los suyos para el siguiente.
+
+## CAMBIO 81: Cronograma cíclico + comida + ranking + push + bono
+
+Extensiones al CAMBIO 80 (time-line disciplinador):
+
+### Cronograma cíclico (`SHIFT_TEMPLATE_BY_CODE`)
+- Tres templates distintos por turno (MAÑANA, TARDE, NOCHE) reflejando la rueda 24h donde el ALG cae **cada 3 BASES contadas globalmente** sin reiniciar al cambiar turno
+- Mañana: 12 hitos (7 BASES + 2 ALG + 2 PROT + 1 COMIDA almuerzo 10:30)
+- Tarde: 12 hitos (7 BASES + 2 ALG + 2 PROT + 1 COMIDA cena 17:40)
+- Noche: 14 hitos (7 BASES + 3 ALG + 3 PROT + 1 COMIDA 02:25) — cierra el ciclo con ALG #3 + PROT #3
+- Step COMIDA con `weight: 0` (no penaliza score), estilo gris dasheado en frontend, sin alarma sonora
+
+### Ranking mensual de líderes
+- `GET /shift-discipline/leader-ranking?month=YYYY-MM` — agrupa runs cerrados por leaderId, calcula `avgScore` + lista de runs
+- Schema: agregado `alertedSteps` (Json?) a `ShiftDisciplineRun` para no enviar push duplicados
+
+### Notificaciones push de retraso
+- Cron cada 5 min (`*/5 * * * *`) ejecuta `checkRetrasos`
+- Cuando un step lleva >15 min sin hacerse, envía push (Web Push API VAPID) con título "⚠️ Retraso en cronograma"
+- `alertedSteps` evita duplicar la misma alerta para el mismo step
+
+### Factor disciplina al bono grupal (CAMBIO 64 → 81)
+- `kpiController.js getScheduleAdherence` ahora trae `disciplineRuns` de la BD y los expone como `disciplineScore` + `disciplineGrade` por turno en `shiftCompletion`
+- `ProductionKpiPage.jsx` agrega:
+  - Mini KPI "⏱ Disciplina" en cada tarjeta de líder (verde ≥90, azul ≥75, amber ≥60, rojo <60)
+  - Condición de bono ahora exige también `avgDiscipline >= 75` (si hay datos del turno disciplinador)
+- Resultado: el bono grupal del CAMBIO 64 ahora exige **rendimiento ≥90% + compañerismo ≥1 intermedio/turno + disciplina ≥75**
+
+## CAMBIO 82: Scan de pedidos prioriza PRODUCTO_TERMINADO sobre NO_CONFORME
+
+**Archivo:** `backend/src/controllers/orderWorkflowController.js` (búsqueda de lote en scan).
+
+**Bug:** cuando un mismo lote tiene entradas en varias zonas (PRODUCTO_TERMINADO, NO_CONFORME, PRODUCCION), el `findFirst` traía cualquiera con `currentQuantity > 0`. Si por orden traía NO_CONFORME (que tiene 1 ud separada por defectos), la validación `zone !== 'PRODUCTO_TERMINADO'` bloqueaba el scan con "Sin stock en Producto Terminado", aunque el mismo lote sí tuviera stock disponible en PT.
+
+**Caso reportado:** lote `FRESA-260422-1718` con 159 ud en PRODUCTO_TERMINADO + 1 ud en NO_CONFORME → scan bloqueado.
+
+**Fix:** nuevo helper `findLotPreferringPT(where)` que busca primero en `zone: 'PRODUCTO_TERMINADO'` y solo si no hay nada cae a otras zonas. Aplicado a las 3 búsquedas existentes (exacto / strip prefix / endsWith).
+
+## CAMBIO 83: Iniciales en rótulos Zebra — fallback robusto + faltaba MarcadoCajasStep
+
+**Problema reportado:** después del CAMBIO 76, las iniciales del operario NO salían en los rótulos. Causas:
+
+1. **MarcadoCajasStep.jsx no estaba modificado** — es el que más imprime (etiquetas de cajas, contramuestras, NC) y se omitió. Faltaba `useAuth` + `printedBy`.
+2. **Si algún componente olvida pasar `printedBy`, no había fallback** — quedaba en blanco.
+
+**Fix:**
+
+### a) MarcadoCajasStep agregado al pool
+- `import { useAuth }` + `import { ..., toInitials }`
+- `userInitials = toInitials(user?.name)`
+- `baseData.printedBy = userInitials` para todos los `buildLotLabelZPL`
+
+### b) Fallback automático desde localStorage
+- `AuthContext.jsx` persiste `userInitials` y `userName` en localStorage cada vez que setea el user (login normal, pin-login, /auth/me en arranque). Logout limpia.
+- `zplLabelBuilder.js` agrega helper `getStoredUserInitials()` que lee de localStorage
+- `renderLabel` y `renderCarritoLabel`: si `printedBy` viene vacío, usan `getStoredUserInitials()` como fallback
+- Resultado: aunque algún componente futuro olvide pasar `printedBy`, el rótulo SIEMPRE incluirá las iniciales del último usuario logueado
+
+**Total de puntos de impresión Zebra cubiertos (8):**
+1. MaterialZonePage.jsx
+2. Labeling.jsx
+3. FinishedProductZonePage.jsx (4 invocaciones internas)
+4. LotManagementModal.jsx
+5. ThermalPrintModal.jsx
+6. PrintLotStep.jsx
+7. GConteoCarritosStep.jsx
+8. **MarcadoCajasStep.jsx** ← agregado en este cambio
+
+ConteoStep.jsx ya tenía su propio formato con nombre completo del operario (no requirió fallback).
+
+## CAMBIO 84: Cronómetro de Esferificación auto-arranca con `note.startedAt`
+
+**Problema reportado:** algunos baches mostraban tiempos de esferificación irreales (ej. 183 min vs ~70 min esperados). Causa: el operario debía pulsar manualmente "INICIAR CRONÓMETRO" al llegar al paso `ESFERIFICACION`. Esto:
+- Se podía olvidar (cronómetro no arrancaba o arrancaba tarde).
+- Se podía manipular para alterar las estadísticas.
+- No reflejaba el momento real, que es cuando se cierra `PROTECCION_GATE` (stage 7) → `FORMACION` (stage 8).
+
+**Fix — `frontend/src/components/AssemblyRunner/steps/EsferificacionStep.jsx`:**
+
+1. **Eliminado** el botón "INICIAR ESFERIFICACIÓN" del estado IDLE.
+2. **Auto-inicialización al montar** el step: si no existe `processParameters.esferificacion_timer` persistido pero sí `noteData.startedAt` (heredado del cierre del paso PROTECCIÓN), se inicializa el cronómetro automáticamente con ese timestamp:
+   - `startTime = noteData.startedAt`
+   - `elapsedMs = Date.now() - startedAt` (recupera tiempo transcurrido si el operario llegó tarde a abrir el step)
+   - `status = RUNNING`
+   - Se persiste en backend con un evento `INICIO` que indica `"Esferificación iniciada automáticamente al finalizar Protección"`
+3. **Pausas y FINALIZAR** funcionan igual que antes — el operario sigue pudiendo pausar por incidencias y describir el motivo.
+4. **Eliminado** `handleStart` (ya no se usa).
+5. Mensaje IDLE ahora explica que el cronómetro auto-inicia al pasar al paso (estado solo aparece si la nota aún no tiene `startedAt`, caso borde).
+
+**Resultado esperado:** tiempo medido = tiempo real desde el cierre de Protección hasta que el operario pulsa FINALIZAR, descontando pausas justificadas. El operario ya no controla el inicio.
+
+## CAMBIO 85: Una sola esferificación a la vez por planta (bloqueo de concurrencia)
+
+**Regla operativa:** la planta solo puede tener UNA nota FORMACION (esferificación de Liquipops) corriendo o en pausa simultáneamente. Si el operario intenta abrir un nuevo bache mientras hay otro activo, el sistema bloquea el inicio del cronómetro y muestra cuál bache hay que finalizar primero.
+
+**Aclaraciones explícitas (del usuario):**
+- El FIN del cronómetro es **siempre manual** — el operario pulsa FINALIZAR. No hay encadenamiento automático.
+- El INICIO sigue siendo automático (CAMBIO 84) desde `note.startedAt`, pero queda bloqueado si hay otra activa.
+- El operario debe poder finalizar antes de tiempo si: termina la jornada, surge una eventualidad, o cambio de sabor.
+
+**Backend:**
+- Nuevo endpoint `GET /api/assembly-notes/active-esferificacion` (`assemblyNoteController.getActiveEsferificacion`).
+  - Busca notas FORMACION en `EXECUTING` cuyo `processParameters.esferificacion_timer.status` sea `RUNNING` o `PAUSED`.
+  - Devuelve `{ active, noteId, batchNumber, flavor, operatorName, startedAt, elapsedMinutes, timerStatus }`.
+  - Registrado en `routes/assemblyNoteRoutes.js` ANTES de `/:id` para que matchee el path literal.
+
+**Frontend — `EsferificacionStep.jsx`:**
+- Antes de auto-arrancar (Case B del CAMBIO 84) se consulta el endpoint.
+- Si otro bache está activo (`noteId !== current`), se setea `blockedBy` y el cronómetro queda IDLE.
+- Banner rojo con `AlertTriangle`: muestra batchNumber + operario + minutos transcurridos + botón "Ir al bache en curso →".
+- Mientras `blockedBy` está activo, polling cada 10s al endpoint; cuando el otro bache se finaliza, se libera el slot y el cronómetro auto-arranca.
+
+**Frontend — `ProductionOperatorPage.jsx`:**
+- Pill verde en el header del panel: "🟢 Esferificación activa: <bache> · Op. <nombre> · <min> min" con click que navega al step.
+- Polling cada 30s, visible para todos los operarios del panel.
+
+**Casos cubiertos:**
+- Operario olvida FINALIZAR el bache anterior → al abrir el siguiente ve el banner rojo con atajo.
+- Cambio de turno: operario entrante llega y ve qué bache del turno saliente sigue abierto.
+- Cierre por eventualidad / fin de jornada → operario FINALIZA manualmente; el siguiente operario podrá iniciar otro.
+
+## CAMBIO 86: Historial de turnos disciplinador (página dedicada)
+
+**Necesidad:** hasta ahora solo se podía ver el turno actual y el inmediatamente anterior (modal de calificación). No había forma de auditar resultados pasados ni comparar líderes/turnos en un rango.
+
+**Backend — `shiftDisciplineController.js` + `shiftDisciplineRoutes.js`:**
+- `GET /api/shift-discipline/history?from&to&leaderId&shiftCode&page&pageSize`
+  - Lista paginada de runs cerrados, con resumen por fila: `stepsTotal`, `stepsDone`, `stepsLate` (Δ>5min), `stepsMissed` (no hechos), `alertsCount`, `finalScore`, `finalGrade`, `leaderName`.
+- `GET /api/shift-discipline/runs/:id`
+  - Devuelve el run completo con `steps[]` para reproducir la timeline tal como ocurrió.
+
+**Frontend — `pages/ShiftDisciplineHistoryPage.jsx` (nuevo):**
+- Ruta: `/shift-discipline/history`
+- Filtros: rango de fecha (default últimos 30 días), turno (Mañana/Tarde/Noche/Todos), líder (selector poblado desde leaderRanking).
+- KPIs en el tope: turnos cerrados, score promedio, % adherencia al horario, pasos hechos/total con # tarde, mejor/peor score del rango.
+- Tabla con columnas: fecha, turno, líder, score, grade, pasos, tarde, sin hacer, alertas push, fecha cierre. Click en fila abre drawer.
+- Drawer detalle: score grande, info card (líder, fecha, inicio/fin), timeline completa con pills (verde=hecho, rojo=no hecho, gris=COMIDA) — mismo formato visual que `ShiftDisciplineTimeline.jsx` pero estático.
+- Acceso restringido a roles `ADMIN`, `LIDER`, `PRODUCCION`. Otros roles ven mensaje de denegación.
+
+**Frontend — `components/ShiftDisciplineTimeline.jsx`:**
+- Botón "📊 Historial" en el header de la barra del turno actual → navega directo a `/shift-discipline/history`. Visible para todos pero la página gating lo bloquea para roles no autorizados.
+
+**Archivos modificados/creados:**
+- `backend/src/controllers/shiftDisciplineController.js` — `+history`, `+getRunDetail`
+- `backend/src/routes/shiftDisciplineRoutes.js` — registra los 2 endpoints
+- `frontend/src/pages/ShiftDisciplineHistoryPage.jsx` — NUEVO
+- `frontend/src/App.jsx` — import + ruta
+- `frontend/src/components/ShiftDisciplineTimeline.jsx` — link al historial
+
+## CAMBIO 87: FEFO obligatorio al transferir lotes de Bodega Principal a Producción
+
+**Archivo:** `frontend/src/components/inventory/LotManagementModal.jsx`
+
+**Problema:** Cuando un operario transfería materia prima de WAREHOUSE → PRODUCTION (botón ArrowRightLeft del modal de gestión de lotes), podía escoger CUALQUIER lote, ignorando FEFO. Esto generaba que lotes con fecha de vencimiento más cercana se quedaran rezagados en bodega y vencieran antes de pasar a producción.
+
+**Fix:** Convertir FEFO en restricción dura para la transferencia WAREHOUSE → PRODUCTION. El operario sigue viendo todos los lotes en bodega, pero solo el más próximo a vencer (o varios si vencen el mismo día) puede ser transferido a Producción. Los demás muestran badge "ESPERAR FEFO" y el botón "Transferir" se deshabilita con mensaje explicando cuál lote debe pasarse primero.
+
+**Cambios clave:**
+
+1. Estado `fefoOverride` y `isAdmin = user?.role === 'ADMIN'` (user ya estaba disponible vía `useAuth()` línea 237).
+2. Nuevo `useMemo` `warehouseFefoEligibleIds`:
+   - Filtra MaterialLot en zona WAREHOUSE con `currentQuantity > 0` y `expiresAt` registrado.
+   - Encuentra la fecha de vencimiento más temprana (normalizada a día calendario).
+   - Devuelve `Set` con IDs de los lotes que vencen ese día (empates incluidos).
+3. Helper `isFefoBlocked(lot, targetZone)`:
+   - Solo bloquea si `_type === 'MaterialLot'`, `lot.zone === 'WAREHOUSE'`, `targetZone === 'PRODUCTION'`.
+   - Si no tiene `expiresAt` → siempre bloqueado.
+   - Si admin activó override → bypass.
+4. `handleTransfer()` valida `isFefoBlocked` con alert que indica el lote correcto.
+5. UI:
+   - Badge en cards de lotes WAREHOUSE: "✅ PRÓXIMO A VENCER — PASAR A PRODUCCIÓN" (verde) / "🔒 ESPERAR FEFO" (gris) / "⚠️ SIN FECHA VTO." (rojo).
+   - Fila de fecha de recibido ahora también muestra "Vence: DD-MM-YYYY".
+   - En el panel de transferencia: botón "Transferir" deshabilitado si `isFefoBlocked(lot, transferZone)`. Mensaje contextual amber con `<Lock>` indicando qué lote pasar primero, o rojo con `<ShieldAlert>` si falta fecha.
+   - Toggle admin "🔒 Override FEFO" / "🔓 Override FEFO ACTIVO" en encabezado del panel de transferencia (solo si `isAdmin`).
+
+**Reglas confirmadas con el usuario (John, 2026-04-29):**
+- Override admin: SI (toggle visible solo para rol ADMIN).
+- Lotes sin `expiresAt`: BLOQUEADOS sin excepción. Recepción de materia prima debe registrar fecha siempre.
+- Auto-asignación EMPAQUE: se mantiene como está.
+- Botón "lote manual" en InputStep: se mantiene como hoy.
+- La restricción aplica SOLO a transferencias WAREHOUSE → PRODUCTION. Otros destinos (CUARENTENA, NO_CONFORME, MAQUILA) no se bloquean.
+
+**NO se modificó InputStep.jsx ni GInputStep.jsx** — esos pasos son consumo dentro de zona de producción, donde el material ya fue liberado. El control FEFO ocurre en el momento del traspaso a producción.
+
+**Refuerzo (2026-04-29 tercera iteración — página `/production/zone`):** El usuario reportó que aún podía seleccionar cualquier lote en la página "Zona de Producción". Esa página NO usa LotManagementModal, usa endpoints distintos (`/api/zone-transfers/available-lots/:productId` y `/api/zone-transfers/transfer-in`).
+
+**Archivos:**
+- `frontend/src/pages/ProductionZonePage.jsx` — `<Select>` de lotes con opciones deshabilitadas para no-FEFO. Banner verde mostrando el lote a transferir. Toggle admin "🔒 Override FEFO".
+- `backend/src/controllers/zoneTransferController.js`:
+  - `getAvailableLots` ordena por `expiresAt asc` y devuelve `fefoEligible` + `fefoBlockedReason` por lote.
+  - `transferIn` valida server-side: bloquea si el lote no es el de fecha más temprana o no tiene `expiresAt`. Acepta `fefoOverride: true` solo para `req.user.role === 'ADMIN'`.
+
+Backend reiniciado.
+
+**Refuerzo (2026-04-29 segunda iteración):** Se agregaron 3 capas adicionales para garantizar el bloqueo:
+
+1. **Frontend — `getTransferZoneOptions(lot)`**: oculta la opción "Producción" del `<select>` de zona destino para lotes WAREHOUSE no-FEFO. Operario no puede ni siquiera elegirla.
+2. **Frontend — orden de la lista**: lotes FEFO elegibles aparecen arriba; los demás se ordenan por `expiresAt asc`; sin fecha al final.
+3. **Backend — `lotController.transferZone` (línea 1653)**: guard server-side. Si origen=WAREHOUSE, destino=PRODUCTION, valida:
+   - Que el lote tenga `expiresAt`.
+   - Que sea el de fecha más temprana (empate por día calendario admitido).
+   - Acepta `fefoOverride: true` solo si `req.user.role === 'ADMIN'`.
+   - Devuelve mensaje específico citando el lote correcto si rechaza.
+
+Backend reiniciado en pm2 (`popping-backend`).
+
 ## CHECKLIST ANTES DE ACEPTAR EL MERGE DEL OTRO EQUIPO
 
 1. Guardar este documento (`CAMBIOS_PENDIENTES_2026-04-18.md`) en git o respaldo externo.
@@ -1363,3 +2551,332 @@ Estos archivos aparecen dentro de `/var/www/gestionpbi`, pero por nombre/context
 5. Ejecutar `git diff --check` y corregir whitespace/conflict markers.
 6. Verificar que no queden marcadores `<<<<<<<`, `=======`, `>>>>>>>`.
 7. Probar como minimo: build frontend, arranque backend, flujo RPA, inventario, relevo de turno, reporte WhatsApp/documentos.
+
+---
+
+## 🎓 NUEVO MÓDULO — ACADEMIA POPPING BOBA (Escuela de Líderes)
+**Fecha:** 2026-04-29
+
+### Objetivo
+Sistema interno de capacitación, evaluación y certificación de líderes de planta. Meta de productividad: **7 baches/turno sostenidos**. Atado a bonificación y posible alza de salario por nivel alcanzado.
+
+### Arquitectura
+- **Módulo independiente** del resto del ERP (prefijos `academia_*` en BD, ruta `/academia` en backend y frontend)
+- Lee KPIs reales de los módulos existentes (production_batches, shift_handover, shift_discipline) para alimentar el cálculo de puntaje
+- 4 pilares × 23 módulos × {lecciones + quiz + evaluación práctica + KPIs reales + comportamiento 360}
+- 4 niveles de certificación: 🥉 Bronce (700-799) · 🥈 Plata (800-879) · 🥇 Oro (880-939) · 🏆 Maestro (940-1000)
+
+### Archivos creados/modificados
+
+**Backend — Schema Prisma:**
+- `backend/prisma/schema.prisma`:
+  - 7 enums nuevos: `AcademiaPilarType`, `AcademiaLessonType`, `AcademiaQuestionType`, `AcademiaCertificationLevel`, `AcademiaEnrollmentStatus`, `AcademiaPracticalEvalStatus`, `AcademiaBonusStatus`
+  - 12 modelos nuevos: `AcademiaCourse`, `AcademiaModule`, `AcademiaLesson`, `AcademiaQuiz`, `AcademiaQuestion`, `AcademiaQuizAttempt`, `AcademiaEnrollment`, `AcademiaProgress`, `AcademiaLessonProgress`, `AcademiaRubric`, `AcademiaPracticalEval`, `AcademiaCertification`, `AcademiaBonus`
+  - 8 relaciones inversas agregadas a `User`
+
+**Backend — Migración SQL:**
+- Aplicada manualmente con `psql` (NO con `prisma migrate dev`) para evitar reset.
+- Solo `CREATE TABLE`, `CREATE TYPE`, `CREATE INDEX`, `ALTER TABLE ADD CONSTRAINT` — cero `DROP` o `DELETE`.
+- 13 tablas nuevas creadas. Total tablas BD: 99 → 112.
+- Backup manual previo: `gestionpbi_20260429_224808.sql.gz`.
+
+**Backend — Seed inicial:**
+- `backend/src/scripts/seed_academia.js` — idempotente, crea 4 cursos (pilares) y 23 módulos. Re-ejecutable sin duplicar.
+
+**Backend — Controllers (5 nuevos):**
+- `backend/src/controllers/academiaCourseController.js` — CRUD cursos y módulos
+- `backend/src/controllers/academiaLessonController.js` — Lecciones + tracking de avance + recompute progress
+- `backend/src/controllers/academiaQuizController.js` — Quiz, preguntas, intentos, calificación automática
+- `backend/src/controllers/academiaEnrollmentController.js` — Inscripciones y perfil del aprendiz
+- `backend/src/controllers/academiaPracticalEvalController.js` — Rúbricas y evaluaciones prácticas en planta
+- `backend/src/controllers/academiaCertificationController.js` — Score, certificaciones, ranking, bonos
+
+**Backend — Servicio de scoring:**
+- `backend/src/services/academiaScoringService.js`:
+  - `computeTotalScore(userId)` — calcula 1000 puntos repartidos en:
+    - Quiz teóricos (230 / 23%)
+    - Eval prácticas (350 / 35%)
+    - KPIs reales del turno (200 / 20%) — lee `production_batches`, meta 7 baches/turno
+    - Proyecto final (150 / 15%)
+    - Comportamiento 360° (70 / 7%) — lee `shift_discipline_record` si existe
+  - Robusto a falta de datos: degrada a 0 sin romper
+
+**Backend — Rutas:**
+- `backend/src/routes/academiaRoutes.js` — Express router con todas las rutas REST
+- `backend/src/routes/index.js` — Registra `/api/academia/*`
+
+**Frontend — Páginas estudiante:**
+- `frontend/src/pages/Academia/AcademiaCatalogo.jsx` — Catálogo de pilares, stats personales, inscripción
+- `frontend/src/pages/Academia/AcademiaCurso.jsx` — Lista de módulos del curso con avance
+- `frontend/src/pages/Academia/AcademiaLeccion.jsx` — Visor de lección (video + texto + adjuntos)
+- `frontend/src/pages/Academia/AcademiaQuiz.jsx` — Cuestionario interactivo con calificación
+- `frontend/src/pages/Academia/AcademiaPerfil.jsx` — Mi puntaje, niveles, certificaciones
+- `frontend/src/pages/Academia/AcademiaRanking.jsx` — Ranking entre líderes
+
+**Frontend — Páginas admin:**
+- `frontend/src/pages/Academia/Admin/AcademiaSeguimiento.jsx` — Tabla de líderes con avance, KPIs, botón de certificar
+- `frontend/src/pages/Academia/Admin/AcademiaPanelEvaluacion.jsx` — Listado y creación de evaluaciones prácticas
+- `frontend/src/pages/Academia/Admin/AcademiaEvaluar.jsx` — Calificar rúbrica desde móvil/web en planta
+- `frontend/src/pages/Academia/Admin/AcademiaContenido.jsx` — Editor unificado: lecciones + quiz + rúbricas por módulo
+
+**Frontend — Navegación:**
+- `frontend/src/App.jsx` — 10 rutas nuevas bajo `/academia/*`
+- `frontend/src/components/common/Sidebar.jsx` — Sección nueva "Talento" con ítem "Academia" + atajos admin (Seguimiento, Evaluaciones, Editor, Ranking)
+
+### Estado al cierre
+- Backend `popping-backend` reiniciado y respondiendo en puerto 3051
+- Frontend compila sin errores (`npm run build` ✅)
+- 4 pilares + 23 módulos visibles en `/api/academia/courses`
+- Endpoints probados: `/courses`, `/modules`, `/me/profile`, `/me/score`
+- Score se calcula correctamente con datos reales de `production_batches` y degrada elegantemente con cero datos
+
+### Pendiente para futuras iteraciones
+- Cargar contenido pedagógico real (lecciones, videos, preguntas, rúbricas) — el editor `/academia/admin/contenido` está listo para esto
+- Producción de videos (HeyGen + Artlist + tomas en planta)
+- Definir estructura de bonos en COP (formula final atada a baches/turno y nivel alcanzado)
+- Integrar el bonus generado por Academia con `AdminLeaderBonusPage` existente
+
+## CAMBIOS 2026-04-30 / 2026-05-03 — Wizard rediseñado + cronograma fin de semana
+
+### Backend
+- **`backend/src/controllers/assemblyNoteController.js`**:
+  - `getNoteById` enriquecida: `displayOrder` ahora con 3 fallbacks (stageId → templateId+stageOrder → formula.additionOrder).
+  - `quickStart`: `noteQty = (stageFormula.baseQuantity || 1) * baseQty` (soporte 0.5 baches).
+  - Hard-cap 120% removido (bloqueaba flujos legítimos por escalado).
+  - `auditLog.create` corregido: `details` no existe, se usa `changes: { note: ... }`.
+- **`backend/src/controllers/genialityAssemblyNoteController.js`**:
+  - Asigna `item.displayOrder` también en formula sort para que frontend respete orden de fórmula.
+- **`backend/src/controllers/assemblyTemplateController.js`**:
+  - 4 sitios `auditLog.create({ details })` cambiados a `changes: { note }`.
+- **`backend/src/services/assemblyService.js`** y **`genialityAssemblyService.js`**:
+  - `consumingStage` ahora incluye `G_PESAJE` (validación stock zona PRODUCCION para Geniality, antes solo Liquipops).
+- **`backend/src/controllers/shiftDisciplineController.js`** (refactor mayor):
+  - `isNonWorkWindow(date, code)` — Sáb-noche, Dom-MAÑANA/TARDE → no-work.
+  - **Domingo NOCHE = arranque de semana** con `TEMPLATE_NOCHE_ARRANQUE`: 3h ALISTAMIENTO (type nuevo `ALISTAMIENTO`, weight 0) + 3 ALGINATOS seguidos a 01:00/01:30/02:00 lun + Base #1 a 02:30 lun.
+  - `isArranqueSemana()` helper.
+  - `buildIdealSchedule(code, start, shiftDate)` ahora dispatch por shiftDate.
+  - `getShiftDateStr` corregido: usa componentes locales (no `toISOString().slice(0,10)`) — evitaba que Sun-NOCHE 22:00 COT se reportara como Mon-NOCHE.
+  - `_loadNonWorkDays` con caché 60s; lista persistida en `systemSettings.NON_WORK_DAYS`.
+  - 3 endpoints CRUD: `GET/POST/DELETE /api/shift-discipline/non-work-days`.
+  - `history`, `leaderRanking`, `monthlyBonus` filtran `isNonWorkWindow` para no inflar promedios.
+  - `getRunDetail` incluye `esferificacion` summary.
+- **`backend/src/routes/shiftDisciplineRoutes.js`** — 3 rutas nuevas para non-work-days.
+
+### Frontend — Wizard rediseñado (PROTECCION/PREMEZCLA/SIROPE)
+- **`frontend/src/components/AssemblyRunner/hooks/useAssemblyNote.js`**:
+  - `isProteccionFlow` extendido: PROTECCION + BASE LIQUIPOPS + COMPUESTO + BASE SIROPE + SABORIZACION → genera `PESAJE_BATCH → ADICION_BATCH → OUTPUT`.
+  - `isPremezclaFlow`: PREMEZCLA + PROTONICO + ALGINATO PREPARADO → genera `PESAJE_BATCH → OUTPUT` (sin adicion).
+  - INTRO se omite para esos flujos (header propio en PESAJE_BATCH).
+  - ENSAMBLE invisible para todos esos productos (auto-completa via API en `handleComplete` y on-mount).
+  - Auto-fill items intermedios: si `componentId` corresponde al producto de un stage previo COMPLETED del mismo bache, se rellena `actualQuantity` y `lotNumber=batchNumber`. Persistido en backend via PATCH.
+  - INPUT step se SALTA para items intermedios (no foto, no captura).
+  - Restauración de `wizardStep` para notas COMPLETED (F5/multi-tablet preserva pantalla).
+  - SABORIZACION: skip OUTPUT (cierre con `actualQuantity = targetQuantity`), va directo a MEDICION nueva.
+- **`frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx`** y **`GenialityRunner/GenialityExecutionWizard.jsx`**:
+  - Auto-complete invisible ENSAMBLE/G_ENSAMBLE en handleComplete + useEffect on-mount.
+  - Auto-save debounce 2s para PESAJE_BATCH e INPUT (Geniality wizard ahora también lo tiene).
+  - canAdvance PESAJE_BATCH exime AGUA + intermedios de foto.
+  - canAdvance ADICION_BATCH bloquea hasta `allConfirmed` (Geniality wizard también).
+  - Guard `!currentStep` muestra spinner "Cerrando ensamble en Siigo..." cuando wizardSteps=0.
+- **`frontend/src/components/AssemblyRunner/steps/PesajeBatchStep.jsx`**:
+  - Header morado "PESAR INGREDIENTES" + nombre producto + contador.
+  - Grid 2-columnas (siempre, no solo desktop).
+  - Sort por `displayOrder` cuando todos lo tienen (de fórmula).
+  - Items intermedios (BASE/ALGINATO PREPARADO/COMPUESTO/PROTECCION/PREMEZCLA/PROTONICO/SABORIZACION) — sin botón FOTO, no requieren foto.
+  - `fmtQtyShort(unit)` respeta unidad real (no asume gramos).
+- **`frontend/src/components/AssemblyRunner/steps/AdicionBatchStep.jsx`**:
+  - Sort por `displayOrder` (orden de fórmula).
+  - Items intermedios se auto-marcan como adicionados (ya están en olla del stage anterior).
+  - Label muestra `item.component?.name` (nombre completo, no abreviatura).
+  - Color naranja para keywords no reconocidas.
+- **`frontend/src/components/AssemblyRunner/steps/OutputStep.jsx`**:
+  - Header compactado, removida sección "Materiales utilizados".
+  - QC params en grilla 2 columnas.
+  - Foto del producto movida DENTRO del bloque QC (era duplicada al final).
+  - QC_PARAMS_SABORIZACION nuevo (Brix 60-65, pH 2.8-3.5).
+- **`frontend/src/components/AssemblyRunner/steps/PrintLotStep.jsx`**:
+  - Default copies = `targetQuantity` (en vez de 1).
+- **`frontend/src/context/ZebraContext.jsx`**:
+  - Removido fallback VPS-Queue (solo IP directa o relay PC).
+- **`frontend/src/components/AssemblyRunner/steps/MedicionStep.jsx`**:
+  - Lee `requireFlavorCheck` y `requireProductPhoto` del config.
+  - Bloque verificación de sabor (checkbox) + foto del producto final.
+  - Persiste en `medicion_draft.flavorOk` y `productPhoto`.
+  - Grid 2 columnas para measurements.
+
+### Frontend — Otros
+- **`frontend/src/components/AssemblyRunner/steps/FormacionQCStep.jsx`**:
+  - Sección "💧 Cambio de agua del sistema de lavado" con SI/NO obligatorio (estado `waterSystemChanged`).
+  - Removida sección "LAVADO + CITROSAN" (proceso ya no existe).
+  - Modal foto ampliada al click sobre miniaturas.
+- **`frontend/src/pages/ProductionOperatorPage.jsx`**:
+  - Botón "⚠️ Reportar evento" en header (abre modal AuxEvent que ya existía pero NO tenía trigger).
+- **`frontend/src/components/ShiftDisciplineTimeline.jsx`** y **`ShiftDisciplineHistoryPage.jsx`**:
+  - Nuevo type `ALISTAMIENTO` (icon 🔧, color indigo).
+  - Card "Días especiales" en historial con CRUD de festivos/no-laborados.
+  - Tira de esferificación visible también en historial (export `EsferificacionStrip`).
+- **`frontend/src/components/AssemblyRunner/StepDisplay.jsx`** — caso `AGUA` agregado (luego no usado pero queda).
+
+### BD — Plantillas modificadas
+- 12 plantillas SABORIZACION (TMPL065, TMPL102-108, GTPL-SAB-CEREZA/SANDIA/CURAZAO/TAMARINDO):
+  - Stage 2 nueva = MEDICION "Toma de Parámetros" (entre G_PESAJE y G_ENSAMBLE).
+  - `processParameters`: measurements [brix 60-65 °Bx, pH 2.8-3.5] + `requireFlavorCheck:true` + `requireProductPhoto:true`.
+- TMPL-PRECONS-001 (PREMEZCLA CONSERVANTES PERLAS) y demás PREMEZCLA: agregado stage IMPRESION_LOTE.
+
+### BD — Datos
+- `systemSettings.NON_WORK_DAYS` precargado con 2026-05-01 (Festivo Día del Trabajo) y 2026-05-02 (Sábado no laborado).
+- Borrados runs huérfanos: 2026-05-03 Mañana/Tarde/Noche (domingo), 2026-05-04 TARDE (creado con shiftDate equivocada), TARDE 30/04 leaderId corregido (Johnatan SIROPES → Gabriel PROD).
+
+### Estado
+- Backend `popping-backend` reiniciado.
+- Frontend compila sin errores.
+- Memoria nueva: `project_shift_discipline_weekend_rules.md`.
+
+---
+
+## INVENTARIO COMPLETO DE PRODUCCIÓN — 2026-05-03 (snapshot pre-merge)
+
+Este bloque enumera **todo lo que NO está commiteado pero ESTÁ corriendo en producción** desde el último commit (`47776da` del 27/04/2026). Para que el merge no borre nada por accidente, cada archivo nuevo o modificado debe inspeccionarse antes de aceptar la versión del equipo externo.
+
+### Backend — CONTROLADORES NUEVOS (no estaban antes)
+- `backend/src/controllers/academiaCertificationController.js` — Certificaciones de líderes en Academia
+- `backend/src/controllers/academiaCourseController.js` — CRUD de cursos
+- `backend/src/controllers/academiaEnrollmentController.js` — Inscripciones de líderes
+- `backend/src/controllers/academiaLessonController.js` — Lecciones (video + texto + adjuntos)
+- `backend/src/controllers/academiaPracticalEvalController.js` — Evaluaciones prácticas con rúbrica
+- `backend/src/controllers/academiaQuizController.js` — Cuestionarios interactivos
+- `backend/src/controllers/cleaningController.js` — Módulo de limpieza/sanitización
+- `backend/src/controllers/inventoryAuditController.js` — Auditoría de inventario físico
+- `backend/src/controllers/mrpForecastController.js` — Forecast MRP (alertas de stock + modal en Procurement)
+- `backend/src/controllers/networkIpsController.js` — Gestión de IPs permitidas (reloj de marcaje)
+- `backend/src/controllers/shiftDisciplineController.js` — **Cronograma disciplinador completo** (TEMPLATE_MANANA/TARDE/NOCHE/NOCHE_ARRANQUE, matcher Hungarian-style ±90min, esferificación summary, monthlyBonus, NON_WORK_DAYS, isNonWorkWindow, getRunDetail con esferificacion)
+
+### Backend — RUTAS NUEVAS
+- `backend/src/routes/academiaRoutes.js`
+- `backend/src/routes/cleaningRoutes.js`
+- `backend/src/routes/inventoryAuditRoutes.js`
+- `backend/src/routes/shiftDisciplineRoutes.js` — `/current`, `/previous`, `/leader-ranking`, `/history`, `/bonus`, `/runs/:id`, `/runs/:id/recompute`, `/:id/refresh`, `/:id/close`, **`/non-work-days` (GET/POST/DELETE)**
+
+### Backend — SERVICIOS NUEVOS
+- `backend/src/services/academiaScoringService.js` — Score de Academia desde `production_batches`
+- `backend/src/services/allowedIpsService.js` — Validación de IPs para marcaje
+- `backend/src/services/cleaningService.js` — Lógica de zonas/tareas/ejecuciones de limpieza
+- `backend/src/services/laborSummaryService.js` — Reporte mensual de horas trabajadas / extras
+
+### Backend — SCRIPTS / SEEDS
+- `backend/prisma/seed-cleaning.js` — Zonas + tareas iniciales del módulo limpieza
+- `backend/src/scripts/seed_academia.js` — 4 pilares + 23 módulos iniciales
+
+### Backend — MIGRACIONES (todas aplicadas en BD producción)
+- `20260320113000_add_internal_lab_traceability_fields`
+- `20260330_fase5_batch_output_target_real_units`
+- `20260330_normalization_fase1_2_6`
+- `20260330_normalization_fase3_7`
+- `20260330_normalization_fase4_8`
+- `20260414000000_add_attendance_module`
+- `20260415000000_add_shift_handover_module`
+- `20260423130000_shift_handover_incoming_signatures`
+- `20260427090000_add_material_lot_attachments`
+
+### Backend — CONTROLADORES MODIFICADOS (cambios sin commitear, ordenados por tamaño)
+
+| Archivo | Δ líneas | Resumen alto-nivel |
+|---|---|---|
+| `attendanceController.js` | +869 | Marcaje de asistencia, validación IP, cálculo horas extra, reportes mensuales |
+| `productionSchedulerController.js` | +672 | createBatch dinámico, 0.5 lotes, deleteBatch revierte consumos, reschedule, validación duración cíclica |
+| `assemblyNoteController.js` | +250 | displayOrder enrichment 3-fallback, quickStart 0.5 lotes, hard-cap 120% removido, auditLog details→changes, auto-cierre esferificación, exclusividad esferificación |
+| `shiftHandoverController.js` | +237 | Firmas de líder entrante, autorización 15min de gracia, simulación de handoff, cleaning supervisor flag |
+| `orderController.js` | +183 | Multi-presentación, scan QR PRODUCTO_TERMINADO prioritario, despacho zona terminado, etiquetas múltiples |
+| `productionSchedulerController.js` (Geniality) | +55 | createBatch Geniality + AUX coexistencia, validación stock G_PESAJE |
+| `formulaController.js` | +53 | Edición de additionOrder por ingrediente, propagación a baches PENDING |
+| `lotController.js` | +36 | Adjuntos de lote (PDF/JPG), traspaso FEFO bodega→producción, productionZoneStock auto-reconcile |
+| `genialityAssemblyNoteController.js` | +33 | displayOrder en formula sort, sub-template stage expansion, FORMACION uses formula |
+| `kpiController.js` | +49 | KPIs de turno con baches/líder, adherencia cronograma, fallas |
+| `rpaController.js` | +21 | Reintento RPA Siigo + log de fallos visibles |
+| `assemblyTemplateController.js` | +8 | auditLog `details` → `changes` (4 sitios) |
+
+### Backend — Fixes menores
+- `auth.js`, `authController.js`, `userController.js` — PIN auth, cleaning supervisor flag, login audit
+- `shiftController.js`, `attendanceRoutes.js`, `adminRoutes.js` — Endpoints de turno + admin
+- `purchaseOrderController.js` — MRP integration, multi-supplier, custom items
+- `orderControllerExtensions.js` (NUEVO) — handlers extendidos para escaneo + reposición
+- `zoneTransferController.js` — Traspaso entre zonas con validación
+- `services/assemblyService.js` y `genialityAssemblyService.js` — `consumingStage` incluye G_PESAJE, validación stock zona PRODUCCION
+- `services/siigoService.js` — Sincronización inventario completa cada hora, reintento POST con backoff
+- `server.js` — Servir downloads de fichas, CORS para múltiples orígenes
+
+### Frontend — PÁGINAS NUEVAS
+- `frontend/src/pages/Academia/` (carpeta completa) — 10 páginas: Catálogo, Curso, Lección, Quiz, Perfil, Ranking, AcademiaSeguimiento, AcademiaPanelEvaluacion, AcademiaEvaluar, AcademiaContenido
+- `frontend/src/pages/AdminLeaderBonusPage.jsx` — Bonificación mensual líderes con desglose
+- `frontend/src/pages/Cleaning/` (carpeta) — Cleaning operator + admin
+- `frontend/src/pages/InventoryAuditPage.jsx` — Conteo físico + reconciliación
+- `frontend/src/pages/LaborManagementPage.jsx` — Gestión de empleados + áreas + asignaciones semanales
+- `frontend/src/pages/MarcajePage.jsx` — Pantalla de marcaje (huella/PIN + IP whitelist)
+- `frontend/src/pages/ShiftDisciplineHistoryPage.jsx` — Histórico cronograma con KPIs + filtros + card "Días especiales"
+
+### Frontend — COMPONENTES NUEVOS
+- `frontend/src/components/ShiftDisciplineTimeline.jsx` — Timeline en panel operario + EsferificacionStrip exportada
+- `frontend/src/components/AssemblyRunner/steps/AdicionBatchStep.jsx` — Lista ordenada de adición a olla con auto-marcado intermedios
+- `frontend/src/components/AssemblyRunner/steps/AguaStep.jsx` — Cronómetro de llenado de agua (creado, no usado actualmente — se mantiene por compatibilidad)
+- `frontend/src/components/AssemblyRunner/steps/PrintLotStep.jsx` — Impresión Zebra del lote producido
+- `frontend/src/api/cleaning.js` — Cliente API limpieza
+
+### Frontend — PÁGINAS MODIFICADAS (top por cambios)
+
+| Página | Δ líneas | Resumen |
+|---|---|---|
+| `ProductionScheduler.jsx` | +559 | Calendario react-big-calendar con sticky gutter (CSS custom), single scrollbar, real start time, reschedule conflict detection, drag&drop, 0.5 lotes |
+| `ProductionOperatorPage.jsx` | +503 | Header colapsable, banner FALLA activa, ShiftDisciplineTimeline embedded, KPI fallas hoy, tabs Perlas/Siropes, esferificación pill, **botón "Reportar evento" agregado** |
+| `ProductionKpiPage.jsx` | +253 | KPIs por turno con score, baches, adherencia, ranking |
+| `OrderManagement.jsx` | +207 | Multi-presentación, scan QR, etiquetas múltiples |
+| `AdminConfig.jsx` | +189 | Configuración shift hours, fallas, zone validation toggle, IPs marcaje, etc. |
+| `App.jsx` | +44 | 14+ rutas nuevas (academia, cleaning, marcaje, labor, inventory audit, shift discipline history, admin leader bonus) |
+
+### Frontend — COMPONENTES Wizard MODIFICADOS
+
+| Componente | Δ | Resumen |
+|---|---|---|
+| `AssemblyExecutionWizard.jsx` | +370 | Auto-complete invisible ENSAMBLE PROTECCION/PREMEZCLA/etc., debounce 2s save, canAdvance PESAJE_BATCH/ADICION_BATCH, guard !currentStep spinner, ENSAMBLE auto desde EMPAQUE/CONTEO |
+| `GenialityRunner/GenialityExecutionWizard.jsx` | +166 | Mismo auto-complete invisible, auto-save debounce, ADICION_BATCH gate, on-mount auto-complete G_ENSAMBLE, multi-lot validation |
+| `hooks/useAssemblyNote.js` | +268 | isProteccionFlow/isPremezclaFlow detection, displayOrder restore, INPUT skip intermedios, persistencia auto-fill, restoredActuals/Lots, intermedios auto-fill desde producedByPrevStage, skip INTRO para flujos rediseñados, COMPLETED → ultimo wizardStep |
+| `steps/PesajeBatchStep.jsx` | +297 | Header morado, grid 2-col, sort displayOrder, sin foto intermedios, fmtQtyShort por unidad, validación 80% inline |
+| `steps/OutputStep.jsx` | +229 | QC compactado, foto en bloque QC, QC_PARAMS_SABORIZACION, pesaje simple confirmar+foto, removido "Materiales utilizados" |
+| `steps/EsferificacionStep.jsx` | +224 | Cronómetro auto-arranca con note.startedAt, único en planta, modal pausa, persistencia processParameters.esferificacion_timer |
+| `steps/MedicionStep.jsx` | +146 | requireFlavorCheck + requireProductPhoto, grid 2-col, modal foto |
+| `steps/FormacionQCStep.jsx` | +110 | Cambio agua sistema lavado SI/NO obligatorio, removido CITROSAN, modal foto |
+
+### Frontend — Componentes Inventario / Lotes
+- `components/inventory/LotManagementModal.jsx` (+228) — FEFO obligatorio en traspaso, multi-lote selección, adjuntos, validación coverage
+- `components/ShiftHandover/ShiftHandoverTab.jsx` (+157) — Tab completa con firmas, simulación, autorización líder
+- `services/zplLabelBuilder.js` (+64) — Iniciales operario robustas, fallback localStorage
+
+### Frontend — Otros
+- `index.css` (+147) — react-big-calendar overrides, sticky calendar gutter, animaciones pill, font scaling tablet
+- `pages/admin/Users.jsx` (+94) — Cleaning supervisor flag, área asignación
+- `pages/PurchaseOrdersPage.jsx` (+90) — MRP integration, custom items
+- `pages/TemplateEditorPage.jsx` (+7) — Soporte sub-templates, edición displayOrder
+
+### Datos / BD aplicados (NO migración — datos puros)
+- `systemSettings.PRODUCTION_CONFIG` — config global de cronograma, zone_validation_enabled, baseDurationMin, etc.
+- `systemSettings.NON_WORK_DAYS` — `[{ date: "2026-05-01", reason: "Festivo Día del Trabajo" }, { date: "2026-05-02", reason: "Sábado no laborado" }]`
+- 12 plantillas SABORIZACION + stage MEDICION (Brix 60-65, pH 2.8-3.5, requireFlavorCheck, requireProductPhoto)
+- Plantillas PREMEZCLA + stage IMPRESION_LOTE
+- Cleaning zones + tasks (seed)
+- Academia courses + modules (seed)
+- ShiftWeek + ShiftAssignment de las semanas operadas
+
+### Recursos estáticos (assets nuevos sirviéndose desde producción)
+- `frontend/public/downloads/ficha-operativa-whatsapp-erp.{html,pdf}`
+- `frontend/public/downloads/informe-gerencial-whatsapp-erp.{html,pdf}`
+- 30+ imágenes de productos: `perlas-*.{png,webp}`, `skarcha-*.png`, `yexis-*.png`, `cocktail.png`, etc.
+
+### Snapshots DOOR_MONITOR
+- ~75 snapshots .jpg en `door_monitor/snapshots/` (capturas del sensor de puerta — datos operativos, no se borran)
+
+### REGLA CLAVE PARA EL MERGE
+Si el equipo externo trae versión de cualquiera de estos archivos:
+1. **NUNCA aceptar su versión completa** sin antes haber hecho diff línea-a-línea contra la nuestra.
+2. Aplicar primero su lógica nueva, luego re-injectar nuestras protecciones (auto-complete invisible, displayOrder fallback, getShiftDateStr local, validación G_PESAJE stock zona, etc.).
+3. Verificar que las migraciones de BD no se duplican (los timestamps `20260320*-20260427*` son nuestros).
+4. Confirmar que `systemSettings.NON_WORK_DAYS` y plantillas SABORIZACION+MEDICION sigan en BD post-merge.
+

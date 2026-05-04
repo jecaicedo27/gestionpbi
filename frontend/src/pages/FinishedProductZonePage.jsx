@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import QRCode from 'qrcode';
 import printer from '../services/bluetoothPrinter';
 import { buildLotLabel } from '../services/tsplLabelBuilder';
-import { buildLotLabelZPL } from '../services/zplLabelBuilder';
+import { buildLotLabelZPL, toInitials } from '../services/zplLabelBuilder';
 import { generateQrDataUrl } from '../services/qrService';
 import { useZebra } from '../context/ZebraContext';
 
@@ -469,6 +469,7 @@ const FinishedProductZonePage = () => {
                         receivedAt: new Date().toISOString(),
                         expiresAt: currentExpiry ? new Date(currentExpiry).toISOString() : null,
                         boxNumber: i, totalBoxes: totalLabels,
+                        printedBy: toInitials(user?.name),
                     }, 1, { maquila: isMaquilaLabel });
                     await sendToZebra(zpl);
                 }
@@ -520,7 +521,12 @@ const FinishedProductZonePage = () => {
                 const res = await api.get(`/finished-lots/lot-summary/${encodeURIComponent(stock.lotNumber)}`);
                 const match = (res.data || []).find(s => s.productId === stock.productId);
                 if (match && match.approved != null) {
-                    setTransferEmpaque({ approved: match.approved, defective: match.defective || 0 });
+                    // Fallback: if approved=0 and defective=0 (operator didn't fill EMPAQUE counts),
+                    // use real stock to avoid blocking transfer for an unrecorded count.
+                    const approved = (match.approved === 0 && (match.defective || 0) === 0)
+                        ? stock.currentQuantity
+                        : match.approved;
+                    setTransferEmpaque({ approved, defective: match.defective || 0 });
                 }
             } catch (e) { console.error('empaque fetch error:', e); }
         }
@@ -829,6 +835,7 @@ const FinishedProductZonePage = () => {
                                     receivedAt:  new Date().toISOString(),
                                     expiresAt:   ingestionExpiry ? new Date(ingestionExpiry).toISOString() : null,
                                     statusText:  'OUTLET - PUBLICIDAD',
+                                    printedBy:   toInitials(user?.name),
                                 };
                                 if (printerMode === 'network') {
                                     // Zebra: single ZPL job with ^PQ{nDefective}
@@ -1226,12 +1233,30 @@ const FinishedProductZonePage = () => {
                                         onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = isExpanded ? '#f8fafc' : '#fff'; }}>
                                         <span style={{ color: '#94a3b8' }}>{isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
                                         <div style={{ flex: 1, minWidth: 0 }}>
-                                            <div style={{ fontWeight: 700, color: '#1e293b', fontSize: '0.88rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                {g.product?.name || '—'}
-                                            </div>
-                                            <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 1 }}>
-                                                {g.product?.sku || ''} · {g.lots.length} lote{g.lots.length > 1 ? 's' : ''}
-                                            </div>
+                                            {(() => {
+                                                const fullName = g.product?.name || '—';
+                                                // Extract size badge: "X 350 GR" / "X 1150 GR" / "X 3400 GR" / "X 1000 ML" / "X 360 ML"
+                                                const sizeMatch = fullName.match(/X\s*(\d{3,4})\s*(GR|G|ML|L|KG)/i);
+                                                const sizeBadge = sizeMatch ? `${sizeMatch[1]}${sizeMatch[2].toLowerCase()}` : null;
+                                                const nameNoSize = sizeBadge ? fullName.replace(/\s*X\s*\d{3,4}\s*(GR|G|ML|L|KG).*$/i, '').trim() : fullName;
+                                                return (
+                                                    <>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                            <div style={{ fontWeight: 700, color: '#1e293b', fontSize: '0.88rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+                                                                {nameNoSize}
+                                                            </div>
+                                                            {sizeBadge && (
+                                                                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: '#0369a1', background: '#e0f2fe', padding: '2px 8px', borderRadius: 6, border: '1px solid #bae6fd', flexShrink: 0 }}>
+                                                                    {sizeBadge}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 1 }}>
+                                                            {g.product?.sku || ''} · {g.lots.length} lote{g.lots.length > 1 ? 's' : ''}
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                         {/* Stock summary - right side */}
                                         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexShrink: 0 }}>
@@ -1576,6 +1601,7 @@ const FinishedProductZonePage = () => {
                                     expiresAt: lot?.expiresAt || '',
                                     boxNumber: i, totalBoxes: totalLabels,
                                     statusText: printModal.isNoConforme ? 'PRODUCTO NO CONFORME' : null,
+                                    printedBy: toInitials(user?.name),
                                 }, 1, { maquila: printMaquila });
                                 await sendToZebra(zpl);
                                 printed++;
@@ -1593,6 +1619,7 @@ const FinishedProductZonePage = () => {
                                     expiresAt: lot?.expiresAt || '',
                                     boxNumber: 1, totalBoxes: 1,
                                     statusText: `NC: ${causaText}`,
+                                    printedBy: toInitials(user?.name),
                                 }, 1);
                                 await sendToZebra(nczpl);
                                 printed++;

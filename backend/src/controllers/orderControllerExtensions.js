@@ -432,6 +432,29 @@ exports.invoiceOrder = async (req, res) => {
                 include: { distributor: { select: { name: true } } }
             });
 
+            // CASCADE: if this is a consolidated order, mark originals as INVOICED too
+            if (order.isConsolidation && order.consolidatedFromOrderIds?.length > 0) {
+                await tx.order.updateMany({
+                    where: { id: { in: order.consolidatedFromOrderIds } },
+                    data: {
+                        status: 'INVOICED',
+                        invoicedAt: new Date(),
+                        invoicedBy: req.user.id,
+                        invoiceNumber: invoiceRef !== 'N/A' ? invoiceRef : null,
+                        invoicePdfUrl: siigoResult?.public_url || null
+                    }
+                });
+                logger.info(`[consolidate cascade] Marcados como INVOICED ${order.consolidatedFromOrderIds.length} pedidos originales`);
+            }
+
+            // ── SKIP FIFO deduction for consolidated orders ──
+            // Inventory was already deducted on the original orders during picking.
+            // The consolidated order is just a summed view for invoicing.
+            if (order.isConsolidation) {
+                logger.info(`[invoice] Skipping FIFO deduction for consolidated order ${order.orderNumber} (inventory already deducted on originals)`);
+                return updatedOrder;
+            }
+
             // ── FIFO deduction from PRODUCTO_TERMINADO ──────────────────────────
             // For every order item, consume the scanned quantity from finished lots.
             // Creates a FinishedLotTransfer record per lot consumed so the
@@ -624,6 +647,36 @@ exports.dispatchOrder = async (req, res) => {
                 }
             });
 
+            // CASCADE: si es consolidado, marcar originales como DISPATCHED también (mismo driver/placa/guía)
+            if (order.isConsolidation && order.consolidatedFromOrderIds?.length > 0) {
+                await tx.order.updateMany({
+                    where: { id: { in: order.consolidatedFromOrderIds } },
+                    data: {
+                        status: 'DISPATCHED',
+                        dispatchedAt: now,
+                        driverName,
+                        licensePlate: licensePlate.toUpperCase(),
+                        driverCedula,
+                        driverPhone: driverPhone || null,
+                        amountPaid: amountPaid ? parseFloat(amountPaid) : null,
+                        dispatchTime: dispatchTime || now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+                        destination,
+                        destinationCity: destinationCity || null,
+                        dispatchNotes,
+                        receiverName: receiverName || null,
+                        receiverPhone: receiverPhone || null,
+                        // NOTE: trackingGuide/transportGuideNumber NO se copian — son únicos por order
+                    }
+                });
+                logger.info(`[consolidate cascade] Marcados como DISPATCHED ${order.consolidatedFromOrderIds.length} pedidos originales`);
+            }
+
+            // SKIP stock deduction for consolidated orders (already deducted during picking of originals)
+            if (order.isConsolidation) {
+                logger.info(`[dispatch] Skipping stock deduction for consolidated order ${order.orderNumber} (deducted on originals at picking)`);
+                return dispatchedOrder;
+            }
+
             // Deduct stock
             for (const item of dispatchedOrder.items) {
                 await tx.product.update({
@@ -709,6 +762,15 @@ exports.deliverOrder = async (req, res) => {
             data,
             include: { distributor: { select: { name: true } } }
         });
+
+        // CASCADE: si es consolidado, marcar originales como DELIVERED también
+        if (order.isConsolidation && order.consolidatedFromOrderIds?.length > 0) {
+            await prisma.order.updateMany({
+                where: { id: { in: order.consolidatedFromOrderIds } },
+                data: { status: 'DELIVERED', deliveredAt: data.deliveredAt }
+            });
+            logger.info(`[consolidate cascade] Marcados como DELIVERED ${order.consolidatedFromOrderIds.length} pedidos originales`);
+        }
 
         // Notify via socket
         const io = req.app.get('io');
@@ -973,6 +1035,9 @@ exports.getOrderCounts = async (req, res) => {
             where.distributorId = req.user.id;
         }
 
+        // Excluir pedidos originales que ya fueron consolidados (se cuentan en el consolidado)
+        where.consolidatedIntoOrderId = null;
+
         const statuses = ['PENDING', 'APPROVED', 'IN_PICKING', 'READY', 'INVOICED', 'DISPATCHED', 'DELIVERED'];
         const counts = {};
 
@@ -1009,6 +1074,12 @@ exports.getAllOrders = async (req, res) => {
             where.createdAt = {};
             if (startDate) where.createdAt.gte = new Date(startDate);
             if (endDate) where.createdAt.lte = new Date(endDate);
+        }
+
+        // Ocultar pedidos originales que ya fueron consolidados (representados por el consolidado).
+        // Pasar ?includeConsolidated=1 para verlos (auditoría).
+        if (req.query.includeConsolidated !== '1') {
+            where.consolidatedIntoOrderId = null;
         }
 
         const [orders, total] = await Promise.all([
@@ -1436,6 +1507,22 @@ exports.getPendingDeliverySummary = async (req, res) => {
             orderBy: { createdAt: 'asc' },
             take: limit,
         });
+
+        // Calcular el "Turno #N" (globalFifoRank) para órdenes en cola operativa.
+        // Mismo cálculo que en getAllOrders — posición FIFO entre activos.
+        const ACTIVE_STATUSES = ['PENDING', 'APPROVED', 'IN_PICKING', 'READY'];
+        const ordersInActiveQueue = orders.filter(o => ACTIVE_STATUSES.includes(o.status));
+        if (ordersInActiveQueue.length > 0) {
+            await Promise.all(ordersInActiveQueue.map(async (order) => {
+                const rankCount = await prisma.order.count({
+                    where: {
+                        status: { in: ACTIVE_STATUSES },
+                        createdAt: { lte: order.createdAt }
+                    }
+                });
+                order.globalFifoRank = rankCount;
+            }));
+        }
 
         res.json({
             success: true,

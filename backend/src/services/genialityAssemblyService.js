@@ -691,8 +691,11 @@ class AssemblyService {
             if (note.status !== 'PENDING') throw new Error('Note is not in PENDING status');
 
             // ── ZONE STOCK VALIDATION at START ──
+            // Aplica al PESAJE de Liquipops y a G_PESAJE de Geniality (BASE
+            // SIROPE, SABORIZACION, etc.). Si el operario no ha traspasado los
+            // insumos a la Zona de Producción, el bache no arranca.
             const processCode = note.processType?.code;
-            const consumingStage = processCode === 'PESAJE';
+            const consumingStage = processCode === 'PESAJE' || processCode === 'G_PESAJE';
 
             if (consumingStage && (note.items || []).length > 0) {
                 let zoneValidationEnabled = true;
@@ -866,6 +869,11 @@ class AssemblyService {
 
             if (!note) throw new Error('Note not found');
             if (note.status === 'COMPLETED') throw new Error('Note already completed');
+
+            // GUARD: CONTEO requires operatorId — prevent silent auto-complete
+            if (note.processType?.code === 'CONTEO' && !operatorId) {
+                throw new Error('CONTEO solo puede cerrarse manualmente por el operario (operatorId requerido)');
+            }
 
             // Update note
             const updatedNote = await tx.assemblyNote.update({

@@ -39,6 +39,19 @@ import FinishedProductZonePage from './pages/FinishedProductZonePage';
 import MaterialZonePage from './pages/MaterialZonePage';
 import HandoffsPage from './pages/HandoffsPage';
 import RecallReportPage from './pages/RecallReportPage';
+import ShiftDisciplineHistoryPage from './pages/ShiftDisciplineHistoryPage';
+// ── Academia Popping Boba — Escuela de Lideres ──
+import AcademiaCatalogo from './pages/Academia/AcademiaCatalogo';
+import AcademiaCurso from './pages/Academia/AcademiaCurso';
+import AcademiaLeccion from './pages/Academia/AcademiaLeccion';
+import AcademiaQuiz from './pages/Academia/AcademiaQuiz';
+import AcademiaPerfil from './pages/Academia/AcademiaPerfil';
+import AcademiaRanking from './pages/Academia/AcademiaRanking';
+import AcademiaSeguimiento from './pages/Academia/Admin/AcademiaSeguimiento';
+import AcademiaPanelEvaluacion from './pages/Academia/Admin/AcademiaPanelEvaluacion';
+import AcademiaEvaluar from './pages/Academia/Admin/AcademiaEvaluar';
+import AcademiaContenido from './pages/Academia/Admin/AcademiaContenido';
+import AdminLeaderBonusPage from './pages/AdminLeaderBonusPage';
 import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
 
 // ── Geniality Parallel Production System ──
@@ -78,6 +91,14 @@ import SalesAnalyticsDashboard from './pages/SalesAnalyticsDashboard';
 import ShiftSchedulePage from './pages/ShiftSchedulePage';
 import AttendancePage from './pages/AttendancePage';
 import ForensicRecoveryPage from './pages/ForensicRecoveryPage';
+import InventoryAuditPage from './pages/InventoryAuditPage';
+import MarcajePage from './pages/MarcajePage';
+
+// ── Aseo (Servicios Generales) ──
+import CleaningStaffView from './pages/Cleaning/CleaningStaffView';
+import CleaningSuppliesView from './pages/Cleaning/CleaningSuppliesView';
+import CleaningSupervisorView from './pages/Cleaning/CleaningSupervisorView';
+import CleaningAdminView from './pages/Cleaning/CleaningAdminView';
 
 
 import { useEffect } from 'react';
@@ -119,6 +140,7 @@ function App() {
                 <ZebraProvider>
                 <Routes>
                     <Route path="/login" element={<Login />} />
+                    <Route path="/marcaje" element={<MarcajePage />} />
                     <Route element={<ProtectedRoute />}>
                         <Route path="/" element={<Layout />}>
                             <Route index element={<Dashboard />} />
@@ -153,7 +175,10 @@ function App() {
                             <Route path="production/handoffs" element={<HandoffsPage />} />
                             <Route path="production/physical-count" element={<PhysicalCountPage />} />
                             <Route path="inventory/count" element={<InventoryCountPage />} />
+                            <Route path="inventory/audit" element={<InventoryAuditPage />} />
                             <Route path="recall-report" element={<RecallReportPage />} />
+                            <Route path="shift-discipline/history" element={<ShiftDisciplineHistoryPage />} />
+                            <Route path="admin/leader-bonus" element={<AdminLeaderBonusPage />} />
 
 
                             {/* Assembly System - Geniality (Siropes) */}
@@ -199,7 +224,26 @@ function App() {
                             <Route path="reconciliation" element={<ReconciliationPage />} />
                             <Route path="shift-schedule" element={<ShiftSchedulePage />} />
                             <Route path="attendance" element={<AttendancePage />} />
+                            <Route path="labor-management" element={<Navigate to="/attendance?tab=operation" replace />} />
                             <Route path="recovery/forensic" element={<ForensicRecoveryPage />} />
+
+                            {/* Academia Popping Boba */}
+                            <Route path="academia" element={<AcademiaCatalogo />} />
+                            <Route path="academia/cursos/:id" element={<AcademiaCurso />} />
+                            <Route path="academia/lecciones/:id" element={<AcademiaLeccion />} />
+                            <Route path="academia/modulos/:moduleId/quiz" element={<AcademiaQuiz />} />
+                            <Route path="academia/perfil" element={<AcademiaPerfil />} />
+                            <Route path="academia/ranking" element={<AcademiaRanking />} />
+                            <Route path="academia/admin/seguimiento" element={<AcademiaSeguimiento />} />
+                            <Route path="academia/admin/evaluaciones" element={<AcademiaPanelEvaluacion />} />
+                            <Route path="academia/admin/evaluar/:id" element={<AcademiaEvaluar />} />
+                            <Route path="academia/admin/contenido" element={<AcademiaContenido />} />
+
+                            {/* Aseo (Servicios Generales) */}
+                            <Route path="aseo" element={<CleaningStaffView />} />
+                            <Route path="aseo/insumos" element={<CleaningSuppliesView />} />
+                            <Route path="aseo/supervisor" element={<CleaningSupervisorView />} />
+                            <Route path="aseo/admin" element={<CleaningAdminView />} />
                         </Route>
                     </Route>
                 </Routes>

@@ -14,7 +14,7 @@ Todos los cambios, arreglos del ratio de ingredientes, o ajustes de GUI
 DEBEN hacerse en ProductionScheduler.jsx. 
 =============================================================================
 */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
 import { format, parse, startOfWeek, getDay } from 'date-fns';
 import { enUS, es } from 'date-fns/locale';
@@ -43,6 +43,11 @@ const DnDCalendar = withDragAndDrop(Calendar);
 const GenialityScheduler = ({ readOnly = false }) => {
     const { user } = useAuth();
     const isAdmin = user?.role === 'ADMIN';
+
+    // Sin sticky de gutter por JS — empujaba el ancho del Calendar y
+    // recortaba el último día. Solo dejamos el scroll horizontal nativo.
+    const calendarWrapperRef = useRef(null);
+
     const [events, setEvents] = useState([]);
     const [suggestions, setSuggestions] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -65,7 +70,50 @@ const GenialityScheduler = ({ readOnly = false }) => {
     }, []);
 
     // Auto-select best template for a batch (most stages wins = master template)
-    const handleLaunchBatch = async (batchId, title, flavor, mix, baseWeight) => {
+    // For ingredient batches (GLUCOSA, FRUCTOSA): use the ingredient-specific template
+    // (TMPL-AZINV-001, TMPL-FRUCT-001) instead of the generic BATCH-GENIALITY siropes flow.
+    const handleLaunchIngredient = async (batchId, templateCode, baseWeight) => {
+        setIsLaunching(true);
+        try {
+            const existRes = await api.get(`/assembly-notes?batchId=${batchId}`);
+            if (existRes.data?.length > 0) {
+                const sorted = [...existRes.data].sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0));
+                const activeNote = sorted.find(n => n.status === 'EXECUTING') || sorted.find(n => n.status === 'PENDING') || sorted[0];
+                window.location.href = `/assembly-execution/${activeNote.id}`;
+                return;
+            }
+            const templatesRes = await api.get('/assembly-templates?all=true');
+            const tmpl = (templatesRes.data || []).find(t => t.isActive && t.templateCode === templateCode);
+            if (!tmpl) {
+                alert(`Plantilla ${templateCode} no encontrada o inactiva.`);
+                setIsLaunching(false);
+                return;
+            }
+            const lotCount = baseWeight ? Math.max(1, Math.round(baseWeight / 100)) : 1;
+            const userId = localStorage.getItem('userId');
+            const res = await api.post('/assembly-notes/quick-start', {
+                templateId: tmpl.id,
+                userId,
+                quantity: lotCount,
+                existingBatchId: batchId,
+            });
+            if (res.data?.firstNoteId) {
+                window.location.href = `/assembly-execution/${res.data.firstNoteId}`;
+            } else {
+                alert(`No se generaron notas para ${templateCode}.`);
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error al iniciar ingrediente: ' + (err.response?.data?.error || err.message));
+        }
+        setIsLaunching(false);
+    };
+
+    const handleLaunchBatch = async (batchId, title, flavor, mix, baseWeight, templateCode) => {
+        // Route ingredient batches to ingredient-specific flow
+        if (templateCode) {
+            return handleLaunchIngredient(batchId, templateCode, baseWeight);
+        }
         setIsLaunching(true);
         try {
             // 1. Check if notes already exist for this batch
@@ -781,9 +829,11 @@ const GenialityScheduler = ({ readOnly = false }) => {
                 targetBatchCount: event.totalBatches, // If saved in backend? Not currently, but we can infer or pass it if backend stores it. The backend currently doesn't store targetBatchCount explicitly in Event model, but we can assume logic.
                 totalPlannedKg: total,
                 totalSyrupKg: event.baseWeight,
+                baseWeight: event.baseWeight,
                 mix: event.mix,
                 scheduledStart: event.start,
                 scheduledEnd: event.end,
+                templateCode: event.templateCode,
                 readOnly: true
             });
         } catch (error) {
@@ -986,7 +1036,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
                         <span className="text-sm text-gray-400">Vista de producción programada</span>
                     </div>
                 )}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4" style={{ width: '100%' }}>
+                <div ref={calendarWrapperRef} className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 overflow-x-auto" style={{ width: '100%' }}>
                     {readOnly ? (
                         <Calendar
                             localizer={localizer}
@@ -1030,7 +1080,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight, event.templateCode);
                                                     }}
                                                     title={isInProgress ? 'Continuar' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
@@ -1130,7 +1180,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         const cleanId = String(event.originalId || event.id).split('-p')[0];
-                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight);
+                                                        handleLaunchBatch(cleanId, event.title, event.flavor, event.mix, event.baseWeight, event.templateCode);
                                                     }}
                                                     title={isInProgress ? 'Continuar' : 'Iniciar Producción'}
                                                     disabled={isLaunching}
@@ -1464,7 +1514,7 @@ const GenialityScheduler = ({ readOnly = false }) => {
                                         <button
                                             onClick={() => {
                                                 const cleanId = String(modalData.originalId || modalData.id).split('-p')[0];
-                                                handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix, modalData.baseWeight);
+                                                handleLaunchBatch(cleanId, modalData.title, modalData.flavor, modalData.mix, modalData.baseWeight, modalData.templateCode);
                                             }}
                                             disabled={isLaunching}
                                             className="px-5 py-2 bg-green-600 text-white font-bold rounded-lg hover:bg-green-700 shadow-sm flex items-center gap-2 disabled:opacity-50"

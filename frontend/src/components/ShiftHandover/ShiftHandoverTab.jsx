@@ -33,6 +33,162 @@ function getAreaTheme(area) {
     return AREA_THEMES[area] || DEFAULT_THEME;
 }
 
+function getOperatorState(handover, participantGroup) {
+    const participants = participantGroup === 'INCOMING'
+        ? (handover?.incomingParticipants || [])
+        : (handover?.outgoingParticipants || []);
+    const operators = participants.filter(participant => participant.role !== 'LIDER');
+    const signatures = (handover?.signatures || []).filter(signature => signature.participantGroup === participantGroup);
+    const signedUserIds = new Set(signatures.map(signature => signature.userId));
+    const missing = operators.filter(operator => !signedUserIds.has(operator.userId));
+
+    return {
+        total: operators.length,
+        signed: operators.length - missing.length,
+        missing
+    };
+}
+
+function LiveHandoverTracker({ handover }) {
+    if (!handover) return null;
+
+    const outgoing = getOperatorState(handover, 'OUTGOING');
+    const incoming = getOperatorState(handover, 'INCOMING');
+    const outgoingLeaderDone = Boolean(handover.outgoingLeaderAt);
+    const incomingLeaderDone = Boolean(handover.incomingLeaderAt);
+
+    const trackerCards = [
+        {
+            key: 'outgoing',
+            title: 'Faltan por firmar salida',
+            accent: '#f59e0b',
+            bg: '#fffbeb',
+            done: outgoing.missing.length === 0,
+            summary: `${outgoing.signed}/${outgoing.total}`,
+            names: outgoing.missing.map(person => person.name)
+        },
+        {
+            key: 'incoming',
+            title: 'Faltan por firmar entrada',
+            accent: '#2563eb',
+            bg: '#eff6ff',
+            done: incoming.missing.length === 0,
+            summary: `${incoming.signed}/${incoming.total}`,
+            names: incoming.missing.map(person => person.name)
+        },
+        {
+            key: 'leaders',
+            title: 'Cierre de líderes',
+            accent: '#7c3aed',
+            bg: '#faf5ff',
+            done: outgoingLeaderDone && incomingLeaderDone,
+            summary: `${Number(outgoingLeaderDone) + Number(incomingLeaderDone)}/2`,
+            names: [
+                ...(outgoingLeaderDone ? [] : ['Falta autorización del líder saliente']),
+                ...(incomingLeaderDone ? [] : ['Falta aceptación del líder entrante'])
+            ]
+        }
+    ];
+
+    return (
+        <div style={{
+            marginTop: 18,
+            marginBottom: 18,
+            padding: 16,
+            borderRadius: 12,
+            border: '1px solid #e2e8f0',
+            background: '#ffffff'
+        }}>
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 12,
+                flexWrap: 'wrap'
+            }}>
+                <div>
+                    <div style={{ fontSize: 15, fontWeight: 900, color: '#0f172a' }}>
+                        Control En Vivo del Relevo
+                    </div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                        Muestra exactamente quién falta por firmar y en qué paso va el cierre.
+                    </div>
+                </div>
+                <div style={{
+                    padding: '6px 12px',
+                    borderRadius: 999,
+                    background: '#f8fafc',
+                    color: '#475569',
+                    fontSize: 12,
+                    fontWeight: 800
+                }}>
+                    {SHIFT_LABELS[handover.outgoingShift]} → {SHIFT_LABELS[handover.incomingShift]}
+                </div>
+            </div>
+
+            <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                gap: 12
+            }}>
+                {trackerCards.map(card => (
+                    <div key={card.key} style={{
+                        border: `1px solid ${card.done ? '#bbf7d0' : `${card.accent}44`}`,
+                        borderRadius: 12,
+                        padding: 14,
+                        background: card.done ? '#f0fdf4' : card.bg
+                    }}>
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                            marginBottom: 8
+                        }}>
+                            <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a' }}>
+                                {card.title}
+                            </div>
+                            <div style={{
+                                padding: '4px 10px',
+                                borderRadius: 999,
+                                background: card.done ? '#16a34a' : card.accent,
+                                color: '#fff',
+                                fontSize: 11,
+                                fontWeight: 900
+                            }}>
+                                {card.done ? 'Listo' : card.summary}
+                            </div>
+                        </div>
+
+                        {card.names.length === 0 ? (
+                            <div style={{ fontSize: 13, fontWeight: 700, color: '#16a34a' }}>
+                                Todo completo en este paso.
+                            </div>
+                        ) : (
+                            <div style={{ display: 'grid', gap: 6 }}>
+                                {card.names.map((name) => (
+                                    <div key={name} style={{
+                                        padding: '8px 10px',
+                                        borderRadius: 10,
+                                        background: '#fff',
+                                        border: '1px solid #e2e8f0',
+                                        fontSize: 13,
+                                        fontWeight: 700,
+                                        color: '#334155'
+                                    }}>
+                                        {name}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 export default function ShiftHandoverTab() {
     const { user } = useAuth();
     const isAdmin = user?.role === 'ADMIN';
@@ -169,6 +325,7 @@ export default function ShiftHandoverTab() {
 
                 {/* Timeline */}
                 <HandoverTimeline handover={h} />
+                <LiveHandoverTracker handover={h} />
 
                 {/* Panels */}
                 <div style={{ display: 'grid', gap: 20, marginTop: 20 }}>

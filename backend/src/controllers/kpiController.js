@@ -839,6 +839,40 @@ const getScheduleAdherence = async (req, res) => {
             shiftProcessCounts[key][code] = (shiftProcessCounts[key][code] || 0) + 1;
         }
 
+        // Intermediates prepared per shift (compañerismo: lo que dejas listo al siguiente turno)
+        // Intermedios = productionBatches sin nota FORMACION (no son baches finales esferificados)
+        // y con completedAt en el periodo. Categoría se infiere del flavor.
+        const intermediateBatches = await prisma.productionBatch.findMany({
+            where: {
+                completedAt: { gte: since },
+                status: 'COMPLETED',
+                NOT: { assemblyNotes: { some: { processType: { code: 'FORMACION' } } } },
+            },
+            select: { id: true, flavor: true, completedAt: true, batchNumber: true }
+        });
+
+        const classifyIntermediate = (flavor) => {
+            const f = (flavor || '').toUpperCase();
+            if (f.includes('ALGINATO')) return 'ALGINATO';
+            if (f.includes('PROTECCION') || f.includes('PROTECCIÓN')) return 'PROTECCION';
+            if (f.includes('BASE')) return 'BASE';
+            if (f.includes('PREMEZCLA')) return 'PREMEZCLA';
+            if (f.includes('SIROPE')) return 'SIROPE';
+            return 'OTROS';
+        };
+
+        const shiftIntermediates = {};
+        for (const b of intermediateBatches) {
+            const d = new Date(b.completedAt);
+            const shift = getShiftAt(d);
+            const dateStr = getShiftDateStr(d, shift);
+            const key = `${dateStr}_${shift}`;
+            if (!shiftIntermediates[key]) shiftIntermediates[key] = { ALGINATO: 0, BASE: 0, PROTECCION: 0, PREMEZCLA: 0, SIROPE: 0, OTROS: 0, total: 0 };
+            const cat = classifyIntermediate(b.flavor);
+            shiftIntermediates[key][cat] += 1;
+            shiftIntermediates[key].total += 1;
+        }
+
         // Key intermediate material stock (current snapshot)
         const KEY_SKUS = ['PROCELIQUIPOPS27', 'PROCELIQUIPOPS43', 'PROCELIQUIPOPS26', 'PROCELIQUIPOPS01'];
         const keyMaterials = await prisma.product.findMany({
@@ -863,6 +897,16 @@ const getScheduleAdherence = async (req, res) => {
             return { leader: leader?.employee?.name || null, operators: operators.map(o => o.employee?.name) };
         };
 
+        // ── Score de disciplina por turno (de ShiftDisciplineRun) ──
+        const disciplineRuns = await prisma.shiftDisciplineRun.findMany({
+            where: { shiftDate: { gte: since.toISOString().slice(0, 10) }, closedAt: { not: null } },
+            select: { shiftDate: true, shiftCode: true, finalScore: true, finalGrade: true },
+        });
+        const disciplineByKey = {};
+        for (const r of disciplineRuns) {
+            disciplineByKey[`${r.shiftDate}_${r.shiftCode}`] = { score: r.finalScore, grade: r.finalGrade };
+        }
+
         const shiftTarget = cfg.shiftBatchTarget || 5;
         const shiftCompletion = Object.values(shiftBuckets).map(s => {
             const { leader, operators } = getTeamForDateAndShift(s.date, s.shift);
@@ -874,7 +918,10 @@ const getScheduleAdherence = async (req, res) => {
                 completionPct: Math.round((s.completed / shiftTarget) * 100),
                 leader,
                 team: operators,
-                processCounts: shiftProcessCounts[key] || {}
+                processCounts: shiftProcessCounts[key] || {},
+                intermediatesPrepared: shiftIntermediates[key] || { ALGINATO: 0, BASE: 0, PROTECCION: 0, PREMEZCLA: 0, SIROPE: 0, OTROS: 0, total: 0 },
+                disciplineScore: disciplineByKey[key]?.score ?? null,
+                disciplineGrade: disciplineByKey[key]?.grade ?? null,
             };
         });
 

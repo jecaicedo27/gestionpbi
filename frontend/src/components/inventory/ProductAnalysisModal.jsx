@@ -63,6 +63,7 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
     const [showLots, setShowLots] = useState(false);
     const [lotScanForModal, setLotScanForModal] = useState(null);
     const [zoneBreakdown, setZoneBreakdown] = useState(null);
+    const [lotSummary, setLotSummary] = useState(null);
     const [reservation, setReservation] = useState(null);
     const [packOptions, setPackOptions] = useState([]);
     const [packOptionsLoading, setPackOptionsLoading] = useState(false);
@@ -117,9 +118,12 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
                 zones[z] = (zones[z] || 0) + qty;
             });
             const assignedQty = Object.values(zones).reduce((sum, qty) => sum + Number(qty || 0), 0);
+            const availableInLots = lots.reduce((s, l) => s + (l.currentQuantity || 0), 0)
+                + Object.values(flsZones).reduce((s, v) => s + v, 0);
             const unassignedQty = Math.max(0, Number(targetProduct.currentStock || 0) - assignedQty);
             if (unassignedQty > 0) zones.SIIGO_UNASSIGNED = unassignedQty;
             setZoneBreakdown(zones);
+            setLotSummary({ assigned: assignedQty, available: availableInLots, unassigned: unassignedQty });
         } catch {
             setZoneBreakdown(null);
         }
@@ -400,6 +404,30 @@ const ProductAnalysisModal = ({ product, initialLotScan, onLotScanConsumed, onCl
                             </div>
                         );
                     })()}
+
+                    {/* Lot assignment summary */}
+                    {lotSummary && (
+                        <div className={`rounded-lg p-2.5 border ${lotSummary.unassigned > 0 ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-100'}`}>
+                            <h3 className="text-[10px] font-bold text-gray-500 uppercase mb-1.5 flex items-center gap-1">
+                                <Layers className="w-3 h-3" />
+                                Trazabilidad de Lotes
+                            </h3>
+                            <div className="grid grid-cols-3 gap-2 text-center">
+                                <div>
+                                    <div className="text-[9px] font-bold text-gray-500 uppercase">Asignado</div>
+                                    <div className="text-sm font-black text-gray-800">{Math.round(lotSummary.assigned)}</div>
+                                </div>
+                                <div>
+                                    <div className="text-[9px] font-bold text-emerald-600 uppercase">En Lotes</div>
+                                    <div className="text-sm font-black text-emerald-600">{Math.round(lotSummary.available)}</div>
+                                </div>
+                                <div>
+                                    <div className="text-[9px] font-bold uppercase text-amber-600">Sin Asignar</div>
+                                    <div className={`text-sm font-black ${lotSummary.unassigned > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>{Math.round(lotSummary.unassigned)}</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Config Section — inline */}
                     <div className="bg-gray-50 rounded-lg p-2.5 border border-gray-100">

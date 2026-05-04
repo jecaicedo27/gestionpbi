@@ -3,9 +3,10 @@ import QRCode from 'qrcode';
 import { Printer, Package, RefreshCw, Bluetooth, BluetoothOff, Wifi, WifiOff, PackagePlus, Trash2, Factory } from 'lucide-react';
 import printer from '../../../services/bluetoothPrinter';
 import { buildLotLabel } from '../../../services/tsplLabelBuilder';
-import { buildLotLabelZPL } from '../../../services/zplLabelBuilder';
+import { buildLotLabelZPL, toInitials } from '../../../services/zplLabelBuilder';
 import { generateQrDataUrl, buildQrPayloadLocal } from '../../../services/qrService';
 import { useZebra } from '../../../context/ZebraContext';
+import { useAuth } from '../../../context/AuthContext';
 import api from '../../../services/api';
 
 
@@ -150,7 +151,9 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
         return fabDate.toISOString().split('T')[0];
     })();
 
-    const MAQUILA_UNITS_PER_BOX = 6;
+    // Maquila box size: 6 para Liquipops, igual que regular para Geniality (12 unds/caja)
+    const isGeniality = /sirope|geniality/i.test(product.name || '');
+    const MAQUILA_UNITS_PER_BOX = isGeniality ? defaultUnitsPerBox : 6;
 
     // ── Contramuestra: solo para LIQUIPOPS 350g (cualquier sabor) ──
     const isLiquipops350 = /liquipops/i.test(product.name || '') && /350/i.test(product.name || '');
@@ -265,6 +268,8 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
 
     // Zebra state from global context (no local polling needed)
     const { zebraStatus, zebraIp, printZPL } = useZebra();
+    const { user } = useAuth();
+    const userInitials = toInitials(user?.name);
 
 
     const totalIngested = isWeightBased
@@ -466,6 +471,7 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 unit: isWeightBased ? 'gramo' : 'und',
                 receivedAt: noteData.productionBatch?.createdAt || new Date().toISOString(),
                 expiresAt: expiryDate ? new Date(expiryDate).toISOString() : null,
+                printedBy: userInitials,
             };
 
             const copies = Number(labelCopies) || 1;

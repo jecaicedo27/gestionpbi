@@ -136,13 +136,35 @@ exports.getAvailableLots = async (req, res) => {
                 receivedAt: true,
                 expiresAt: true
             },
-            orderBy: { receivedAt: 'desc' }
+            orderBy: [
+                { expiresAt: 'asc' },
+                { receivedAt: 'desc' }
+            ]
         });
 
-        // Override lot unit with the product's unit for correct display
+        // FEFO: marcar lotes elegibles (los de fecha de vencimiento más temprana, empate por día).
+        const withExpiry = lots.filter(l => l.expiresAt);
+        let eligibleIds = new Set();
+        if (withExpiry.length > 0) {
+            const earliest = new Date(withExpiry[0].expiresAt);
+            earliest.setHours(0, 0, 0, 0);
+            const earliestTs = earliest.getTime();
+            eligibleIds = new Set(withExpiry.filter(l => {
+                const d = new Date(l.expiresAt);
+                d.setHours(0, 0, 0, 0);
+                return d.getTime() === earliestTs;
+            }).map(l => l.id));
+        }
+
         const lotsWithUnit = lots.map(l => ({
             ...l,
-            unit: productUnit
+            unit: productUnit,
+            fefoEligible: eligibleIds.has(l.id),
+            fefoBlockedReason: eligibleIds.has(l.id)
+                ? null
+                : !l.expiresAt
+                    ? 'NO_EXPIRY'
+                    : 'NOT_FEFO'
         }));
 
         res.json(lotsWithUnit);
@@ -155,7 +177,7 @@ exports.getAvailableLots = async (req, res) => {
 // ── POST /zone-transfers/transfer-in — Move material INTO production zone ─
 exports.transferIn = async (req, res) => {
     try {
-        const { productId, materialLotId, quantity, observations, photos } = req.body;
+        const { productId, materialLotId, quantity, observations, photos, fefoOverride } = req.body;
         const userId = req.body.userId || req.user?.id;
 
         if (!productId || !quantity || quantity <= 0) {
@@ -178,6 +200,39 @@ exports.transferIn = async (req, res) => {
                 if (lot.currentQuantity < quantity) {
                     throw new Error(`Cantidad insuficiente en lote. Disponible: ${lot.currentQuantity}, Solicitado: ${quantity}`);
                 }
+
+                // ── FEFO GUARD ──
+                // El lote a transferir debe ser el de fecha de vencimiento más temprana en bodega.
+                // Lotes sin fecha de vencimiento están bloqueados.
+                // Admin puede saltarse pasando fefoOverride=true.
+                const isAdmin = req.user?.role === 'ADMIN';
+                const overrideActive = isAdmin && fefoOverride === true;
+                if (!overrideActive) {
+                    if (!lot.expiresAt) {
+                        throw new Error('Este lote no tiene fecha de vencimiento registrada. Edite el lote y registre la fecha antes de pasarlo a Producción.');
+                    }
+                    const candidates = await tx.materialLot.findMany({
+                        where: {
+                            productId,
+                            zone: 'WAREHOUSE',
+                            currentQuantity: { gt: 0 },
+                            expiresAt: { not: null }
+                        },
+                        orderBy: { expiresAt: 'asc' }
+                    });
+                    if (candidates.length > 0) {
+                        const earliestDay = new Date(candidates[0].expiresAt);
+                        earliestDay.setHours(0, 0, 0, 0);
+                        const lotDay = new Date(lot.expiresAt);
+                        lotDay.setHours(0, 0, 0, 0);
+                        if (lotDay.getTime() !== earliestDay.getTime()) {
+                            const earliestLot = candidates[0];
+                            const expStr = earliestDay.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+                            throw new Error(`FEFO: Debe pasar primero a Producción el lote ${earliestLot.lotNumber} (vence ${expStr}).`);
+                        }
+                    }
+                }
+
                 lotNumber = lot.lotNumber;
 
                 // Decrement lot quantity and mark zone

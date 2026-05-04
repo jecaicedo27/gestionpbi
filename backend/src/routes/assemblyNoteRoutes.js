@@ -7,6 +7,12 @@ const productionBatchController = require('../controllers/productionBatchControl
 // All routes are prefixed with /api/assembly-notes in index.js
 
 router.get('/', assemblyNoteController.getAllNotes);
+
+// Active esferificacion lookup — used by EsferificacionStep to enforce the
+// "una sola esferificación a la vez por planta" invariant. Must be registered
+// BEFORE '/:id' so the literal path is matched first.
+router.get('/active-esferificacion', auth, assemblyNoteController.getActiveEsferificacion);
+
 router.get('/:id', assemblyNoteController.getNoteById);
 router.post('/quick-start', assemblyNoteController.quickStart);
 router.post('/generate', assemblyNoteController.generateForBatch);

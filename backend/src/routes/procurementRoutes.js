@@ -38,6 +38,11 @@ const fileFilter = (req, file, cb) => {
 const quotationUpload = multer({ storage: makeStorage(QUOTATION_DIR, 'cotizacion'), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter });
 const invoiceUpload = multer({ storage: makeStorage(INVOICE_DIR, 'factura'), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter });
 const receptionPhotoUpload = multer({ storage: makeStorage(RECEPTION_PHOTO_DIR, 'recepcion'), limits: { fileSize: 20 * 1024 * 1024 }, fileFilter });
+const materialLotAttachmentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024, files: 20 },
+    fileFilter
+});
 
 // ── Purchase Orders ──
 
@@ -324,7 +329,7 @@ router.post('/receptions/:id/reception-photos', auth, receptionPhotoUpload.array
 
 // ── Material Lots ──
 
-router.post('/lots', auth, roles('ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CALIDAD', 'LOGISTICA'), receptionController.createLots);
+router.post('/lots', auth, roles('ADMIN', 'DIRECTOR_TECNICO', 'LIDER_OPERACIONES', 'CALIDAD', 'LOGISTICA'), materialLotAttachmentUpload.any(), receptionController.createLots);
 router.get('/lots', auth, receptionController.listLots);
 router.get('/lots/stock-summary', auth, receptionController.stockSummary);
 router.get('/lots/:id/label', auth, generateLotLabel);

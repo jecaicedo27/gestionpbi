@@ -115,18 +115,9 @@ export const ZebraProvider = ({ children }) => {
                 } catch (e) {}
             }
 
-            // 3. VPS Queue Check — if backend is up, we can queue print jobs (AP-isolation fallback)
-            const token = localStorage.getItem('token');
-            const queueRes = await fetch('/api/zebra/jobs/next', {
-                headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-            });
-            if (queueRes.ok) {
-                // Backend reachable — tablet can enqueue jobs, PC relay prints them
-                setZebraStatus('connected');
-                setZebraIp('VPS-Queue');
-            } else {
-                setZebraStatus('unreachable');
-            }
+            // VPS-Queue fallback removido a pedido del usuario — la conexión
+            // a la impresora debe ser solo por IP directa (LAN) o relay PC.
+            setZebraStatus('unreachable');
         } catch (error) {
             console.error('[ZebraContext] status check error:', error);
             setZebraStatus('unreachable');
@@ -219,18 +210,14 @@ export const ZebraProvider = ({ children }) => {
                 try {
                     const ctrl = new AbortController();
                     const timer = setTimeout(() => ctrl.abort(), 2500);
-                    await fetch(`http://${wifiIp}/pstprnt`, {
+                    fetch(`http://${wifiIp}/pstprnt`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'text/plain' },
                         body: zpl,
                         mode: 'no-cors',
                         signal: ctrl.signal,
-                    });
-                    clearTimeout(timer);
-                    return { ok: true }; // no-cors → opaque response, assume success
-                } catch (_wifiErr) {
-                    // Mixed-content block or unreachable → fall to VPS Queue
-                }
+                    }).then(() => clearTimeout(timer)).catch(() => clearTimeout(timer));
+                } catch (_) { /* best-effort */ }
                 const token = localStorage.getItem('token');
                 const res = await fetch('/api/zebra/jobs', {
                     method: 'POST',
@@ -245,37 +232,33 @@ export const ZebraProvider = ({ children }) => {
                 return { ok: true, queued: true, jobId: data.jobId };
             }
 
-            // 1. Direct LAN Printing (includes force-IP mode)
+            // 1. Direct LAN Printing — fire-and-forget (no-cors gives opaque response, unreliable)
+            //    Always fall through to VPS Queue for guaranteed delivery via PC relay.
             const directIp = forceIp || (zebraIp === configIp || zebraIp === ZEBRA_IP ? zebraIp : null);
             if (directIp) {
                 try {
                     const ctrl = new AbortController();
                     const timer = setTimeout(() => ctrl.abort(), 2500);
-                    await fetch(`http://${directIp}/pstprnt`, {
+                    fetch(`http://${directIp}/pstprnt`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'text/plain' },
                         body: zpl,
                         mode: 'no-cors',
                         signal: ctrl.signal
-                    });
-                    clearTimeout(timer);
-                    return { ok: true };
-                } catch (lanErr) {
-                    // Si falla por CORS/Mixed-Content en tablet HTTPS, hacemos fallback a la cola silenciosamente
-                    console.warn('[ZebraContext] Direct LAN fetch failed, falling back to VPS Queue:', lanErr.message);
-                    const token = localStorage.getItem('token');
-                    const res = await fetch('/api/zebra/jobs', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-                        },
-                        body: JSON.stringify({ zpl }),
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) throw new Error(data.error || 'Error al encolar al VPS-Queue tras fallo directo');
-                    return { ok: true, queued: true, jobId: data.jobId };
-                }
+                    }).then(() => clearTimeout(timer)).catch(() => clearTimeout(timer));
+                } catch (_) { /* best-effort */ }
+                const token = localStorage.getItem('token');
+                const res = await fetch('/api/zebra/jobs', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+                    },
+                    body: JSON.stringify({ zpl }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'Error al encolar impresión');
+                return { ok: true, queued: true, jobId: data.jobId };
             } 
             
             // 2. PC Relay Printing

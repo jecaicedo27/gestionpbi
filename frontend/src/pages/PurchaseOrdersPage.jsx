@@ -240,6 +240,7 @@ const PurchaseOrdersPage = () => {
         if (custom) return 'unidad';
         return 'unidad';
     };
+    const isRawMaterialSku = (sku) => String(sku || '').toUpperCase().startsWith('MP');
     const getPackaging = (sku) => packagings.find(p => p.siigoProductCode === sku);
     const updateItem = (index, field, value) => {
         const newItems = [...orderItems];
@@ -536,7 +537,10 @@ const PurchaseOrdersPage = () => {
         setLotEntries([{
             lotNumber: '',
             quantity: 0,
-            expiresAt: null
+            expiresAt: null,
+            expiresAtRaw: '',
+            attachmentType: 'CERTIFICADO_CALIDAD',
+            attachmentFiles: []
         }]);
         setLotModalVisible(true);
     };
@@ -545,7 +549,7 @@ const PurchaseOrdersPage = () => {
         const n = lotEntries.length + 1;
         setLotEntries([...lotEntries, {
             lotNumber: '',
-            quantity: 0, expiresAt: null
+            quantity: 0, expiresAt: null, expiresAtRaw: '', attachmentType: 'CERTIFICADO_CALIDAD', attachmentFiles: []
         }]);
     };
 
@@ -558,15 +562,30 @@ const PurchaseOrdersPage = () => {
     const submitLots = async () => {
         if (!selectedPOItem?.quantityAvailableForLots) { message.error('No hay cantidad recibida y contabilizada disponible para lotear este producto.'); return; }
         if (lotEntries.some(l => !l.lotNumber || !l.quantity)) { message.warning('Completa número de lote y cantidad'); return; }
+        if (lotEntries.some(l => !l.expiresAtRaw)) { message.warning('Completa la fecha de vencimiento de todos los lotes'); return; }
+        if (isRawMaterialSku(selectedPOItem?.siigoProductCode) && lotEntries.some(l => !l.attachmentFiles?.length)) {
+            message.warning('Cada lote de materia prima debe tener certificado de calidad o ficha técnica');
+            return;
+        }
         setSubmittingLots(true);
         try {
-            await api.post('/procurement/lots', {
-                purchaseOrderItemId: selectedPOItem.id,
-                lots: lotEntries.map(l => ({
-                    lotNumber: l.lotNumber,
-                    quantity: l.quantity,
-                    expiresAt: l.expiresAtRaw || null
-                }))
+            const formData = new FormData();
+            formData.append('purchaseOrderItemId', selectedPOItem.id);
+            formData.append('lots', JSON.stringify(lotEntries.map(l => ({
+                lotNumber: l.lotNumber,
+                quantity: l.quantity,
+                expiresAt: l.expiresAtRaw || null,
+                attachmentType: l.attachmentType || 'CERTIFICADO_CALIDAD'
+            }))));
+
+            for (let index = 0; index < lotEntries.length; index += 1) {
+                const entry = lotEntries[index];
+                const compressedFiles = await compressFiles(entry.attachmentFiles || []);
+                compressedFiles.forEach(file => formData.append(`lotAttachments_${index}`, file));
+            }
+
+            await api.post('/procurement/lots', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
             });
             message.success(`🏷️ ${lotEntries.length} lote(s) creados`);
             setLotModalVisible(false);
@@ -1790,6 +1809,25 @@ const PurchaseOrdersPage = () => {
                                         <Table dataSource={item.lots} rowKey="id" size="small" pagination={false} style={{ marginTop: 4 }}
                                             columns={[
                                                 { title: 'Lote', dataIndex: 'lotNumber', render: v => <Tag color="blue">{v}</Tag> },
+                                                { title: 'Soportes', key: 'attachments', render: (_, lot) => (
+                                                    Array.isArray(lot.attachments) && lot.attachments.length > 0 ? (
+                                                        <Space wrap size={[4, 4]}>
+                                                            {lot.attachments.map((attachment) => (
+                                                                <Button
+                                                                    key={attachment.id}
+                                                                    size="small"
+                                                                    type="link"
+                                                                    icon={attachment.mimeType === 'application/pdf' ? <FilePdfOutlined /> : null}
+                                                                    href={attachment.url}
+                                                                    target="_blank"
+                                                                    style={{ padding: 0, height: 'auto' }}
+                                                                >
+                                                                    {attachment.type === 'FICHA_TECNICA' ? 'Ficha' : 'Certificado'}
+                                                                </Button>
+                                                            ))}
+                                                        </Space>
+                                                    ) : <Text type="secondary">Sin soporte</Text>
+                                                ) },
                                                 { title: 'Cantidad', dataIndex: 'currentQuantity', align: 'right', render: v => v?.toLocaleString() },
                                                 { title: 'Vencimiento', dataIndex: 'expiresAt', render: (v, lot) => {
                                                     if (v) return dayjs(v).format('DD/MM/YY');
@@ -2353,11 +2391,12 @@ const PurchaseOrdersPage = () => {
                 const lotsTotal = lotEntries.reduce((s, l) => s + (l.quantity || 0), 0);
                 const maxQty = selectedPOItem?.quantityAvailableForLots || 0;
                 const exceeds = lotsTotal > maxQty;
-                const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0 && l.expiresAtRaw?.trim());
-                const canSubmit = allValid && !exceeds && lotsTotal > 0;
                 // Detect unit: packaging materials use units, raw materials use grams
                 const itemUnit = selectedPOItem?.siigoProductCode ? getProductUnit(selectedPOItem.siigoProductCode) : 'gramo';
                 const isGram = itemUnit === 'gramo';
+                const requiresLotSupport = isRawMaterialSku(selectedPOItem?.siigoProductCode);
+                const allValid = lotEntries.every(l => l.lotNumber?.trim() && l.quantity > 0 && l.expiresAtRaw?.trim() && (!requiresLotSupport || l.attachmentFiles?.length > 0));
+                const canSubmit = allValid && !exceeds && lotsTotal > 0;
                 const unitLabel = isGram ? 'g' : 'und';
                 const fmtQty = (v) => isGram ? `${v?.toLocaleString()}g (${(v / 1000).toFixed(2)} kg)` : `${v?.toLocaleString()} und`;
                 return (
@@ -2403,18 +2442,33 @@ const PurchaseOrdersPage = () => {
                                 </div>
                                 {/* Photo upload per lot + Print Button */}
                                 <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: lot.photoPreview ? '#f6ffed' : '#fff7e6', border: `1px solid ${lot.photoPreview ? '#b7eb8f' : '#ffd591'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
-                                        {lot.photoPreview ? '✅ Foto tomada' : '📷 Tomar foto del lote'}
-                                        <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                                    <Select
+                                        size="small"
+                                        value={lot.attachmentType || 'CERTIFICADO_CALIDAD'}
+                                        onChange={(value) => updateLotEntry(idx, 'attachmentType', value)}
+                                        style={{ width: 190 }}
+                                        options={[
+                                            { value: 'CERTIFICADO_CALIDAD', label: 'Certificado de calidad' },
+                                            { value: 'FICHA_TECNICA', label: 'Ficha técnica' }
+                                        ]}
+                                    />
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: lot.attachmentFiles?.length ? '#f6ffed' : '#fff7e6', border: `1px solid ${lot.attachmentFiles?.length ? '#b7eb8f' : '#ffd591'}`, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                        {lot.attachmentFiles?.length ? `✅ ${lot.attachmentFiles.length} archivo(s)` : `📎 ${requiresLotSupport ? 'Subir soporte' : 'Adjuntar soporte opcional'}`}
+                                        <input type="file" accept="image/*,application/pdf" multiple capture="environment" style={{ display: 'none' }}
                                             onChange={e => {
-                                                const file = e.target.files?.[0];
-                                                if (!file) return;
+                                                const files = Array.from(e.target.files || []);
+                                                if (!files.length) return;
                                                 const newEntries = [...lotEntries];
-                                                newEntries[idx] = { ...newEntries[idx], photoFile: file, photoPreview: URL.createObjectURL(file) };
+                                                newEntries[idx] = { ...newEntries[idx], attachmentFiles: files };
                                                 setLotEntries(newEntries);
                                             }} />
                                     </label>
-                                    {lot.photoPreview && <img src={lot.photoPreview} alt="Lote" style={{ height: 32, borderRadius: 4, border: '1px solid #d9d9d9' }} />}
+                                    {lot.attachmentFiles?.[0] && (
+                                        lot.attachmentFiles[0].type === 'application/pdf'
+                                            ? <Tag color="red">PDF</Tag>
+                                            : <img src={URL.createObjectURL(lot.attachmentFiles[0])} alt="Lote" style={{ height: 32, borderRadius: 4, border: '1px solid #d9d9d9' }} />
+                                    )}
+                                    {requiresLotSupport && !lot.attachmentFiles?.length && <Text type="danger" style={{ fontSize: 11 }}>Soporte obligatorio</Text>}
                                     
                                     <div style={{ flex: 1 }} />
                                     

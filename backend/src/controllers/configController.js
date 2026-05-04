@@ -22,7 +22,16 @@ exports.getConfig = async (req, res) => {
                 geniality_targetDays: 8,
                 geniality_alertYellow: 12,
                 geniality_alertRed: 3,
-                geniality_batchDuration: 240
+                geniality_batchDuration: 240,
+                liquipops_baseDurationMin: 30,
+                liquipops_alginatoDurationMin: 35,
+                liquipops_sphericationDurationMin: 60,
+                liquipops_alginatoEveryN: 3,
+                liquipops_handoverWindows: [
+                    { startH: 6,  startM: 0, endH: 6,  endM: 20, label: 'Entrega turno mañana' },
+                    { startH: 14, startM: 0, endH: 14, endM: 20, label: 'Entrega turno tarde' },
+                    { startH: 22, startM: 0, endH: 22, endM: 20, label: 'Entrega turno noche' }
+                ]
             });
         }
 

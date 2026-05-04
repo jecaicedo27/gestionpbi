@@ -1652,7 +1652,7 @@ const lotController = {
 
     async transferZone(req, res) {
         try {
-            const { lotId, lotType, targetZone, quantity } = req.body;
+            const { lotId, lotType, targetZone, quantity, fefoOverride } = req.body;
             if (!lotId || !targetZone || !quantity || quantity <= 0) {
                 return res.status(400).json({ error: 'lotId, targetZone y quantity son requeridos' });
             }
@@ -1665,6 +1665,40 @@ const lotController = {
                     if (!lot) throw new Error('Lote no encontrado');
                     if (lot.currentQuantity < quantity) throw new Error(`Cantidad insuficiente. Disponible: ${lot.currentQuantity}`);
                     if (lot.zone === targetZone) throw new Error('La zona destino es igual a la actual');
+
+                    // ── FEFO GUARD: bodega → producción ──
+                    // Solo el lote con la fecha de vencimiento más temprana puede pasar a producción.
+                    // Lotes sin fecha de vencimiento están bloqueados. Admin puede pasar fefoOverride=true.
+                    if (lot.zone === 'WAREHOUSE' && targetZone === 'PRODUCTION') {
+                        const isAdmin = req.user?.role === 'ADMIN';
+                        const overrideActive = isAdmin && fefoOverride === true;
+
+                        if (!overrideActive) {
+                            if (!lot.expiresAt) {
+                                throw new Error('Este lote no tiene fecha de vencimiento registrada. Edite el lote y registre la fecha antes de pasarlo a Producción.');
+                            }
+                            const candidates = await tx.materialLot.findMany({
+                                where: {
+                                    productId: lot.productId,
+                                    zone: 'WAREHOUSE',
+                                    currentQuantity: { gt: 0 },
+                                    expiresAt: { not: null }
+                                },
+                                orderBy: { expiresAt: 'asc' }
+                            });
+                            if (candidates.length > 0) {
+                                const earliestDay = new Date(candidates[0].expiresAt);
+                                earliestDay.setHours(0, 0, 0, 0);
+                                const lotDay = new Date(lot.expiresAt);
+                                lotDay.setHours(0, 0, 0, 0);
+                                if (lotDay.getTime() !== earliestDay.getTime()) {
+                                    const earliestLot = candidates[0];
+                                    const expStr = earliestDay.toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' });
+                                    throw new Error(`FEFO: Debe pasar primero a Producción el lote ${earliestLot.lotNumber} (vence ${expStr}).`);
+                                }
+                            }
+                        }
+                    }
 
                     const sourceZone = lot.zone;
                     const roundedQty = Math.round(quantity);

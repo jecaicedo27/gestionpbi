@@ -63,7 +63,7 @@ const PREMIXES = [
     },
     {
         name: 'Premezcla Calcio Dióxido',
-        code: 'TMPL110',
+        code: 'TMPL111',
         emoji: '🦴',
         gradient: 'from-lime-500 to-green-600',
         shadow: 'shadow-lime-200',
@@ -98,7 +98,7 @@ const PROCESSES = [
     },
     {
         name: 'Base Liquipops Dióxido',
-        code: 'TMPL-BASELIQ-001-v2',
+        code: 'TMPL049',
         emoji: '⚪',
         gradient: 'from-emerald-500 to-teal-700',
         shadow: 'shadow-emerald-200',
@@ -404,7 +404,7 @@ export default function PremixQuickPanel() {
                                     </label>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', marginTop: '.35rem' }}>
                                         <button
-                                            onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))}
+                                            onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))}
                                             style={{
                                                 width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0',
                                                 background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b',
@@ -413,12 +413,14 @@ export default function PremixQuickPanel() {
                                         >−</button>
                                         <input
                                             type="number"
-                                            min="1"
+                                            min="0.5"
                                             max="100"
+                                            step="0.5"
                                             value={quantities[premix.code] || 1}
                                             onChange={e => {
-                                                const v = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
-                                                setQuantities(prev => ({ ...prev, [premix.code]: v }));
+                                                const raw = parseFloat(e.target.value);
+                                                const v = isNaN(raw) ? 1 : Math.max(0.5, Math.min(100, raw));
+                                                setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) }));
                                             }}
                                             style={{
                                                 flex: 1, textAlign: 'center', fontSize: '1rem', fontWeight: 700,
@@ -429,7 +431,7 @@ export default function PremixQuickPanel() {
                                             onBlur={e => e.target.style.borderColor = '#e2e8f0'}
                                         />
                                         <button
-                                            onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))}
+                                            onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))}
                                             style={{
                                                 width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0',
                                                 background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b',
@@ -523,17 +525,17 @@ export default function PremixQuickPanel() {
                                         <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
                                             <button
-                                                onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))}
+                                                onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))}
                                                 style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                                             >−</button>
                                             <input
-                                                type="number" min="1" max="100"
+                                                type="number" min="0.5" max="100" step="0.5"
                                                 value={quantities[premix.code] || 1}
-                                                onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))}
+                                                onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }}
                                                 style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }}
                                             />
                                             <button
-                                                onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))}
+                                                onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))}
                                                 style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                                             >+</button>
                                         </div>
@@ -591,9 +593,9 @@ export default function PremixQuickPanel() {
                                         <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
                                         <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                            <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                            <input type="number" min="0.5" max="100" step="0.5" value={quantities[premix.code] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                         </div>
                                         <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
                                             style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
@@ -644,9 +646,9 @@ export default function PremixQuickPanel() {
                                     </select>
                                     <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: Math.max(1, (prev[ESFERIFICACION_TEMPLATE] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                        <input type="number" min="1" max="100" value={quantities[ESFERIFICACION_TEMPLATE] || 1} onChange={e => setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: Math.min(100, (prev[ESFERIFICACION_TEMPLATE] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: Math.max(0.5, parseFloat(((prev[ESFERIFICACION_TEMPLATE] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                        <input type="number" min="0.5" max="100" step="0.5" value={quantities[ESFERIFICACION_TEMPLATE] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [ESFERIFICACION_TEMPLATE]: Math.min(100, parseFloat(((prev[ESFERIFICACION_TEMPLATE] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                     </div>
                                     <button onClick={() => handleStart({ code: ESFERIFICACION_TEMPLATE, flavorKey: selectedFlavor })} disabled={loading || isStartingEsf || !esfTid}
                                         style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: esfTid ? esfBg : '#e2e8f0', color: esfTid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: esfTid && !isStartingEsf ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStartingEsf ? .7 : 1 }}>
@@ -692,9 +694,9 @@ export default function PremixQuickPanel() {
                                     <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
                                     <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                        <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                        <input type="number" min="0.5" max="100" step="0.5" value={quantities[premix.code] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                     </div>
                                     <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
                                         style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
@@ -744,9 +746,9 @@ export default function PremixQuickPanel() {
                                     <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3 }}>{premix.description}</p>
                                     <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                        <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                        <input type="number" min="0.5" max="100" step="0.5" value={quantities[premix.code] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                        <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                     </div>
                                     <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
                                         style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
@@ -791,9 +793,9 @@ export default function PremixQuickPanel() {
                                         <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
                                         <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                            <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                            <input type="number" min="0.5" max="100" step="0.5" value={quantities[premix.code] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                         </div>
                                         <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
                                             style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>
@@ -842,9 +844,9 @@ export default function PremixQuickPanel() {
                                         <p style={{ color: '#64748b', fontSize: '.65rem', margin: '0 0 .3rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{premix.description}</p>
                                         <label style={{ fontWeight: 600, fontSize: '.65rem', color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em' }}>Cantidad de Lotes</label>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '.3rem 0 .5rem' }}>
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, (prev[premix.code] || 1) - 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
-                                            <input type="number" min="1" max="100" value={quantities[premix.code] || 1} onChange={e => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(1, Math.min(100, parseInt(e.target.value) || 1)) }))} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
-                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, (prev[premix.code] || 1) + 1) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.max(0.5, parseFloat(((prev[premix.code] || 1) - 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                                            <input type="number" min="0.5" max="100" step="0.5" value={quantities[premix.code] || 1} onChange={e => { const r = parseFloat(e.target.value); const v = isNaN(r) ? 1 : Math.max(0.5, Math.min(100, r)); setQuantities(prev => ({ ...prev, [premix.code]: parseFloat(v.toFixed(2)) })); }} style={{ width: 50, textAlign: 'center', padding: '.3rem', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: '.9rem', fontWeight: 700, outline: 'none' }} />
+                                            <button onClick={() => setQuantities(prev => ({ ...prev, [premix.code]: Math.min(100, parseFloat(((prev[premix.code] || 1) + 0.5).toFixed(2))) }))} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e2e8f0', background: '#f8fafc', fontSize: '1rem', fontWeight: 700, color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                                         </div>
                                         <button onClick={() => handleStart(premix)} disabled={loading || isStarting || !tid}
                                             style={{ width: '100%', padding: '.4rem', borderRadius: 8, border: 'none', background: tid ? bg : '#e2e8f0', color: tid ? '#fff' : '#94a3b8', fontWeight: 700, fontSize: '.8rem', cursor: tid && !isStarting ? 'pointer' : 'not-allowed', transition: 'opacity .2s', opacity: isStarting ? .7 : 1 }}>

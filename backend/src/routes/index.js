@@ -42,6 +42,7 @@ const cartRoutes = require('./cartRoutes');
 const productiveTraceabilityRoutes = require('./productiveTraceabilityRoutes');
 const driverRoutes = require('./driverRoutes');
 const forensicRecoveryRoutes = require('./forensicRecoveryRoutes');
+const inventoryAuditRoutes = require('./inventoryAuditRoutes');
 
 router.get('/', (req, res) => {
     res.json({ message: 'MRP Popping Boba API' });
@@ -59,6 +60,7 @@ router.use('/distributor', distributorRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/production', productionRoutes);
 router.use('/audit', auditRoutes);
+router.use('/inventory-audit', inventoryAuditRoutes);
 router.use('/production/liquipops', productionSchedulerRoutes); // New
 router.use('/rpa', rpaRoutes);
 router.use('/labels', labelRoutes);
@@ -139,8 +141,10 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
     try {
         const { id } = req.params;
 
+        const batch = await _prisma.productionBatch.findUnique({ where: { id }, select: { batchNumber: true } });
+        if (!batch) return res.status(404).json({ error: 'Batch no encontrado' });
+
         await _prisma.$transaction(async (tx) => {
-            // 1. Get all assembly note IDs for this batch
             const notes = await tx.assemblyNote.findMany({
                 where: { productionBatchId: id },
                 select: { id: true }
@@ -148,7 +152,7 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
             const noteIds = notes.map(n => n.id);
 
             if (noteIds.length > 0) {
-                // 2. Get all lot consumptions to REVERT before deleting
+                // 1. Revert input consumptions (return materials to source lots)
                 const consumptions = await tx.lotConsumption.findMany({
                     where: { assemblyNoteId: { in: noteIds } },
                     select: {
@@ -157,7 +161,6 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
                     }
                 });
 
-                // 3. Revert each materialLot and product stock
                 for (const c of consumptions) {
                     if (c.materialLotId && c.quantityUsed > 0) {
                         await tx.materialLot.update({
@@ -166,22 +169,77 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
                         });
                         console.log(`[deleteBatch] Reverted ${c.quantityUsed}g → MaterialLot ${c.materialLotId}`);
                     }
-                    // Revert product currentStock
                     const productId = c.materialLot?.productId;
                     if (productId && c.quantityUsed > 0) {
                         await tx.product.update({
                             where: { id: productId },
-                            data: { currentStock: { increment: c.quantityUsed } }
+                            data: {
+                                currentStock: { increment: c.quantityUsed },
+                                productionZoneStock: { increment: c.quantityUsed }
+                            }
                         });
                     }
                 }
 
-                // 4. Now safe to delete consumptions and notes
+                // 2. Delete/zero output MaterialLots created by this batch (intermediate products like fructosa/base)
+                const outputLots = await tx.materialLot.findMany({
+                    where: { lotNumber: batch.batchNumber },
+                    select: { id: true, productId: true, currentQuantity: true, siigoProductName: true }
+                });
+                for (const ol of outputLots) {
+                    if (ol.productId && ol.currentQuantity > 0) {
+                        await tx.product.update({
+                            where: { id: ol.productId },
+                            data: {
+                                currentStock: { decrement: ol.currentQuantity },
+                                productionZoneStock: { decrement: ol.currentQuantity }
+                            }
+                        });
+                    }
+                    // Try to delete; if FK constraint (another batch consumed from this lot), zero it out
+                    const hasConsumptions = await tx.lotConsumption.count({ where: { materialLotId: ol.id } });
+                    if (hasConsumptions > 0) {
+                        await tx.materialLot.update({
+                            where: { id: ol.id },
+                            data: { currentQuantity: 0, status: 'DEPLETED' }
+                        });
+                        console.log(`[deleteBatch] Zeroed output MaterialLot ${ol.siigoProductName} (${ol.currentQuantity}g) — has ${hasConsumptions} external consumptions`);
+                    } else {
+                        await tx.materialLot.delete({ where: { id: ol.id } });
+                        console.log(`[deleteBatch] Deleted output MaterialLot ${ol.siigoProductName} (${ol.currentQuantity}g)`);
+                    }
+                }
+
+                // 3. Delete output FinishedLotStocks created by this batch
+                const outputFinished = await tx.finishedLotStock.findMany({
+                    where: { batchId: id },
+                    select: { id: true, productId: true, currentQuantity: true }
+                });
+                for (const of_ of outputFinished) {
+                    if (of_.productId && of_.currentQuantity > 0) {
+                        await tx.product.update({
+                            where: { id: of_.productId },
+                            data: {
+                                currentStock: { decrement: of_.currentQuantity },
+                                productionZoneStock: { decrement: of_.currentQuantity }
+                            }
+                        });
+                    }
+                    console.log(`[deleteBatch] Deleted output FinishedLotStock ${of_.id} (${of_.currentQuantity} uds)`);
+                }
+                if (outputFinished.length > 0) {
+                    await tx.finishedLotStock.deleteMany({ where: { batchId: id } });
+                }
+
+                // 4. Delete RPA executions linked to this batch's notes
+                await tx.rpaExecution.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
+
+                // 5. Delete consumptions, items, and notes
                 await tx.lotConsumption.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
                 await tx.assemblyNoteItem.deleteMany({ where: { assemblyNoteId: { in: noteIds } } });
                 await tx.assemblyNote.deleteMany({ where: { productionBatchId: id } });
 
-                console.log(`[deleteBatch] Reverted ${consumptions.length} consumptions for batch ${id}`);
+                console.log(`[deleteBatch] Reverted ${consumptions.length} consumptions, deleted ${outputLots.length} output lots, ${outputFinished.length} finished lots for batch ${batch.batchNumber}`);
             }
 
             await tx.batchOutputTarget.deleteMany({ where: { batchId: id } });
@@ -200,6 +258,9 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
 const batchHistoryController = require('../controllers/batchHistoryController');
 router.get('/batch-history', auth, batchHistoryController.list);
 router.get('/batch-history/:batchId', auth, batchHistoryController.detail);
+
+const mrpForecastController = require('../controllers/mrpForecastController');
+router.get('/mrp-forecast', auth, mrpForecastController.forecast);
 
 router.use('/reports', reportRoutes);
 router.use('/admin', adminRoutes);
@@ -236,6 +297,12 @@ const attendanceRoutes = require('./attendanceRoutes');
 router.use('/attendance', attendanceRoutes);
 const shiftHandoverRoutes = require('./shiftHandoverRoutes');
 router.use('/shift-handover', shiftHandoverRoutes);
+const shiftDisciplineRoutes = require('./shiftDisciplineRoutes');
+router.use('/shift-discipline', shiftDisciplineRoutes);
+const academiaRoutes = require('./academiaRoutes');
+router.use('/academia', academiaRoutes);
+const cleaningRoutes = require('./cleaningRoutes');
+router.use('/cleaning', cleaningRoutes);
 router.use('/', testRoute);
 
 module.exports = router;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../../context/AuthContext';
+import api from '../../../services/api';
 
 const parseStored = (value, fallback) => {
     if (typeof value !== 'string') return value ?? fallback;
@@ -61,6 +62,60 @@ const IntroStep = ({
     const isAdmin = user?.role === 'ADMIN';
     const noteData = note;
     const isAlreadyStarted = noteData.status === 'EXECUTING';
+    const [noProducidoSubmitting, setNoProducidoSubmitting] = useState(null); // noteId being processed
+
+    // Marca una presentación EMPAQUE como "no producida" (qty=0) y cierra su nota +
+    // las G_ENSAMBLE/ENSAMBLE asociadas al mismo productId. Útil cuando una presentación
+    // no se fabricó pero el batch debe avanzar. Queda registrado para adherencia.
+    const handleNoProducido = async (empaqueNote) => {
+        if (!empaqueNote?.id) return;
+        const presentName = empaqueNote.stageName || empaqueNote.product?.name || 'Presentación';
+        if (!window.confirm(`¿Confirmas que NO se produjo "${presentName}"?\n\nQuedará registrada con 0 unidades para la adherencia del programa, sin imprimir etiquetas ni enviar a Siigo.`)) return;
+        try {
+            setNoProducidoSubmitting(empaqueNote.id);
+
+            // 1. Si está PENDING, hay que pasarla a EXECUTING primero (el backend rechaza /complete sobre PENDING)
+            if (empaqueNote.status === 'PENDING') {
+                try {
+                    await api.post(`/assembly-notes/${empaqueNote.id}/start`, { operatorId: user?.id });
+                } catch (e) { /* puede ya estar EXECUTING por otra vía */ }
+            }
+
+            // 2. Cerrar la nota EMPAQUE con qty=0
+            await api.post(`/assembly-notes/${empaqueNote.id}/complete`, {
+                operatorId: user?.id,
+                actualQuantity: 0,
+                observations: `No producido — presentación marcada como 0 unidades (no se fabricó).`,
+            });
+
+            // 3. Cerrar todas las ENSAMBLE/G_ENSAMBLE pendientes del mismo productId con qty=0
+            const ensambleNotes = (allBatchNotes || []).filter(n =>
+                ['ENSAMBLE', 'G_ENSAMBLE'].includes(n.processType?.code) &&
+                n.productId === empaqueNote.productId &&
+                n.status !== 'COMPLETED'
+            );
+            for (const ens of ensambleNotes) {
+                try {
+                    if (ens.status === 'PENDING') {
+                        await api.post(`/assembly-notes/${ens.id}/start`, { operatorId: user?.id }).catch(() => {});
+                    }
+                    await api.post(`/assembly-notes/${ens.id}/complete`, {
+                        operatorId: user?.id,
+                        actualQuantity: 0,
+                        observations: `Auto-completado: presentación no producida.`,
+                    });
+                } catch (e) {
+                    console.warn('[NoProducido ENSAMBLE]', ens.id, e.message);
+                }
+            }
+
+            // 4. Recargar
+            window.location.reload();
+        } catch (e) {
+            alert('Error: ' + (e.response?.data?.error || e.message));
+            setNoProducidoSubmitting(null);
+        }
+    };
 
     const processCode = noteData.processType?.code;
     const isPesaje = ['PESAJE', 'G_PESAJE'].includes(processCode);
@@ -1153,6 +1208,27 @@ const IntroStep = ({
                                                                 onClick={(e) => { e.stopPropagation(); setPhotoModal({ url: recImg, label: `📷 Foto Recepción` }); }}
                                                             />
                                                         )}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* "No producido" — botón cuando la presentación no se fabricó (real=0) y no está cerrada */}
+                                            {!isCompleted && (actualConteo === 0 || actualConteo == null) && (
+                                                <div className="px-4 pb-3" onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                        disabled={noProducidoSubmitting === en.id}
+                                                        onClick={() => handleNoProducido(en)}
+                                                        className={`w-full text-xs font-bold rounded-lg px-3 py-2 border-2 transition-all
+                                                            ${noProducidoSubmitting === en.id
+                                                                ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-wait'
+                                                                : 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100 hover:border-rose-400'}`}
+                                                    >
+                                                        {noProducidoSubmitting === en.id
+                                                            ? '⏳ Marcando...'
+                                                            : '❌ No se produjo esta presentación'}
+                                                    </button>
+                                                    <div className="text-[9px] text-slate-400 text-center mt-1">
+                                                        Cierra con 0 unidades — no imprime etiquetas ni envía a Siigo
                                                     </div>
                                                 </div>
                                             )}

@@ -17,6 +17,7 @@ export default function OrderManagement() {
     const isDistributor = user?.role === 'DISTRIBUIDOR';
     const canManageOrders = isAdmin || isComercial;
     const [statusFilter, setStatusFilter] = useState('PENDING');
+    const [searchQuery, setSearchQuery] = useState('');
     const [selectedOrder, setSelectedOrder] = useState(null);
     const [pickingOrder, setPickingOrder] = useState(null);
     const [pickingProgress, setPickingProgress] = useState(null);
@@ -34,6 +35,8 @@ export default function OrderManagement() {
     const [driverSuggestions, setDriverSuggestions] = useState([]);
     const [showDriverSuggestions, setShowDriverSuggestions] = useState(false);
     const [invoiceFiles, setInvoiceFiles] = useState({ invoicePdf: null, accountStatement: null, invoiceNumber: '' });
+    const [selectedForConsolidation, setSelectedForConsolidation] = useState(new Set());
+    const [consolidating, setConsolidating] = useState(false);
     const [manualLot, setManualLot] = useState('');
     const [scanBuffer, setScanBuffer] = useState('');
     const [lastScan, setLastScan] = useState(null); // {productName, lotNumber, status, timestamp}
@@ -881,7 +884,8 @@ export default function OrderManagement() {
                     pickedQty,
                     pickedBoxLabel: pickedPack.shortLabel,
                     isBackorder: order.orderNumber?.includes('-BKO'),
-                    packingMode: order.packingMode || 'STANDARD'
+                    packingMode: order.packingMode || 'STANDARD',
+                    globalFifoRank: order.globalFifoRank || null,  // "Turno #N" — viene del backend para PENDING/APPROVED/IN_PICKING/READY
                 });
             });
         });
@@ -961,8 +965,8 @@ export default function OrderManagement() {
                     </div>
                 </div>
 
-                {/* Status Filter */}
-                <div className="mb-6 flex gap-2 overflow-x-auto pb-2">
+                {/* Status Filter (tabs) */}
+                <div className="mb-3 flex gap-2 overflow-x-auto pb-2">
                     {['PENDING', 'APPROVED', 'IN_PICKING', 'READY', 'INVOICED', 'DISPATCHED', 'DELIVERED'].map(status => {
                         const count = orderCounts?.[status] || 0;
                         return (
@@ -985,15 +989,94 @@ export default function OrderManagement() {
                     })}
                 </div>
 
-                {/* Orders List */}
-                <div className="space-y-4">
-                    {orders?.length === 0 ? (
-                        <div className="bg-white rounded-lg shadow-md p-12 text-center text-gray-500">
-                            <Package className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                            <p>No hay pedidos con estado {statusLabels[statusFilter] || statusFilter}</p>
+                {/* Búsqueda por orden o distribuidor — fila propia, ancho completo en tablet */}
+                <div className="mb-4 relative">
+                    <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Buscar por orden o distribuidor..."
+                        className="w-full pl-9 pr-9 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300 focus:border-blue-400"
+                    />
+                    <svg className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+                    </svg>
+                    {searchQuery && (
+                        <button onClick={() => setSearchQuery('')}
+                            className="absolute right-2 top-2 text-slate-400 hover:text-slate-700 text-lg leading-none">
+                            ×
+                        </button>
+                    )}
+                </div>
+
+                {/* Consolidation bar — only for READY tab and admin/logistica */}
+                {statusFilter === 'READY' && (isAdmin || isLogistica) && selectedForConsolidation.size >= 2 && (() => {
+                    const selectedOrders = (orders || []).filter(o => selectedForConsolidation.has(o.id));
+                    const distinctDistributors = new Set(selectedOrders.map(o => o.distributorId));
+                    const sameDistributor = distinctDistributors.size === 1;
+                    return (
+                        <div className={`mb-4 p-4 rounded-xl border-2 flex items-center justify-between gap-4 ${sameDistributor ? 'bg-purple-50 border-purple-300' : 'bg-amber-50 border-amber-300'}`}>
+                            <div className="flex items-center gap-3">
+                                <div className="text-3xl">📦</div>
+                                <div>
+                                    <div className="font-bold text-gray-800">{selectedForConsolidation.size} pedidos seleccionados</div>
+                                    {sameDistributor ? (
+                                        <div className="text-xs text-purple-700">Mismo distribuidor — listo para consolidar en una sola factura</div>
+                                    ) : (
+                                        <div className="text-xs text-amber-700">⚠️ Solo se pueden consolidar pedidos del mismo distribuidor</div>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => setSelectedForConsolidation(new Set())}
+                                    className="px-3 py-2 text-xs text-gray-600 hover:bg-gray-100 rounded-lg"
+                                >Cancelar</button>
+                                <button
+                                    onClick={async () => {
+                                        if (!sameDistributor) return;
+                                        if (!confirm(`¿Consolidar ${selectedForConsolidation.size} pedidos en uno solo?\n\nSe creará un nuevo pedido CON-XXXX con la suma de todos los items. Los originales quedarán marcados como consolidados.`)) return;
+                                        setConsolidating(true);
+                                        try {
+                                            const res = await axios.post(`${API_URL}/orders/consolidate`, { orderIds: Array.from(selectedForConsolidation) }, { headers: AUTH() });
+                                            alert(`✓ Pedidos consolidados en ${res.data.order.orderNumber}`);
+                                            setSelectedForConsolidation(new Set());
+                                            queryClient.invalidateQueries(['admin-orders']);
+                                            queryClient.invalidateQueries(['order-counts']);
+                                        } catch (e) {
+                                            alert('Error: ' + (e.response?.data?.error || e.message));
+                                        } finally {
+                                            setConsolidating(false);
+                                        }
+                                    }}
+                                    disabled={!sameDistributor || consolidating}
+                                    className={`px-4 py-2 rounded-lg text-sm font-bold text-white transition-all ${sameDistributor && !consolidating ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-400 cursor-not-allowed'}`}
+                                >
+                                    {consolidating ? 'Consolidando...' : `Consolidar ${selectedForConsolidation.size} pedidos`}
+                                </button>
+                            </div>
                         </div>
-                    ) : (
-                        orders?.map((order, index) => {
+                    );
+                })()}
+
+                {/* Orders List (filtra por búsqueda en orden o distribuidor) */}
+                <div className="space-y-4">
+                    {(() => {
+                        const q = searchQuery.trim().toLowerCase();
+                        const visibleOrders = q
+                            ? (orders || []).filter(o =>
+                                (o.orderNumber || '').toLowerCase().includes(q) ||
+                                (o.distributor?.name || '').toLowerCase().includes(q))
+                            : (orders || []);
+                        if (visibleOrders.length === 0) {
+                            return (
+                                <div className="bg-white rounded-lg shadow-md p-12 text-center text-gray-500">
+                                    <Package className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                                    <p>{q ? `No hay pedidos que coincidan con "${searchQuery}"` : `No hay pedidos con estado ${statusLabels[statusFilter] || statusFilter}`}</p>
+                                </div>
+                            );
+                        }
+                        return visibleOrders.map((order, index) => {
                             const progress = order.pickingProgress || 0;
                             const totalItems = order.items?.length || 0;
                             const completedItems = order.items?.filter(i => {
@@ -1160,11 +1243,39 @@ export default function OrderManagement() {
                                 </div>
                                 <div className="flex justify-between items-start mb-4">
                                     <div className="pt-2 flex items-start">
+                                        {/* Checkbox for consolidation — only on READY tab and admin/logistica */}
+                                        {statusFilter === 'READY' && (isAdmin || isLogistica) && !order.isConsolidation && !order.consolidatedIntoOrderId && (
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedForConsolidation.has(order.id)}
+                                                onChange={(e) => {
+                                                    const next = new Set(selectedForConsolidation);
+                                                    if (e.target.checked) next.add(order.id);
+                                                    else next.delete(order.id);
+                                                    setSelectedForConsolidation(next);
+                                                }}
+                                                onClick={e => e.stopPropagation()}
+                                                className="mr-3 mt-3 w-5 h-5 cursor-pointer"
+                                                title="Seleccionar para consolidar"
+                                            />
+                                        )}
                                         <div className="flex items-center justify-center min-w-[56px] w-[56px] h-[56px] bg-purple-100 text-purple-700 rounded-xl text-4xl font-black mr-4 shadow-sm border border-purple-200 flex-shrink-0">
                                             {order.globalFifoRank || index + 1}
                                         </div>
                                         <div>
-                                            <h3 className="text-xl font-semibold text-gray-900">{order.orderNumber}</h3>
+                                            <h3 className="text-xl font-semibold text-gray-900">
+                                                {order.orderNumber}
+                                                {order.isConsolidation && (
+                                                    <span className="ml-2 px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded-full border border-purple-300">
+                                                        CONSOLIDADO ({order.consolidatedFromOrderIds?.length || 0})
+                                                    </span>
+                                                )}
+                                                {order.consolidatedIntoOrderId && (
+                                                    <span className="ml-2 px-2 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full border border-amber-300">
+                                                        Consolidado en otro pedido
+                                                    </span>
+                                                )}
+                                            </h3>
                                             <p className="text-sm text-gray-600 mt-1">
                                                 Distribuidor: <span className="font-medium">{order.distributor?.name}</span>
                                             </p>
@@ -1537,8 +1648,8 @@ export default function OrderManagement() {
                                 )}
                             </div>
                             );
-                        })
-                    )}
+                        });
+                    })()}
                 </div>
             </div>
 
@@ -3619,59 +3730,31 @@ export default function OrderManagement() {
                                                     &times;
                                                 </button>
                                             </div>
-                                            <div className="p-4 space-y-3">
+                                            <div className="p-3 space-y-1.5">
                                                 {detailList.map((row, idx) => (
-                                                    <div key={`${row.orderNumber}-${idx}`} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                                                        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
-                                                            <div className="min-w-0">
-                                                                <div className="flex flex-wrap items-center gap-2">
-                                                                    <span className="font-semibold text-gray-900">{row.orderNumber}</span>
-                                                                    {row.isBackorder && (
-                                                                        <span className="inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
-                                                                            Backorder
-                                                                        </span>
-                                                                    )}
-                                                                    <span className={`inline-flex px-2.5 py-1 rounded-full text-[11px] font-semibold border ${getStatusColor(row.status)}`}>
-                                                                        {statusLabels[row.status] || row.status}
+                                                    <div key={`${row.orderNumber}-${idx}`} className="rounded-lg border border-gray-200 bg-white px-3 py-2 shadow-sm hover:bg-gray-50 transition-colors">
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
+                                                                {row.globalFifoRank != null && (
+                                                                    <span className="inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-white shrink-0" title="Posición en la cola FIFO global">
+                                                                        #{row.globalFifoRank}
                                                                     </span>
-                                                                </div>
-                                                                <div className="text-xs text-gray-500 mt-1">{row.distributor}</div>
-                                                            </div>
-                                                            <div className="text-left lg:text-right">
-                                                                <div className="text-lg font-bold text-gray-900">{row.qty} uds</div>
-                                                                <div className="text-xs text-gray-500">{row.boxDetail}</div>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
-                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
-                                                                <div className="text-[11px] text-gray-500">Pendiente actual</div>
-                                                                <div className="text-sm font-bold text-gray-900">{row.qty} uds</div>
-                                                            </div>
-                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
-                                                                <div className="text-[11px] text-gray-500">Equivalencia</div>
-                                                                <div className="text-sm font-bold text-gray-900">{row.boxLabel}</div>
-                                                            </div>
-                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
-                                                                <div className="text-[11px] text-gray-500">Pedido original</div>
-                                                                <div className="text-sm font-bold text-gray-900">{row.requestedQty} uds</div>
-                                                                <div className="text-[11px] text-gray-500">{row.requestedBoxLabel}</div>
-                                                            </div>
-                                                            <div className="rounded-lg border bg-gray-50 px-3 py-2">
-                                                                <div className="text-[11px] text-gray-500">Empaque</div>
-                                                                <div className="text-sm font-bold text-gray-900">x{row.unitsPerBox} uds/caja</div>
-                                                                {row.pickedQty > 0 && (
-                                                                    <div className="text-[11px] text-gray-500">Separado: {row.pickedQty} uds</div>
                                                                 )}
+                                                                <span className="font-semibold text-gray-900 text-xs truncate">{row.orderNumber}</span>
+                                                                <span className="text-[11px] text-gray-500 truncate">· {row.distributor}</span>
+                                                                {row.isBackorder && (
+                                                                    <span className="inline-flex px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 text-purple-700">BKO</span>
+                                                                )}
+                                                                <span className={`inline-flex px-1.5 py-0.5 rounded text-[9px] font-semibold border ${getStatusColor(row.status)}`}>
+                                                                    {statusLabels[row.status] || row.status}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-right shrink-0">
+                                                                <span className="text-base font-black text-gray-900">{row.qty}</span>
+                                                                <span className="text-[10px] text-gray-500 ml-1">uds</span>
+                                                                <span className="text-[10px] text-gray-400 ml-1">· {row.boxLabel}</span>
                                                             </div>
                                                         </div>
-
-                                                        {row.unitsPerBox > 1 && row.qty > 0 && row.qty < row.unitsPerBox && (
-                                                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                                                                Este saldo sigue apareciendo como <strong>{row.boxLabel}</strong> porque el producto maneja <strong>x{row.unitsPerBox} uds por caja</strong>.
-                                                                En este caso, la deuda real son <strong>{row.qty} unidades</strong>, no una caja completa.
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 ))}
                                             </div>

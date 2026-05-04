@@ -39,6 +39,11 @@ router.post('/checkin',                 ac.checkIn);
 router.post('/checkout',               ac.checkOut);
 router.get('/status/:employeeId',       ac.getStatus);
 
+// ── Marcaje multi-método (PIN / Cédula / Cara) — público sin auth ────────────
+router.post('/pin-mark',                ac.pinMark);
+router.post('/cedula-mark',             ac.cedulaMark);
+router.post('/face-mark',               ac.faceMark);
+
 // ── Admin: presencia y dashboard ─────────────────────────────────────────────
 router.get('/present',    auth, ac.getPresent);
 router.get('/dashboard',  auth, ac.getDashboard);
@@ -50,6 +55,22 @@ router.get('/history',    auth, ac.getHistory);
 router.get('/hours/:employeeId',  auth, ac.getHours);
 router.get('/punctuality',        auth, ac.getPunctuality);
 router.get('/overtime',           auth, ac.getOvertime);
+router.get('/payroll-summary',    auth, ac.getPayrollSummary);
+router.get('/payroll-config',     auth, ac.getPayrollConfig);
+router.put('/payroll-config',     auth, roles(ADMIN_ROLES), ac.updatePayrollConfig);
+router.get('/labor-novelties',    auth, ac.getLaborNovelties);
+router.post('/labor-novelties',   auth, roles(ADMIN_ROLES), ac.createLaborNovelty);
+router.delete('/labor-novelties/:id', auth, roles(ADMIN_ROLES), ac.deleteLaborNovelty);
+
+// ── Aprobaciones de horas extra ──────────────────────────────────────────────
+router.get('/overtime-approvals',          auth, ac.listOvertimeApprovals);
+router.post('/overtime-approvals',         auth, roles(ADMIN_ROLES), ac.createOvertimeApproval);
+router.delete('/overtime-approvals/:id',   auth, roles(ADMIN_ROLES), ac.deleteOvertimeApproval);
+router.get('/payroll-closures',   auth, ac.getPayrollClosures);
+router.get('/payroll-closures/:id', auth, ac.getPayrollClosureDetail);
+router.get('/payroll-closures/:id/export', auth, ac.exportPayrollClosure);
+router.post('/payroll-closures/close', auth, roles(ADMIN_ROLES), ac.closePayrollPeriod);
+router.post('/payroll-closures/:id/reopen', auth, roles(ADMIN_ROLES), ac.reopenPayrollClosure);
 
 // ── Admin: gestión de empleados del kiosko ───────────────────────────────────
 router.get('/employees',                          auth, ac.getEmployees);

@@ -4,7 +4,8 @@ import { Bluetooth, Wifi, Printer, TestTube } from 'lucide-react';
 import printer from '../../services/bluetoothPrinter';
 import { useZebra } from '../../context/ZebraContext';
 import { buildLotLabel, buildTestLabel } from '../../services/tsplLabelBuilder';
-import { buildLotLabelZPL, buildTestLabelZPL } from '../../services/zplLabelBuilder';
+import { buildLotLabelZPL, buildTestLabelZPL, toInitials } from '../../services/zplLabelBuilder';
+import { useAuth } from '../../context/AuthContext';
 
 /**
  * ThermalPrintModal
@@ -25,6 +26,7 @@ import { buildLotLabelZPL, buildTestLabelZPL } from '../../services/zplLabelBuil
  * }
  */
 const ThermalPrintModal = ({ visible, onCancel, lotData }) => {
+    const { user } = useAuth();
     // ── Mode & Printers ──
     const [mode, setMode] = useState(() => localStorage.getItem('label_printer_mode') || 'bluetooth');
     useEffect(() => { localStorage.setItem('label_printer_mode', mode); }, [mode]);
@@ -111,7 +113,8 @@ const ThermalPrintModal = ({ visible, onCancel, lotData }) => {
                 supplier: lotData.supplierName || '',
                 receivedAt: lotData.receivedAt || new Date().toISOString(),
                 expiresAt: lotData.expiresAt || null,
-                orderNumber: lotData.orderNumber || ''
+                orderNumber: lotData.orderNumber || '',
+                printedBy: toInitials(user?.name)
             };
 
             const nFull = Number(fullBoxes) || 0;

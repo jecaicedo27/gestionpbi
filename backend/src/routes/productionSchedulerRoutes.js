@@ -8,6 +8,8 @@ router.get('/mix/:flavor', auth, productionSchedulerController.calculateBatchMix
 router.get('/demand', auth, productionSchedulerController.getFlavorDemand);
 router.get('/demand/:flavor', auth, productionSchedulerController.getFlavorDemand);
 router.get('/schedule', auth, productionSchedulerController.getSchedule);
+router.get('/operational-meta', auth, productionSchedulerController.getOperationalMeta);
+router.get('/failure-stats', auth, productionSchedulerController.failureStats);
 router.post('/schedule', auth, productionSchedulerController.createBatch);
 router.delete('/all', auth, productionSchedulerController.deleteAllBatches);
 router.post('/:line/reschedule-shift', auth, productionSchedulerController.rescheduleShift);

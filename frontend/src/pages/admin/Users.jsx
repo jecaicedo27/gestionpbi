@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
 import api from '../../services/api';
-import { Trash2, UserPlus, Pencil, Check, X, Settings, LockKeyhole, Unlock } from 'lucide-react';
+import { Trash2, UserPlus, Pencil, Check, X, Settings, LockKeyhole, Unlock, Sparkles } from 'lucide-react';
 
 const ID_TYPES = [
     { id: '13', label: 'NIT' },
@@ -52,6 +52,7 @@ const Users = () => {
     const [editingName, setEditingName] = useState(null); // { userId, value }
     const [editingBilling, setEditingBilling] = useState(null); // { userId, nit, idType, discountPercent }
     const [editingRole, setEditingRole] = useState(null); // { userId, value }
+    const [editingCleaning, setEditingCleaning] = useState(null); // { userId, isCleaningStaff, isCleaningSupervisor }
     const [pinModal, setPinModal] = useState(null); // { userId, name }
     const [pinInput, setPinInput] = useState('');
     const [pinError, setPinError] = useState('');
@@ -127,6 +128,20 @@ const Users = () => {
             loadUsers();
         } catch (error) {
             alert('Error actualizando rol');
+        }
+    };
+
+    const handleSaveCleaning = async () => {
+        if (!editingCleaning) return;
+        try {
+            await api.patch(`/admin/users/${editingCleaning.userId}`, {
+                isCleaningStaff: editingCleaning.isCleaningStaff,
+                isCleaningSupervisor: editingCleaning.isCleaningSupervisor,
+            });
+            setEditingCleaning(null);
+            loadUsers();
+        } catch (error) {
+            alert('Error actualizando configuración de aseo');
         }
     };
 
@@ -265,13 +280,33 @@ const Users = () => {
                                                 <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
                                             </select>
                                         ) : (
-                                            <button
-                                                onClick={() => setEditingRole({ userId: user.id, value: user.role })}
-                                                className="px-2 py-1 bg-neutral-100 rounded text-xs hover:bg-indigo-100 hover:text-indigo-700 transition-colors cursor-pointer"
-                                                title="Clic para cambiar rol"
-                                            >
-                                                {user.role}
-                                            </button>
+                                            <div className="flex items-center gap-1 flex-wrap">
+                                                <button
+                                                    onClick={() => setEditingRole({ userId: user.id, value: user.role })}
+                                                    className="px-2 py-1 bg-neutral-100 rounded text-xs hover:bg-indigo-100 hover:text-indigo-700 transition-colors cursor-pointer"
+                                                    title="Clic para cambiar rol"
+                                                >
+                                                    {user.role}
+                                                </button>
+                                                {user.isCleaningStaff && (
+                                                    <span className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[10px] font-semibold" title="Personal de aseo">🧹</span>
+                                                )}
+                                                {user.isCleaningSupervisor && (
+                                                    <span className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded text-[10px] font-semibold" title="Supervisor de aseo">👁️</span>
+                                                )}
+                                                <button
+                                                    onClick={() => setEditingCleaning({
+                                                        userId: user.id,
+                                                        name: user.name,
+                                                        isCleaningStaff: !!user.isCleaningStaff,
+                                                        isCleaningSupervisor: !!user.isCleaningSupervisor,
+                                                    })}
+                                                    className={`p-1 rounded transition-opacity ${(user.isCleaningStaff || user.isCleaningSupervisor) ? 'text-emerald-600 hover:bg-emerald-50' : 'text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-emerald-600 hover:bg-emerald-50'}`}
+                                                    title="Configurar aseo"
+                                                >
+                                                    <Sparkles size={14} />
+                                                </button>
+                                            </div>
                                         )}
                                     </td>
                                     
@@ -396,6 +431,49 @@ const Users = () => {
                     </table>
                 </div>
             </Card>
+
+            {/* Cleaning flags modal */}
+            {editingCleaning && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setEditingCleaning(null)}>
+                    <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <h2 className="text-lg font-bold mb-1 flex items-center gap-2">
+                            <Sparkles size={18} className="text-emerald-600" />
+                            Aseo — {editingCleaning.name}
+                        </h2>
+                        <p className="text-xs text-neutral-500 mb-4">Define si este usuario participa en el módulo de aseo.</p>
+                        <div className="space-y-3">
+                            <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-emerald-50 transition-colors">
+                                <input
+                                    type="checkbox"
+                                    className="mt-1 h-4 w-4 accent-emerald-600"
+                                    checked={editingCleaning.isCleaningStaff}
+                                    onChange={e => setEditingCleaning({ ...editingCleaning, isCleaningStaff: e.target.checked })}
+                                />
+                                <div>
+                                    <div className="font-semibold text-sm">🧹 Personal de aseo</div>
+                                    <div className="text-xs text-neutral-500">Recibe y ejecuta tareas asignadas. Verá <code>/aseo</code> en su menú.</div>
+                                </div>
+                            </label>
+                            <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-indigo-50 transition-colors">
+                                <input
+                                    type="checkbox"
+                                    className="mt-1 h-4 w-4 accent-indigo-600"
+                                    checked={editingCleaning.isCleaningSupervisor}
+                                    onChange={e => setEditingCleaning({ ...editingCleaning, isCleaningSupervisor: e.target.checked })}
+                                />
+                                <div>
+                                    <div className="font-semibold text-sm">👁️ Supervisor de aseo</div>
+                                    <div className="text-xs text-neutral-500">Verifica/aprueba ejecuciones y ve reportes. Verá <code>/aseo/supervisor</code>.</div>
+                                </div>
+                            </label>
+                        </div>
+                        <div className="flex gap-2 mt-5">
+                            <button onClick={() => setEditingCleaning(null)} className="flex-1 py-2 border rounded text-sm hover:bg-neutral-50">Cancelar</button>
+                            <button onClick={handleSaveCleaning} className="flex-1 py-2 bg-emerald-600 text-white rounded text-sm font-semibold hover:bg-emerald-700">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Billing settings modal */}
             {editingBilling && (

@@ -670,18 +670,58 @@ exports.createBatch = async (req, res) => {
 exports.updateBatch = async (req, res) => {
     try {
         const { id } = req.params;
-        const { scheduledStart, scheduledEnd, status, notes } = req.body;
+        const { scheduledStart, scheduledEnd, status, notes, mix, baseWeight } = req.body;
 
         const updateData = {};
         if (scheduledStart) updateData.scheduledStart = new Date(scheduledStart);
         if (scheduledEnd) updateData.scheduledEnd = new Date(scheduledEnd);
         if (status) updateData.status = status;
         if (notes !== undefined) updateData.notes = notes;
+        if (baseWeight !== undefined && baseWeight !== null && !Number.isNaN(Number(baseWeight))) {
+            updateData.baseWeight = Number(baseWeight);
+        }
+
+        // Update outputTargets if mix is provided
+        if (mix && Array.isArray(mix)) {
+            for (const item of mix) {
+                if (!item.productId) continue;
+                await prisma.batchOutputTarget.updateMany({
+                    where: { batchId: id, productId: item.productId },
+                    data: {
+                        plannedUnits: item.plannedUnits,
+                        plannedWeightKg: item.plannedWeightKg || 0
+                    }
+                });
+            }
+            // If baseWeight wasn't explicitly sent, recompute from outputTargets
+            if (updateData.baseWeight === undefined) {
+                const updatedTargets = await prisma.batchOutputTarget.findMany({
+                    where: { batchId: id },
+                    select: { plannedWeightKg: true }
+                });
+                const totalKg = updatedTargets.reduce((acc, t) => acc + (t.plannedWeightKg || 0), 0);
+                if (totalKg > 0) updateData.baseWeight = totalKg;
+            }
+        }
 
         const batch = await prisma.productionBatch.update({
             where: { id },
             data: updateData
         });
+
+        // Recompute projectedTotalWeight if mix changed
+        if (mix && Array.isArray(mix)) {
+            const updatedTargets = await prisma.batchOutputTarget.findMany({
+                where: { batchId: id },
+                select: { plannedWeightKg: true }
+            });
+            const totalOutput = updatedTargets.reduce((acc, t) => acc + (t.plannedWeightKg || 0), 0);
+            await prisma.productionBatch.update({
+                where: { id },
+                data: { projectedTotalWeight: totalOutput }
+            });
+        }
+
         res.json(batch);
     } catch (error) {
         console.error("Error updating batch:", error);
@@ -741,6 +781,11 @@ exports.getSchedule = async (req, res) => {
             const ingredientSku = b.outputTargets.find(t => INGREDIENT_TEMPLATE_MAP[t.product?.sku]);
             const templateCode = ingredientSku ? INGREDIENT_TEMPLATE_MAP[ingredientSku.product.sku] : undefined;
 
+            // For ingredient-style batches (no size pattern in product name),
+            // derive kgFactor from baseWeight/plannedUnits so the modal can
+            // recompute weights correctly when the user changes units.
+            const totalUnits = b.outputTargets.reduce((acc, t) => acc + (t.plannedUnits || 0), 0);
+
             return {
                 id: b.id,
                 title: `${b.flavor}${seq} (${Math.round(b.baseWeight || 0)}kg)`,
@@ -754,6 +799,10 @@ exports.getSchedule = async (req, res) => {
                 ...(templateCode ? { templateCode } : {}),
                 mix: b.outputTargets.map(t => {
                     const sizeInfo = parseSize(t.product.name, batchDensity);
+                    let kgFactor = sizeInfo.kgFactor;
+                    if ((!kgFactor || kgFactor === 0) && b.baseWeight && totalUnits > 0) {
+                        kgFactor = b.baseWeight / totalUnits;
+                    }
                     return {
                         id: t.productId,
                         productId: t.productId,
@@ -761,7 +810,9 @@ exports.getSchedule = async (req, res) => {
                         sku: t.product.sku,
                         plannedUnits: t.plannedUnits,
                         plannedWeightKg: t.plannedWeightKg,
-                        sizeLabel: `${sizeInfo.value}${sizeInfo.unit}`
+                        packSize: t.product.packSize || 1,
+                        sizeLabel: `${Math.round(kgFactor * 1000) / 1000} Kg`,
+                        kgFactor: Math.round(kgFactor * 1000) / 1000
                     };
                 })
             };

@@ -37,6 +37,8 @@ const ProductionZonePage = () => {
     const [previewPhoto, setPreviewPhoto] = useState(null);
 
     const [scannerInput, setScannerInput] = useState('');
+    const [fefoOverride, setFefoOverride] = useState(false);
+    const isAdmin = user?.role === 'ADMIN';
 
     // ── Load zone stock + history on mount ──
     useEffect(() => {
@@ -220,7 +222,8 @@ const ProductionZonePage = () => {
                 quantity: transferQty,
                 observations: transferObs || null,
                 photos: photos.map(p => p.url),
-                userId: user?.id
+                userId: user?.id,
+                fefoOverride: fefoOverride && isAdmin
             });
             message.success(`✅ ${transferQty} × ${selectedProduct.name} ingresado a zona de producción`);
             setSelectedProduct(null);
@@ -231,6 +234,7 @@ const ProductionZonePage = () => {
             setSearchQuery('');
             setSearchResults([]);
             setShowTransferForm(false);
+            setFefoOverride(false);
             loadZoneStock();
             loadHistory();
         } catch (e) {
@@ -354,7 +358,25 @@ const ProductionZonePage = () => {
 
                         {/* Step 2: Lot */}
                         <div className="pz-transfer-col">
-                            <label className="pz-label">Lote</label>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                                <label className="pz-label">Lote (FEFO)</label>
+                                {isAdmin && availableLots.some(l => !l.fefoEligible) && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setFefoOverride(v => !v)}
+                                        style={{
+                                            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+                                            border: fefoOverride ? '1px solid #f59e0b' : '1px solid #cbd5e1',
+                                            background: fefoOverride ? '#fef3c7' : '#fff',
+                                            color: fefoOverride ? '#92400e' : '#64748b',
+                                            cursor: 'pointer'
+                                        }}
+                                        title="Admin: permitir saltarse el orden FEFO"
+                                    >
+                                        {fefoOverride ? '🔓 Override FEFO' : '🔒 Override FEFO'}
+                                    </button>
+                                )}
+                            </div>
                             {lotsLoading ? <Spin size="small" /> : (
                                 <>
                                     <Select
@@ -364,15 +386,60 @@ const ProductionZonePage = () => {
                                         onChange={setSelectedLot}
                                         allowClear
                                         disabled={!selectedProduct}
-                                        options={availableLots.map(l => ({
-                                            value: l.id,
-                                            label: `${l.lotNumber} — ${fmtQty(l.currentQuantity, l.unit)}`
-                                        }))}
+                                        optionLabelProp="label"
+                                        options={availableLots.map(l => {
+                                            const exp = l.expiresAt
+                                                ? new Date(l.expiresAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })
+                                                : null;
+                                            const blocked = !l.fefoEligible && !(fefoOverride && isAdmin);
+                                            const reason = l.fefoBlockedReason === 'NO_EXPIRY'
+                                                ? 'Sin fecha vto.'
+                                                : 'Esperar FEFO';
+                                            return {
+                                                value: l.id,
+                                                disabled: blocked,
+                                                label: (
+                                                    <span>
+                                                        {l.fefoEligible && <span style={{ color: '#16a34a', fontWeight: 800 }}>✅ </span>}
+                                                        {blocked && <span>🔒 </span>}
+                                                        {l.lotNumber} — {fmtQty(l.currentQuantity, l.unit)}
+                                                        {exp ? ` · Vence ${exp}` : ''}
+                                                    </span>
+                                                ),
+                                                searchLabel: `${l.lotNumber} ${exp || ''}`,
+                                                rawLot: l,
+                                                blocked,
+                                                reason,
+                                                exp
+                                            };
+                                        })}
+                                        optionRender={(opt) => (
+                                            <div style={{ opacity: opt.data.blocked ? 0.55 : 1 }}>
+                                                <div style={{ fontWeight: 600 }}>
+                                                    {opt.data.rawLot.fefoEligible && <span style={{ color: '#16a34a', fontWeight: 800 }}>✅ USAR ESTE — </span>}
+                                                    {opt.data.blocked && <span>🔒 </span>}
+                                                    {opt.data.rawLot.lotNumber}
+                                                </div>
+                                                <div style={{ fontSize: 11, color: '#64748b' }}>
+                                                    {fmtQty(opt.data.rawLot.currentQuantity, opt.data.rawLot.unit)}
+                                                    {opt.data.exp && ` · Vence ${opt.data.exp}`}
+                                                    {opt.data.blocked && ` · ${opt.data.reason}`}
+                                                </div>
+                                            </div>
+                                        )}
                                     />
                                     {selectedProduct && availableLots.length === 0 && (selectedProduct.productionZoneStock || 0) > 0 && (
                                         <div style={{ marginTop: 6, padding: '6px 10px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 6, fontSize: '0.78rem', color: '#ad6800' }}>
                                             ⚠️ Todo el stock ya está en zona de producción ({fmtQty(selectedProduct.productionZoneStock, selectedProduct.unit)}).
                                             No hay lotes pendientes en bodega.
+                                        </div>
+                                    )}
+                                    {selectedProduct && availableLots.length > 0 && availableLots.some(l => l.fefoEligible) && (
+                                        <div style={{ marginTop: 6, padding: '6px 10px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, fontSize: '0.78rem', color: '#166534' }}>
+                                            ✅ Lote a transferir: <strong>{availableLots.find(l => l.fefoEligible)?.lotNumber}</strong>
+                                            {availableLots.find(l => l.fefoEligible)?.expiresAt && (
+                                                <> (vence {new Date(availableLots.find(l => l.fefoEligible).expiresAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })})</>
+                                            )}
                                         </div>
                                     )}
                                 </>

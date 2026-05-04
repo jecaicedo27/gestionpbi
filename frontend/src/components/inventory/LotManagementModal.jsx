@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { X, Plus, Package, Trash2, ChevronDown, ChevronUp, Clock, User, AlertCircle, Printer, Pencil, Save, ArrowRightLeft } from 'lucide-react';
+import { X, Plus, Package, Trash2, ChevronDown, ChevronUp, Clock, User, AlertCircle, Printer, Pencil, Save, ArrowRightLeft, Lock, ShieldAlert } from 'lucide-react';
 import api from '../../services/api';
 import { useZebraRef } from '../../context/ZebraContext';
-import { buildLotLabelZPL } from '../../services/zplLabelBuilder';
+import { buildLotLabelZPL, toInitials } from '../../services/zplLabelBuilder';
+import { useAuth } from '../../context/AuthContext';
 import { resolveScannedQuantity, parseScanInput } from '../../services/scannerParser';
 import {
     normalizeInventoryIntegerInput,
@@ -233,6 +234,7 @@ const DeferredInput = ({ value, onCommit, onScan, className, ...props }) => {
 };
 
 const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onChanged }) => {
+    const { user } = useAuth();
     const [lots, setLots] = useState([]);
     const [loading, setLoading] = useState(true);
     const [lotTab, setLotTab] = useState('active');
@@ -264,6 +266,8 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
     const [transferZone, setTransferZone] = useState('');
     const [transferQty, setTransferQty] = useState('');
     const [transferring, setTransferring] = useState(false);
+    const [fefoOverride, setFefoOverride] = useState(false);
+    const isAdmin = user?.role === 'ADMIN';
 
     const zebraRef = useZebraRef();
 
@@ -780,7 +784,8 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                 packContainerType: label.packContainerType,
                 boxNumber: label.sequence,
                 totalBoxes: label.totalPackages,
-                statusText
+                statusText,
+                printedBy: toInitials(user?.name)
             }, 1)).join('\n');
 
             const printResult = await zebraRef.current.printZPL(zpl);
@@ -890,6 +895,40 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
         }
     };
 
+    // FEFO ENFORCEMENT — lotes en WAREHOUSE elegibles para transferir a PRODUCTION.
+    // Reglas:
+    //   1. Solo MaterialLot en zona WAREHOUSE con currentQuantity > 0.
+    //   2. Debe tener expiresAt registrado.
+    //   3. Elegible = los lotes con la fecha de vencimiento más temprana (empates por día).
+    const warehouseFefoEligibleIds = useMemo(() => {
+        const candidates = lots.filter(l =>
+            l._type === 'MaterialLot' &&
+            l.zone === 'WAREHOUSE' &&
+            l.currentQuantity > 0 &&
+            l.expiresAt
+        );
+        if (candidates.length === 0) return new Set();
+        const earliestTs = Math.min(...candidates.map(l => new Date(l.expiresAt).getTime()));
+        const earliestDay = new Date(earliestTs);
+        earliestDay.setHours(0, 0, 0, 0);
+        const earliestDayTs = earliestDay.getTime();
+        const eligible = candidates.filter(l => {
+            const d = new Date(l.expiresAt);
+            d.setHours(0, 0, 0, 0);
+            return d.getTime() === earliestDayTs;
+        });
+        return new Set(eligible.map(l => l.id));
+    }, [lots]);
+
+    const isFefoBlocked = (lot, targetZone) => {
+        if (lot._type !== 'MaterialLot') return false;
+        if (lot.zone !== 'WAREHOUSE') return false;
+        if (targetZone !== 'PRODUCTION') return false;
+        if (fefoOverride && isAdmin) return false;
+        if (!lot.expiresAt) return true; // sin fecha = bloqueado siempre
+        return !warehouseFefoEligibleIds.has(lot.id);
+    };
+
     const materialZones = [
         { value: 'WAREHOUSE', label: 'Bodega principal' },
         { value: 'PRODUCTION', label: 'Producción' },
@@ -909,7 +948,12 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
 
     const getTransferZoneOptions = (lot) => {
         const zones = lot._type === 'MaterialLot' ? materialZones : finishedZones;
-        return zones.filter(z => z.value !== lot.zone);
+        return zones.filter(z => {
+            if (z.value === lot.zone) return false;
+            // FEFO: ocultar "PRODUCTION" como destino si el lote no es elegible (a menos que admin override)
+            if (z.value === 'PRODUCTION' && isFefoBlocked(lot, 'PRODUCTION')) return false;
+            return true;
+        });
     };
 
     const handleTransfer = async (lot) => {
@@ -922,6 +966,19 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
             alert(`Cantidad máxima disponible: ${lot.currentQuantity}`);
             return;
         }
+        // FEFO guard — block transfers from WAREHOUSE to PRODUCTION that violate FEFO order
+        if (isFefoBlocked(lot, transferZone)) {
+            if (!lot.expiresAt) {
+                alert('Este lote no tiene fecha de vencimiento registrada. Edita el lote y registra la fecha antes de pasarlo a Producción.');
+            } else {
+                const eligibleLot = lots.find(l => warehouseFefoEligibleIds.has(l.id));
+                const exp = eligibleLot?.expiresAt
+                    ? new Date(eligibleLot.expiresAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })
+                    : '';
+                alert(`FEFO: Debes pasar primero el lote ${eligibleLot?.lotNumber || ''}${exp ? ` (vence ${exp})` : ''} a Producción antes que este.`);
+            }
+            return;
+        }
         setTransferring(true);
         try {
             await api.post('/inventory/lots/transfer-zone', {
@@ -929,6 +986,7 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                 lotType: lot._type,
                 targetZone: transferZone,
                 quantity: Math.round(qty),
+                fefoOverride: fefoOverride && isAdmin,
             });
             setTransferLotId(null);
             setTransferZone('');
@@ -1194,23 +1252,57 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                     ) : (
                         lots
                             .filter(lot => lotTab === 'active' ? lot.currentQuantity > 0 : lot.currentQuantity <= 0)
+                            .slice()
+                            .sort((a, b) => {
+                                // FEFO elegibles primero, luego sin fecha (rojo) al final, resto por expiresAt asc
+                                const aElig = warehouseFefoEligibleIds.has(a.id) ? 0 : 1;
+                                const bElig = warehouseFefoEligibleIds.has(b.id) ? 0 : 1;
+                                if (aElig !== bElig) return aElig - bElig;
+                                if (!a.expiresAt && b.expiresAt) return 1;
+                                if (a.expiresAt && !b.expiresAt) return -1;
+                                if (a.expiresAt && b.expiresAt) {
+                                    return new Date(a.expiresAt) - new Date(b.expiresAt);
+                                }
+                                return 0;
+                            })
                             .map(lot => {
                                 const pct = lot.initialQuantity > 0 ? Math.round((lot.currentQuantity / lot.initialQuantity) * 100) : 0;
                                 const isExpanded = expandedLot === lot.id;
                                 const history = lotHistory[lot.id] || [];
+                                // FEFO badges (solo aplican a MaterialLot en WAREHOUSE)
+                                const isWarehouseMaterial = lot._type === 'MaterialLot' && lot.zone === 'WAREHOUSE' && lot.currentQuantity > 0;
+                                const isFefoEligible = isWarehouseMaterial && warehouseFefoEligibleIds.has(lot.id);
+                                const isFefoLockedNoExpiry = isWarehouseMaterial && !lot.expiresAt;
+                                const isFefoLockedByOrder = isWarehouseMaterial && !isFefoEligible && !isFefoLockedNoExpiry;
 
                                 return (
                                     <div key={`${lot._type}_${lot.id}`} className={`border rounded-xl overflow-hidden transition-all ${lot.currentQuantity <= 0 ? 'opacity-60' : ''}`}>
                                         <div className="flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer" onClick={() => toggleHistory(lot)}>
                                             <div className="flex-1">
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 flex-wrap">
                                                     <span className="font-bold text-gray-900">{lot.lotNumber}</span>
                                                     {getStatusBadge(lot.status, lot.currentQuantity, lot.initialQuantity)}
                                                     <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-50 text-slate-600 border">{lot.zone || 'WAREHOUSE'}</span>
                                                     {lot.labelPrinted && <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Impreso</span>}
+                                                    {isFefoEligible && (
+                                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-green-600 text-white">
+                                                            ✅ PRÓXIMO A VENCER — PASAR A PRODUCCIÓN
+                                                        </span>
+                                                    )}
+                                                    {isFefoLockedByOrder && (
+                                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-slate-400 text-white flex items-center gap-1">
+                                                            <Lock size={9} /> ESPERAR FEFO
+                                                        </span>
+                                                    )}
+                                                    {isFefoLockedNoExpiry && (
+                                                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-red-500 text-white flex items-center gap-1">
+                                                            <ShieldAlert size={9} /> SIN FECHA VTO.
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <div className="text-xs text-gray-500 mt-0.5">
                                                     Recibido: {lot.receivedAt ? new Date(lot.receivedAt).toLocaleDateString('es-CO') : 'N/A'} · Inicial: {fmtQty(lot.initialQuantity)}
+                                                    {lot.expiresAt && <> · Vence: <span className="font-bold">{new Date(lot.expiresAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })}</span></>}
                                                 </div>
                                             </div>
 
@@ -1265,56 +1357,92 @@ const LotManagementModal = ({ product, initialScan, onScanConsumed, onClose, onC
                                             </div>
                                         </div>
 
-                                        {transferLotId === lot.id && (
-                                            <div className="bg-blue-50 border-t border-blue-200 p-3" onClick={e => e.stopPropagation()}>
-                                                <div className="text-xs font-bold text-blue-700 uppercase mb-2">Transferir a otra zona</div>
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                    <select
-                                                        value={transferZone}
-                                                        onChange={e => setTransferZone(e.target.value)}
-                                                        className="flex-1 min-w-[140px] text-sm border border-blue-300 rounded-lg px-2 py-1.5 bg-white"
-                                                    >
-                                                        <option value="">Zona destino...</option>
-                                                        {getTransferZoneOptions(lot).map(z => (
-                                                            <option key={z.value} value={z.value}>{z.label}</option>
-                                                        ))}
-                                                    </select>
-                                                    <div className="flex items-center gap-1">
-                                                        <input
-                                                            type="number"
-                                                            placeholder="Cantidad"
-                                                            value={transferQty}
-                                                            onChange={e => setTransferQty(e.target.value)}
-                                                            min={1}
-                                                            max={lot.currentQuantity}
-                                                            className="w-28 text-sm border border-blue-300 rounded-lg px-2 py-1.5"
-                                                        />
-                                                        <button
-                                                            onClick={() => setTransferQty(String(lot.currentQuantity))}
-                                                            className="text-[10px] px-1.5 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                        {transferLotId === lot.id && (() => {
+                                            const fefoBlocked = isFefoBlocked(lot, transferZone);
+                                            const eligibleLot = lots.find(l => warehouseFefoEligibleIds.has(l.id));
+                                            const eligibleExp = eligibleLot?.expiresAt
+                                                ? new Date(eligibleLot.expiresAt).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' })
+                                                : '';
+                                            return (
+                                                <div className="bg-blue-50 border-t border-blue-200 p-3" onClick={e => e.stopPropagation()}>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="text-xs font-bold text-blue-700 uppercase">Transferir a otra zona</div>
+                                                        {isAdmin && (
+                                                            <button
+                                                                onClick={() => setFefoOverride(v => !v)}
+                                                                className={`text-[10px] font-bold px-2 py-1 rounded-full border transition-all ${fefoOverride
+                                                                    ? 'bg-amber-100 border-amber-400 text-amber-800'
+                                                                    : 'bg-white border-slate-300 text-slate-500 hover:bg-slate-100'}`}
+                                                                title="Admin: permitir saltarse el orden FEFO"
+                                                            >
+                                                                {fefoOverride ? '🔓 Override FEFO ACTIVO' : '🔒 Override FEFO'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <select
+                                                            value={transferZone}
+                                                            onChange={e => setTransferZone(e.target.value)}
+                                                            className="flex-1 min-w-[140px] text-sm border border-blue-300 rounded-lg px-2 py-1.5 bg-white"
                                                         >
-                                                            Todo
+                                                            <option value="">Zona destino...</option>
+                                                            {getTransferZoneOptions(lot).map(z => (
+                                                                <option key={z.value} value={z.value}>{z.label}</option>
+                                                            ))}
+                                                        </select>
+                                                        <div className="flex items-center gap-1">
+                                                            <input
+                                                                type="number"
+                                                                placeholder="Cantidad"
+                                                                value={transferQty}
+                                                                onChange={e => setTransferQty(e.target.value)}
+                                                                min={1}
+                                                                max={lot.currentQuantity}
+                                                                className="w-28 text-sm border border-blue-300 rounded-lg px-2 py-1.5"
+                                                            />
+                                                            <button
+                                                                onClick={() => setTransferQty(String(lot.currentQuantity))}
+                                                                className="text-[10px] px-1.5 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                                                            >
+                                                                Todo
+                                                            </button>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => handleTransfer(lot)}
+                                                            disabled={transferring || !transferZone || !transferQty || fefoBlocked}
+                                                            className="px-3 py-1.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            {transferring ? 'Transfiriendo...' : 'Transferir'}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setTransferLotId(null)}
+                                                            className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700"
+                                                        >
+                                                            Cancelar
                                                         </button>
                                                     </div>
-                                                    <button
-                                                        onClick={() => handleTransfer(lot)}
-                                                        disabled={transferring || !transferZone || !transferQty}
-                                                        className="px-3 py-1.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        {transferring ? 'Transfiriendo...' : 'Transferir'}
-                                                    </button>
-                                                    <button
-                                                        onClick={() => setTransferLotId(null)}
-                                                        className="px-2 py-1.5 text-sm text-gray-500 hover:text-gray-700"
-                                                    >
-                                                        Cancelar
-                                                    </button>
+                                                    <div className="text-[10px] text-blue-500 mt-1">
+                                                        Disponible: {fmtQty(lot.currentQuantity)} {unit}
+                                                    </div>
+                                                    {fefoBlocked && !lot.expiresAt && (
+                                                        <div className="mt-2 bg-red-50 border border-red-300 rounded-lg px-3 py-2 text-xs text-red-700 flex items-start gap-1.5">
+                                                            <ShieldAlert size={14} className="mt-0.5 flex-shrink-0" />
+                                                            <div>
+                                                                <span className="font-bold">Sin fecha de vencimiento.</span> Edita el lote y registra la fecha antes de pasarlo a Producción.
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    {fefoBlocked && lot.expiresAt && eligibleLot && (
+                                                        <div className="mt-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-start gap-1.5">
+                                                            <Lock size={14} className="mt-0.5 flex-shrink-0" />
+                                                            <div>
+                                                                <span className="font-bold">FEFO:</span> Debes pasar primero a Producción el lote <span className="font-black">{eligibleLot.lotNumber}</span>{eligibleExp && <> (vence {eligibleExp})</>}.
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <div className="text-[10px] text-blue-500 mt-1">
-                                                    Disponible: {fmtQty(lot.currentQuantity)} {unit}
-                                                </div>
-                                            </div>
-                                        )}
+                                            );
+                                        })()}
 
                                         {isExpanded && (
                                             <div className="bg-gray-50 border-t p-3">

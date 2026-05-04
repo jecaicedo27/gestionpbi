@@ -33,7 +33,7 @@ const AdminConfig = () => {
 
     const handleChange = (e) => {
         const { name, value } = e.target;
-        const floatFields = ['syrupRatio', 'esfera_output_factor'];
+        const floatFields = ['syrupRatio', 'syrupRatioDioxido', 'esfera_output_factor'];
         setConfig(prev => ({
             ...prev,
             [name]: floatFields.includes(name) ? parseFloat(value) : (parseInt(value) || 0)
@@ -124,7 +124,8 @@ const AdminConfig = () => {
             if (baseName === 'minStockDays') return 15;
             if (baseName === 'alertYellow') return 12;
             if (baseName === 'alertRed') return 3;
-            if (baseName === 'syrupRatio') return 1.0;
+            if (baseName === 'syrupRatio') return 0.62;
+            if (baseName === 'syrupRatioDioxido') return 0.81;
             if (baseName === 'batchDuration') return activeTab === 'geniality' ? 240 : 90;
             if (baseName === 'shiftBatchTarget') return 5;
         }
@@ -247,6 +248,11 @@ const AdminConfig = () => {
                     Si la IP configurada no responde, el sistema buscará automáticamente la impresora en la red 192.168.0.x
                 </p>
             </div>
+
+            <hr className="mb-6 border-gray-200" />
+
+            {/* ── Network Access (PIN login) ── */}
+            <NetworkAccessSection />
 
             <hr className="mb-6 border-gray-200" />
 
@@ -495,19 +501,34 @@ const AdminConfig = () => {
                                         <p className="text-xs text-gray-400 mt-1">Actualmente: {getDisplayValue('shiftBatchTarget')} baches por turno</p>
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-purple-700 mb-1">% de Jarabe en Producto Final</label>
-                                        <p className="text-xs text-gray-500 mb-2"><strong>Rendimiento del jarabe.</strong> Si un tarro pesa 350gr y este valor es 0.70 (70%), significa que solo necesitas 245gr de jarabe del batch. El 30% restante (105gr) se añade después (líquido protector, etc). Con 120kg de jarabe produces MÁS unidades que antes.</p>
+                                        <label className="block text-sm font-medium text-purple-700 mb-1">% de Jarabe en Producto Final — Liquipops NORMAL</label>
+                                        <p className="text-xs text-gray-500 mb-2"><strong>Rendimiento del jarabe (sabores normales).</strong> Si un tarro pesa 350gr y este valor es 0.62 (62%), significa que necesitas 217gr de jarabe del batch. El 38% restante (133gr) se añade después (líquido protector, etc.). Aplica a todos los sabores que NO usan BASE DIOXIDO.</p>
                                         <input
                                             type="number"
                                             step="0.01"
                                             min="0"
                                             max="1"
                                             name="syrupRatio"
-                                            value={config.syrupRatio !== undefined ? config.syrupRatio : 0.70}
+                                            value={config.syrupRatio !== undefined ? config.syrupRatio : 0.62}
                                             onChange={handleChange}
                                             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-500"
                                         />
-                                        <p className="text-xs text-gray-400 mt-1">Valor entre 0 y 1 (ej: 0.70 = 70%)</p>
+                                        <p className="text-xs text-gray-400 mt-1">Valor entre 0 y 1 (ej: 0.62 = 62%)</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-emerald-700 mb-1">% de Jarabe en Producto Final — Liquipops DIOXIDO</label>
+                                        <p className="text-xs text-gray-500 mb-2"><strong>Rendimiento del jarabe (sabores con BASE DIOXIDO, ej. MANGO BICHE CON SAL).</strong> Estos sabores usan menos líquido de protección y rinden menos unidades por batch. Detección automática: si el COMPUESTO usa BASE LIQUIPOPS DIOXIDO como ingrediente.</p>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            max="1"
+                                            name="syrupRatioDioxido"
+                                            value={config.syrupRatioDioxido !== undefined ? config.syrupRatioDioxido : 0.81}
+                                            onChange={handleChange}
+                                            className="w-full px-3 py-2 border border-emerald-300 rounded-md focus:outline-none focus:ring-1 focus:ring-emerald-500 font-bold text-emerald-900"
+                                        />
+                                        <p className="text-xs text-gray-400 mt-1">Valor entre 0 y 1 (ej: 0.81 = 81%)</p>
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-emerald-700 mb-1">Factor de Rendimiento ESFERAS</label>
@@ -644,6 +665,162 @@ const AdminConfig = () => {
                     )}
                 </div>
             )}
+        </div>
+    );
+};
+
+// ── Network Access Section: manages allowed IPs for PIN login ──
+const NetworkAccessSection = () => {
+    const [ips, setIps] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [manualIp, setManualIp] = useState('');
+    const [manualLabel, setManualLabel] = useState('');
+
+    const load = async () => {
+        try {
+            const { data } = await api.get('/admin/network-ips');
+            setIps(data.ips || []);
+        } catch {
+            setMsg({ type: 'error', text: 'Error al cargar IPs' });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => { load(); }, []);
+
+    const registerCurrent = async () => {
+        setBusy(true); setMsg(null);
+        try {
+            const { data } = await api.post('/admin/network-ips/register-current', { label: 'Planta' });
+            setMsg({ type: 'success', text: `IP ${data.entry.ip} registrada como red interna.` });
+            await load();
+        } catch (e) {
+            setMsg({ type: 'error', text: e?.response?.data?.error || 'Error al registrar' });
+        } finally { setBusy(false); }
+    };
+
+    const addManual = async () => {
+        if (!manualIp.trim()) return;
+        setBusy(true); setMsg(null);
+        try {
+            const { data } = await api.post('/admin/network-ips', { ip: manualIp.trim(), label: manualLabel.trim() });
+            setMsg({ type: 'success', text: `IP ${data.entry.ip} agregada.` });
+            setManualIp(''); setManualLabel('');
+            await load();
+        } catch (e) {
+            setMsg({ type: 'error', text: e?.response?.data?.error || 'Error al agregar' });
+        } finally { setBusy(false); }
+    };
+
+    const remove = async (ip) => {
+        if (!confirm(`¿Quitar ${ip} de la lista de IPs internas?`)) return;
+        setBusy(true); setMsg(null);
+        try {
+            await api.delete(`/admin/network-ips/${ip}`);
+            setMsg({ type: 'success', text: `IP ${ip} eliminada.` });
+            await load();
+        } catch (e) {
+            setMsg({ type: 'error', text: e?.response?.data?.error || 'Error al eliminar' });
+        } finally { setBusy(false); }
+    };
+
+    return (
+        <div>
+            <h2 className="text-xl font-bold mb-2 text-gray-800">🔐 IPs Internas (Acceso PIN)</h2>
+            <p className="text-sm text-gray-600 mb-4">
+                El login por PIN solo funciona desde estas IPs. Si la IP de la planta cambia (por corte de luz, reinicio del módem, etc.),
+                conéctate desde la planta y haz click en <b>Registrar IP actual</b>.
+            </p>
+
+            <div className="flex flex-wrap gap-2 mb-4">
+                <button
+                    onClick={registerCurrent}
+                    disabled={busy}
+                    className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-md hover:bg-emerald-700 disabled:opacity-50"
+                >
+                    {busy ? 'Procesando...' : '📍 Registrar IP actual como interna'}
+                </button>
+                <button
+                    onClick={load}
+                    disabled={busy}
+                    className="px-3 py-2 bg-gray-200 text-gray-700 text-sm rounded-md hover:bg-gray-300 disabled:opacity-50"
+                >
+                    🔄 Recargar
+                </button>
+            </div>
+
+            {msg && (
+                <div className={`p-2 mb-3 rounded text-sm ${msg.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {msg.text}
+                </div>
+            )}
+
+            <div className="border border-gray-200 rounded-md overflow-hidden mb-4">
+                <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="text-left px-3 py-2 font-medium text-gray-700">IP</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-700">Etiqueta</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-700">Agregada por</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-700">Fecha</th>
+                            <th className="px-3 py-2"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {loading ? (
+                            <tr><td colSpan="5" className="text-center py-4 text-gray-500">Cargando...</td></tr>
+                        ) : ips.length === 0 ? (
+                            <tr><td colSpan="5" className="text-center py-4 text-gray-500">Sin IPs dinámicas. Las del archivo .env también funcionan.</td></tr>
+                        ) : ips.map(entry => (
+                            <tr key={entry.ip} className="border-t border-gray-100">
+                                <td className="px-3 py-2 font-mono">{entry.ip}</td>
+                                <td className="px-3 py-2">{entry.label || '—'}</td>
+                                <td className="px-3 py-2 text-gray-600">{entry.addedBy || '—'}</td>
+                                <td className="px-3 py-2 text-gray-600">{entry.addedAt ? new Date(entry.addedAt).toLocaleString('es-CO') : '—'}</td>
+                                <td className="px-3 py-2 text-right">
+                                    <button
+                                        onClick={() => remove(entry.ip)}
+                                        disabled={busy}
+                                        className="text-red-600 hover:text-red-800 text-xs font-medium disabled:opacity-50"
+                                    >
+                                        Eliminar
+                                    </button>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+
+            <details className="text-sm">
+                <summary className="cursor-pointer text-gray-600 hover:text-gray-800">Agregar IP manualmente</summary>
+                <div className="flex flex-wrap gap-2 mt-3">
+                    <input
+                        type="text"
+                        placeholder="192.168.1.100"
+                        value={manualIp}
+                        onChange={(e) => setManualIp(e.target.value)}
+                        className="px-3 py-2 border border-gray-300 rounded-md text-sm font-mono"
+                    />
+                    <input
+                        type="text"
+                        placeholder="Etiqueta (ej: Planta - sede norte)"
+                        value={manualLabel}
+                        onChange={(e) => setManualLabel(e.target.value)}
+                        className="flex-1 min-w-[200px] px-3 py-2 border border-gray-300 rounded-md text-sm"
+                    />
+                    <button
+                        onClick={addManual}
+                        disabled={busy || !manualIp.trim()}
+                        className="px-3 py-2 bg-blue-600 text-white text-sm rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        Agregar
+                    </button>
+                </div>
+            </details>
         </div>
     );
 };

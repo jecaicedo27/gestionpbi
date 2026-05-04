@@ -10,8 +10,11 @@ import CoccionStep from './steps/CoccionStep';
 import MedicionStep from './steps/MedicionStep';
 import FormacionQCStep from './steps/FormacionQCStep';
 import EsferificacionStep from './steps/EsferificacionStep';
+import AguaStep from './steps/AguaStep';
 import ProteccionGateStep from './steps/ProteccionGateStep';
 import PesajeBatchStep from './steps/PesajeBatchStep';
+import AdicionBatchStep from './steps/AdicionBatchStep';
+import PrintLotStep from './steps/PrintLotStep';
 import GConteoCarritosStep from '../GenialityRunner/steps/GConteoCarritosStep';
 import GEPremixStep from '../GenialityRunner/steps/GEPremixStep';
 import GEBaseLiquidaStep from '../GenialityRunner/steps/GEBaseLiquidaStep';
@@ -37,8 +40,11 @@ const StepDisplay = (props) => {
     if (stepType === 'MEDICION') return <MedicionStep     {...props} />;
     if (stepType === 'FORMACION_QC') return <FormacionQCStep {...props} />;
     if (stepType === 'ESFERIFICACION') return <EsferificacionStep {...props} />;
+    if (stepType === 'AGUA') return <AguaStep {...props} />;
     if (stepType === 'PROTECCION_GATE') return <ProteccionGateStep {...props} />;
     if (stepType === 'PESAJE_BATCH') return <PesajeBatchStep {...props} />;
+    if (stepType === 'ADICION_BATCH') return <AdicionBatchStep {...props} />;
+    if (stepType === 'IMPRESION_LOTE') return <PrintLotStep {...props} />;
 
     // Geniality steps
     if (stepType === 'G_CONTEO_CARRITOS') return <GConteoCarritosStep {...props} />;

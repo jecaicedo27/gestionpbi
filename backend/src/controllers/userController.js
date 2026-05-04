@@ -96,7 +96,7 @@ const handleUserWriteError = (res, error, fallbackMessage) => {
 const getUsers = async (req, res) => {
     try {
         const users = await prisma.user.findMany({
-            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, createdAt: true, pin: true }
+            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true, createdAt: true, pin: true }
         });
         // Map pin hash → boolean flag (never expose the hash)
         const safeUsers = users.map(({ pin, ...u }) => ({ ...u, hasPin: !!pin }));
@@ -238,7 +238,7 @@ const deleteUser = async (req, res) => {
 const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nit, name, role, idType, discountPercent, reteFuente } = req.body;
+        const { nit, name, role, idType, discountPercent, reteFuente, isCleaningStaff, isCleaningSupervisor } = req.body;
         const data = {};
         if (nit !== undefined) data.nit = normalizeText(nit) || null;
         if (idType !== undefined) data.idType = normalizeText(idType) || '13';
@@ -250,6 +250,8 @@ const updateUser = async (req, res) => {
             data.discountPercent = parsedDiscountPercent;
         }
         if (reteFuente !== undefined) data.reteFuente = parseBoolean(reteFuente, true);
+        if (isCleaningStaff !== undefined) data.isCleaningStaff = parseBoolean(isCleaningStaff, false);
+        if (isCleaningSupervisor !== undefined) data.isCleaningSupervisor = parseBoolean(isCleaningSupervisor, false);
         if (name !== undefined) {
             const cleanName = normalizeText(name);
             if (!cleanName) return res.status(400).json({ error: 'El nombre no puede estar vacío.' });
@@ -266,7 +268,7 @@ const updateUser = async (req, res) => {
         const user = await prisma.user.update({
             where: { id },
             data,
-            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true }
+            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true }
         });
         res.json({ success: true, data: user });
     } catch (error) {

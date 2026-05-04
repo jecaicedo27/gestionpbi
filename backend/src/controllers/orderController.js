@@ -149,7 +149,7 @@ const createOrder = async (req, res) => {
 
 const getOrders = async (req, res) => {
     try {
-        const { status, page = 1, limit = 50 } = req.query;
+        const { status, page = 1, limit = 50, includeConsolidated } = req.query;
         const skip = (page - 1) * limit;
 
         const where = {};
@@ -158,6 +158,13 @@ const getOrders = async (req, res) => {
         // Distributors only see their own orders
         if (req.user.role === 'DISTRIBUIDOR') {
             where.distributorId = req.user.id;
+        }
+
+        // Ocultar pedidos originales que ya fueron consolidados (admin/distribuidor podrían
+        // confundirlos con pedidos diferentes). El consolidado los representa.
+        // Pasar ?includeConsolidated=1 para verlos (debug, auditoría).
+        if (includeConsolidated !== '1') {
+            where.consolidatedIntoOrderId = null;
         }
 
         const [orders, total] = await Promise.all([
@@ -602,6 +609,177 @@ const patchOrder = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/orders/consolidate
+ * Consolidate multiple READY orders from the same distributor into one.
+ * Does NOT touch inventory (originals already consumed it).
+ */
+const consolidateOrders = async (req, res) => {
+    const { orderIds } = req.body;
+    if (!Array.isArray(orderIds) || orderIds.length < 2) {
+        return res.status(400).json({ success: false, error: 'Debes seleccionar al menos 2 pedidos para consolidar' });
+    }
+    try {
+        const orders = await prisma.order.findMany({
+            where: { id: { in: orderIds } },
+            include: {
+                items: true,
+                distributor: { select: { id: true, name: true } }
+            }
+        });
+
+        if (orders.length !== orderIds.length) {
+            return res.status(404).json({ success: false, error: 'Algunos pedidos no existen' });
+        }
+
+        // Validations
+        const distributorIds = [...new Set(orders.map(o => o.distributorId))];
+        if (distributorIds.length > 1) {
+            return res.status(400).json({ success: false, error: 'Solo puedes consolidar pedidos del mismo distribuidor' });
+        }
+        const invalidStatus = orders.find(o => o.status !== 'READY');
+        if (invalidStatus) {
+            return res.status(400).json({ success: false, error: `El pedido ${invalidStatus.orderNumber} no está en estado Listo` });
+        }
+        const alreadyConsolidated = orders.find(o => o.consolidatedIntoOrderId);
+        if (alreadyConsolidated) {
+            return res.status(400).json({ success: false, error: `El pedido ${alreadyConsolidated.orderNumber} ya está consolidado` });
+        }
+
+        // Sort by createdAt to make the order numbering predictable
+        orders.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+        // Build distributor slug for orderNumber (uppercase, no accents, hyphens, max 20 chars)
+        const distributorName = orders[0].distributor?.name || 'CLIENTE';
+        const distributorSlug = distributorName
+            .normalize('NFD').replace(/[̀-ͯ]/g, '')
+            .toUpperCase()
+            .replace(/[^A-Z0-9\s-]/g, '')
+            .trim()
+            .replace(/\s+/g, '-')
+            .substring(0, 20)
+            .replace(/-+$/, '');
+
+        // Generate orderNumber CON-{DISTRIBUIDOR}-{seq}
+        const lastConsolidated = await prisma.order.findFirst({
+            where: { orderNumber: { startsWith: 'CON-' } },
+            orderBy: { createdAt: 'desc' },
+            select: { orderNumber: true }
+        });
+        let nextSeq = 1;
+        if (lastConsolidated) {
+            const m = lastConsolidated.orderNumber.match(/-(\d+)$/);
+            if (m) nextSeq = parseInt(m[1]) + 1;
+        }
+        const newOrderNumber = `CON-${distributorSlug}-${String(nextSeq).padStart(4, '0')}`;
+
+        // Build consolidated notes
+        const originNumbers = orders.map(o => o.orderNumber).join(', ');
+        const originalNotes = orders.filter(o => o.notes && o.notes.trim()).map(o => `[${o.orderNumber}] ${o.notes}`).join('\n');
+        const consolidatedNotes = `Consolidado de pedidos: ${originNumbers}${originalNotes ? '\n\n--- Notas originales ---\n' + originalNotes : ''}`;
+
+        // Sum items by productId
+        const itemsByProduct = new Map();
+        for (const o of orders) {
+            for (const it of o.items) {
+                if (!itemsByProduct.has(it.productId)) {
+                    itemsByProduct.set(it.productId, {
+                        productId: it.productId,
+                        requestedQty: 0,
+                        allocatedQty: 0
+                    });
+                }
+                const agg = itemsByProduct.get(it.productId);
+                agg.requestedQty += it.requestedQty || 0;
+                agg.allocatedQty += it.allocatedQty || 0;
+            }
+        }
+
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Create consolidated order
+            const firstOrder = orders[0];
+            const newOrder = await tx.order.create({
+                data: {
+                    orderNumber: newOrderNumber,
+                    distributorId: firstOrder.distributorId,
+                    status: 'READY',
+                    notes: consolidatedNotes,
+                    isConsolidation: true,
+                    consolidatedFromOrderIds: orders.map(o => o.id),
+                    completionPercent: 100,
+                    pickingProgress: 100,
+                    readyAt: new Date(),
+                    destination: firstOrder.destination,
+                    destinationCity: firstOrder.destinationCity,
+                    receiverName: firstOrder.receiverName,
+                    receiverPhone: firstOrder.receiverPhone,
+                }
+            });
+
+            // 2. Create OrderItems for consolidated (summed). Pedidos READY → pendingQty=0.
+            for (const item of itemsByProduct.values()) {
+                await tx.orderItem.create({
+                    data: {
+                        orderId: newOrder.id,
+                        productId: item.productId,
+                        requestedQty: item.requestedQty,
+                        allocatedQty: item.allocatedQty,
+                        pendingQty: Math.max(0, item.requestedQty - item.allocatedQty),
+                    }
+                });
+            }
+
+            // 3. Mark originals as consolidated (keep status READY but referenced)
+            await tx.order.updateMany({
+                where: { id: { in: orderIds } },
+                data: { consolidatedIntoOrderId: newOrder.id }
+            });
+
+            return newOrder;
+        });
+
+        // Copy OrderPickingItems from originals to consolidated (lots already assigned).
+        // OrderPickingItem se relaciona con OrderItem (no con Order). Hay que mapear cada pickingItem
+        // del item original al item nuevo del consolidado por productId.
+        try {
+            const originalItems = await prisma.orderItem.findMany({
+                where: { orderId: { in: orderIds } },
+                include: { pickingItems: true }
+            });
+            const consolidatedItems = await prisma.orderItem.findMany({
+                where: { orderId: result.id }
+            });
+            const consolidatedByProductId = new Map(consolidatedItems.map(ci => [ci.productId, ci.id]));
+
+            let copied = 0;
+            for (const origItem of originalItems) {
+                const newItemId = consolidatedByProductId.get(origItem.productId);
+                if (!newItemId) continue;
+                for (const pi of origItem.pickingItems) {
+                    const { id, scannedAt, orderItemId, ...rest } = pi;
+                    await prisma.orderPickingItem.create({
+                        data: { ...rest, orderItemId: newItemId }
+                    });
+                    copied++;
+                }
+            }
+            console.log(`[consolidate] Copiados ${copied} pickingItems al consolidado ${result.orderNumber}`);
+        } catch (e) {
+            console.warn('OrderPickingItem copy warning:', e.message);
+        }
+
+        const consolidatedFull = await prisma.order.findUnique({
+            where: { id: result.id },
+            include: { items: { include: { product: true } }, distributor: true }
+        });
+
+        res.json({ success: true, order: consolidatedFull, consolidatedCount: orders.length });
+    } catch (error) {
+        console.error('Consolidate Orders Error:', error);
+        res.status(500).json({ success: false, error: 'Error consolidando pedidos: ' + error.message });
+    }
+};
+
 module.exports = {
     createOrder,
     createOrderFromExcel,
@@ -621,5 +799,6 @@ module.exports = {
     getAllOrders,
     getOrderById,
     getOrderCounts,
-    getPendingDeliverySummary
+    getPendingDeliverySummary,
+    consolidateOrders
 };

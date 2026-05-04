@@ -698,6 +698,11 @@ class SiigoService {
             dueDate.setDate(dueDate.getDate() + PAYMENT_DAYS);
 
             // ─── Build invoice observations: notes + flavor/qty/lot detail ───
+            // Formato:
+            //   PRODUCTO X SIZE: TOTAL uds
+            //     • LOTE-A: X uds
+            //     • LOTE-B: Y uds
+            // Cada lote en línea separada para que sea legible (antes estaban amontonados con coma).
             const orderNotes = order.notes ? order.notes.trim() : '';
             const lines = [];
             if (orderNotes) lines.push(orderNotes);
@@ -707,10 +712,26 @@ class SiigoService {
                 const flavor = saborM ? saborM[1].trim() : (item.product?.sku || '?');
                 const sizeM = name.match(/X\s+(\d+)\s*(GR?|ML|KG)/i);
                 const sizeLabel = sizeM ? `${sizeM[1]}${sizeM[2].toUpperCase()}` : '';
-                const qty = item.pickingItems?.reduce((s, pi) => s + (pi.scannedQty || 0), 0) || 0;
+                const qty = (item.pickingItems || []).reduce((s, pi) => s + (pi.scannedQty || 0), 0);
                 if (qty <= 0) continue;
-                const lots = [...new Set((item.pickingItems || []).map(pi => pi.lotNumber).filter(Boolean))];
-                lines.push(`${flavor} ${sizeLabel}: ${qty} uds - Lote: ${lots.join(', ') || 'S/L'}`);
+
+                // Agregar uds por lote (sumar repetidos del mismo lote)
+                const byLot = {};
+                for (const pi of (item.pickingItems || [])) {
+                    if (!pi.lotNumber) continue;
+                    byLot[pi.lotNumber] = (byLot[pi.lotNumber] || 0) + (pi.scannedQty || 0);
+                }
+                const lotEntries = Object.entries(byLot).sort((a, b) => b[1] - a[1]);
+                const lotCountLabel = lotEntries.length > 0 ? ` (${lotEntries.length} ${lotEntries.length === 1 ? 'lote' : 'lotes'})` : '';
+
+                lines.push(`${flavor} ${sizeLabel}: ${qty} uds${lotCountLabel}`);
+                if (lotEntries.length > 0) {
+                    for (const [lot, lotQty] of lotEntries) {
+                        lines.push(`  • ${lot}: ${lotQty} uds`);
+                    }
+                } else {
+                    lines.push(`  • Sin lote asignado`);
+                }
             }
             const observations = lines.join('\n').substring(0, 5000);
 

@@ -4,7 +4,8 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { RefreshCw, Play, RotateCcw, CheckCircle, Clock, Layers, ChevronRight, Timer, Factory, Warehouse } from 'lucide-react';
+import { RefreshCw, Play, RotateCcw, CheckCircle, Clock, Layers, ChevronRight, Timer, Factory, Warehouse, AlertCircle, X } from 'lucide-react';
+import ShiftDisciplineTimeline from '../components/ShiftDisciplineTimeline';
 
 // ─── Process Group Classification ────────────────────────────────────────────
 const PROCESS_GROUPS = [
@@ -513,6 +514,42 @@ const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) =
                     </div>
                 )}
 
+                {/* Peso total / cantidad de baches — útil en intermedios (AZUCAR INVERTIDA, BASE, PROTECCION) */}
+                {(() => {
+                    // repeats SOLO desde processParameters.repeatTotal o numLots (intermedios aggregateOnRepeat).
+                    // No usar outputTargets[0].plannedUnits porque en sabores finales son UDS DE TARROS, no baches.
+                    const repeats = batch.notes?.find(n => n.processParameters?.repeatTotal)?.processParameters?.repeatTotal
+                        || numLots
+                        || 1;
+                    // Peso total: 1) batch.baseWeight, 2) fallback: nota con unit='g'+targetQuantity (ej. ENSAMBLE),
+                    // 3) último fallback: suma de items planeados de la primera nota con items.
+                    let totalKg = Number(batch.baseWeight) || 0;
+                    if (totalKg <= 0) {
+                        const wNote = batch.notes?.find(n => (n.unit === 'g' || n.unit === 'gramo') && (n.targetQuantity || 0) > 0);
+                        if (wNote) totalKg = Math.round((wNote.targetQuantity / 1000) * 10) / 10;
+                    }
+                    if (totalKg <= 0) {
+                        const noteWithItems = batch.notes?.find(n => (n.items || []).length > 0);
+                        if (noteWithItems) {
+                            const sumG = noteWithItems.items.reduce((s, it) => {
+                                const q = Number(it.actualQuantity || it.plannedQuantity) || 0;
+                                return s + (it.unit === 'kg' || it.unit === 'KG' ? q * 1000 : q);
+                            }, 0);
+                            if (sumG > 0) totalKg = Math.round((sumG / 1000) * 10) / 10;
+                        }
+                    }
+                    if (totalKg <= 0) return null;
+                    const perBatch = repeats > 1 ? Math.round((totalKg / repeats) * 10) / 10 : totalKg;
+                    const batchLabel = repeats === 1 ? '1 bache' : `${repeats} baches × ${perBatch} kg`;
+                    return (
+                        <div className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-bold border border-amber-200 bg-amber-50 text-amber-800 rounded-md px-2 py-0.5">
+                            <span>⚖️</span>
+                            <span>{totalKg} kg total</span>
+                            <span className="text-amber-600 font-semibold">· {batchLabel}</span>
+                        </div>
+                    );
+                })()}
+
                 {/* Current stage label */}
                 {currentStageName && (
                     <div className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-1">
@@ -616,7 +653,8 @@ const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) =
 
             {/* CTA */}
             {!isDone ? (
-                canAct ? (
+                <>
+                {canAct ? (
                     <button
                         onClick={() => onStart(batch)}
                         className="w-full py-3 flex items-center justify-center gap-2 font-bold text-sm bg-slate-800 hover:bg-slate-900 text-white transition-colors group-hover:bg-blue-600">
@@ -632,7 +670,15 @@ const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) =
                     <div className="w-full py-3 flex items-center justify-center gap-2 font-bold text-sm bg-slate-200 text-slate-400 cursor-not-allowed">
                         🔒 Esperando tu turno
                     </div>
-                )
+                )}
+                {isAdmin && (() => {
+                    const completedConteo = batch.notes.find(n =>
+                        n.status === 'COMPLETED' && /^(G_)?CONTEO$/i.test(n.processType?.code)
+                    );
+                    if (!completedConteo) return null;
+                    return <ReopenConteoButton noteId={completedConteo.id} stageName={completedConteo.stageName || 'Conteo'} onSuccess={onRefresh} />;
+                })()}
+                </>
             ) : (
                 <div className="border-t border-emerald-100">
                     <div className="w-full py-2.5 bg-emerald-50 flex items-center justify-center gap-2 text-emerald-600 text-xs font-semibold">
@@ -672,6 +718,133 @@ const ProductionOperatorPage = () => {
             if (t && t > 0) setShiftBatchTarget(t);
         }).catch(() => {});
     }, []);
+
+    const [showAuxEventModal, setShowAuxEventModal] = useState(false);
+
+    const AUX_EVENT_OPTIONS = [
+        { name: 'CAMBIO DE AGUA',  duration: 30,  icon: '💧', color: 'cyan',   editable: false },
+        { name: 'LAVADO',          duration: 60,  icon: '🧼', color: 'teal',   editable: false },
+        { name: 'PAUSA ACTIVA',    duration: 15,  icon: '☕', color: 'indigo', editable: false },
+        { name: 'MANTENIMIENTO',   duration: 60,  icon: '🔧', color: 'gray',   editable: true  },
+        { name: 'REUNIÓN',         duration: 30,  icon: '👥', color: 'purple', editable: true  },
+        { name: 'FALLA',           duration: 0,   icon: '⚠️', color: 'red',    editable: true  },
+    ];
+
+    const [activeFailure, setActiveFailure] = useState(null);
+    const [failureStats, setFailureStats] = useState({ totalFailures: 0, totalMinutesLost: 0 });
+
+    // Pill: esferificación activa (única por planta) — informativa para todos
+    // los operarios; sirve para saber cuál bache hay que cerrar antes de poder
+    // arrancar el siguiente.
+    const [activeEsfer, setActiveEsfer] = useState(null);
+    useEffect(() => {
+        let cancelled = false;
+        const fetchActive = async () => {
+            try {
+                const r = await api.get('/assembly-notes/active-esferificacion');
+                if (!cancelled) setActiveEsfer(r.data?.active ? r.data : null);
+            } catch { /* ignore */ }
+        };
+        fetchActive();
+        const t = setInterval(fetchActive, 30000);
+        return () => { cancelled = true; clearInterval(t); };
+    }, []);
+
+    // Header colapsable — el sticky de arriba ocupaba demasiada altura y solo
+    // dejaba ver una fila de fichas. Default colapsado en tablet/mobile,
+    // expandido en PC; persistido en localStorage para no resetear cada visita.
+    const [headerCollapsed, setHeaderCollapsed] = useState(() => {
+        try {
+            const saved = localStorage.getItem('productionHeaderCollapsed');
+            if (saved !== null) return saved === '1';
+        } catch {}
+        return typeof window !== 'undefined' && window.innerWidth < 1024; // colapsado por default en mobile/tablet
+    });
+    useEffect(() => {
+        try { localStorage.setItem('productionHeaderCollapsed', headerCollapsed ? '1' : '0'); } catch {}
+    }, [headerCollapsed]);
+
+    const fetchFailureStats = useCallback(async () => {
+        try {
+            const apiBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+            const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+            const { data } = await api.get(`${apiBase}/failure-stats?from=${todayStart.toISOString()}`);
+            setFailureStats(data);
+            setActiveFailure(data.activeFailure || null);
+        } catch (e) {
+            console.warn('Could not load failure stats:', e.message);
+        }
+    }, [activeLine]);
+
+    useEffect(() => { fetchFailureStats(); const t = setInterval(fetchFailureStats, 30000); return () => clearInterval(t); }, [fetchFailureStats]);
+
+    const registerAuxEvent = async (evt) => {
+        const isFalla = evt.name === 'FALLA';
+        const apiBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+
+        if (isFalla) {
+            const note = prompt('Describe brevemente la falla (opcional):', '') || '';
+            try {
+                const now = new Date();
+                const created = await api.post(`${apiBase}/schedule`, {
+                    flavor: 'FALLA',
+                    scheduledStart: now,
+                    scheduledEnd: new Date(now.getTime() + 60000),
+                    baseWeight: 0,
+                    mix: [],
+                    notes: note ? `${note}` : 'Falla reportada por operario'
+                });
+                await api.patch(`${apiBase}/${created.data.id}/aux-action`, { action: 'start' });
+                setShowAuxEventModal(false);
+                alert('⚠️ FALLA iniciada — Recuerda resolverla cuando se solucione');
+                fetchData(true);
+                fetchFailureStats();
+            } catch (e) {
+                alert('Error: ' + (e.response?.data?.error || e.message));
+            }
+            return;
+        }
+
+        let dur = evt.duration;
+        if (evt.editable || dur === 0) {
+            const input = prompt(`Duración de ${evt.name} en minutos:`, dur || '');
+            if (!input) return;
+            dur = parseInt(input);
+            if (!dur || dur <= 0) { alert('Duración inválida'); return; }
+        }
+        try {
+            const now = new Date();
+            const end = new Date(now.getTime() + dur * 60000);
+            await api.post(`${apiBase}/schedule`, {
+                flavor: evt.name,
+                scheduledStart: now,
+                scheduledEnd: end,
+                baseWeight: 0,
+                mix: [],
+                notes: `Registrado por operario desde panel (${dur} min)`
+            });
+            setShowAuxEventModal(false);
+            alert(`✓ ${evt.name} registrado (${dur} min)`);
+            fetchData(true);
+        } catch (e) {
+            alert('Error: ' + (e.response?.data?.error || e.message));
+        }
+    };
+
+    const resolveFailure = async () => {
+        if (!activeFailure) return;
+        const note = prompt('Notas de resolución (opcional):', '') || '';
+        const apiBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+        try {
+            const res = await api.patch(`${apiBase}/${activeFailure.id}/aux-action`, { action: 'finish', note });
+            alert(`✓ Falla resuelta en ${res.data.durationMin || 0} min — cronograma desplazado`);
+            setActiveFailure(null);
+            fetchData(true);
+            fetchFailureStats();
+        } catch (e) {
+            alert('Error: ' + (e.response?.data?.error || e.message));
+        }
+    };
 
     const fetchData = useCallback(async (showSpinner = false) => {
         if (showSpinner) setRefreshing(true);
@@ -821,12 +994,13 @@ const ProductionOperatorPage = () => {
     }, [fetchData]);
 
     // Classify batch as sirope or perla — check ALL stage products, not just the first
+    // Geniality keywords incluye AZUCAR INVERT (Glucosa/Fructosa se preparan en línea Geniality)
     const isSirope = (b) => {
         const bn = (b.batchNumber || '').toUpperCase();
-        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY') || bn.includes('LIQUIMON')) return true;
+        if (bn.includes('SIROPE') || bn.includes('SABORIZACION') || bn.includes('GENIALITY') || bn.includes('LIQUIMON') || bn.includes('AZUCAR-INVERT') || bn.includes('FRUCTOSA')) return true;
         return (b.allProductNames || []).some(p => {
             const u = p.toUpperCase();
-            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY') || u.includes('LIQUIMON');
+            return u.includes('SIROPE') || u.includes('SABORIZACION') || u.includes('GENIALITY') || u.includes('LIQUIMON') || u.includes('AZUCAR INVERT') || u.includes('AZUCAR INVERTIDA');
         });
     };
 
@@ -931,130 +1105,165 @@ const ProductionOperatorPage = () => {
     return (
         <div className="min-h-screen" style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #f0f4ff 100%)' }}>
             {/* Header responsivo (compacto en PC) */}
-            <div className="bg-white/95 backdrop-blur-sm border-b border-slate-200 px-4 py-3 md:py-4 sticky top-0 z-10 shadow-sm">
+            <div className="bg-white/95 backdrop-blur-sm border-b border-slate-200 px-4 py-2 md:py-3 sticky top-0 z-10 shadow-sm">
                 <div className="max-w-screen-2xl mx-auto">
+                    {/* Toggle colapsar/expandir info de turno */}
+                    <div className="flex items-center justify-end mb-1">
+                        <button
+                            onClick={() => setHeaderCollapsed(c => !c)}
+                            className="text-[11px] font-bold text-slate-500 hover:text-slate-800 px-2 py-0.5 rounded border border-slate-200 hover:border-slate-300 bg-slate-50">
+                            {headerCollapsed ? '▼ Mostrar info de turno' : '▲ Ocultar info de turno'}
+                        </button>
+                    </div>
+
+                    {/* Time-line disciplinador del turno (solo expandido) */}
+                    {!headerCollapsed && <ShiftDisciplineTimeline />}
+
+                    {/* Pill compacta de esferificación activa — solo cuando el header
+                        está colapsado (cuando está expandido, ya aparece en la tira
+                        de "ESFERIFICACIÓN CUADRILLA" del ShiftDisciplineTimeline). */}
+                    {activeEsfer && headerCollapsed && (
+                        <div
+                            onClick={() => navigate(`/assembly-execution/${activeEsfer.noteId}`)}
+                            className="mb-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-300 flex items-center justify-between gap-2 cursor-pointer hover:bg-emerald-100 transition-colors text-xs"
+                            title="Ir al bache en curso">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                                <span>🟢</span>
+                                <span className="font-bold text-emerald-800 truncate">
+                                    Esferificación: {activeEsfer.batchNumber || activeEsfer.flavor}
+                                    {activeEsfer.operatorName && <> · {activeEsfer.operatorName}</>}
+                                    {typeof activeEsfer.elapsedMinutes === 'number' && <> · {activeEsfer.elapsedMinutes}m</>}
+                                    {activeEsfer.timerStatus === 'PAUSED' && <> · ⏸️</>}
+                                </span>
+                            </div>
+                            <ChevronRight size={14} className="text-emerald-600 shrink-0" />
+                        </div>
+                    )}
+
                     {/* Fila 1: Título, Filtro Línea (Perlas/Siropes), Botones Acción */}
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 md:mb-5">
-                        {/* Izquierda: Título */}
-                        <div className="flex items-center justify-between md:justify-start gap-4">
-                            <div>
-                                <div className="flex items-center gap-2.5 mb-0.5">
-                                    <div className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center">
-                                         <Layers size={16} className="text-white" />
+                    {/* Banner Falla Activa — siempre visible (compactado si colapsado) */}
+                    {activeFailure && (headerCollapsed ? (
+                        <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-50 border border-red-300 flex items-center justify-between gap-2 text-xs animate-pulse">
+                            <span className="font-bold text-red-700 truncate">
+                                ⚠️ FALLA ACTIVA · {Math.floor((Date.now() - new Date(activeFailure.startedAt).getTime()) / 60000)}min
+                                {activeFailure.notes ? ` · ${activeFailure.notes}` : ''}
+                            </span>
+                            <button onClick={resolveFailure} className="px-2 py-0.5 bg-red-600 text-white text-[11px] font-bold rounded shrink-0">
+                                Resolver ✓
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="mb-3 p-3 rounded-xl bg-red-50 border-2 border-red-300 flex items-center justify-between gap-3 animate-pulse">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <div className="text-3xl shrink-0">⚠️</div>
+                                <div className="min-w-0">
+                                    <div className="text-sm font-bold text-red-700">FALLA ACTIVA</div>
+                                    <div className="text-xs text-red-600 truncate">
+                                        Iniciada hace {Math.floor((Date.now() - new Date(activeFailure.startedAt).getTime()) / 60000)} min
+                                        {activeFailure.notes ? ` — ${activeFailure.notes}` : ''}
                                     </div>
-                                    <h1 className="text-xl md:text-2xl font-extrabold text-slate-800">Panel de Producción</h1>
                                 </div>
-                                <p className="text-xs text-slate-400 capitalize md:ml-11">
-                                    {format(new Date(), "EEEE, d 'de' MMMM yyyy", { locale: es })}
-                                </p>
                             </div>
-                            {/* Botones acciones (Mobile) - solo visibles en movil, en PC flotan a la derecha */}
-                            <div className="flex md:hidden items-center gap-2">
-                                <button onClick={() => navigate('/production/zone')} className="p-2 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200"><Warehouse size={16} /></button>
-                                <button onClick={() => fetchData(true)} className="p-2 rounded-lg bg-slate-100 text-slate-600 border border-slate-200"><RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} /></button>
-                            </div>
+                            <button onClick={resolveFailure} className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 shrink-0">
+                                Resolver Falla ✓
+                            </button>
+                        </div>
+                    ))}
+
+                    {/* KPI fallas hoy (solo si hay fallas y header expandido) */}
+                    {!headerCollapsed && failureStats.totalFailures > 0 && (
+                        <div className="mb-3 p-2 rounded-lg bg-red-50/50 border border-red-200 inline-block">
+                            <span className="text-xs text-red-600 font-semibold">⏱️ Fallas hoy: </span>
+                            <span className="text-sm font-bold text-red-700">{failureStats.totalFailures} fallas</span>
+                            <span className="text-xs text-red-500"> · </span>
+                            <span className="text-sm font-bold text-red-700">{failureStats.totalMinutesLost} min perdidos</span>
+                        </div>
+                    )}
+
+                    {/* TODO en UNA sola fila: título mini + tabs línea + tabs estado + stats + acciones */}
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                        {/* Título mini */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            <Layers size={14} className="text-slate-700" />
+                            <h1 className="text-sm font-extrabold text-slate-800">Producción</h1>
+                            <span className="text-[10px] text-slate-400 hidden md:inline">· {format(new Date(), "d MMM", { locale: es })}</span>
                         </div>
 
-                        {/* Centro: Line Tabs (Perlas/Siropes) */}
-                        <div className="flex flex-1 md:max-w-md gap-2 w-full">
+                        {/* Tabs Perlas/Siropes — compactos */}
+                        <div className="flex gap-1">
                             {lineTabs.map(lt => {
                                 const isActive = activeLine === lt.key;
                                 return (
                                     <button
                                         key={lt.key}
                                         onClick={() => { setActiveLine(lt.key); setActiveTab('active'); }}
-                                        style={{
-                                            flex: 1,
-                                            padding: '0.6rem 0.5rem',
-                                            borderRadius: 12,
-                                            border: 'none',
-                                            background: isActive
-                                                ? (lt.key === 'perlas' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'linear-gradient(135deg, #f59e0b, #d97706)')
-                                                : '#f1f5f9',
-                                            color: isActive ? '#fff' : '#94a3b8',
-                                            fontWeight: 800,
-                                            fontSize: '0.9rem',
-                                            cursor: 'pointer',
-                                            transition: 'all .25s',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            gap: '0.4rem',
-                                            boxShadow: isActive ? '0 4px 12px rgba(0,0,0,0.15)' : 'none',
-                                        }}
-                                    >
-                                        <span className="text-lg md:text-xl">{lt.icon}</span>
+                                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-extrabold transition-all ${
+                                            isActive
+                                                ? (lt.key === 'perlas' ? 'bg-blue-600 text-white shadow' : 'bg-amber-500 text-white shadow')
+                                                : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                                        }`}>
+                                        <span>{lt.icon}</span>
                                         {lt.label}
-                                        <span style={{
-                                            background: isActive ? 'rgba(255,255,255,0.25)' : '#cbd5e1',
-                                            color: isActive ? '#fff' : '#64748b',
-                                            borderRadius: 20,
-                                            padding: '0.1rem 0.5rem',
-                                            fontSize: '0.75rem',
-                                            fontWeight: 900,
-                                            minWidth: 22,
-                                            textAlign: 'center',
-                                        }}>{lt.count}</span>
+                                        <span className={`rounded-full px-1.5 text-[10px] font-black ${isActive ? 'bg-white/25' : 'bg-slate-300 text-slate-700'}`}>
+                                            {lt.count}
+                                        </span>
                                     </button>
                                 );
                             })}
                         </div>
 
-                        {/* Derecha: Acciones (PC) */}
-                        <div className="hidden md:flex items-center gap-2">
-                            <button
-                                onClick={() => navigate('/production/zone')}
-                                className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-900 font-semibold px-4 py-2.5 rounded-xl hover:bg-indigo-50 transition-colors border border-indigo-200 bg-indigo-50 shadow-sm">
-                                <Warehouse size={16} />
-                                Zona
-                            </button>
-                            <button
-                                onClick={() => fetchData(true)}
-                                disabled={refreshing}
-                                className="flex items-center gap-2 text-sm text-slate-600 hover:text-slate-900 font-semibold px-4 py-2.5 rounded-xl hover:bg-slate-100 transition-colors border border-slate-200 shadow-sm bg-white">
-                                <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
-                                Actualizar
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Compact stats + status tabs — single inline row */}
-                    <div className="flex items-center justify-between gap-2">
-                        {/* Mini inline stats */}
-                        <div className="flex items-center gap-1.5 text-xs flex-wrap">
-                            <span className="font-extrabold text-slate-700 text-sm leading-none">{total}</span>
-                            <span className="text-slate-300">·</span>
-                            <span className="font-bold text-blue-600">⚡{inProgress}</span>
-                            <span className="text-slate-300">·</span>
-                            <span className="font-bold text-amber-600">⏳{pending}</span>
-                            <span className="text-slate-300">·</span>
-                            <span className="font-bold text-emerald-600">✓{completedCount}</span>
-                            <span className="text-[9px] text-slate-300 hidden sm:inline ml-1">· {format(lastRefresh, 'HH:mm:ss')}</span>
-                        </div>
-                        {/* Status tabs */}
-                        <div className="flex gap-1.5 flex-shrink-0">
+                        {/* Tabs estado (En curso / Completados) */}
+                        <div className="flex gap-1">
                             {tabs.map(tab => (
-                                <button
-                                    key={tab.key}
-                                    onClick={() => setActiveTab(tab.key)}
-                                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border-2
-                                        ${activeTab === tab.key ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'}`}
-                                >
-                                    {tab.icon}
+                                <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                                    className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                                        activeTab === tab.key ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-500'
+                                    }`}>
+                                    <span>{tab.icon}</span>
                                     <span className="hidden sm:inline">{tab.label}</span>
-                                    <span className={`rounded-full px-1.5 text-[10px] font-black
-                                        ${activeTab === tab.key ? 'text-blue-600' : 'text-slate-400'}`}>
-                                        {tab.count}
-                                    </span>
+                                    <span className={`rounded-full px-1.5 text-[10px] font-black ${activeTab === tab.key ? 'text-blue-600' : 'text-slate-400'}`}>{tab.count}</span>
                                 </button>
                             ))}
+                        </div>
+
+                        {/* Stats inline */}
+                        <div className="flex items-center gap-1 text-[11px]">
+                            <span className="font-extrabold text-slate-700">{total}</span>
+                            <span className="font-bold text-blue-600">⚡{inProgress}</span>
+                            <span className="font-bold text-amber-600">⏳{pending}</span>
+                            <span className="font-bold text-emerald-600">✓{completedCount}</span>
+                            <span className="text-[9px] text-slate-300 hidden md:inline">{format(lastRefresh, 'HH:mm')}</span>
+                        </div>
+
+                        {/* Acciones */}
+                        <div className="flex items-center gap-1">
+                            <button onClick={() => navigate('/production/zone')}
+                                className="flex items-center gap-1 text-xs text-indigo-700 font-bold px-2 py-1 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100"
+                                title="Zona de Producción">
+                                <Warehouse size={14} />
+                                <span className="hidden md:inline">Zona</span>
+                            </button>
+                            <button onClick={() => setShowAuxEventModal(true)}
+                                className={`flex items-center gap-1 text-xs font-bold px-2 py-1 rounded-lg border ${activeFailure ? 'border-red-300 bg-red-50 text-red-700 animate-pulse' : 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+                                title="Reportar falla / evento auxiliar">
+                                <span>⚠️</span>
+                                <span className="hidden md:inline">{activeFailure ? 'Falla activa' : 'Reportar evento'}</span>
+                            </button>
+                            <button onClick={() => fetchData(true)} disabled={refreshing}
+                                className="flex items-center gap-1 text-xs text-slate-700 font-bold px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50"
+                                title="Actualizar">
+                                <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+                                <span className="hidden md:inline">Actualizar</span>
+                            </button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Shift KPI Banner — only for PRODUCCION on perlas tab */}
-            {user?.role === 'PRODUCCION' && activeLine === 'perlas' && (() => {
+            {/* Shift KPI Banner — DESACTIVADO. La info ya está en la tira
+                "ESFERIFICACIÓN CUADRILLA" del ShiftDisciplineTimeline arriba.
+                Se mantiene el bloque inutil={false} para no romper el JSX. */}
+            {false && user?.role === 'PRODUCCION' && activeLine === 'perlas' && (() => {
                 const now = new Date();
                 const cotH = now.getHours(); // Server is in COT
                 const currentShift = cotH >= 6 && cotH < 14 ? 'MANANA' : cotH >= 14 && cotH < 22 ? 'TARDE' : 'NOCHE';
@@ -1063,19 +1272,48 @@ const ProductionOperatorPage = () => {
                 else if (currentShift === 'TARDE') shiftStart.setHours(14, 0, 0, 0);
                 else { shiftStart.setHours(22, 0, 0, 0); if (cotH < 6) shiftStart.setDate(shiftStart.getDate() - 1); }
 
+                // Cálculo justo por prorrateo: si un bache cruzó turnos, cada turno se acredita
+                // la fracción de tiempo de FORMACION que cayó dentro de su rango.
+                // Ej: bache iniciado 04:23 terminado 06:03 → 97 min en noche + 3 min en mañana
+                // → noche se acredita 97/100 = 0.97 y mañana 0.03 de ese bache.
+                const shiftEnd = new Date(shiftStart.getTime() + 8 * 3600000);
+                const nowMs = Date.now();
+                const fractionForShift = (f) => {
+                    if (!f?.startedAt) return 0;
+                    const startMs = new Date(f.startedAt).getTime();
+                    const endMs = f.completedAt ? new Date(f.completedAt).getTime() : nowMs;
+                    const totalMs = endMs - startMs;
+                    if (totalMs <= 0) return 0;
+                    const overlapStart = Math.max(startMs, shiftStart.getTime());
+                    const overlapEnd = Math.min(endMs, shiftEnd.getTime());
+                    const overlapMs = Math.max(0, overlapEnd - overlapStart);
+                    return overlapMs / totalMs;
+                };
+                // Baches con cualquier traslape en el turno
                 const shiftBatches = lineBatches.filter(b => {
                     const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
-                    if (!f?.startedAt) return false;
-                    return new Date(f.startedAt) >= shiftStart;
+                    return fractionForShift(f) > 0;
                 });
-
+                // Acreditación prorrateada (puede ser fraccionada)
+                const completedCredit = shiftBatches.reduce((sum, b) => {
+                    const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
+                    return sum + fractionForShift(f);
+                }, 0);
+                // Para retrocompat: lista de baches completados (con completedAt) — se sigue usando para promedio
                 const completed = shiftBatches.filter(b => {
                     const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
                     return f?.completedAt;
                 });
+                // En proceso al momento (con FORMACION corriendo)
+                const inProgress = shiftBatches.filter(b => {
+                    const f = b.notes?.find(n => n.processType?.code === 'FORMACION');
+                    return f?.startedAt && !f?.completedAt;
+                });
 
                 const TARGET_BATCHES = shiftBatchTarget;
-                const completionPct = Math.min(100, Math.round((completed.length / TARGET_BATCHES) * 100));
+                // Usar la suma prorrateada (fraccionada) en lugar del conteo entero
+                const creditDisplay = Math.round(completedCredit * 10) / 10;
+                const completionPct = Math.min(100, Math.round((completedCredit / TARGET_BATCHES) * 100));
 
                 let avgFormacion = null;
                 if (completed.length > 0) {
@@ -1091,19 +1329,19 @@ const ProductionOperatorPage = () => {
                 const batchColor = completionPct >= 100 ? 'emerald' : completionPct >= 60 ? 'amber' : 'slate';
                 const timeColor = avgScore >= 80 ? 'emerald' : avgScore >= 50 ? 'amber' : 'red';
 
-                const remaining = TARGET_BATCHES - completed.length;
-                const motivMsg = completed.length >= TARGET_BATCHES
+                const remaining = Math.max(0, Math.round((TARGET_BATCHES - completedCredit) * 10) / 10);
+                const motivMsg = completedCredit >= TARGET_BATCHES
                     ? '🏆 ¡Meta cumplida! ¡Turno élite!'
-                    : remaining === 1
+                    : remaining <= 1
                     ? '🔥 ¡Uno más y lo logran!'
                     : completionPct >= 60
                     ? '⚡ ¡Van por buen camino!'
-                    : completed.length >= 1
+                    : completedCredit >= 1
                     ? `💪 Faltan ${remaining} — ¡A darle!`
                     : `🎯 Meta del turno: ${TARGET_BATCHES} baches`;
 
-                const borderColor = completed.length >= TARGET_BATCHES ? 'border-emerald-300' : 'border-slate-200';
-                const bgGrad = completed.length >= TARGET_BATCHES
+                const borderColor = completedCredit >= TARGET_BATCHES ? 'border-emerald-300' : 'border-slate-200';
+                const bgGrad = completedCredit >= TARGET_BATCHES
                     ? 'bg-gradient-to-r from-emerald-50 to-emerald-100/50'
                     : 'bg-white';
 
@@ -1111,9 +1349,12 @@ const ProductionOperatorPage = () => {
                     <div className="max-w-screen-2xl mx-auto px-4 pt-4">
                         <div className={`flex items-center gap-3 border ${borderColor} rounded-xl px-4 py-3 shadow-sm ${bgGrad}`}>
                             <div className="flex-1 flex items-center gap-4">
-                                <div className="text-center min-w-[80px]">
-                                    <div className={`text-2xl font-black ${completed.length >= TARGET_BATCHES ? 'text-emerald-600' : 'text-slate-700'}`}>{completed.length}/{TARGET_BATCHES}</div>
+                                <div className="text-center min-w-[90px]">
+                                    <div className={`text-2xl font-black ${completedCredit >= TARGET_BATCHES ? 'text-emerald-600' : 'text-slate-700'}`}>{creditDisplay}/{TARGET_BATCHES}</div>
                                     <div className="text-[10px] text-slate-400 font-semibold">Esferificados</div>
+                                    {inProgress.length > 0 && (
+                                        <div className="text-[9px] text-blue-600 font-bold mt-0.5">+{inProgress.length} corriendo</div>
+                                    )}
                                 </div>
                                 <div className="h-8 w-px bg-slate-200" />
                                 <div className="flex-1">
@@ -1179,6 +1420,46 @@ const ProductionOperatorPage = () => {
                     </div>
                 )}
             </div>
+
+            {/* Modal Eventos Auxiliares */}
+            {showAuxEventModal && (
+                <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4" onClick={() => setShowAuxEventModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold text-slate-800">Registrar Evento</h3>
+                            <button onClick={() => setShowAuxEventModal(false)} className="text-slate-400 hover:text-slate-600 p-1">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <p className="text-xs text-slate-500 mb-3">Selecciona el evento que ocurre AHORA. La duración se aplica desde este momento.</p>
+                        <div className="grid grid-cols-2 gap-2">
+                            {AUX_EVENT_OPTIONS.map(evt => {
+                                const colorMap = {
+                                    cyan:   'bg-cyan-50 border-cyan-300 text-cyan-700 hover:bg-cyan-100',
+                                    teal:   'bg-teal-50 border-teal-300 text-teal-700 hover:bg-teal-100',
+                                    indigo: 'bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100',
+                                    gray:   'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100',
+                                    purple: 'bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100',
+                                    red:    'bg-red-50 border-red-300 text-red-700 hover:bg-red-100',
+                                };
+                                return (
+                                    <button
+                                        key={evt.name}
+                                        onClick={() => registerAuxEvent(evt)}
+                                        className={`p-3 rounded-xl border-2 ${colorMap[evt.color]} flex flex-col items-center gap-1 transition-all`}
+                                    >
+                                        <span className="text-2xl">{evt.icon}</span>
+                                        <span className="text-xs font-bold text-center leading-tight">{evt.name}</span>
+                                        <span className="text-[10px] opacity-70">
+                                            {evt.duration === 0 ? 'Pregunta duración' : evt.editable ? `~${evt.duration} min (editable)` : `${evt.duration} min`}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
