@@ -104,13 +104,13 @@ function PinPanel() {
     const clear = () => setPin('');
     const back = () => setPin(p => p.slice(0, -1));
 
-    const submit = async (action) => {
+    const submit = async (action, subtype = null) => {
         if (pin.length !== 4) { setFeedback({ ok: false, text: 'PIN incompleto' }); return; }
         setBusy(true); setFeedback(null);
         try {
             const res = await fetch('/api/attendance/pin-mark', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pin, action })
+                body: JSON.stringify({ pin, action, subtype })
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Error');
@@ -144,7 +144,7 @@ function PinPanel() {
                 <button onClick={() => append('0')} disabled={busy} style={styles.keyDigit}>0</button>
                 <button onClick={back} disabled={busy} style={styles.keyBack}>← Borrar</button>
             </div>
-            <ActionButtons onIn={() => submit('IN')} onOut={() => submit('OUT')} ready={pin.length === 4 && !busy} />
+            <ActionButtons onIn={() => submit('IN')} onOut={(subtype) => submit('OUT', subtype)} ready={pin.length === 4 && !busy} />
             {feedback && <Feedback msg={feedback} />}
         </div>
     );
@@ -161,13 +161,13 @@ function CedulaPanel() {
     const clear = () => setCedula('');
     const back = () => setCedula(p => p.slice(0, -1));
 
-    const submit = async (action) => {
+    const submit = async (action, subtype = null) => {
         if (cedula.length < 6) { setFeedback({ ok: false, text: 'Cédula incompleta (mínimo 6 dígitos)' }); return; }
         setBusy(true); setFeedback(null);
         try {
             const res = await fetch('/api/attendance/cedula-mark', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cedula, action })
+                body: JSON.stringify({ cedula, action, subtype })
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Error');
@@ -197,7 +197,7 @@ function CedulaPanel() {
                 <button onClick={() => append('0')} disabled={busy} style={styles.keyDigit}>0</button>
                 <button onClick={back} disabled={busy} style={styles.keyBack}>← Borrar</button>
             </div>
-            <ActionButtons onIn={() => submit('IN')} onOut={() => submit('OUT')} ready={cedula.length >= 6 && !busy} />
+            <ActionButtons onIn={() => submit('IN')} onOut={(subtype) => submit('OUT', subtype)} ready={cedula.length >= 6 && !busy} />
             {feedback && <Feedback msg={feedback} />}
         </div>
     );
@@ -263,13 +263,13 @@ function FacePanel() {
         return () => { cancelled = true; clearInterval(interval); };
     }, [streamReady, busy]);
 
-    const submit = async (action) => {
+    const submit = async (action, subtype = null) => {
         if (!detectedDescriptor) { setFeedback({ ok: false, text: 'No se detecta cara' }); return; }
         setBusy(true); setFeedback(null);
         try {
             const res = await fetch('/api/attendance/face-mark', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ descriptor: detectedDescriptor, action })
+                body: JSON.stringify({ descriptor: detectedDescriptor, action, subtype })
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Error');
@@ -296,7 +296,7 @@ function FacePanel() {
             </div>
             <ActionButtons
                 onIn={() => submit('IN')}
-                onOut={() => submit('OUT')}
+                onOut={(subtype) => submit('OUT', subtype)}
                 ready={!!detectedDescriptor && !busy}
             />
             {feedback && <Feedback msg={feedback} />}
@@ -306,6 +306,41 @@ function FacePanel() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 function ActionButtons({ onIn, onOut, ready }) {
+    const [showSubtype, setShowSubtype] = useState(false);
+
+    const handleOut = (subtype) => {
+        setShowSubtype(false);
+        onOut(subtype);
+    };
+
+    if (showSubtype) {
+        return (
+            <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 8, textAlign: 'center' }}>
+                    ¿Por qué motivo sales?
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <button onClick={() => handleOut('BREAK')} style={{
+                        padding: '16px 4px', fontSize: 13, fontWeight: 800, border: 'none', borderRadius: 10,
+                        background: '#f59e0b', color: 'white', cursor: 'pointer', lineHeight: 1.2
+                    }}>🍞<br/>DESAYUNO<br/><span style={{ fontSize: 10, fontWeight: 600 }}>(15 min)</span></button>
+                    <button onClick={() => handleOut('LUNCH')} style={{
+                        padding: '16px 4px', fontSize: 13, fontWeight: 800, border: 'none', borderRadius: 10,
+                        background: '#8b5cf6', color: 'white', cursor: 'pointer', lineHeight: 1.2
+                    }}>🍽️<br/>ALMUERZO<br/><span style={{ fontSize: 10, fontWeight: 600 }}>(diurnos)</span></button>
+                    <button onClick={() => handleOut('FINAL')} style={{
+                        padding: '16px 4px', fontSize: 13, fontWeight: 800, border: 'none', borderRadius: 10,
+                        background: '#dc2626', color: 'white', cursor: 'pointer', lineHeight: 1.2
+                    }}>🏁<br/>FIN DE<br/>TURNO</button>
+                </div>
+                <button onClick={() => setShowSubtype(false)} style={{
+                    width: '100%', marginTop: 8, padding: '10px 0', fontSize: 13, fontWeight: 700,
+                    border: '1px solid #d1d5db', borderRadius: 8, background: 'white', color: '#6b7280', cursor: 'pointer'
+                }}>← Cancelar</button>
+            </div>
+        );
+    }
+
     return (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
             <button onClick={onIn} disabled={!ready} style={{
@@ -313,7 +348,7 @@ function ActionButtons({ onIn, onOut, ready }) {
                 background: ready ? '#16a34a' : '#9ca3af', color: 'white',
                 cursor: ready ? 'pointer' : 'not-allowed'
             }}>✓ ENTRADA</button>
-            <button onClick={onOut} disabled={!ready} style={{
+            <button onClick={() => ready && setShowSubtype(true)} disabled={!ready} style={{
                 padding: '18px 0', fontSize: 17, fontWeight: 800, border: 'none', borderRadius: 12,
                 background: ready ? '#dc2626' : '#9ca3af', color: 'white',
                 cursor: ready ? 'pointer' : 'not-allowed'

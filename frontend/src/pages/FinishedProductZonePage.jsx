@@ -1378,7 +1378,13 @@ const FinishedProductZonePage = () => {
                                                                         }}>
                                                                             <Printer size={12} /> {s.labelPrinted ? '✅ Reimprimir' : 'Rótulo'}
                                                                         </button>
-                                                                        {['ADMIN', 'LOGISTICA'].includes(user?.role) && (
+                                                                        {/* LOGISTICA NO puede transferir DESDE zona PRODUCCION — el producto sólo
+                                                                            sale de ahí mediante Acta de Entrega creada por EMPAQUE. ADMIN sí puede
+                                                                            (escape hatch para correcciones manuales). */}
+                                                                        {(
+                                                                            user?.role === 'ADMIN' ||
+                                                                            (user?.role === 'LOGISTICA' && activeZone !== 'PRODUCCION')
+                                                                        ) && (
                                                                         <button onClick={() => openTransfer(s)} style={{
                                                                             padding: '4px 10px', border: '1.5px solid #6366f1', borderRadius: 6,
                                                                             background: '#eef2ff', color: '#4f46e5', fontWeight: 700, fontSize: '0.72rem',

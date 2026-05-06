@@ -88,7 +88,7 @@ const getPendingUserEmployees = async (req, res) => {
             users: users.map((user) => ({
                 ...user,
                 suggestedArea: suggestShiftAreaForUser(user),
-                suggestedRole: 'OPERARIO',
+                suggestedRole: user.role === 'MECANICO' ? 'MECANICO' : 'OPERARIO',
                 suggestedIsFixed: suggestIsFixedForUser(user)
             })),
             areas: SHIFT_OPERATION_AREAS
@@ -256,6 +256,16 @@ const updateEmployee = async (req, res) => {
                 });
             } catch (err) {
                 logger.error('Failed to sync assignment areas:', err);
+            }
+        }
+
+        // Si el empleado quedó como isFixed o cambió de área, asegurar que tenga assignment
+        // en la semana actual con el turno correcto (DIURNO para áreas fijas).
+        if (data.area || data.isFixed !== undefined || data.groupNumber !== undefined) {
+            try {
+                await assignEmployeeToCurrentWeek(prisma, emp);
+            } catch (err) {
+                logger.error('Failed to auto-assign employee to current week after update:', err);
             }
         }
 

@@ -467,3 +467,114 @@ exports.getProductReservation = async (req, res) => {
         res.status(500).json({ error: 'Error al consultar reservas' });
     }
 };
+
+// ── Inventario Físico: ajustar finishedLotStock al stock real contado ──
+// POST /api/inventory/physical-adjust
+//   body: { sku, physicalQty, notes }
+// Si physicalQty < SUM(finishedLotStock activos), descuenta FEFO (más antiguos)
+// hasta dejar el saldo exacto. Si physicalQty > SUM, NO ajusta hacia arriba
+// — necesita ingest manual de un nuevo lote (lo reportamos al usuario).
+exports.physicalAdjust = async (req, res) => {
+    try {
+        const { sku, physicalQty, notes } = req.body;
+        if (!sku || physicalQty == null || physicalQty < 0) {
+            return res.status(400).json({ error: 'sku y physicalQty (>= 0) requeridos' });
+        }
+        const target = Number(physicalQty);
+        const product = await prisma.product.findFirst({ where: { sku } });
+        if (!product) return res.status(404).json({ error: `Producto ${sku} no encontrado` });
+
+        const lots = await prisma.finishedLotStock.findMany({
+            where: { productId: product.id, currentQuantity: { gt: 0 } },
+            orderBy: [{ zone: 'desc' }, { createdAt: 'asc' }],
+        });
+        const totalActual = lots.reduce((s, l) => s + l.currentQuantity, 0);
+        const aDescontar = totalActual - target;
+
+        if (aDescontar < 0) {
+            return res.json({
+                success: false,
+                shortfall: Math.abs(aDescontar),
+                totalActual,
+                target,
+                message: `gestionpbi tiene ${totalActual} pero físico dice ${target}. Faltan ${Math.abs(aDescontar)} en sistema. Necesita ingest manual de un lote nuevo (no se ajusta hacia arriba automáticamente).`,
+            });
+        }
+        if (aDescontar === 0) {
+            return res.json({ success: true, totalActual, target, adjusted: 0, message: 'Ya estaba cuadrado.' });
+        }
+
+        const userId = req.user?.id;
+        const lotsHit = [];
+        let toRemove = aDescontar;
+        for (const lot of lots) {
+            if (toRemove <= 0) break;
+            const take = Math.min(lot.currentQuantity, toRemove);
+            const newQty = lot.currentQuantity - take;
+            const status = newQty <= 0 ? 'DEPLETED'
+                : (newQty < lot.initialQuantity * 0.1 ? 'LOW' : 'AVAILABLE');
+            await prisma.finishedLotStock.update({
+                where: { id: lot.id },
+                data: { currentQuantity: newQty, status },
+            });
+            await prisma.finishedLotTransfer.create({
+                data: {
+                    finishedLotStock: { connect: { id: lot.id } },
+                    product: { connect: { id: product.id } },
+                    transferredBy: { connect: { id: userId } },
+                    lotNumber: lot.lotNumber,
+                    fromZone: lot.zone,
+                    toZone: lot.zone,
+                    quantity: take,
+                    reason: `AJUSTE FÍSICO: físico=${target}. ${notes || ''}`.trim(),
+                },
+            });
+            lotsHit.push({ lotNumber: lot.lotNumber, before: lot.currentQuantity, after: newQty, taken: take, status });
+            toRemove -= take;
+        }
+
+        res.json({
+            success: true,
+            sku,
+            totalActual,
+            target,
+            adjusted: aDescontar,
+            lotsHit,
+            message: `Descontados ${aDescontar} unidades fantasma. Stock final = ${target}.`,
+        });
+    } catch (e) {
+        console.error('[physicalAdjust] error:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// GET /api/inventory/physical-status
+// Devuelve la lista de productos finales con stock contable (Siigo) y suma de
+// lotes vivos. Sirve de base para el operario que cuenta físico.
+exports.physicalStatus = async (req, res) => {
+    try {
+        const rows = await prisma.$queryRawUnsafe(`
+            SELECT pr.id, pr.sku, pr.name,
+                   COALESCE(pr."currentStock", 0) AS contable,
+                   COALESCE(SUM(CASE WHEN fls."currentQuantity" > 0 THEN fls."currentQuantity" ELSE 0 END), 0) AS lotes,
+                   COUNT(CASE WHEN fls."currentQuantity" > 0 THEN 1 END) AS num_lotes
+              FROM products pr
+              LEFT JOIN finished_lot_stock fls ON fls."productId" = pr.id
+             WHERE (pr.sku LIKE 'LIQ%' OR pr.sku LIKE 'GENI%' OR pr.sku LIKE 'P-%' OR pr.sku LIKE 'LIQUI%')
+               AND pr.active = true
+             GROUP BY pr.id, pr.sku, pr.name, pr."currentStock"
+             ORDER BY ABS(COALESCE(pr."currentStock", 0) - COALESCE(SUM(CASE WHEN fls."currentQuantity" > 0 THEN fls."currentQuantity" ELSE 0 END), 0)) DESC
+        `);
+        const data = rows.map(r => ({
+            id: r.id, sku: r.sku, name: r.name,
+            contable: Number(r.contable),
+            lotes: Number(r.lotes),
+            diff: Number(r.lotes) - Number(r.contable),
+            numLotes: Number(r.num_lotes),
+        }));
+        res.json({ success: true, count: data.length, data });
+    } catch (e) {
+        console.error('[physicalStatus] error:', e);
+        res.status(500).json({ error: e.message });
+    }
+};

@@ -183,16 +183,21 @@ exports.transferIn = async (req, res) => {
         if (!productId || !quantity || quantity <= 0) {
             return res.status(400).json({ error: 'productId y quantity son obligatorios' });
         }
+        // El lote es OBLIGATORIO. Sin él se generaba descuadre: el lote padre
+        // quedaba intacto en bodega pero Product.currentStock bajaba.
+        if (!materialLotId) {
+            return res.status(400).json({ error: 'Debe seleccionar el lote específico antes de transferir a producción.' });
+        }
 
         const result = await prisma.$transaction(async (tx) => {
             // 1. Validate product exists
             const product = await tx.product.findUnique({ where: { id: productId } });
             if (!product) throw new Error('Producto no encontrado');
 
-            // 2. If lot specified, validate it
+            // 2. Validate lot
             let lot = null;
             let lotNumber = null;
-            if (materialLotId) {
+            {
                 lot = await tx.materialLot.findUnique({ where: { id: materialLotId } });
                 if (!lot) throw new Error('Lote no encontrado');
                 if (lot.productId !== productId) throw new Error('El lote no pertenece a este producto');

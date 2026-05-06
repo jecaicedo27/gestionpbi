@@ -198,23 +198,29 @@ const GenialityExecutionWizard = () => {
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
     const handleAddCarrito = useCallback(async (productId, productName, qty, productionPhotoUrl) => {
-        // Capture current carriots BEFORE async state update
-        const carriotosBefore = carriots;
-        const newEntry = addCarritoLocal(productId, productName, qty, productionPhotoUrl);
-        // Use captured local state + new entry — avoids stale note.processParameters
-        try {
-            const allCarriots = [...carriotosBefore, newEntry];
-            await api.patch(`/assembly-notes/${note.id}`, {
-                processParameters: {
-                    ...note.processParameters,
-                    carriots: allCarriots,
-                }
-            });
-            message.success(`🛒 Carrito #${newEntry.carritoNum} registrado — ${qty} uds de ${productName}`);
-        } catch (e) {
-            console.warn('Error saving carrito:', e.message);
+        // Endpoint dedicado: foto OBLIGATORIA, persistencia atómica.
+        if (!productionPhotoUrl) {
+            message.error('⚠️ La foto del carrito es obligatoria. Sube la foto antes de registrar.');
+            return;
         }
-    }, [note, carriots, addCarritoLocal]);
+        try {
+            const res = await api.post(`/geniality/assembly-notes/${note.id}/carriots`, {
+                productId, qty, photoUrl: productionPhotoUrl, productName
+            });
+            const { carrito, allCarriots } = res.data;
+            preloadCarriots(allCarriots);
+            message.success(`🛒 Carrito #${carrito.carritoNum} registrado — ${qty} uds de ${productName}`);
+            return carrito;
+        } catch (e) {
+            console.error('[addCarrito] error:', e?.response?.data?.error || e.message);
+            try {
+                const queue = JSON.parse(localStorage.getItem('carrito_retry_queue') || '[]');
+                queue.push({ noteId: note.id, productId, qty, photoUrl: productionPhotoUrl, productName, ts: Date.now(), endpoint: 'geniality' });
+                localStorage.setItem('carrito_retry_queue', JSON.stringify(queue));
+                message.warning('⚠️ Carrito en cola — se guardará al recuperar conexión');
+            } catch {}
+        }
+    }, [note?.id, preloadCarriots]);
 
     const handleRemoveCarrito = useCallback((carritoId) => {
         Modal.confirm({
@@ -1204,6 +1210,8 @@ const GenialityExecutionWizard = () => {
                 // ── Auto-complete remaining "Ensamble Siigo" G_ENSAMBLE notes ──
                 // Per-carrito RPAs already handled Siigo accounting. Complete these
                 // with real per-product carrito quantities and skip RPA.
+                // Si una presentación NO tiene carritos → se cierra con qty=0 y skipRpa.
+                const failedAutoCloses = [];
                 try {
                     const allNotesRes = await api.get(`/assembly-notes?batchId=${batchId}`);
                     const ensambleSiigoNotes = (allNotesRes.data || []).filter(n =>
@@ -1216,33 +1224,95 @@ const GenialityExecutionWizard = () => {
                             const isPreConteo = (esNote.stageOrder || 0) < (note.stageOrder || 0);
                             const productCarriots = receivedCarriots.filter(c => c.productId === esNote.productId);
                             const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
-                            const qty = realQty > 0 ? realQty : esNote.targetQuantity;
+                            // Sin carritos = presentación no se produjo. Cierre con qty=0.
+                            const qty = realQty > 0 ? realQty : 0;
+                            const noProduction = qty === 0;
 
-                            if (!isPreConteo) {
-                                // Finished product — skipRpa (per-carrito already handled Siigo)
+                            // skipRpa cuando: producto terminado con RPA per-carrito ya disparada,
+                            // o cuando no se produjo nada (no tiene sentido un Ensamble Siigo de 0).
+                            const shouldSkipRpa = !isPreConteo || noProduction;
+                            if (shouldSkipRpa) {
                                 await api.patch(`/assembly-notes/${esNote.id}`, {
                                     processParameters: { ...(esNote.processParameters || {}), skipRpa: true }
                                 });
                             }
-                            // Pre-CONTEO notes (intermediate products like SABORIZACION) keep skipRpa=false so RPA fires
+                            // Pre-CONTEO notes (productos intermedios) con producción real
+                            // mantienen skipRpa=false para que la RPA dispare.
 
                             if (esNote.status === 'PENDING') {
                                 await api.post(`/assembly-notes/${esNote.id}/start`, { operatorId: user?.id }).catch(() => {});
                             }
+                            const obs = noProduction
+                                ? `Presentación sin producción — bache cerrado sin esta referencia. Lote: ${batchNumber}.`
+                                : isPreConteo
+                                    ? `Auto-completado post-CONTEO: ${qty} uds (producto intermedio, RPA pendiente). Lote: ${batchNumber}.`
+                                    : `Auto-completado post-CONTEO: ${qty} uds (RPA per-carrito). Lote: ${batchNumber}.`;
                             await api.post(`/assembly-notes/${esNote.id}/complete`, {
                                 operatorId: user?.id,
                                 actualQuantity: qty,
-                                observations: isPreConteo
-                                    ? `Auto-completado post-CONTEO: ${qty} uds (producto intermedio, RPA pendiente). Lote: ${batchNumber}.`
-                                    : `Auto-completado post-CONTEO: ${qty} uds (RPA per-carrito). Lote: ${batchNumber}.`
+                                observations: obs
                             });
-                            console.log(`[G_CONTEO handleComplete] ✅ Ensamble Siigo ${esNote.stageName} completed (qty: ${qty}, preConteo: ${isPreConteo})`);
+                            console.log(`[G_CONTEO handleComplete] ✅ Ensamble Siigo ${esNote.stageName} completed (qty: ${qty}, preConteo: ${isPreConteo}, noProduction: ${noProduction})`);
                         } catch (esErr) {
                             console.warn(`[G_CONTEO handleComplete] ⚠️ Could not auto-complete ${esNote.stageName}:`, esErr.message);
+                            failedAutoCloses.push(esNote.stageName);
                         }
                     }
                 } catch (scanErr) {
                     console.warn('[G_CONTEO handleComplete] ⚠️ Could not scan for Ensamble Siigo notes:', scanErr.message);
+                }
+
+                // ── AUTO-CIERRE de notas EMPAQUE/G_EMPAQUE pendientes del bache ──
+                // Sin esto las G_EMPAQUE por tamaño quedan EXECUTING y el bache nunca
+                // llega a status=COMPLETED → vuelve a salir como pendiente.
+                // Presentación sin carritos → qty=0, skipRpa, observación específica.
+                try {
+                    const allNotesRes2 = await api.get(`/assembly-notes?batchId=${batchId}`);
+                    const empaqueNotes = (allNotesRes2.data || []).filter(n =>
+                        n.id !== note.id &&
+                        n.status !== 'COMPLETED' &&
+                        ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code)
+                    );
+                    for (const empNote of empaqueNotes) {
+                        try {
+                            const carConsumed = empNote.processParameters?.carriots_consumed || [];
+                            const qtyFromCarriots = carConsumed.reduce((s, c) => s + (c.qty || 0), 0);
+                            const productCarriots = receivedCarriots.filter(c => c.productId === empNote.productId);
+                            const realQty = productCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+                            // Sin carritos NI consumo registrado → presentación no producida
+                            const qty = qtyFromCarriots > 0
+                                ? qtyFromCarriots
+                                : (realQty > 0 ? realQty : 0);
+                            const noProduction = qty === 0;
+                            // Si tuvo producción los carritos ya consumieron Siigo (skipRpa);
+                            // si no produjo nada también skipRpa (no disparar Siigo por 0).
+                            await api.patch(`/assembly-notes/${empNote.id}`, {
+                                processParameters: { ...(empNote.processParameters || {}), skipRpa: true }
+                            }).catch(() => {});
+                            if (empNote.status === 'PENDING') {
+                                await api.post(`/assembly-notes/${empNote.id}/start`, { operatorId: user?.id }).catch(() => {});
+                            }
+                            await api.post(`/assembly-notes/${empNote.id}/complete`, {
+                                operatorId: user?.id,
+                                actualQuantity: qty,
+                                observations: noProduction
+                                    ? `Presentación sin producción — bache cerrado sin esta referencia. Lote: ${batchNumber}.`
+                                    : `Auto-completado al cerrar conteo: ${qty} uds. Lote: ${batchNumber}.`
+                            });
+                            console.log(`[G_CONTEO handleComplete] ✅ Empaque ${empNote.stageName} → qty=${qty} (noProduction=${noProduction})`);
+                        } catch (empErr) {
+                            console.warn(`[G_CONTEO handleComplete] ⚠️ Could not auto-complete ${empNote.stageName}:`, empErr.message);
+                            failedAutoCloses.push(empNote.stageName);
+                        }
+                    }
+                } catch (scanEmpErr) {
+                    console.warn('[G_CONTEO handleComplete] ⚠️ Could not scan for Empaque notes:', scanEmpErr.message);
+                }
+
+                // Visibilidad: si alguna nota no se cerró, alertar al operario para que
+                // no asuma que el bache cerró cuando en realidad sigue pendiente.
+                if (failedAutoCloses.length > 0) {
+                    message.warning(`No se cerraron automáticamente: ${failedAutoCloses.join(', ')}. Revisa el panel y reintenta.`, 8);
                 }
 
                 message.success('🎉 ¡Conteo completado exitosamente!');
@@ -1359,7 +1429,6 @@ const GenialityExecutionWizard = () => {
                 }
 
                 // 4. Auto-complete the separate ENSAMBLE note (mirror note for Siigo traceability)
-                // NOTE: Only Liquipops ENSAMBLE — Geniality (G_ENSAMBLE) is NOT touched here
                 try {
                     const batchId = note.productionBatchId;
                     const allNotesRes2 = await api.get(`/assembly-notes?batchId=${batchId}`);
@@ -1418,6 +1487,124 @@ const GenialityExecutionWizard = () => {
                     }
                 } catch (e) {
                     console.warn('[ENSAMBLE auto-complete scan]', e.message);
+                }
+
+                // ══════════════════════════════════════════════════════════════════════
+                // 5. AUTO-CIERRE COMPLETO DEL BACHE GENIALITY
+                // Cierra G_ENSAMBLE (Ensamble Siigo) + EMPAQUE de los OTROS tamaños del
+                // mismo bache. Sin esto el batch nunca llega a status=COMPLETED y vuelve
+                // a aparecer en el programador como pendiente.
+                // Caso "presentación sin cantidades": si un tamaño no tiene carritos
+                // asignados, se cierra con qty=0 y skipRpa para no disparar Siigo de 0.
+                // ══════════════════════════════════════════════════════════════════════
+                const failedAutoClosesEmp = [];
+                try {
+                    const batchId = note.productionBatchId;
+                    const allNotesRes3 = await api.get(`/assembly-notes?batchId=${batchId}`);
+                    const allNotes = allNotesRes3.data || [];
+                    const batchNumberForLogs = note.productionBatch?.batchNumber
+                        || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber
+                        || '';
+
+                    // 5a. G_ENSAMBLE pendientes — la RPA Siigo ya disparó por carrito
+                    const gEnsambleNotes = allNotes.filter(n =>
+                        n.id !== note.id &&
+                        n.status !== 'COMPLETED' &&
+                        n.processType?.code === 'G_ENSAMBLE'
+                    );
+                    for (const esNote of gEnsambleNotes) {
+                        try {
+                            const isPreConteo = (esNote.stageOrder || 0) < (note.stageOrder || 0);
+                            // Cantidad real para esta nota:
+                            // - mismo producto que el empaque cerrado: lo realmente empacado (totalEmpaque)
+                            // - intermedio (BASE/SABORIZACION) con producción ya hecha: targetQuantity
+                            // - otro producto terminado del bache (otra presentación): leer carriots_consumed de SU EMPAQUE
+                            let qty;
+                            if (esNote.productId === note.productId) {
+                                qty = totalEmpaque;
+                            } else if (isPreConteo) {
+                                qty = esNote.targetQuantity || 0;
+                            } else {
+                                // Producto terminado distinto al actual: si su EMPAQUE registró
+                                // carritos consumidos, usar esa cantidad; si no, presentación sin producción → 0.
+                                const otherEmpaque = allNotes.find(n =>
+                                    n.productId === esNote.productId &&
+                                    ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code)
+                                );
+                                const otherCarriots = otherEmpaque?.processParameters?.carriots_consumed || [];
+                                qty = otherCarriots.reduce((s, c) => s + (c.qty || 0), 0);
+                            }
+                            const noProduction = qty === 0;
+                            // skipRpa: producto terminado (RPA per-carrito ya disparó) o sin producción.
+                            const shouldSkipRpa = !isPreConteo || noProduction;
+                            if (shouldSkipRpa) {
+                                await api.patch(`/assembly-notes/${esNote.id}`, {
+                                    processParameters: { ...(esNote.processParameters || {}), skipRpa: true }
+                                }).catch(() => {});
+                            }
+                            if (esNote.status === 'PENDING') {
+                                await api.post(`/assembly-notes/${esNote.id}/start`, { operatorId: user?.id }).catch(() => {});
+                            }
+                            const obs = noProduction
+                                ? `Presentación sin producción — bache cerrado sin esta referencia. Lote: ${batchNumberForLogs}.`
+                                : isPreConteo
+                                    ? `Auto-completado post-empaque: ${qty} (intermedio). Lote: ${batchNumberForLogs}.`
+                                    : `Auto-completado post-empaque: ${qty} uds (RPA per-carrito). Lote: ${batchNumberForLogs}.`;
+                            await api.post(`/assembly-notes/${esNote.id}/complete`, {
+                                operatorId: user?.id,
+                                actualQuantity: qty,
+                                observations: obs
+                            });
+                            console.log(`[G_ENSAMBLE auto-complete] ✅ ${esNote.stageName} → qty=${qty} (noProduction=${noProduction})`);
+                        } catch (esErr) {
+                            console.warn(`[G_ENSAMBLE auto-complete] ${esNote.stageName}:`, esErr.message);
+                            failedAutoClosesEmp.push(esNote.stageName);
+                        }
+                    }
+
+                    // 5b. EMPAQUE/G_EMPAQUE de OTROS tamaños del mismo bache que aún estén abiertos.
+                    // Si un tamaño no tiene carritos asignados → qty=0 (no se produjo).
+                    const otherEmpaqueNotes = allNotes.filter(n =>
+                        n.id !== note.id &&
+                        n.status !== 'COMPLETED' &&
+                        ['EMPAQUE', 'G_EMPAQUE'].includes(n.processType?.code) &&
+                        n.productId !== note.productId
+                    );
+                    for (const empNote of otherEmpaqueNotes) {
+                        try {
+                            const carConsumed = empNote.processParameters?.carriots_consumed || [];
+                            const qtyFromCarriots = carConsumed.reduce((s, c) => s + (c.qty || 0), 0);
+                            // Sin carritos consumidos → presentación no producida (qty=0)
+                            const qty = qtyFromCarriots;
+                            const noProduction = qty === 0;
+                            // Siempre skipRpa: si tuvo producción los carritos ya consumieron Siigo;
+                            // si no produjo nada tampoco se debe disparar Siigo.
+                            await api.patch(`/assembly-notes/${empNote.id}`, {
+                                processParameters: { ...(empNote.processParameters || {}), skipRpa: true }
+                            }).catch(() => {});
+                            if (empNote.status === 'PENDING') {
+                                await api.post(`/assembly-notes/${empNote.id}/start`, { operatorId: user?.id }).catch(() => {});
+                            }
+                            await api.post(`/assembly-notes/${empNote.id}/complete`, {
+                                operatorId: user?.id,
+                                actualQuantity: qty,
+                                observations: noProduction
+                                    ? `Presentación sin producción — bache cerrado sin esta referencia. Lote: ${batchNumberForLogs}.`
+                                    : `Auto-completado al cerrar empaque del bache: ${qty} uds. Lote: ${batchNumberForLogs}.`
+                            });
+                            console.log(`[EMPAQUE-OTROS auto-complete] ✅ ${empNote.stageName} → qty=${qty} (noProduction=${noProduction})`);
+                        } catch (empErr) {
+                            console.warn(`[EMPAQUE-OTROS auto-complete] ${empNote.stageName}:`, empErr.message);
+                            failedAutoClosesEmp.push(empNote.stageName);
+                        }
+                    }
+                } catch (closeAllErr) {
+                    console.warn('[Auto-cierre bache Geniality]', closeAllErr.message);
+                }
+
+                // Visibilidad: si alguna nota no se cerró, alertar al operario.
+                if (failedAutoClosesEmp.length > 0) {
+                    message.warning(`No se cerraron automáticamente: ${failedAutoClosesEmp.join(', ')}. Revisa el panel y reintenta.`, 8);
                 }
             } else if (currentStep?.type === 'CONTEO') {
                 // ── Packaging role finalizing CONTEO ──
@@ -2031,7 +2218,7 @@ const GenialityExecutionWizard = () => {
         if (isPackagingMode) {
             // EMPAQUE Role: Strict depth validation (must receive and assemble/label all carriots)
             const createdCarriots = empaqueCarriots || [];
-            
+
             if (createdCarriots.length > 0) {
                 const totalCreated = createdCarriots.length;
                 const fullyProcessedCount = createdCarriots.filter(c => c.receivedAt && c.labeledAt).length;
@@ -2039,10 +2226,18 @@ const GenialityExecutionWizard = () => {
                 if (fullyProcessedCount < totalCreated) {
                     canAdvance = false;
                 }
+
+                // GUARD: cada carrito rotulado DEBE tener su ensamble Siigo registrado.
+                // Sin rpaExecutionId el carrito quedó "SIN SIIGO" y no entró al inventario contable.
+                // Bloqueamos TERMINAR EMPAQUE para forzar resolver ese ensamble antes de cerrar.
+                const carritoSinSiigo = createdCarriots.find(c => c.receivedAt && c.labeledAt && !c.rpaExecutionId);
+                if (carritoSinSiigo) {
+                    canAdvance = false;
+                }
             } else {
                 canAdvance = false; // Cannot finish if nothing has been sent over yet
             }
-            
+
             // Also enforce completion sequentially if looking at Empaque note
             const conteoNoteLocal = allBatchNotes?.find(n => n.processType?.code === 'CONTEO');
             const isConteoCompleted = conteoNoteLocal?.status === 'COMPLETED';

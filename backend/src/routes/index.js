@@ -163,11 +163,21 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
 
                 for (const c of consumptions) {
                     if (c.materialLotId && c.quantityUsed > 0) {
-                        await tx.materialLot.update({
+                        const updated = await tx.materialLot.update({
                             where: { id: c.materialLotId },
-                            data: { currentQuantity: { increment: c.quantityUsed } }
+                            data: { currentQuantity: { increment: c.quantityUsed } },
+                            select: { id: true, currentQuantity: true, status: true, initialQuantity: true }
                         });
-                        console.log(`[deleteBatch] Reverted ${c.quantityUsed}g → MaterialLot ${c.materialLotId}`);
+                        const newStatus = updated.currentQuantity <= 0 ? 'DEPLETED'
+                            : updated.currentQuantity < (updated.initialQuantity * 0.1) ? 'LOW_STOCK'
+                                : 'AVAILABLE';
+                        if (newStatus !== updated.status) {
+                            await tx.materialLot.update({
+                                where: { id: updated.id },
+                                data: { status: newStatus }
+                            });
+                        }
+                        console.log(`[deleteBatch] Reverted ${c.quantityUsed}g → MaterialLot ${c.materialLotId} (cur ahora ${updated.currentQuantity}, status ${newStatus})`);
                     }
                     const productId = c.materialLot?.productId;
                     if (productId && c.quantityUsed > 0) {

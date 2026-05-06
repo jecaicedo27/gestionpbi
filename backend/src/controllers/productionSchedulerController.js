@@ -1168,10 +1168,20 @@ exports.deleteBatch = async (req, res) => {
                 // 3. Restore each materialLot and product stock
                 for (const c of consumptions) {
                     if (c.materialLotId && c.quantityUsed > 0) {
-                        await tx.materialLot.update({
+                        const upd = await tx.materialLot.update({
                             where: { id: c.materialLotId },
-                            data: { currentQuantity: { increment: c.quantityUsed } }
+                            data: { currentQuantity: { increment: c.quantityUsed } },
+                            select: { id: true, currentQuantity: true, status: true, initialQuantity: true }
                         });
+                        const newStatus = upd.currentQuantity <= 0 ? 'DEPLETED'
+                            : upd.currentQuantity < (upd.initialQuantity * 0.1) ? 'LOW_STOCK'
+                                : 'AVAILABLE';
+                        if (newStatus !== upd.status) {
+                            await tx.materialLot.update({
+                                where: { id: upd.id },
+                                data: { status: newStatus }
+                            });
+                        }
                     }
                     const productId = c.materialLot?.productId;
                     if (productId && c.quantityUsed > 0) {
@@ -1227,10 +1237,20 @@ exports.deleteAllBatches = async (req, res) => {
                 // 3. Restore each materialLot and product stock
                 for (const c of consumptions) {
                     if (c.materialLotId && c.quantityUsed > 0) {
-                        await tx.materialLot.update({
+                        const upd = await tx.materialLot.update({
                             where: { id: c.materialLotId },
-                            data: { currentQuantity: { increment: c.quantityUsed } }
+                            data: { currentQuantity: { increment: c.quantityUsed } },
+                            select: { id: true, currentQuantity: true, status: true, initialQuantity: true }
                         });
+                        const newStatus = upd.currentQuantity <= 0 ? 'DEPLETED'
+                            : upd.currentQuantity < (upd.initialQuantity * 0.1) ? 'LOW_STOCK'
+                                : 'AVAILABLE';
+                        if (newStatus !== upd.status) {
+                            await tx.materialLot.update({
+                                where: { id: upd.id },
+                                data: { status: newStatus }
+                            });
+                        }
                     }
                     const productId = c.materialLot?.productId;
                     if (productId && c.quantityUsed > 0) {

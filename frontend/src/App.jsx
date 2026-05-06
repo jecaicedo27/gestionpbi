@@ -52,6 +52,8 @@ import AcademiaPanelEvaluacion from './pages/Academia/Admin/AcademiaPanelEvaluac
 import AcademiaEvaluar from './pages/Academia/Admin/AcademiaEvaluar';
 import AcademiaContenido from './pages/Academia/Admin/AcademiaContenido';
 import AdminLeaderBonusPage from './pages/AdminLeaderBonusPage';
+import TimingAnalysisPage from './pages/TimingAnalysisPage';
+import AdminPhysicalInventoryPage from './pages/AdminPhysicalInventoryPage';
 import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
 
 // ── Geniality Parallel Production System ──
@@ -113,6 +115,48 @@ const socket = io(import.meta.env.VITE_POPPING_SOCKET_URL || undefined, {
 
 function App() {
     const queryClient = useQueryClient();
+
+    // ── Reintento automático de carritos / etiquetas que fallaron al guardar
+    // Si una tablet pierde conexión justo al registrar carrito o imprimir,
+    // los datos quedan en localStorage y se reintentan cada 30s. Persistencia
+    // a nivel de aplicación, no de tablet individual.
+    useEffect(() => {
+        const drainQueue = async () => {
+            try {
+                const apiMod = (await import('./services/api')).default;
+                // Carritos
+                const carritoQ = JSON.parse(localStorage.getItem('carrito_retry_queue') || '[]');
+                const carritoPending = [];
+                for (const item of carritoQ) {
+                    try {
+                        const url = item.endpoint === 'geniality'
+                            ? `/geniality/assembly-notes/${item.noteId}/carriots`
+                            : `/assembly-notes/${item.noteId}/carriots`;
+                        await apiMod.post(url, item);
+                        console.log('[retryQueue] ✓ Carrito reintegrado:', item);
+                    } catch (e) {
+                        carritoPending.push(item);
+                    }
+                }
+                localStorage.setItem('carrito_retry_queue', JSON.stringify(carritoPending));
+                // Etiquetas
+                const labelsQ = JSON.parse(localStorage.getItem('package_labels_retry_queue') || '[]');
+                const labelsPending = [];
+                for (const item of labelsQ) {
+                    try {
+                        await apiMod.post(`/assembly-notes/${item.noteId}/package-labels`, { labels: item.labels });
+                        console.log('[retryQueue] ✓ Etiquetas reintegradas:', item.labels.length);
+                    } catch (e) {
+                        labelsPending.push(item);
+                    }
+                }
+                localStorage.setItem('package_labels_retry_queue', JSON.stringify(labelsPending));
+            } catch (e) { console.warn('[retryQueue] error:', e?.message); }
+        };
+        drainQueue(); // primera al cargar
+        const t = setInterval(drainQueue, 30_000);
+        return () => clearInterval(t);
+    }, []);
 
     useEffect(() => {
         socket.on('connect', () => console.log('Connected to WebSocket'));
@@ -179,6 +223,8 @@ function App() {
                             <Route path="recall-report" element={<RecallReportPage />} />
                             <Route path="shift-discipline/history" element={<ShiftDisciplineHistoryPage />} />
                             <Route path="admin/leader-bonus" element={<AdminLeaderBonusPage />} />
+                            <Route path="admin/timing-analysis" element={<TimingAnalysisPage />} />
+                            <Route path="admin/physical-inventory" element={<AdminPhysicalInventoryPage />} />
 
 
                             {/* Assembly System - Geniality (Siropes) */}

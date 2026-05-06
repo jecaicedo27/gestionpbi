@@ -4,16 +4,30 @@
  * Gestiona: check-in, check-out, descansos, enrollment facial, reportes.
  */
 const { PrismaClient } = require('@prisma/client');
+const axios = require('axios');
+const FormData = require('form-data');
 const logger = require('../utils/logger');
 const { getLaborSummary } = require('../services/laborSummaryService');
 const prisma = new PrismaClient();
+
+// Servicio Python YOLOv8 + InsightFace ArcFace
+const FACE_SERVICE_URL = process.env.FACE_SERVICE_URL || 'http://127.0.0.1:3063';
 
 const PAYROLL_CONFIG_KEY = 'attendance_payroll_config';
 const PAYROLL_CLOSURE_PREFIX = 'attendance_payroll_closure:';
 const DEFAULT_PAYROLL_CONFIG = {
     dayStart: '06:00',
-    nightStart: '21:00',
+    nightStart: '19:00',
     fortnightCutoffDay: 15,
+    weeklyHours: 44,
+    monthlyHourDivisor: 220,
+    surchargeNight: 0.35,
+    surchargeSundayDay: 0.80,
+    surchargeSundayNight: 1.15,
+    overtimeDay: 0.25,
+    overtimeNight: 0.75,
+    overtimeSundayDay: 1.05,
+    overtimeSundayNight: 1.55,
 };
 const LABOR_NOVELTY_TYPES = [
     'AUSENCIA',
@@ -134,8 +148,12 @@ const KIOSK_REQUIRED_ROLES = [
     'COMERCIAL',
 ];
 
-// Turnos donde los descansos descuentan de las horas trabajadas
-const OFFICE_SHIFT_CODES = ['OFICINA'];
+// Roles que PUEDEN aparecer en el cuadro de turnos y marcar en kiosko (pero no es obligatorio para acceder)
+// Incluye los REQUIRED + ADMIN (para que el equipo de administración pueda marcar entrada/desayuno/almuerzo/salida).
+const KIOSK_ELIGIBLE_ROLES = [...KIOSK_REQUIRED_ROLES, 'ADMIN'];
+
+// Turnos donde los descansos descuentan de las horas trabajadas (8:00-17:00 oficina)
+const OFFICE_SHIFT_CODES = ['OFICINA', 'DIURNO'];
 
 // ─── Utilidades ──────────────────────────────────────────────────────────────
 
@@ -149,6 +167,33 @@ function faceDistance(d1, d2) {
         sum += (d1[i] - d2[i]) ** 2;
     }
     return Math.sqrt(sum);
+}
+
+/**
+ * Normaliza el `faceDescriptor` almacenado a un array de descriptores.
+ * Soporta dos formatos:
+ *   - Legacy: array plano de 128 floats → [array]
+ *   - Nuevo:  array de arrays de 128 floats → tal cual
+ */
+function getDescriptorList(stored) {
+    if (!Array.isArray(stored) || stored.length === 0) return [];
+    if (typeof stored[0] === 'number') return [stored]; // legacy
+    return stored.filter(d => Array.isArray(d) && d.length === 128);
+}
+
+/**
+ * Devuelve la MÍNIMA distancia entre el descriptor query y cualquiera de los
+ * descriptores guardados del empleado. Mejora robustez bajo cambios de luz/ángulo.
+ */
+function bestFaceDistance(query, stored) {
+    const list = getDescriptorList(stored);
+    if (list.length === 0) return Infinity;
+    let best = Infinity;
+    for (const d of list) {
+        const dist = faceDistance(query, d);
+        if (dist < best) best = dist;
+    }
+    return best;
 }
 
 /**
@@ -199,12 +244,7 @@ async function calcWorkedHours(employeeId, from, to) {
         orderBy: { timestamp: 'asc' },
     });
 
-    // Obtener asignacion de turno vigente para saber si es OFICINA
-    const employee = await prisma.shiftEmployee.findUnique({
-        where: { id: employeeId },
-    });
-
-    // Buscar el turno de la semana activa mas reciente
+    // Buscar el turno de la semana activa mas reciente para saber si es OFICINA
     const weekAssignment = await prisma.shiftAssignment.findFirst({
         where: { employeeId },
         include: { week: true },
@@ -214,33 +254,52 @@ async function calcWorkedHours(employeeId, from, to) {
     const shiftCode = weekAssignment?.shift?.toUpperCase() || '';
     const isOfficeShift = OFFICE_SHIFT_CODES.includes(shiftCode);
 
+    // Cálculo robusto:
+    //  - Cada ENTRY abre un período de trabajo.
+    //  - Cualquier EXIT cierra el período (sea FINAL, BREAK, LUNCH, etc).
+    //  - Si el EXIT es BREAK/LUNCH/MEDICAL/PERSONAL, el lapso hasta el próximo ENTRY se cuenta como break.
+    //  - Si la última marca es ENTRY (empleado todavía dentro), el período abierto se cierra al min(to, now).
     let totalMs = 0;
     let breakMs = 0;
     let entryTime = null;
     let breakStart = null;
+    let breakSubtype = null;
 
     for (const rec of records) {
+        const ts = new Date(rec.timestamp);
         if (rec.type === 'ENTRY') {
-            entryTime = new Date(rec.timestamp);
-            breakStart = null;
+            // Si veníamos de un break, cerrar el lapso de break ahora
+            if (breakStart) {
+                breakMs += ts - breakStart;
+                breakStart = null;
+                breakSubtype = null;
+            }
+            entryTime = ts;
         } else if (rec.type === 'EXIT') {
-            if (rec.subtype === 'FINAL' && entryTime) {
-                totalMs += new Date(rec.timestamp) - entryTime;
+            // Cualquier EXIT cierra el período de trabajo abierto
+            if (entryTime) {
+                totalMs += ts - entryTime;
                 entryTime = null;
-            } else if (['BREAK', 'LUNCH', 'MEDICAL', 'PERSONAL'].includes(rec.subtype)) {
-                breakStart = new Date(rec.timestamp);
             }
-        }
-        // Re-ENTRY after break
-        if (rec.type === 'ENTRY' && breakStart) {
-            if (isOfficeShift) {
-                breakMs += new Date(rec.timestamp) - breakStart;
+            // Si es break/lunch/medical/personal, marcar inicio de break
+            if (['BREAK', 'LUNCH', 'MEDICAL', 'PERSONAL'].includes(rec.subtype)) {
+                breakStart = ts;
+                breakSubtype = rec.subtype;
             }
-            breakStart = null;
         }
     }
 
-    const netMs = totalMs - (isOfficeShift ? breakMs : 0);
+    // Si el empleado todavía estaba dentro al final del rango, cerrar el período abierto al min(to, now)
+    if (entryTime) {
+        const cap = new Date(Math.min(new Date(to).getTime(), Date.now()));
+        if (cap > entryTime) {
+            totalMs += cap - entryTime;
+        }
+    }
+
+    // Para horas netas: en turno OFICINA el almuerzo se descuenta. En turnos productivos, no.
+    const netMs = isOfficeShift ? totalMs - breakMs : totalMs;
+
     return {
         totalHours: +(totalMs / 3600000).toFixed(2),
         breakHours: +(breakMs / 3600000).toFixed(2),
@@ -263,13 +322,21 @@ exports.findByCedula = async (req, res) => {
             select: {
                 id: true, name: true, area: true, role: true,
                 photoUrl: true, isInPlant: true, lastEntryAt: true,
-                cedula: true, faceDescriptor: true,
+                cedula: true, faceDescriptor: true, faceDescriptorInsightface: true,
             },
         });
         if (!employee) return res.status(404).json({ error: 'Empleado no encontrado' });
 
         const { isInPlant, currentState } = await getPresenceStatus(employee.id);
-        res.json({ ...employee, isInPlant, currentState });
+        // Indicar booleanos para el cliente (no enviar los embeddings completos)
+        const { faceDescriptor, faceDescriptorInsightface, ...rest } = employee;
+        res.json({
+            ...rest,
+            isInPlant,
+            currentState,
+            faceDescriptor: faceDescriptor ? true : null,
+            faceDescriptorInsightface: faceDescriptorInsightface ? true : null,
+        });
     } catch (err) {
         logger.error('findByCedula error:', err);
         res.status(500).json({ error: 'Error al buscar empleado' });
@@ -306,7 +373,7 @@ exports.matchFace = async (req, res) => {
         let bestDist = Infinity;
 
         for (const emp of employees) {
-            const dist = faceDistance(descriptor, emp.faceDescriptor);
+            const dist = bestFaceDistance(descriptor, emp.faceDescriptor);
             if (dist < bestDist) {
                 bestDist = dist;
                 bestMatch = emp;
@@ -397,6 +464,32 @@ exports.checkOut = async (req, res) => {
         }
 
         const isFinal = subtype === 'FINAL';
+        let timestamp = new Date();
+        let overtimeNotice = null;
+
+        // Detección de tiempo extra al marcar FIN DE TURNO (solo turnos fijos)
+        if (isFinal) {
+            const ot = assessOvertime(employee, timestamp);
+            if (ot.applies) {
+                if (ot.status === 'requires_auth') {
+                    return res.status(422).json({
+                        error: `⚠️ Saliste ${ot.minutesOver} min después de tu hora oficial. Requiere autorización del ADMIN.`,
+                        requiresOvertimeAuth: true,
+                        employeeName: employee.name,
+                        cedula: employee.cedula,
+                        minutesOver: ot.minutesOver,
+                        scheduledEnd: ot.scheduledEnd,
+                    });
+                }
+                if (ot.status === 'warning') {
+                    timestamp = new Date(ot.scheduledEnd);
+                    overtimeNotice = {
+                        minutesOver: ot.minutesOver,
+                        message: `✓ Completaste tu horario. Veo que estás saliendo ${ot.minutesOver} min después de las ${ot.scheduledEnd.toISOString().slice(11,16)} UTC. Se registra el horario normal.`,
+                    };
+                }
+            }
+        }
 
         const [record] = await prisma.$transaction([
             prisma.attendanceRecord.create({
@@ -404,13 +497,14 @@ exports.checkOut = async (req, res) => {
                     employeeId,
                     type: 'EXIT',
                     subtype,
+                    timestamp,
                     latitude: latitude ?? null,
                     longitude: longitude ?? null,
                     accuracy: accuracy ?? null,
                     photoPath: photoPath ?? null,
                     verified: verified ?? false,
                     source: source ?? 'KIOSK',
-                    notes: notes ?? null,
+                    notes: overtimeNotice ? `${notes ?? ''} | Salida real ${new Date().toISOString().slice(11,16)} pero capeada a hora-fin (${overtimeNotice.minutesOver} min sin justificar)` : (notes ?? null),
                 },
             }),
             prisma.shiftEmployee.update({
@@ -419,8 +513,8 @@ exports.checkOut = async (req, res) => {
             }),
         ]);
 
-        res.json({ success: true, record });
-        logger.info(`EXIT(${subtype}): ${employee.name} (${employee.cedula})`);
+        res.json({ success: true, record, overtimeNotice });
+        logger.info(`EXIT(${subtype}): ${employee.name} (${employee.cedula})${overtimeNotice ? ` [overtime warn ${overtimeNotice.minutesOver}min]` : ''}`);
     } catch (err) {
         logger.error('checkOut error:', err);
         res.status(500).json({ error: 'Error al registrar salida' });
@@ -493,19 +587,23 @@ exports.getDashboard = async (req, res) => {
             }),
         ]);
 
-        // Fetch all today's records, then keep only the LATEST per employee.
-        // This way the activity feed always reflects the CURRENT state of each
-        // person — no "stale" exits showing after a return-from-break.
-        const allTodayRecords = await prisma.attendanceRecord.findMany({
-            where: { timestamp: { gte: today } },
+        // Fetch the most recent records (last 7 days), then keep only the LATEST
+        // per employee. This way the activity feed reflects the CURRENT state of
+        // each person — including night-shift entries from the previous day —
+        // and never shows "stale" exits after a return-from-break.
+        const sevenDaysAgo = new Date(today);
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const recentRaw = await prisma.attendanceRecord.findMany({
+            where: { timestamp: { gte: sevenDaysAgo } },
             include: {
                 employee: { select: { name: true, area: true, photoUrl: true } },
             },
             orderBy: { timestamp: 'desc' },
+            take: 200,
         });
         const seenEmployees = new Set();
         const recentRecords = [];
-        for (const r of allTodayRecords) {
+        for (const r of recentRaw) {
             if (!seenEmployees.has(r.employeeId)) {
                 seenEmployees.add(r.employeeId);
                 recentRecords.push(r);
@@ -782,6 +880,375 @@ exports.getPayrollSummary = async (req, res) => {
     }
 };
 
+/**
+ * GET /api/attendance/payroll-summary/export?format=xlsx
+ * Exporta el resumen quincenal con las 8 bandas legales (CST + Ley 2466/2025).
+ * Listo para Siigo Nómina / World Office.
+ */
+exports.exportPayrollSummary = async (req, res) => {
+    try {
+        const { periodType = 'fortnight', anchorDate, from, to, area, format = 'xlsx' } = req.query;
+        const summary = await getLaborSummary({ periodType, anchorDate, from, to, area });
+
+        // ── Datos de empresa (de SystemSettings) ──
+        const companyRow = await prisma.systemSettings.findUnique({ where: { key: 'PRODUCTION_CONFIG' } }).catch(() => null);
+        const companyVal = (companyRow && typeof companyRow.value === 'object') ? companyRow.value : {};
+        const company = {
+            name: companyVal.companyName || 'POPPING BOBA INTERNATIONAL S.A.S.',
+            nit:  companyVal.companyNit  || '901.878.434',
+            address: companyVal.companyAddress || 'Colombia',
+        };
+
+        const anyPay = (summary.summary || []).some((r) => r.pay && r.pay.totalPay > 0);
+        const generatedBy = req.user?.name || req.user?.email || 'Sistema';
+        const generatedAt = new Date().toLocaleString('es-CO', {
+            timeZone: 'America/Bogota', day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: true,
+        });
+        const fmtDateLong = (iso) => {
+            const d = new Date(`${iso}T12:00:00`);
+            return d.toLocaleDateString('es-CO', { day: '2-digit', month: 'long', year: 'numeric' });
+        };
+
+        // ── Definición de columnas con grupos (para colorear y bordes) ──
+        // group: identificador del bloque (info | hours-ord | hours-ordnight | hours-sun | hours-sunnight | hours-ext | hours-extnight | hours-extsun | hours-extsunnight | totals | $info | $ord | $ordnight | $sun | $sunnight | $ext | $extnight | $extsun | $extsunnight | $bonus | $total)
+        // header: encabezado
+        // sub: subencabezado pequeño con porcentaje
+        // width: ancho columna
+        const COLOR = {
+            corp:           'FF0E2954', // azul corporativo oscuro
+            corpAccent:     'FF1E63B5',
+            zebra:          'FFF7FAFC',
+            border:         'FFB8C2CC',
+            ord:            'FFE8F1FB', // azul muy claro (ord día)
+            ordNight:       'FFD7E0F5', // índigo claro
+            sun:            'FFFCE7E7', // rojo claro (dom/fest día)
+            sunNight:       'FFF8C9C9', // rojo medio
+            ext:            'FFFEF3C7', // amarillo claro (extra día)
+            extNight:       'FFFDE68A', // amarillo más fuerte
+            extSun:         'FFFCE7F3', // rosa (extra dom día)
+            extSunNight:    'FFF9A8D4', // rosa fuerte
+            totalH:         'FFE6E9F0', // gris azulado (total horas)
+            money:          'FFE9F8EE', // verde pálido
+            moneyTotal:     'FF15803D', // verde fuerte
+            footerTotal:    'FFD1FAE5',
+        };
+
+        const columns = [
+            { key: 'name',        header: 'EMPLEADO',           sub: '',         width: 30, group: 'info',   align: 'left'  },
+            { key: 'cedula',      header: 'CÉDULA',             sub: '',         width: 14, group: 'info',   align: 'center' },
+            { key: 'area',        header: 'ÁREA',               sub: '',         width: 16, group: 'info',   align: 'center' },
+            { key: 'sched',       header: 'DÍAS PROG.',         sub: '',         width: 10, group: 'info',   align: 'center' },
+            { key: 'present',     header: 'DÍAS PRES.',         sub: '',         width: 10, group: 'info',   align: 'center' },
+            { key: 'absent',      header: 'AUSENCIAS',          sub: '',         width: 10, group: 'info',   align: 'center' },
+            { key: 'ordDay',      header: 'H. ORD. DÍA',        sub: '0%',       width: 12, group: 'ord',     align: 'right', fmt: '0.00' },
+            { key: 'ordNight',    header: 'H. ORD. NOCHE',      sub: '+35%',     width: 13, group: 'ordNight',align: 'right', fmt: '0.00' },
+            { key: 'ordSunDay',   header: 'H. DOM/FEST DÍA',    sub: '+80%',     width: 14, group: 'sun',     align: 'right', fmt: '0.00' },
+            { key: 'ordSunNight', header: 'H. DOM/FEST NOCHE',  sub: '+115%',    width: 14, group: 'sunNight',align: 'right', fmt: '0.00' },
+            { key: 'extDay',      header: 'H. EXTRA DÍA',       sub: '+25%',     width: 12, group: 'ext',     align: 'right', fmt: '0.00' },
+            { key: 'extNight',    header: 'H. EXTRA NOCHE',     sub: '+75%',     width: 13, group: 'extNight',align: 'right', fmt: '0.00' },
+            { key: 'extSunDay',   header: 'H. EX. DOM DÍA',     sub: '+105%',    width: 13, group: 'extSun',  align: 'right', fmt: '0.00' },
+            { key: 'extSunNight', header: 'H. EX. DOM NOCHE',   sub: '+155%',    width: 14, group: 'extSunNight', align: 'right', fmt: '0.00' },
+            { key: 'totalH',      header: 'TOTAL HORAS',        sub: '',         width: 12, group: 'totalH',  align: 'right', fmt: '0.00' },
+        ];
+        if (anyPay) {
+            columns.push(
+                { key: 'salary',     header: 'SALARIO BASE',     sub: 'mensual',   width: 14, group: 'money',     align: 'right', fmt: '$#,##0' },
+                { key: 'valueHour',  header: 'VALOR HORA',       sub: '',          width: 12, group: 'money',     align: 'right', fmt: '$#,##0' },
+                { key: '$ordDay',    header: '$ ORD. DÍA',       sub: '',          width: 13, group: 'ord',        align: 'right', fmt: '$#,##0' },
+                { key: '$ordNight',  header: '$ ORD. NOCHE',     sub: '',          width: 13, group: 'ordNight',   align: 'right', fmt: '$#,##0' },
+                { key: '$sunDay',    header: '$ DOM/FEST DÍA',   sub: '',          width: 14, group: 'sun',        align: 'right', fmt: '$#,##0' },
+                { key: '$sunNight',  header: '$ DOM/FEST NOCHE', sub: '',          width: 14, group: 'sunNight',   align: 'right', fmt: '$#,##0' },
+                { key: '$extDay',    header: '$ EXTRA DÍA',      sub: '',          width: 13, group: 'ext',        align: 'right', fmt: '$#,##0' },
+                { key: '$extNight',  header: '$ EXTRA NOCHE',    sub: '',          width: 13, group: 'extNight',   align: 'right', fmt: '$#,##0' },
+                { key: '$extSunDay', header: '$ EX. DOM DÍA',    sub: '',          width: 14, group: 'extSun',     align: 'right', fmt: '$#,##0' },
+                { key: '$extSunNight', header: '$ EX. DOM NOCHE', sub: '',         width: 14, group: 'extSunNight',align: 'right', fmt: '$#,##0' },
+                { key: '$bonus',     header: '$ BONO',           sub: 'prorrateado', width: 12, group: 'money',     align: 'right', fmt: '$#,##0' },
+                { key: '$total',     header: '$ TOTAL DEVENGADO', sub: 'quincena',   width: 18, group: 'moneyTotal', align: 'right', fmt: '$#,##0' },
+            );
+        }
+
+        const groupColor = (g) => COLOR[g] || COLOR.zebra;
+
+        // ── CSV (sin estilos) ──
+        if (format === 'csv') {
+            const csvHeaders = columns.map((c) => c.sub ? `${c.header} (${c.sub})` : c.header);
+            const csvRows = (summary.summary || []).map((r) => {
+                const p = r.pay || {};
+                const totalH = +(r.ordDayHours + r.ordNightHours + r.ordSunDayHours + r.ordSunNightHours
+                    + r.extDayHours + r.extNightHours + r.extSunDayHours + r.extSunNightHours).toFixed(2);
+                const base = [
+                    r.employee.name, r.employee.cedula || '', r.employee.area,
+                    r.scheduledDays, r.presentDays, r.absenceDays,
+                    r.ordDayHours, r.ordNightHours, r.ordSunDayHours, r.ordSunNightHours,
+                    r.extDayHours, r.extNightHours, r.extSunDayHours, r.extSunNightHours,
+                    totalH,
+                ];
+                if (!anyPay) return base;
+                return [...base,
+                    p.salaryMonthly || 0, p.valueHour || 0,
+                    p.ordDayPay || 0, p.ordNightPay || 0, p.ordSunDayPay || 0, p.ordSunNightPay || 0,
+                    p.extDayPay || 0, p.extNightPay || 0, p.extSunDayPay || 0, p.extSunNightPay || 0,
+                    p.bonusPay || 0, p.totalPay || 0,
+                ];
+            });
+            const csv = [csvHeaders, ...csvRows].map((row) => row.map(escapeCsv).join(',')).join('\n');
+            const filename = `nomina_${summary.period.from}_${summary.period.to}.csv`;
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+            return res.send('﻿' + csv);
+        }
+
+        // ── XLSX con exceljs ──
+        const ExcelJS = require('exceljs');
+        const wb = new ExcelJS.Workbook();
+        wb.creator = company.name;
+        wb.created = new Date();
+        const ws = wb.addWorksheet('Nómina quincenal', {
+            views: [{ state: 'frozen', xSplit: 1, ySplit: 9, showGridLines: false }],
+            pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+        });
+
+        const lastColLetter = (n) => {
+            let s = '';
+            while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+            return s;
+        };
+        const N = columns.length;
+        const lastCol = lastColLetter(N);
+
+        // Set columns widths
+        ws.columns = columns.map((c) => ({ key: c.key, width: c.width }));
+
+        // ── Encabezado corporativo ──
+        // Fila 1: Nombre empresa
+        ws.mergeCells(`A1:${lastCol}1`);
+        const r1 = ws.getCell('A1');
+        r1.value = company.name;
+        r1.font = { name: 'Calibri', size: 20, bold: true, color: { argb: 'FFFFFFFF' } };
+        r1.alignment = { vertical: 'middle', horizontal: 'center' };
+        r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.corp } };
+        ws.getRow(1).height = 32;
+
+        // Fila 2: NIT y dirección
+        ws.mergeCells(`A2:${lastCol}2`);
+        const r2 = ws.getCell('A2');
+        r2.value = `NIT ${company.nit}    ·    ${company.address}`;
+        r2.font = { name: 'Calibri', size: 11, color: { argb: 'FFFFFFFF' } };
+        r2.alignment = { vertical: 'middle', horizontal: 'center' };
+        r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.corpAccent } };
+        ws.getRow(2).height = 20;
+
+        // Fila 3: Título reporte
+        ws.mergeCells(`A3:${lastCol}3`);
+        const r3 = ws.getCell('A3');
+        r3.value = 'REPORTE QUINCENAL DE NÓMINA';
+        r3.font = { name: 'Calibri', size: 14, bold: true, color: { argb: COLOR.corp } };
+        r3.alignment = { vertical: 'middle', horizontal: 'center' };
+        ws.getRow(3).height = 26;
+
+        // Fila 4: Período
+        ws.mergeCells(`A4:${lastCol}4`);
+        const r4 = ws.getCell('A4');
+        r4.value = `Período: del ${fmtDateLong(summary.period.from)} al ${fmtDateLong(summary.period.to)}`;
+        r4.font = { name: 'Calibri', size: 11, italic: true, color: { argb: 'FF334155' } };
+        r4.alignment = { vertical: 'middle', horizontal: 'center' };
+        ws.getRow(4).height = 18;
+
+        // Fila 5: Festivos
+        const holidaysText = (summary.holidays || []).length
+            ? `Festivos en período: ${summary.holidays.map((h) => `${fmtDateLong(h.date)} – ${h.name}`).join('  ·  ')}`
+            : 'Sin festivos en este período';
+        ws.mergeCells(`A5:${lastCol}5`);
+        const r5 = ws.getCell('A5');
+        r5.value = holidaysText;
+        r5.font = { name: 'Calibri', size: 10, color: { argb: 'FF991B1B' } };
+        r5.alignment = { vertical: 'middle', horizontal: 'center' };
+        r5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF2F2' } };
+        ws.getRow(5).height = 18;
+
+        // Fila 6: Generado por / fecha
+        ws.mergeCells(`A6:${lastCol}6`);
+        const r6 = ws.getCell('A6');
+        r6.value = `Generado por: ${generatedBy}    ·    Fecha de generación: ${generatedAt}    ·    Empleados: ${(summary.summary || []).length}`;
+        r6.font = { name: 'Calibri', size: 9, color: { argb: 'FF64748B' } };
+        r6.alignment = { vertical: 'middle', horizontal: 'center' };
+        ws.getRow(6).height = 16;
+
+        // Fila 7 vacía (separador)
+        ws.getRow(7).height = 6;
+
+        // Fila 8: Headers
+        const headerRowNum = 8;
+        const subRowNum = 9;
+        columns.forEach((c, i) => {
+            const cell = ws.getCell(headerRowNum, i + 1);
+            cell.value = c.header;
+            cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COLOR.corp } };
+            cell.border = {
+                top:    { style: 'thin', color: { argb: COLOR.corp } },
+                left:   { style: 'thin', color: { argb: 'FFFFFFFF' } },
+                right:  { style: 'thin', color: { argb: 'FFFFFFFF' } },
+                bottom: { style: 'thin', color: { argb: COLOR.corp } },
+            };
+        });
+        ws.getRow(headerRowNum).height = 28;
+
+        // Fila 9: Sub-header (porcentajes)
+        columns.forEach((c, i) => {
+            const cell = ws.getCell(subRowNum, i + 1);
+            cell.value = c.sub || '';
+            cell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF1E40AF' }, bold: true };
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: groupColor(c.group) } };
+            cell.border = {
+                top:    { style: 'thin', color: { argb: COLOR.border } },
+                bottom: { style: 'medium', color: { argb: COLOR.corp } },
+                left:   { style: 'thin', color: { argb: COLOR.border } },
+                right:  { style: 'thin', color: { argb: COLOR.border } },
+            };
+        });
+        ws.getRow(subRowNum).height = 18;
+
+        // ── Filas de datos ──
+        const dataStartRow = subRowNum + 1;
+        (summary.summary || []).forEach((r, idx) => {
+            const p = r.pay || {};
+            const totalH = +(
+                r.ordDayHours + r.ordNightHours + r.ordSunDayHours + r.ordSunNightHours +
+                r.extDayHours + r.extNightHours + r.extSunDayHours + r.extSunNightHours
+            ).toFixed(2);
+            const valueByKey = {
+                name: r.employee.name,
+                cedula: r.employee.cedula || '',
+                area: r.employee.area,
+                sched: r.scheduledDays,
+                present: r.presentDays,
+                absent: r.absenceDays,
+                ordDay: r.ordDayHours,
+                ordNight: r.ordNightHours,
+                ordSunDay: r.ordSunDayHours,
+                ordSunNight: r.ordSunNightHours,
+                extDay: r.extDayHours,
+                extNight: r.extNightHours,
+                extSunDay: r.extSunDayHours,
+                extSunNight: r.extSunNightHours,
+                totalH,
+                salary: p.salaryMonthly || null,
+                valueHour: p.valueHour || null,
+                $ordDay: p.ordDayPay || null,
+                $ordNight: p.ordNightPay || null,
+                $sunDay: p.ordSunDayPay || null,
+                $sunNight: p.ordSunNightPay || null,
+                $extDay: p.extDayPay || null,
+                $extNight: p.extNightPay || null,
+                $extSunDay: p.extSunDayPay || null,
+                $extSunNight: p.extSunNightPay || null,
+                $bonus: p.bonusPay || null,
+                $total: p.totalPay || null,
+            };
+            const rowNum = dataStartRow + idx;
+            const isZebra = idx % 2 === 1;
+            columns.forEach((c, i) => {
+                const cell = ws.getCell(rowNum, i + 1);
+                const v = valueByKey[c.key];
+                cell.value = (v === null || v === undefined || v === '') ? null : v;
+                cell.alignment = { vertical: 'middle', horizontal: c.align || 'left', indent: c.align === 'left' ? 1 : 0 };
+                cell.font = {
+                    name: 'Calibri', size: 10,
+                    bold: c.key === 'name' || c.group === 'moneyTotal' || c.key === 'totalH',
+                    color: { argb: c.group === 'moneyTotal' ? COLOR.moneyTotal : 'FF1F2937' },
+                };
+                if (c.fmt) cell.numFmt = c.fmt;
+                // Fondo: zebra excepto en grupos coloreados de banda
+                const groupBg = ['ord','ordNight','sun','sunNight','ext','extNight','extSun','extSunNight','totalH','moneyTotal'].includes(c.group)
+                    ? groupColor(c.group)
+                    : (isZebra ? COLOR.zebra : 'FFFFFFFF');
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: groupBg } };
+                cell.border = {
+                    top:    { style: 'hair', color: { argb: COLOR.border } },
+                    bottom: { style: 'hair', color: { argb: COLOR.border } },
+                    left:   { style: 'hair', color: { argb: COLOR.border } },
+                    right:  { style: 'hair', color: { argb: COLOR.border } },
+                };
+                // Resaltar celdas con valor 0 como vacío
+                if (typeof v === 'number' && v === 0 && c.fmt) {
+                    cell.value = null;
+                }
+            });
+            ws.getRow(rowNum).height = 22;
+        });
+
+        // ── Fila de TOTALES ──
+        const totalRowNum = dataStartRow + (summary.summary || []).length;
+        const totals = {};
+        const sumKey = (k) => (summary.summary || []).reduce((s, r) => s + (r[k] || 0), 0);
+        const sumPay = (k) => (summary.summary || []).reduce((s, r) => s + (r.pay?.[k] || 0), 0);
+        totals.ordDay      = sumKey('ordDayHours');
+        totals.ordNight    = sumKey('ordNightHours');
+        totals.ordSunDay   = sumKey('ordSunDayHours');
+        totals.ordSunNight = sumKey('ordSunNightHours');
+        totals.extDay      = sumKey('extDayHours');
+        totals.extNight    = sumKey('extNightHours');
+        totals.extSunDay   = sumKey('extSunDayHours');
+        totals.extSunNight = sumKey('extSunNightHours');
+        totals.totalH = totals.ordDay + totals.ordNight + totals.ordSunDay + totals.ordSunNight
+            + totals.extDay + totals.extNight + totals.extSunDay + totals.extSunNight;
+        totals.$ordDay     = sumPay('ordDayPay');
+        totals.$ordNight   = sumPay('ordNightPay');
+        totals.$sunDay     = sumPay('ordSunDayPay');
+        totals.$sunNight   = sumPay('ordSunNightPay');
+        totals.$extDay     = sumPay('extDayPay');
+        totals.$extNight   = sumPay('extNightPay');
+        totals.$extSunDay  = sumPay('extSunDayPay');
+        totals.$extSunNight= sumPay('extSunNightPay');
+        totals.$bonus      = sumPay('bonusPay');
+        totals.$total      = sumPay('totalPay');
+
+        columns.forEach((c, i) => {
+            const cell = ws.getCell(totalRowNum, i + 1);
+            cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: c.group === 'moneyTotal' ? 'FFFFFFFF' : COLOR.corp } };
+            cell.alignment = { vertical: 'middle', horizontal: c.align || 'left' };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.group === 'moneyTotal' ? COLOR.moneyTotal : COLOR.footerTotal } };
+            cell.border = {
+                top:    { style: 'medium', color: { argb: COLOR.corp } },
+                bottom: { style: 'medium', color: { argb: COLOR.corp } },
+                left:   { style: 'thin', color: { argb: COLOR.border } },
+                right:  { style: 'thin', color: { argb: COLOR.border } },
+            };
+            if (i === 0) cell.value = 'TOTALES';
+            else if (i < 6) cell.value = '';
+            else if (totals[c.key] !== undefined) {
+                cell.value = totals[c.key] || null;
+                if (c.fmt) cell.numFmt = c.fmt;
+            }
+        });
+        ws.getRow(totalRowNum).height = 26;
+
+        // ── Pie de página ──
+        const footerRowNum = totalRowNum + 2;
+        ws.mergeCells(`A${footerRowNum}:${lastCol}${footerRowNum}`);
+        const fc = ws.getCell(`A${footerRowNum}`);
+        fc.value = `Documento generado automáticamente por gestionpbi.lat   ·   ${company.name}   ·   NIT ${company.nit}`;
+        fc.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF94A3B8' } };
+        fc.alignment = { vertical: 'middle', horizontal: 'center' };
+
+        // Print options: filas y columnas a repetir
+        ws.pageSetup.printTitlesRow = `${headerRowNum}:${subRowNum}`;
+
+        const buffer = await wb.xlsx.writeBuffer();
+        const filename = `nomina_${summary.period.from}_${summary.period.to}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(Buffer.from(buffer));
+    } catch (err) {
+        logger.error('exportPayrollSummary error:', err);
+        res.status(500).json({ error: err.message || 'Error exportando resumen laboral' });
+    }
+};
+
 exports.getPayrollConfig = async (req, res) => {
     try {
         const row = await prisma.systemSettings.findUnique({
@@ -801,17 +1268,32 @@ exports.getPayrollConfig = async (req, res) => {
 exports.updatePayrollConfig = async (req, res) => {
     try {
         const payload = req.body || {};
+        const numericKeys = [
+            'weeklyHours', 'monthlyHourDivisor',
+            'surchargeNight', 'surchargeSundayDay', 'surchargeSundayNight',
+            'overtimeDay', 'overtimeNight', 'overtimeSundayDay', 'overtimeSundayNight',
+        ];
         const config = {
             dayStart: typeof payload.dayStart === 'string' ? payload.dayStart : DEFAULT_PAYROLL_CONFIG.dayStart,
             nightStart: typeof payload.nightStart === 'string' ? payload.nightStart : DEFAULT_PAYROLL_CONFIG.nightStart,
             fortnightCutoffDay: parseInt(payload.fortnightCutoffDay, 10) || DEFAULT_PAYROLL_CONFIG.fortnightCutoffDay,
         };
+        for (const key of numericKeys) {
+            const raw = payload[key];
+            const num = typeof raw === 'number' ? raw : parseFloat(raw);
+            config[key] = Number.isFinite(num) ? num : DEFAULT_PAYROLL_CONFIG[key];
+        }
 
         if (!config.dayStart.includes(':') || !config.nightStart.includes(':')) {
             return res.status(400).json({ error: 'Las franjas diurna y nocturna deben tener formato HH:MM' });
         }
         if (config.fortnightCutoffDay < 1 || config.fortnightCutoffDay > 28) {
             return res.status(400).json({ error: 'El corte quincenal debe estar entre 1 y 28' });
+        }
+        for (const key of numericKeys) {
+            if (config[key] < 0 || config[key] > 5) {
+                return res.status(400).json({ error: `El valor de ${key} debe estar entre 0 y 5` });
+            }
         }
 
         const updated = await prisma.systemSettings.upsert({
@@ -828,6 +1310,123 @@ exports.updatePayrollConfig = async (req, res) => {
     } catch (err) {
         logger.error('updatePayrollConfig error:', err);
         res.status(500).json({ error: 'Error guardando configuracion laboral' });
+    }
+};
+
+// ── Festivos (PayrollHoliday) ──────────────────────────────────────────────────
+
+exports.listHolidays = async (req, res) => {
+    try {
+        const year = parseInt(req.query.year, 10);
+        const where = Number.isInteger(year) ? { year } : {};
+        const holidays = await prisma.payrollHoliday.findMany({
+            where,
+            orderBy: { date: 'asc' },
+        });
+        res.json(holidays);
+    } catch (err) {
+        logger.error('listHolidays error:', err);
+        res.status(500).json({ error: 'Error obteniendo festivos' });
+    }
+};
+
+exports.createHoliday = async (req, res) => {
+    try {
+        const { date, name } = req.body || {};
+        if (!date || !name) return res.status(400).json({ error: 'date y name son obligatorios' });
+        const parsed = new Date(`${date}T12:00:00`);
+        if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'date inválido' });
+        const holiday = await prisma.payrollHoliday.create({
+            data: { date: parsed, name: String(name).trim(), year: parsed.getFullYear() },
+        });
+        res.status(201).json(holiday);
+    } catch (err) {
+        if (err.code === 'P2002') return res.status(409).json({ error: 'Ya existe un festivo en esa fecha' });
+        logger.error('createHoliday error:', err);
+        res.status(500).json({ error: 'Error creando festivo' });
+    }
+};
+
+exports.deleteHoliday = async (req, res) => {
+    try {
+        await prisma.payrollHoliday.delete({ where: { id: req.params.id } });
+        res.json({ success: true });
+    } catch (err) {
+        if (err.code === 'P2025') return res.status(404).json({ error: 'Festivo no encontrado' });
+        logger.error('deleteHoliday error:', err);
+        res.status(500).json({ error: 'Error eliminando festivo' });
+    }
+};
+
+// ── Perfiles de nómina (EmployeePayrollProfile) ────────────────────────────────
+
+exports.listPayrollProfiles = async (req, res) => {
+    try {
+        const profiles = await prisma.employeePayrollProfile.findMany({
+            include: {
+                employee: { select: { id: true, name: true, area: true, role: true, cedula: true, active: true } },
+            },
+            orderBy: [{ employee: { area: 'asc' } }, { employee: { name: 'asc' } }],
+        });
+        res.json(profiles.map((p) => ({
+            ...p,
+            salaryMonthly: Number(p.salaryMonthly),
+            monthlyBonus: Number(p.monthlyBonus),
+        })));
+    } catch (err) {
+        logger.error('listPayrollProfiles error:', err);
+        res.status(500).json({ error: 'Error obteniendo perfiles de nómina' });
+    }
+};
+
+exports.upsertPayrollProfile = async (req, res) => {
+    try {
+        const {
+            employeeId, salaryMonthly, startDate,
+            transportAllowance, monthlyBonus, contractType, active, notes,
+        } = req.body || {};
+
+        if (!employeeId) return res.status(400).json({ error: 'employeeId es obligatorio' });
+        const salary = parseFloat(salaryMonthly);
+        if (!Number.isFinite(salary) || salary < 0) return res.status(400).json({ error: 'salaryMonthly inválido' });
+        const start = startDate ? new Date(`${startDate}T12:00:00`) : null;
+        if (!start || Number.isNaN(start.getTime())) return res.status(400).json({ error: 'startDate inválido' });
+
+        const data = {
+            employeeId,
+            salaryMonthly: salary,
+            startDate: start,
+            transportAllowance: transportAllowance !== false,
+            monthlyBonus: parseFloat(monthlyBonus) || 0,
+            contractType: contractType || 'INDEFINIDO',
+            active: active !== false,
+            notes: notes || null,
+        };
+
+        const profile = await prisma.employeePayrollProfile.upsert({
+            where: { employeeId },
+            create: data,
+            update: data,
+        });
+        res.json({
+            ...profile,
+            salaryMonthly: Number(profile.salaryMonthly),
+            monthlyBonus: Number(profile.monthlyBonus),
+        });
+    } catch (err) {
+        logger.error('upsertPayrollProfile error:', err);
+        res.status(500).json({ error: err.message || 'Error guardando perfil' });
+    }
+};
+
+exports.deletePayrollProfile = async (req, res) => {
+    try {
+        await prisma.employeePayrollProfile.delete({ where: { employeeId: req.params.employeeId } });
+        res.json({ success: true });
+    } catch (err) {
+        if (err.code === 'P2025') return res.status(404).json({ error: 'Perfil no encontrado' });
+        logger.error('deletePayrollProfile error:', err);
+        res.status(500).json({ error: 'Error eliminando perfil' });
     }
 };
 
@@ -1163,11 +1762,12 @@ exports.getEmployees = async (req, res) => {
         // IDs de usuarios ya vinculados a shift_employees
         const linkedUserIds = new Set(employees.filter(e => e.userId).map(e => e.userId));
 
-        // Usuarios registrados en gestionpbi con roles de kiosko pero SIN shift_employee
+        // Usuarios registrados en gestionpbi con roles elegibles de kiosko pero SIN shift_employee.
+        // Incluye ADMIN (equipo administración) para que pueda migrarse al cuadro de turnos.
         const pendingUsers = await prisma.user.findMany({
             where: {
                 active: true,
-                role: { in: KIOSK_REQUIRED_ROLES },
+                role: { in: KIOSK_ELIGIBLE_ROLES },
                 id: { notIn: [...linkedUserIds] },
                 ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
             },
@@ -1217,23 +1817,32 @@ exports.createFromUser = async (req, res) => {
 
         if (!area) return res.status(400).json({ error: 'El área es requerida' });
 
-        const employee = await prisma.shiftEmployee.create({
-            data: {
-                name: user.name,
-                area,
-                role: user.role,
-                cedula: cedula?.trim() || null,
-                userId: user.id,
-                active: true,
-                isInPlant: false,
-            },
+        // Usa el helper de sync para crear shiftEmployee + asignar la semana actual al turno correcto.
+        // Esto garantiza que el empleado quede listo en el cuadro de turnos sin paso adicional.
+        const { createShiftEmployeeFromUser } = require('../services/shiftEmployeeSyncService');
+        const result = await createShiftEmployeeFromUser(prisma, user, {
+            area,
+            assignCurrentWeek: true,
         });
+        const employee = result.employee;
+
+        // Si vino cédula, actualizarla en el shiftEmployee recién creado
+        if (cedula?.trim()) {
+            await prisma.shiftEmployee.update({
+                where: { id: employee.id },
+                data: { cedula: cedula.trim() },
+            }).catch(err => {
+                if (err.code === 'P2002') {
+                    logger.warn(`Cédula duplicada al crear empleado ${user.name}: ${cedula}`);
+                }
+            });
+        }
 
         res.status(201).json({ success: true, employee });
-        logger.info(`ShiftEmployee created from user ${user.name} (${user.role})`);
+        logger.info(`ShiftEmployee created from user ${user.name} (${user.role}) → área ${employee.area}`);
     } catch (err) {
         logger.error('createFromUser error:', err);
-        res.status(500).json({ error: 'Error al crear registro de kiosko' });
+        res.status(500).json({ error: err.message || 'Error al crear registro de kiosko' });
     }
 };
 
@@ -1245,19 +1854,30 @@ exports.createFromUser = async (req, res) => {
  */
 exports.enrollFace = async (req, res) => {
     try {
-        const { descriptor, photoUrl } = req.body;
-        if (!descriptor || !Array.isArray(descriptor) || descriptor.length !== 128) {
-            return res.status(400).json({ error: 'Descriptor facial inválido (requiere array de 128 floats)' });
+        const { descriptor, descriptors, photoUrl, mode = 'replace' } = req.body;
+
+        // Aceptar uno o varios descriptores
+        let newDescriptors = [];
+        if (Array.isArray(descriptors) && descriptors.length > 0) {
+            for (const d of descriptors) {
+                if (!Array.isArray(d) || d.length !== 128) {
+                    return res.status(400).json({ error: 'Cada descriptor debe ser array de 128 floats' });
+                }
+                newDescriptors.push(d);
+            }
+        } else if (Array.isArray(descriptor) && descriptor.length === 128) {
+            newDescriptors = [descriptor];
+        } else {
+            return res.status(400).json({ error: 'Debes enviar `descriptor` (array 128) o `descriptors` (array de arrays 128)' });
         }
 
-        // Verificar duplicado (distancia < 0.5 con otro empleado)
+        // Verificar duplicado contra otros empleados (usa el primer descriptor)
         const others = await prisma.shiftEmployee.findMany({
             where: { active: true, faceDescriptor: { not: null }, id: { not: req.params.id } },
             select: { id: true, name: true, faceDescriptor: true },
         });
-
         for (const other of others) {
-            const dist = faceDistance(descriptor, other.faceDescriptor);
+            const dist = bestFaceDistance(newDescriptors[0], other.faceDescriptor);
             if (dist < 0.5) {
                 return res.status(409).json({
                     error: `Rostro muy similar al de ${other.name} (distancia: ${dist.toFixed(3)}). Verifica que sea la persona correcta.`,
@@ -1266,17 +1886,28 @@ exports.enrollFace = async (req, res) => {
             }
         }
 
+        // Construir el array final según mode
+        let finalDescriptors = newDescriptors;
+        if (mode === 'append') {
+            const current = await prisma.shiftEmployee.findUnique({
+                where: { id: req.params.id },
+                select: { faceDescriptor: true }
+            });
+            const existing = getDescriptorList(current?.faceDescriptor);
+            finalDescriptors = [...existing, ...newDescriptors].slice(-10); // máximo 10 por empleado
+        }
+
         const updated = await prisma.shiftEmployee.update({
             where: { id: req.params.id },
             data: {
-                faceDescriptor: descriptor,
+                faceDescriptor: finalDescriptors,
                 ...(photoUrl ? { photoUrl } : {}),
             },
             select: { id: true, name: true, photoUrl: true },
         });
 
-        res.json({ success: true, employee: updated });
-        logger.info(`Face enrolled: ${updated.name}`);
+        res.json({ success: true, employee: updated, descriptorsCount: finalDescriptors.length });
+        logger.info(`Face enrolled: ${updated.name} (mode=${mode}, descriptors=${finalDescriptors.length})`);
     } catch (err) {
         logger.error('enrollFace error:', err);
         res.status(500).json({ error: 'Error al enrollar descriptor facial' });
@@ -1522,15 +2153,112 @@ exports.getDoorCrossingsSummary = async (req, res) => {
 // el flujo de relevo. Todos crean AttendanceRecord con source=HANDOVER.
 // Helper interno reutilizado por las 3 variantes.
 // ═════════════════════════════════════════════════════════════════════════════
-async function _markEmployeeAttendance({ shiftEmployee, action, methodLabel }) {
+// ═════════════════════════════════════════════════════════════════════════════
+//  Overtime detection — SOLO LOGISTICA, ASEO y EMPAQUE con turno fijo 8-17
+//  Excluidos por decisión operativa: PERSONAL_OFICINA, CALIDAD, CONTABILIDAD,
+//  COMERCIAL (registran normal aunque salgan tarde) y rotativos PROD/SIROPES.
+// ═════════════════════════════════════════════════════════════════════════════
+const OVERTIME_AREAS = new Set(['LOGISTICA', 'ASEO', 'EMPAQUE']);
+const OVERTIME_TOLERANCE_MIN = 15;
+const OVERTIME_AUTH_THRESHOLD_MIN = 30;
+
+function getScheduledShiftEnd(employee, ts) {
+    // Aplica solo a empleados con turno fijo 8-17 en las áreas controladas
+    if (!OVERTIME_AREAS.has(employee.area)) return null;
+    if (employee.isFixed === false) return null; // si está explícitamente como rotativo, no aplica
+    if (employee.isFixed !== true) return null;  // requiere isFixed=true (no asumir)
+    // Hora Colombia
+    const colTime = new Date(ts.getTime() - 5 * 3600 * 1000);
+    const colDay = colTime.getUTCDay(); // 0=Sun, 6=Sat
+    if (colDay === 0) return null; // domingo no aplica
+    let endHour = 17, endMin = 0; // L-V default 17:00
+    if (colDay === 6) { endHour = 12; endMin = 0; } // sábado 12:00
+    // Construir end en Colombia time, devolver en UTC
+    const colYear  = colTime.getUTCFullYear();
+    const colMonth = colTime.getUTCMonth();
+    const colDate  = colTime.getUTCDate();
+    const endColUtc = new Date(Date.UTC(colYear, colMonth, colDate, endHour, endMin, 0));
+    // De Colombia (UTC-5) a UTC: +5h
+    return new Date(endColUtc.getTime() + 5 * 3600 * 1000);
+}
+
+function assessOvertime(employee, exitTimestamp) {
+    const scheduledEnd = getScheduledShiftEnd(employee, exitTimestamp);
+    if (!scheduledEnd) return { applies: false };
+    const minutesOver = Math.round((exitTimestamp - scheduledEnd) / 60000);
+    if (minutesOver <= OVERTIME_TOLERANCE_MIN) return { applies: true, status: 'normal', minutesOver, scheduledEnd };
+    if (minutesOver <= OVERTIME_AUTH_THRESHOLD_MIN) return { applies: true, status: 'warning', minutesOver, scheduledEnd };
+    return { applies: true, status: 'requires_auth', minutesOver, scheduledEnd };
+}
+
+async function _markEmployeeAttendance({ shiftEmployee, action, methodLabel, subtype = null }) {
     if (!shiftEmployee) {
         return { error: 'Sin perfil de empleado de turno', status: 403 };
     }
     if (!['IN', 'OUT'].includes(action)) {
         return { error: 'action debe ser IN u OUT', status: 400 };
     }
+    const validSubtypes = ['BREAK', 'LUNCH', 'MEDICAL', 'PERSONAL', 'FINAL'];
+    let safeSubtype = null;
+    if (action === 'OUT') {
+        if (!subtype) {
+            return { error: 'Para salir debes elegir motivo: BREAK, LUNCH o FINAL', status: 400 };
+        }
+        if (!validSubtypes.includes(subtype)) {
+            return { error: `Motivo inválido. Usa: ${validSubtypes.join(', ')}`, status: 400 };
+        }
+        safeSubtype = subtype;
+    }
 
-    const ts = new Date();
+    // BLOQUEO: rotativos PROD/SIROPES/EMPAQUE no pueden marcar ENTRY ni EXIT FINAL por kiosko
+    // Su flujo de inicio/fin de turno es por firma de relevo en /turnos.
+    const ROTATING_AREAS = new Set(['PRODUCCION', 'SIROPES', 'EMPAQUE']);
+    if (ROTATING_AREAS.has(shiftEmployee.area) && shiftEmployee.isFixed === false) {
+        if (action === 'IN') {
+            return {
+                error: '🚫 Tu turno INICIA con la firma del relevo en zona de producción (no por kiosko). Solo usa el kiosko para registrar tu desayuno cuando ya estés trabajando.',
+                status: 403,
+                blocked: 'rotating_entry'
+            };
+        }
+        if (action === 'OUT' && safeSubtype === 'FINAL') {
+            return {
+                error: '🚫 Tu turno TERMINA con la firma del relevo cuando llegue el turno entrante (no por kiosko). Si solo vas al desayuno, elige 🍞 DESAYUNO.',
+                status: 403,
+                blocked: 'rotating_exit_final'
+            };
+        }
+        // BREAK/LUNCH/MEDICAL/PERSONAL sí los permite (descansos intermedios)
+    }
+
+    let ts = new Date();
+    let overtimeNotice = null;
+
+    // Detección de tiempo extra al marcar FIN DE TURNO
+    if (action === 'OUT' && safeSubtype === 'FINAL') {
+        const ot = assessOvertime(shiftEmployee, ts);
+        if (ot.applies) {
+            if (ot.status === 'requires_auth') {
+                return {
+                    error: `⚠️ Saliste ${ot.minutesOver} min después de tu hora oficial. Requiere autorización del ADMIN.`,
+                    status: 422,
+                    requiresOvertimeAuth: true,
+                    employeeName: shiftEmployee.name,
+                    minutesOver: ot.minutesOver,
+                    scheduledEnd: ot.scheduledEnd,
+                };
+            }
+            if (ot.status === 'warning') {
+                // Cap al timestamp de hora-fin: no se cuentan extras pero queda registrada la salida
+                ts = new Date(ot.scheduledEnd);
+                overtimeNotice = {
+                    minutesOver: ot.minutesOver,
+                    message: `✓ Completaste tu horario. Veo que estás saliendo ${ot.minutesOver} min después de las ${ot.scheduledEnd.toISOString().slice(11,16)} UTC. Se registra el horario normal.`,
+                };
+            }
+        }
+    }
+
     const fourHoursAgo = new Date(ts.getTime() - 4 * 60 * 60 * 1000);
     const recent = await prisma.attendanceRecord.findFirst({
         where: { employeeId: shiftEmployee.id, timestamp: { gte: fourHoursAgo } },
@@ -1548,43 +2276,49 @@ async function _markEmployeeAttendance({ shiftEmployee, action, methodLabel }) {
         data: {
             employeeId: shiftEmployee.id,
             type: action === 'IN' ? 'ENTRY' : 'EXIT',
-            source: 'HANDOVER',
+            subtype: safeSubtype,
+            source: 'KIOSK',
             timestamp: ts,
             verified: true,
-            notes: `Marcaje ${methodLabel} (${shiftEmployee.area})`
+            notes: `Marcaje ${methodLabel} (${shiftEmployee.area})${safeSubtype ? ` - ${safeSubtype}` : ''}`
         }
     });
 
-    // Sync presence flag so the "En Planta Ahora" dashboard counts correctly.
-    await prisma.shiftEmployee.update({
-        where: { id: shiftEmployee.id },
-        data: action === 'IN'
-            ? { isInPlant: true,  lastEntryAt: ts }
-            : { isInPlant: false }
-    });
+    // Sync presence flag — solo sale de planta si es FINAL.
+    // BREAK/LUNCH = sigue contando como en planta (descanso interno).
+    const goingOutFinal = action === 'OUT' && safeSubtype === 'FINAL';
+    if (action === 'IN' || goingOutFinal) {
+        await prisma.shiftEmployee.update({
+            where: { id: shiftEmployee.id },
+            data: action === 'IN'
+                ? { isInPlant: true,  lastEntryAt: ts }
+                : { isInPlant: false }
+        });
+    }
 
-    logger.info(`[Mark${methodLabel}] ${action} ${shiftEmployee.name} (${shiftEmployee.area}) at ${ts.toISOString()}`);
+    logger.info(`[Mark${methodLabel}] ${action} ${shiftEmployee.name} (${shiftEmployee.area}) at ${ts.toISOString()}${overtimeNotice ? ` [overtime warning ${overtimeNotice.minutesOver}min]` : ''}`);
     return {
         success: true,
         employeeName: shiftEmployee.name,
         area: shiftEmployee.area,
         type: record.type,
         timestamp: record.timestamp,
-        method: methodLabel
+        method: methodLabel,
+        overtimeNotice, // null o { minutesOver, message }
     };
 }
 
-// POST /api/attendance/pin-mark — body: { pin, action }
+// POST /api/attendance/pin-mark — body: { pin, action, subtype? }
 exports.pinMark = async (req, res) => {
     try {
-        const { pin, action } = req.body || {};
+        const { pin, action, subtype } = req.body || {};
         if (!pin || !/^\d{4}$/.test(pin)) {
             return res.status(400).json({ error: 'PIN debe ser 4 dígitos' });
         }
         const bcrypt = require('bcrypt');
         const users = await prisma.user.findMany({
             where: { active: true, pin: { not: null }, role: { not: 'DISTRIBUIDOR' } },
-            select: { id: true, name: true, pin: true, shiftEmployee: { select: { id: true, name: true, area: true } } }
+            select: { id: true, name: true, pin: true, shiftEmployee: { select: { id: true, name: true, area: true, isFixed: true, cedula: true } } }
         });
         let matched = null;
         for (const u of users) {
@@ -1593,7 +2327,7 @@ exports.pinMark = async (req, res) => {
         if (!matched) return res.status(401).json({ error: 'PIN incorrecto' });
 
         const result = await _markEmployeeAttendance({
-            shiftEmployee: matched.shiftEmployee, action, methodLabel: 'PIN'
+            shiftEmployee: matched.shiftEmployee, action, methodLabel: 'PIN', subtype
         });
         if (result.error) return res.status(result.status).json({ error: result.error, lastMark: result.lastMark });
         res.json(result);
@@ -1603,22 +2337,22 @@ exports.pinMark = async (req, res) => {
     }
 };
 
-// POST /api/attendance/cedula-mark — body: { cedula, action }
+// POST /api/attendance/cedula-mark — body: { cedula, action, subtype? }
 exports.cedulaMark = async (req, res) => {
     try {
-        const { cedula, action } = req.body || {};
+        const { cedula, action, subtype } = req.body || {};
         if (!cedula || !/^\d{6,12}$/.test(String(cedula).trim())) {
             return res.status(400).json({ error: 'Cédula inválida (6-12 dígitos)' });
         }
         const employee = await prisma.shiftEmployee.findUnique({
             where: { cedula: String(cedula).trim() },
-            select: { id: true, name: true, area: true, active: true }
+            select: { id: true, name: true, area: true, active: true, isFixed: true, cedula: true }
         });
         if (!employee) return res.status(404).json({ error: 'Cédula no registrada' });
         if (!employee.active) return res.status(403).json({ error: 'Empleado inactivo' });
 
         const result = await _markEmployeeAttendance({
-            shiftEmployee: employee, action, methodLabel: 'CEDULA'
+            shiftEmployee: employee, action, methodLabel: 'CEDULA', subtype
         });
         if (result.error) return res.status(result.status).json({ error: result.error, lastMark: result.lastMark });
         res.json(result);
@@ -1642,20 +2376,18 @@ function _euclideanDistance(a, b) {
 }
 exports.faceMark = async (req, res) => {
     try {
-        const { descriptor, action } = req.body || {};
+        const { descriptor, action, subtype } = req.body || {};
         if (!Array.isArray(descriptor) || descriptor.length !== 128) {
             return res.status(400).json({ error: 'Descriptor facial inválido (debe ser array de 128 floats)' });
         }
         const employees = await prisma.shiftEmployee.findMany({
             where: { active: true, faceDescriptor: { not: null } },
-            select: { id: true, name: true, area: true, faceDescriptor: true }
+            select: { id: true, name: true, area: true, faceDescriptor: true, isFixed: true, cedula: true }
         });
         let bestMatch = null;
         let bestDist = Infinity;
         for (const emp of employees) {
-            const stored = Array.isArray(emp.faceDescriptor) ? emp.faceDescriptor : [];
-            if (stored.length !== 128) continue;
-            const d = _euclideanDistance(descriptor, stored);
+            const d = bestFaceDistance(descriptor, emp.faceDescriptor);
             if (d < bestDist) { bestDist = d; bestMatch = emp; }
         }
         if (!bestMatch || bestDist > FACE_MATCH_THRESHOLD) {
@@ -1666,7 +2398,7 @@ exports.faceMark = async (req, res) => {
         }
 
         const result = await _markEmployeeAttendance({
-            shiftEmployee: bestMatch, action, methodLabel: 'FACE'
+            shiftEmployee: bestMatch, action, methodLabel: 'FACE', subtype
         });
         if (result.error) return res.status(result.status).json({ error: result.error, lastMark: result.lastMark });
         res.json({ ...result, faceDistance: Math.round(bestDist * 1000) / 1000 });
@@ -1886,5 +2618,286 @@ exports.recordHandoverAttendance = async ({ userId, eventType, outgoingShift, si
     } catch (err) {
         logger.error('[HandoverAttendance] error (non-blocking):', err);
         return { error: err.message };
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  YOLOv8 + InsightFace (delega al servicio Python en :3063)
+// ═════════════════════════════════════════════════════════════════════════════
+
+exports.enrollFaceInsightface = async (req, res) => {
+    try {
+        const employeeId = req.params.id;
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: 'Debes subir al menos 1 foto en el campo "files"' });
+        }
+        const form = new FormData();
+        for (const f of req.files) {
+            form.append('files', f.buffer, { filename: f.originalname || 'photo.jpg', contentType: f.mimetype || 'image/jpeg' });
+        }
+        const url = `${FACE_SERVICE_URL}/enroll-multi/${employeeId}`;
+        const response = await axios.post(url, form, {
+            headers: form.getHeaders(),
+            timeout: 30000,
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+        });
+        logger.info(`[InsightFace enroll] ${employeeId} → ${response.data.photos_used} fotos válidas`);
+        res.json({ success: true, ...response.data });
+    } catch (err) {
+        const msg = err.response?.data?.detail || err.message;
+        logger.error('[enrollFaceInsightface] error:', msg);
+        res.status(err.response?.status || 500).json({ error: msg });
+    }
+};
+
+exports.faceMarkInsightface = async (req, res) => {
+    try {
+        const { action, subtype } = req.body || {};
+        if (!req.file) return res.status(400).json({ error: 'Falta la foto en campo "photo"' });
+        if (!['IN', 'OUT'].includes(action)) return res.status(400).json({ error: 'action debe ser IN u OUT' });
+
+        const form = new FormData();
+        form.append('file', req.file.buffer, { filename: req.file.originalname || 'kiosk.jpg', contentType: req.file.mimetype || 'image/jpeg' });
+
+        const r = await axios.post(`${FACE_SERVICE_URL}/match`, form, {
+            headers: form.getHeaders(),
+            timeout: 10000,
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+        });
+
+        if (!r.data.matched) {
+            const reason = r.data.reason === 'no_face_detected' ? 'No se detectó cara'
+                : r.data.reason === 'no_enrolled_employees' ? 'No hay empleados enrolados'
+                : `Rostro no reconocido (distancia: ${r.data.best_distance ?? '?'})`;
+            return res.status(401).json({ error: reason, faceServiceResponse: r.data });
+        }
+
+        const employee = await prisma.shiftEmployee.findUnique({
+            where: { id: r.data.employee_id },
+            select: { id: true, name: true, area: true, active: true }
+        });
+        if (!employee) return res.status(404).json({ error: 'Empleado no existe en BD' });
+        if (!employee.active) return res.status(403).json({ error: 'Empleado inactivo' });
+
+        const result = await _markEmployeeAttendance({
+            shiftEmployee: employee, action, methodLabel: 'FACE_INSIGHTFACE', subtype
+        });
+        if (result.error) return res.status(result.status).json({ error: result.error, lastMark: result.lastMark });
+
+        res.json({ ...result, similarity: r.data.similarity, distance: r.data.distance });
+    } catch (err) {
+        const msg = err.response?.data?.detail || err.message;
+        logger.error('[faceMarkInsightface] error:', msg);
+        res.status(err.response?.status || 500).json({ error: msg });
+    }
+};
+
+/**
+ * Verifica que la foto coincide con la cédula ingresada.
+ * NO marca asistencia — solo identifica + valida match.
+ * Body: multipart con `photo` + `cedula`.
+ * Devuelve { verified, employee?, currentState?, similarity?, reason? }.
+ */
+exports.verifyFaceByCedula = async (req, res) => {
+    try {
+        const { cedula } = req.body || {};
+        if (!req.file) return res.status(400).json({ error: 'Falta la foto en campo "photo"' });
+        if (!cedula) return res.status(400).json({ error: 'Falta cédula' });
+
+        // 1) Buscar empleado por cédula
+        const employee = await prisma.shiftEmployee.findUnique({
+            where: { cedula: String(cedula).trim() },
+            select: {
+                id: true, name: true, area: true, role: true,
+                photoUrl: true, isInPlant: true, active: true,
+            }
+        });
+        if (!employee) return res.status(404).json({ verified: false, reason: 'cedula_not_found', error: 'Cédula no registrada' });
+        if (!employee.active) return res.status(403).json({ verified: false, reason: 'inactive', error: 'Empleado inactivo' });
+
+        // 2) Identificar cara con InsightFace
+        const form = new FormData();
+        form.append('file', req.file.buffer, { filename: req.file.originalname || 'kiosk.jpg', contentType: req.file.mimetype || 'image/jpeg' });
+
+        let matchData;
+        try {
+            const r = await axios.post(`${FACE_SERVICE_URL}/match`, form, {
+                headers: form.getHeaders(),
+                timeout: 10000,
+                maxBodyLength: Infinity,
+                maxContentLength: Infinity,
+            });
+            matchData = r.data;
+        } catch (err) {
+            const msg = err.response?.data?.detail || err.message;
+            logger.error('[verifyFaceByCedula] face-service error:', msg);
+            return res.status(503).json({ verified: false, reason: 'face_service_error', error: 'Servicio de reconocimiento no responde' });
+        }
+
+        // 3) Casos de respuesta
+        if (!matchData.matched) {
+            const reason = matchData.reason || 'unknown';
+            return res.status(200).json({
+                verified: false,
+                reason,
+                expected: { id: employee.id, name: employee.name },
+                best_distance: matchData.best_distance ?? null,
+            });
+        }
+
+        // 4) Match encontrado — validar que coincide con la cédula
+        if (matchData.employee_id !== employee.id) {
+            logger.warn(`[verifyFaceByCedula] MISMATCH: cédula=${cedula} (esperado: ${employee.name}) cara_detectada=${matchData.name} (id=${matchData.employee_id}) sim=${matchData.similarity}`);
+            return res.status(200).json({
+                verified: false,
+                reason: 'face_mismatch',
+                expected: { id: employee.id, name: employee.name },
+                detected: { id: matchData.employee_id, name: matchData.name },
+                similarity: matchData.similarity,
+            });
+        }
+
+        // 5) Verified — calcular estado actual del empleado
+        const currentState = await _getEmployeeCurrentState(employee.id);
+
+        logger.info(`[verifyFaceByCedula] ✅ ${employee.name} (cédula ${cedula}) — sim=${matchData.similarity} state=${currentState}`);
+        return res.json({
+            verified: true,
+            employee: {
+                id: employee.id,
+                name: employee.name,
+                area: employee.area,
+                role: employee.role,
+                photoUrl: employee.photoUrl,
+                isInPlant: employee.isInPlant,
+            },
+            currentState,
+            similarity: matchData.similarity,
+            distance: matchData.distance,
+        });
+    } catch (err) {
+        logger.error('[verifyFaceByCedula] error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// Helper: estado actual del empleado (OUT, IN, BREAK)
+async function _getEmployeeCurrentState(employeeId) {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    const last = await prisma.attendanceRecord.findFirst({
+        where: { employeeId, timestamp: { gte: fourHoursAgo } },
+        orderBy: { timestamp: 'desc' },
+        select: { type: true, subtype: true }
+    });
+    if (!last) return 'OUT';
+    if (last.type === 'ENTRY') return 'IN';
+    if (last.type === 'EXIT' && last.subtype === 'FINAL') return 'OUT';
+    return 'BREAK'; // EXIT con BREAK / LUNCH / MEDICAL / PERSONAL
+}
+
+/**
+ * Justifica salida con tiempo extra. Pide PIN del admin que autoriza.
+ * POST /api/attendance/justify-overtime
+ * Body: { cedula, reason, adminPin }
+ */
+exports.justifyOvertime = async (req, res) => {
+    try {
+        const { cedula, reason, adminPin } = req.body || {};
+        if (!cedula) return res.status(400).json({ error: 'Falta cédula' });
+        if (!reason || reason.trim().length < 5) return res.status(400).json({ error: 'Motivo demasiado corto (mínimo 5 caracteres)' });
+        if (!adminPin || !/^\d{4}$/.test(adminPin)) return res.status(400).json({ error: 'PIN admin debe ser 4 dígitos' });
+
+        // 1) Buscar empleado
+        const employee = await prisma.shiftEmployee.findUnique({
+            where: { cedula: String(cedula).trim() },
+            select: { id: true, name: true, area: true, active: true, isFixed: true }
+        });
+        if (!employee) return res.status(404).json({ error: 'Cédula no registrada' });
+        if (!employee.active) return res.status(403).json({ error: 'Empleado inactivo' });
+
+        // 2) Validar PIN admin
+        const bcrypt = require('bcrypt');
+        const admins = await prisma.user.findMany({
+            where: { role: 'ADMIN', pin: { not: null } },
+            select: { id: true, name: true, pin: true }
+        });
+        let admin = null;
+        for (const a of admins) {
+            if (await bcrypt.compare(adminPin, a.pin)) { admin = a; break; }
+        }
+        if (!admin) return res.status(401).json({ error: 'PIN admin incorrecto' });
+
+        // 3) Calcular tiempo extra
+        const ts = new Date();
+        const ot = assessOvertime(employee, ts);
+        if (!ot.applies || ot.status === 'normal') {
+            return res.status(400).json({ error: 'No hay tiempo extra que justificar (estás dentro del horario)' });
+        }
+
+        // 4) Calcular horas día/noche según hora actual Colombia
+        const colHour = new Date(ts.getTime() - 5 * 3600 * 1000).getUTCHours();
+        const isNight = colHour >= 21 || colHour < 6;
+        const minutesOver = Math.max(0, (ts - ot.scheduledEnd) / 60000);
+        const overtimeHours = +(minutesOver / 60).toFixed(2);
+        const dayHours   = isNight ? 0 : overtimeHours;
+        const nightHours = isNight ? overtimeHours : 0;
+
+        // 5) Crear AttendanceRecord (timestamp REAL, no capeado)
+        const record = await prisma.attendanceRecord.create({
+            data: {
+                employeeId: employee.id,
+                type: 'EXIT',
+                subtype: 'FINAL',
+                source: 'KIOSK',
+                timestamp: ts,
+                verified: true,
+                notes: `Tiempo extra autorizado por ${admin.name} | Motivo: ${reason}`,
+            }
+        });
+
+        // 6) Crear OvertimeApproval
+        const approval = await prisma.overtimeApproval.create({
+            data: {
+                employeeId: employee.id,
+                date: ts,
+                dayHours,
+                nightHours,
+                reason: reason.trim(),
+                approvedById: admin.id,
+            }
+        });
+
+        // 7) Marcar como salido de planta
+        await prisma.shiftEmployee.update({
+            where: { id: employee.id },
+            data: { isInPlant: false }
+        });
+
+        logger.info(`[justifyOvertime] ✅ ${employee.name} | +${minutesOver.toFixed(0)}min (${dayHours}d/${nightHours}n) | autorizado por ${admin.name} | motivo: ${reason}`);
+        res.json({
+            success: true,
+            employeeName: employee.name,
+            area: employee.area,
+            minutesOver: Math.round(minutesOver),
+            dayHours,
+            nightHours,
+            authorizedBy: admin.name,
+            approvalId: approval.id,
+            recordId: record.id,
+        });
+    } catch (err) {
+        logger.error('[justifyOvertime] error:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+exports.faceServiceHealth = async (req, res) => {
+    try {
+        const r = await axios.get(`${FACE_SERVICE_URL}/health`, { timeout: 5000 });
+        res.json(r.data);
+    } catch (err) {
+        res.status(503).json({ error: 'Servicio facial no responde', detail: err.message });
     }
 };

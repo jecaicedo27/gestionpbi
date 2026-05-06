@@ -7,6 +7,8 @@
   <meta name="theme-color" content="#4f46e5" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <!-- Forzar HTTPS: si entró por HTTP, redirigir antes de cargar React (necesario para getUserMedia/cámara) -->
+  <script>if (location.protocol === 'http:' && !['localhost','127.0.0.1'].includes(location.hostname)) { location.replace('https:' + window.location.href.substring(window.location.protocol.length)); }</script>
   <link rel="manifest" href="/manifest.json" />
   
   <!-- Premium Fonts -->

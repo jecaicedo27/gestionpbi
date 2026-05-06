@@ -13,6 +13,11 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
         return <Navigate to="/login" state={{ from: location }} replace />;
     }
 
+    // Cleaning-only users can ONLY access /aseo* routes
+    if (user.isCleaningOnly && !location.pathname.startsWith('/aseo')) {
+        return <Navigate to="/aseo" replace />;
+    }
+
     if (allowedRoles && !allowedRoles.includes(user.role)) {
         // Redirect to dashboard if role not allowed, or show forbidden page
         return <Navigate to="/" replace />;

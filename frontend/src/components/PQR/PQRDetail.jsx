@@ -325,18 +325,42 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                         {/* Evidence Grid */}
                                         {item.evidence?.length > 0 && (
                                             <div className="flex gap-2 overflow-x-auto pb-2">
-                                                {item.evidence.map(ev => (
-                                                    <div
-                                                        key={ev.id}
-                                                        onClick={() => ev.type === 'IMAGE' && setSelectedImage({ images: item.evidence.filter(e => e.type === 'IMAGE'), index: item.evidence.filter(e => e.type === 'IMAGE').findIndex(e => e.id === ev.id) })}
-                                                        className="w-16 h-16 rounded-lg bg-gray-200 flex-shrink-0 cursor-pointer overflow-hidden border border-gray-300 relative group"
-                                                    >
-                                                        <img src={`${import.meta.env.VITE_API_URL}${ev.url}`} className="w-full h-full object-cover" />
-                                                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center">
-                                                            <Eye size={12} className="text-white opacity-0 group-hover:opacity-100" />
+                                                {item.evidence.map(ev => {
+                                                    // Mismo modal abre imagen O video — cada uno con su preview clickeable
+                                                    const handleClick = () => {
+                                                        // Pasamos TODA la evidencia (imagen+video) en orden, e índice del clicado
+                                                        const idx = item.evidence.findIndex(e => e.id === ev.id);
+                                                        setSelectedImage({ images: item.evidence, index: idx });
+                                                    };
+                                                    if (ev.type === 'VIDEO') {
+                                                        return (
+                                                            <div
+                                                                key={ev.id}
+                                                                onClick={handleClick}
+                                                                className="w-16 h-16 rounded-lg bg-gray-800 flex-shrink-0 cursor-pointer flex flex-col items-center justify-center text-white text-[10px] font-bold border border-gray-300 hover:border-blue-400 transition-all relative group"
+                                                                title="Ver video"
+                                                            >
+                                                                <span className="text-xl">🎥</span>
+                                                                <span>Video</span>
+                                                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
+                                                                    <Eye size={14} className="text-white opacity-0 group-hover:opacity-100" />
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    return (
+                                                        <div
+                                                            key={ev.id}
+                                                            onClick={handleClick}
+                                                            className="w-16 h-16 rounded-lg bg-gray-200 flex-shrink-0 cursor-pointer overflow-hidden border border-gray-300 relative group"
+                                                        >
+                                                            <img src={`${import.meta.env.VITE_API_URL}${ev.url}`} className="w-full h-full object-cover" />
+                                                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center">
+                                                                <Eye size={12} className="text-white opacity-0 group-hover:opacity-100" />
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                ))}
+                                                    );
+                                                })}
                                             </div>
                                         )}
                                     </div>
@@ -754,15 +778,29 @@ const PQRDetail = ({ pqr, onClose, onUpdate, isReadOnly = false }) => {
                                 </button>
                             )}
 
-                            {/* Image */}
+                            {/* Imagen o Video */}
                             <div className="relative max-h-[90vh] max-w-full">
-                                <img
-                                    src={`${import.meta.env.VITE_API_URL}${selectedImage.images[selectedImage.index].url}`}
-                                    alt={`Evidencia ${selectedImage.index + 1}`}
-                                    className="max-h-[85vh] max-w-full object-contain rounded-lg shadow-2xl"
-                                />
+                                {selectedImage.images[selectedImage.index].type === 'VIDEO' ? (
+                                    <video
+                                        key={selectedImage.images[selectedImage.index].id}
+                                        src={`${import.meta.env.VITE_API_URL}${selectedImage.images[selectedImage.index].url}`}
+                                        controls
+                                        autoPlay
+                                        playsInline
+                                        className="max-h-[85vh] max-w-full rounded-lg shadow-2xl bg-black"
+                                    >
+                                        Tu navegador no soporta video. <a href={`${import.meta.env.VITE_API_URL}${selectedImage.images[selectedImage.index].url}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline">Abrir en pestaña nueva</a>
+                                    </video>
+                                ) : (
+                                    <img
+                                        src={`${import.meta.env.VITE_API_URL}${selectedImage.images[selectedImage.index].url}`}
+                                        alt={`Evidencia ${selectedImage.index + 1}`}
+                                        className="max-h-[85vh] max-w-full object-contain rounded-lg shadow-2xl"
+                                    />
+                                )}
                                 <p className="text-white/80 text-center mt-4 font-medium">
                                     {selectedImage.index + 1} / {selectedImage.images.length}
+                                    {selectedImage.images[selectedImage.index].type === 'VIDEO' && <span className="ml-2 text-xs">🎥 Video</span>}
                                 </p>
                             </div>
 

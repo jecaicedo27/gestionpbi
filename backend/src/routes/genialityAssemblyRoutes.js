@@ -169,6 +169,13 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+// Endpoint dedicado de carritos (POST en vez de PATCH genérico).
+// Reusa el controller principal — los carritos viven en
+// `processParameters.carriots`, mismo formato Liquipops/Geniality.
+const liquipopsAssemblyController = require('../controllers/assemblyNoteController');
+router.post('/:id/carriots', auth, liquipopsAssemblyController.addCarrito);
+router.post('/:id/package-labels', auth, liquipopsAssemblyController.persistPackageLabels);
+
 router.post('/upload-photo', upload.single('photo'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const url = `/uploads/production/${req.file.filename}`;

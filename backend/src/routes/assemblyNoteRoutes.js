@@ -180,6 +180,12 @@ const storage = multer.diskStorage({
     }
 });
 const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+// Endpoint dedicado de carritos (POST en vez de PATCH genérico)
+router.post('/:id/carriots', auth, assemblyNoteController.addCarrito);
+
+// Persistir etiquetas Zebra impresas (sobrevive a reload, audit trail)
+router.post('/:id/package-labels', auth, assemblyNoteController.persistPackageLabels);
+
 router.post('/upload-photo', upload.single('photo'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const url = `/uploads/production/${req.file.filename}`;

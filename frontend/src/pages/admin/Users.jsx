@@ -10,7 +10,7 @@ const ID_TYPES = [
     { id: '11', label: 'Reg. Civil' },
 ];
 
-const SHIFT_SYNC_ROLES = ['PRODUCCION', 'OPERARIO_PICKING', 'LOGISTICA'];
+const SHIFT_SYNC_ROLES = ['PRODUCCION', 'OPERARIO_PICKING', 'LOGISTICA', 'MECANICO'];
 const SHIFT_AREA_OPTIONS = [
     { value: 'PRODUCCION', label: 'Producción' },
     { value: 'SIROPES', label: 'Siropes' },
@@ -69,11 +69,13 @@ const Users = () => {
     const handleRoleChange = (role) => {
         const canSyncToShifts = SHIFT_SYNC_ROLES.includes(role);
         const nextShiftArea = canSyncToShifts ? getDefaultShiftArea(role) : 'PRODUCCION';
+        const nextShiftEmployeeRole = role === 'MECANICO' ? 'MECANICO' : 'OPERARIO';
         setFormData(prev => ({
             ...prev,
             role,
             addToShiftSchedule: canSyncToShifts ? prev.addToShiftSchedule : false,
             shiftArea: nextShiftArea,
+            shiftEmployeeRole: nextShiftEmployeeRole,
             shiftIsFixed: isFixedShiftArea(nextShiftArea),
             shiftGroupNumber: isFixedShiftArea(nextShiftArea) ? '' : prev.shiftGroupNumber
         }));
@@ -137,6 +139,7 @@ const Users = () => {
             await api.patch(`/admin/users/${editingCleaning.userId}`, {
                 isCleaningStaff: editingCleaning.isCleaningStaff,
                 isCleaningSupervisor: editingCleaning.isCleaningSupervisor,
+                isCleaningOnly: editingCleaning.isCleaningOnly,
             });
             setEditingCleaning(null);
             loadUsers();
@@ -278,6 +281,7 @@ const Users = () => {
                                                 <option value="COMERCIAL">Comercial</option>
                                                 <option value="QUIMICO">Químico</option>
                                                 <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
+                                                <option value="MECANICO">Mecánico</option>
                                             </select>
                                         ) : (
                                             <div className="flex items-center gap-1 flex-wrap">
@@ -300,6 +304,7 @@ const Users = () => {
                                                         name: user.name,
                                                         isCleaningStaff: !!user.isCleaningStaff,
                                                         isCleaningSupervisor: !!user.isCleaningSupervisor,
+                                                        isCleaningOnly: !!user.isCleaningOnly,
                                                     })}
                                                     className={`p-1 rounded transition-opacity ${(user.isCleaningStaff || user.isCleaningSupervisor) ? 'text-emerald-600 hover:bg-emerald-50' : 'text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-emerald-600 hover:bg-emerald-50'}`}
                                                     title="Configurar aseo"
@@ -464,6 +469,18 @@ const Users = () => {
                                 <div>
                                     <div className="font-semibold text-sm">👁️ Supervisor de aseo</div>
                                     <div className="text-xs text-neutral-500">Verifica/aprueba ejecuciones y ve reportes. Verá <code>/aseo/supervisor</code>.</div>
+                                </div>
+                            </label>
+                            <label className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-amber-50 transition-colors">
+                                <input
+                                    type="checkbox"
+                                    className="mt-1 h-4 w-4 accent-amber-600"
+                                    checked={editingCleaning.isCleaningOnly}
+                                    onChange={e => setEditingCleaning({ ...editingCleaning, isCleaningOnly: e.target.checked })}
+                                />
+                                <div>
+                                    <div className="font-semibold text-sm">🔒 Solo módulo de aseo</div>
+                                    <div className="text-xs text-neutral-500">Restringe a esta usuaria al módulo de aseo. NO podrá acceder a inventario, producción ni otros módulos.</div>
                                 </div>
                             </label>
                         </div>
@@ -664,6 +681,7 @@ const Users = () => {
                                     <option value="COMERCIAL">Comercial</option>
                                     <option value="QUIMICO">Químico</option>
                                     <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
+                                    <option value="MECANICO">Mecánico</option>
                                 </select>
                             </div>
                             {SHIFT_SYNC_ROLES.includes(formData.role) && (
@@ -713,6 +731,7 @@ const Users = () => {
                                                 >
                                                     <option value="OPERARIO">Operario</option>
                                                     <option value="LIDER">Lider</option>
+                                                    <option value="MECANICO">Mecánico</option>
                                                 </select>
                                             </div>
                                             <div>
@@ -743,6 +762,22 @@ const Users = () => {
                                         </div>
                                     )}
                                 </div>
+                            )}
+                            {formData.role === 'MECANICO' && (
+                                <>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Cédula</label>
+                                        <input className="w-full p-2 border rounded font-mono" placeholder="Ej: 1085325053"
+                                            value={formData.nit} onChange={e => setFormData({ ...formData, nit: e.target.value })} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium mb-1">Tipo de Documento</label>
+                                        <select className="w-full p-2 border rounded"
+                                            value={formData.idType} onChange={e => setFormData({ ...formData, idType: e.target.value })}>
+                                            {ID_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                                        </select>
+                                    </div>
+                                </>
                             )}
                             {formData.role === 'DISTRIBUIDOR' && (
                                 <>

@@ -1643,7 +1643,36 @@ class AssemblyService {
                 }
             }
 
-            const isEnsambleStep = ['ENSAMBLE', 'FORMACION'].includes(processCode);
+            // RPA dispatch decision (centralizado en backend, no frontend):
+            //  - EMPAQUE de producto terminado Liquipops (accountGroup 1401) → SÍ dispara
+            //  - FORMACION → SÍ dispara
+            //  - ENSAMBLE de productos intermedios (BASE, COMPUESTO, PROTECCION, etc.) → SÍ dispara
+            //  - ENSAMBLE espejo de finished good Liquipops (post-migración no se crea, pero
+            //    baches en curso pre-migración aún las tienen) → NO dispara, la EMPAQUE ya lo hizo.
+            //  - Geniality (accountGroup 1402): RPA viene per-carrito, NO se dispara aquí.
+            const isLiquipopsFinishedGood = note.product?.accountGroup === 1401 &&
+                note.product?.type !== 'MATERIA_PRIMA';
+            const isGenialityFinishedGood = note.product?.accountGroup === 1402 &&
+                note.product?.type !== 'MATERIA_PRIMA';
+
+            let isEnsambleStep;
+            if (processCode === 'EMPAQUE' && isLiquipopsFinishedGood) {
+                // EMPAQUE finished good Liquipops dispara RPA
+                isEnsambleStep = true;
+                // Para que el código siguiente arme el lotNumber/observations
+                createdLotNumber = createdLotNumber || note.productionBatch?.batchNumber || null;
+            } else if (processCode === 'ENSAMBLE' && isLiquipopsFinishedGood) {
+                // ENSAMBLE espejo de Liquipops finished good (legacy pre-migración) → NO dispara
+                isEnsambleStep = false;
+                console.log(`[completeNote] ⏭️ ENSAMBLE espejo Liquipops — RPA omitido (la EMPAQUE del mismo productId ya disparó). note=${noteId}`);
+            } else if (processCode === 'EMPAQUE' && isGenialityFinishedGood) {
+                // EMPAQUE Geniality: NO dispara (per-carrito ya disparó durante MARCADO_CAJAS)
+                isEnsambleStep = false;
+            } else {
+                // Comportamiento original: ENSAMBLE y FORMACION disparan RPA
+                isEnsambleStep = ['ENSAMBLE', 'FORMACION'].includes(processCode);
+            }
+
             return { updatedNote, createdLotNumber, producesOutput, isEnsambleStep, productName: note.product?.name, productSku: note.product?.sku, stageName: note.stageName, batchNumber: note.productionBatch?.batchNumber || null, targetQuantity: note.targetQuantity, consumptionAlerts: consumptionAlerts.length > 0 ? consumptionAlerts : undefined };
         });
 

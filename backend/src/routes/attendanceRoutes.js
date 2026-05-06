@@ -26,11 +26,15 @@
  */
 
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { auth, roles } = require('../middleware/auth');
 const ac = require('../controllers/attendanceController');
 
 const ADMIN_ROLES = ['ADMIN', 'RECURSOS_HUMANOS'];
+
+// Para subir fotos al servicio Python (memoria, máx 8MB cada una)
+const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 // ── Públicas (kiosko) ────────────────────────────────────────────────────────
 router.get('/find-by-cedula/:cedula',   ac.findByCedula);
@@ -44,6 +48,14 @@ router.post('/pin-mark',                ac.pinMark);
 router.post('/cedula-mark',             ac.cedulaMark);
 router.post('/face-mark',               ac.faceMark);
 
+// ── Marcaje YOLOv8 + InsightFace (servicio Python en :3063) — público ────────
+router.post('/face-mark-v2',            photoUpload.single('photo'), ac.faceMarkInsightface);
+router.post('/verify-face-by-cedula',   photoUpload.single('photo'), ac.verifyFaceByCedula);
+router.get('/face-service-health',      ac.faceServiceHealth);
+
+// ── Tiempo extra: justificación con PIN admin desde kiosko ───────────────────
+router.post('/justify-overtime',        ac.justifyOvertime);
+
 // ── Admin: presencia y dashboard ─────────────────────────────────────────────
 router.get('/present',    auth, ac.getPresent);
 router.get('/dashboard',  auth, ac.getDashboard);
@@ -56,8 +68,15 @@ router.get('/hours/:employeeId',  auth, ac.getHours);
 router.get('/punctuality',        auth, ac.getPunctuality);
 router.get('/overtime',           auth, ac.getOvertime);
 router.get('/payroll-summary',    auth, ac.getPayrollSummary);
+router.get('/payroll-summary/export', auth, ac.exportPayrollSummary);
 router.get('/payroll-config',     auth, ac.getPayrollConfig);
 router.put('/payroll-config',     auth, roles(ADMIN_ROLES), ac.updatePayrollConfig);
+router.get('/holidays',           auth, ac.listHolidays);
+router.post('/holidays',          auth, roles(ADMIN_ROLES), ac.createHoliday);
+router.delete('/holidays/:id',    auth, roles(ADMIN_ROLES), ac.deleteHoliday);
+router.get('/payroll-profiles',   auth, ac.listPayrollProfiles);
+router.put('/payroll-profiles',   auth, roles(ADMIN_ROLES), ac.upsertPayrollProfile);
+router.delete('/payroll-profiles/:employeeId', auth, roles(ADMIN_ROLES), ac.deletePayrollProfile);
 router.get('/labor-novelties',    auth, ac.getLaborNovelties);
 router.post('/labor-novelties',   auth, roles(ADMIN_ROLES), ac.createLaborNovelty);
 router.delete('/labor-novelties/:id', auth, roles(ADMIN_ROLES), ac.deleteLaborNovelty);
@@ -76,6 +95,7 @@ router.post('/payroll-closures/:id/reopen', auth, roles(ADMIN_ROLES), ac.reopenP
 router.get('/employees',                          auth, ac.getEmployees);
 router.post('/employees/from-user/:userId',       auth, roles(ADMIN_ROLES), ac.createFromUser);
 router.put('/employees/:id/face',                 auth, roles(ADMIN_ROLES), ac.enrollFace);
+router.put('/employees/:id/face-insightface',     auth, roles(ADMIN_ROLES), photoUpload.array('files', 5), ac.enrollFaceInsightface);
 router.put('/employees/:id/pin',                  auth, roles(ADMIN_ROLES), ac.setPin);
 router.put('/employees/:id/cedula',               auth, roles(ADMIN_ROLES), ac.setCedula);
 router.post('/employees/:id/manual-record',       auth, roles(ADMIN_ROLES), ac.manualRecord);

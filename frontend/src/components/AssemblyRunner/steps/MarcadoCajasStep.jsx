@@ -572,6 +572,58 @@ const MarcadoCajasStep = ({ stepData, onMarcadoChange, allBatchNotes = [], carri
                 }
             }
 
+            // ── PERSISTIR ETIQUETAS EN BD ──
+            // El flag `setPrinted(true)` solo vivía en memoria; al recargar se
+            // perdía. Ahora persistimos cada etiqueta en `package_labels` con
+            // `printedAt` para auditoría y para que la UI sobreviva F5.
+            try {
+                const labels = [];
+                let seqCounter = 1;
+                const totalCount =
+                    (pendingFillQty > 0 ? 1 : 0) + nFull + (hasPartial ? 1 : 0) +
+                    nDefective + contramuestraQty + maquilaFullBoxes + (maquilaPartialUnits > 0 ? 1 : 0);
+                const pushLabel = (qty, statusText, opts = {}) => {
+                    labels.push({
+                        productId: product.id,
+                        lotNumber: batchNumber,
+                        zone: 'PRODUCCION',
+                        quantity: qty,
+                        unit: isWeightBased ? 'gramo' : 'und',
+                        packLabel: opts.packLabel || statusText || null,
+                        packContainerType: opts.packContainerType || null,
+                        sequence: seqCounter++,
+                        totalPackages: totalCount,
+                    });
+                };
+                if (pendingFillQty > 0) pushLabel(pendingFillQty, 'CAJA COMPLETADA');
+                for (let i = 0; i < nFull; i++) pushLabel(isWeightBased ? approvedTarros : Number(unitsPerBox), 'COMPLETA');
+                if (hasPartial) pushLabel(Number(partialUnits), 'PARCIAL');
+                for (let i = 0; i < nDefective; i++) {
+                    const qty = (i === nDefective - 1 && defectiveTarros > 0) ? defectiveTarros - (defPerBox * i) : defPerBox;
+                    pushLabel(qty, 'OUTLET - PUBLICIDAD');
+                }
+                for (let i = 0; i < contramuestraQty; i++) pushLabel(1, 'CONTRAMUESTRA');
+                for (let i = 0; i < maquilaFullBoxes; i++) pushLabel(maquilaBoxSize, 'MAQUILA');
+                if (maquilaPartialUnits > 0) pushLabel(maquilaPartialUnits, 'MAQUILA');
+
+                if (labels.length > 0) {
+                    const url = window.location.pathname.includes('/geniality/')
+                        ? `/geniality/assembly-notes/${noteData.id}/package-labels`
+                        : `/assembly-notes/${noteData.id}/package-labels`;
+                    await api.post(url, { labels });
+                    console.log(`[MarcadoCajas] ✓ ${labels.length} etiquetas persistidas en BD`);
+                }
+            } catch (persistErr) {
+                console.error('[MarcadoCajas] FALLO persistencia de etiquetas:', persistErr);
+                // Encolar para reintento background
+                try {
+                    const queue = JSON.parse(localStorage.getItem('package_labels_retry_queue') || '[]');
+                    queue.push({ noteId: noteData.id, labels, ts: Date.now() });
+                    localStorage.setItem('package_labels_retry_queue', JSON.stringify(queue));
+                    alert('⚠️ Etiquetas IMPRESAS pero NO guardadas en BD. Se reintentará automáticamente. Avisa al admin si persiste.');
+                } catch {}
+            }
+
             setPrinted(true);
         } catch (err) {
             console.error('Print error:', err);

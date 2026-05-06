@@ -58,6 +58,21 @@ exports.createPQR = async (req, res) => {
             return res.status(400).json({ error: 'No se enviaron items para el reporte' });
         }
 
+        // Validar que cada item tenga al menos 1 evidencia (imagen o video).
+        // El equipo de calidad necesita la evidencia para revisar.
+        const itemsSinEvidencia = itemsToCreate.filter(it => !it.evidenceCount || parseInt(it.evidenceCount, 10) <= 0);
+        if (itemsSinEvidencia.length > 0) {
+            return res.status(400).json({
+                error: `Cada item debe tener al menos 1 foto o video como evidencia. ${itemsSinEvidencia.length} item(s) sin evidencia.`,
+            });
+        }
+        const totalExpected = itemsToCreate.reduce((s, it) => s + parseInt(it.evidenceCount || 0, 10), 0);
+        if (files.length < totalExpected) {
+            return res.status(400).json({
+                error: `Se esperaban ${totalExpected} archivos de evidencia pero llegaron ${files.length}.`,
+            });
+        }
+
         const result = await prisma.$transaction(async (tx) => {
             // 1. Generate Friendly Ticket Number — find actual max sequence
             const lastPQR = await tx.pQR.findFirst({

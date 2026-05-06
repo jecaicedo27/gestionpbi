@@ -19,6 +19,7 @@ import GConteoCarritosStep from '../GenialityRunner/steps/GConteoCarritosStep';
 import GEPremixStep from '../GenialityRunner/steps/GEPremixStep';
 import GEBaseLiquidaStep from '../GenialityRunner/steps/GEBaseLiquidaStep';
 import GECoccionStep from '../GenialityRunner/steps/GECoccionStep';
+import CoccionInversionStep from '../GenialityRunner/steps/CoccionInversionStep';
 
 /**
  * StepDisplay — thin router
@@ -53,6 +54,7 @@ const StepDisplay = (props) => {
     if (stepType === 'GE_PREMIX') return <GEPremixStep {...props} />;
     if (stepType === 'GE_BASE_LIQUIDA') return <GEBaseLiquidaStep {...props} />;
     if (stepType === 'GE_COCCION') return <GECoccionStep {...props} />;
+    if (stepType === 'COCCION_INVERSION') return <CoccionInversionStep {...props} />;
 
     return null;
 };

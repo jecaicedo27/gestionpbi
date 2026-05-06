@@ -287,6 +287,17 @@ router.post('/transfer', auth, async (req, res) => {
         if (toZone === 'BODEGA') {
             return res.status(400).json({ error: 'No se puede transferir producto terminado a Bodega. Solo materia prima va allí.' });
         }
+        // ⛔ LOGISTICA NO puede transferir DESDE zona PRODUCCION.
+        // El producto sólo sale de PRODUCCION vía Acta de Entrega (ProductHandoff)
+        // creada por EMPAQUE y recibida por LOGISTICA. Si LOGISTICA pudiera mover
+        // directamente desde PRODUCCION saltaría el handoff y `productionZoneStock`
+        // quedaría descuadrado. Sólo ADMIN puede hacer este movimiento (escape hatch
+        // para correcciones manuales).
+        if (fromZone === 'PRODUCCION' && req.user.role !== 'ADMIN') {
+            return res.status(403).json({
+                error: 'No puedes transferir desde la zona de Producción. El producto debe entregarse mediante Acta de Entrega creada por Empaque.'
+            });
+        }
         const result = await finishedLotService.transferZone({
             productId,
             lotNumber,

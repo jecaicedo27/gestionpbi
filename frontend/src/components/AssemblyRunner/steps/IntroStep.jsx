@@ -63,14 +63,21 @@ const IntroStep = ({
     const noteData = note;
     const isAlreadyStarted = noteData.status === 'EXECUTING';
     const [noProducidoSubmitting, setNoProducidoSubmitting] = useState(null); // noteId being processed
+    const [confirmNoProducido, setConfirmNoProducido] = useState(null); // { note, presentName }
 
     // Marca una presentación EMPAQUE como "no producida" (qty=0) y cierra su nota +
     // las G_ENSAMBLE/ENSAMBLE asociadas al mismo productId. Útil cuando una presentación
     // no se fabricó pero el batch debe avanzar. Queda registrado para adherencia.
-    const handleNoProducido = async (empaqueNote) => {
+    const handleNoProducido = (empaqueNote) => {
         if (!empaqueNote?.id) return;
         const presentName = empaqueNote.stageName || empaqueNote.product?.name || 'Presentación';
-        if (!window.confirm(`¿Confirmas que NO se produjo "${presentName}"?\n\nQuedará registrada con 0 unidades para la adherencia del programa, sin imprimir etiquetas ni enviar a Siigo.`)) return;
+        setConfirmNoProducido({ note: empaqueNote, presentName });
+    };
+
+    const executeNoProducido = async () => {
+        const empaqueNote = confirmNoProducido?.note;
+        setConfirmNoProducido(null);
+        if (!empaqueNote?.id) return;
         try {
             setNoProducidoSubmitting(empaqueNote.id);
 
@@ -823,6 +830,16 @@ const IntroStep = ({
         if (empaqueNotes.length >= 1) {
             const completedCount = empaqueNotes.filter(n => n.status === 'COMPLETED').length;
             const allDone = completedCount === empaqueNotes.length;
+            // Las presentaciones con producción real = 0 se auto-cerrarán (no son pendientes reales).
+            // Calculamos pendientes "verdaderos": status !== COMPLETED Y con producción > 0 detectada.
+            const conteoNoteForBanner = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
+            const conteoParamsRawBanner = conteoNoteForBanner?.processParameters;
+            const conteoParamsBanner = typeof conteoParamsRawBanner === 'string'
+                ? (() => { try { return JSON.parse(conteoParamsRawBanner); } catch { return {}; } })()
+                : (conteoParamsRawBanner || {});
+            const conteoMapBanner = typeof conteoParamsBanner.conteo === 'string'
+                ? (() => { try { return JSON.parse(conteoParamsBanner.conteo); } catch { return {}; } })()
+                : (conteoParamsBanner.conteo || {});
             const selectorConteoNote = allBatchNotes.find(n => ['CONTEO', 'G_CONTEO'].includes(n.processType?.code));
             const selectorConteoParams = asStoredObject(selectorConteoNote?.processParameters);
             const fallbackCarriots = asStoredArray(selectorConteoParams.carriots);
@@ -1301,14 +1318,34 @@ const IntroStep = ({
                         </div>
 
                         {/* Bottom guidance banner */}
-                        <div className={`mx-6 mb-6 rounded-2xl p-4 text-center text-sm font-bold ${allDone
-                            ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
-                            : 'bg-amber-50 border border-amber-200 text-amber-700'}`}>
-                            {allDone
-                                ? '✅ Todas las presentaciones completadas — presiona SIGUIENTE para avanzar'
-                                : `⚠️ Debes completar TODAS las presentaciones (${empaqueNotes.length - completedCount} pendientes) antes de pasar al siguiente proceso`
-                            }
-                        </div>
+                        {(() => {
+                            // Pendientes reales = no COMPLETED y con producción > 0 (las de 0 se auto-cierran)
+                            const realPendientes = empaqueNotes.filter(en => {
+                                if (en.status === 'COMPLETED') return false;
+                                const numsB = (en.stageName || '').toLowerCase().match(/\d{3,}/g) || [];
+                                const tgt = outputTargets.find(t => numsB.some(n => (t.product?.name || '').toLowerCase().includes(n)));
+                                const empData = en.empaqueData || {};
+                                const empRef = en.processParameters?.empaqueRef || {};
+                                const ce = tgt ? Object.values(conteoMapBanner).find(c => String(c.productId) === String(tgt.productId)) : null;
+                                const v = ce?.actual ?? empData.conteo_qty ?? empRef.conteo_qty ?? null;
+                                return typeof v === 'number' && v > 0;
+                            }).length;
+                            const skippableCount = empaqueNotes.length - completedCount - realPendientes;
+                            return (
+                                <div className={`mx-6 mb-6 rounded-2xl p-4 text-center text-sm font-bold ${allDone
+                                    ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+                                    : realPendientes === 0
+                                        ? 'bg-blue-50 border border-blue-200 text-blue-700'
+                                        : 'bg-amber-50 border border-amber-200 text-amber-700'}`}>
+                                    {allDone
+                                        ? '✅ Todas las presentaciones completadas — presiona SIGUIENTE para avanzar'
+                                        : realPendientes === 0
+                                            ? `🔄 Cerrando automáticamente ${skippableCount} presentación(es) sin producción…`
+                                            : `⚠️ Debes completar ${realPendientes} presentación(es) con producción real${skippableCount > 0 ? ` (${skippableCount} sin producción se cerrarán solas)` : ''} antes de pasar al siguiente proceso`
+                                    }
+                                </div>
+                            );
+                        })()}
                     </div>
 
                     {/* ── Photo Modal Overlay ── */}
@@ -1579,6 +1616,112 @@ const IntroStep = ({
                     </div>
                 </div>
             </div>
+
+            {/* Modal global: visor de foto (producción / recepción) */}
+            {photoModal && (
+                <div
+                    className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+                    onClick={() => setPhotoModal(null)}
+                >
+                    <div className="relative max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+                        <div className="bg-white rounded-2xl overflow-hidden shadow-2xl animate-slideUp">
+                            <div className="bg-gradient-to-r from-orange-500 to-red-500 px-5 py-3 flex items-center justify-between">
+                                <span className="text-white font-bold text-sm truncate">📸 {photoModal.label}</span>
+                                <button
+                                    onClick={() => setPhotoModal(null)}
+                                    className="w-9 h-9 bg-white/20 hover:bg-white/30 rounded-full flex items-center justify-center transition-all"
+                                    aria-label="Cerrar"
+                                >
+                                    <span className="text-white font-black text-lg">✕</span>
+                                </button>
+                            </div>
+                            <div className="bg-slate-900 flex items-center justify-center">
+                                <img
+                                    src={photoModal.url}
+                                    alt={photoModal.label}
+                                    className="w-full max-h-[80vh] object-contain"
+                                />
+                            </div>
+                            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 text-center">
+                                <a
+                                    href={photoModal.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-blue-600 hover:underline font-semibold"
+                                >
+                                    Abrir imagen en pestaña nueva ↗
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: confirmar "No se produjo esta presentación" */}
+            {confirmNoProducido && (
+                <div
+                    className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn"
+                    onClick={() => setConfirmNoProducido(null)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-slideUp"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Header rojo de advertencia */}
+                        <div className="bg-gradient-to-r from-red-500 to-orange-500 px-6 py-5 text-white">
+                            <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center text-3xl">
+                                    ⚠️
+                                </div>
+                                <div>
+                                    <h3 className="font-black text-lg leading-tight">Marcar como NO producido</h3>
+                                    <p className="text-white/90 text-sm font-medium">Esta acción no se puede deshacer</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Body */}
+                        <div className="px-6 py-5 space-y-4">
+                            <div className="bg-slate-50 rounded-xl p-4 border-2 border-slate-200">
+                                <div className="text-[11px] font-bold text-slate-500 uppercase mb-1">Presentación</div>
+                                <div className="font-extrabold text-slate-800 text-base leading-snug">
+                                    {confirmNoProducido.presentName}
+                                </div>
+                            </div>
+
+                            <div className="text-sm text-slate-700 leading-relaxed">
+                                ¿Confirmas que <b>NO se produjo</b> esta presentación en este batch?
+                            </div>
+
+                            <div className="bg-amber-50 border-l-4 border-amber-400 p-3 text-xs text-amber-900 space-y-1 rounded-r-lg">
+                                <div className="font-bold flex items-center gap-1">
+                                    <span>📋</span> Qué pasará si confirmas:
+                                </div>
+                                <div>• Quedará registrada con <b>0 unidades</b> para la adherencia del programa.</div>
+                                <div>• <b>NO se imprimirán etiquetas</b>.</div>
+                                <div>• <b>NO se enviará a Siigo</b>.</div>
+                                <div>• El batch puede avanzar a las demás presentaciones.</div>
+                            </div>
+                        </div>
+
+                        {/* Footer botones */}
+                        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex gap-3 justify-end">
+                            <button
+                                onClick={() => setConfirmNoProducido(null)}
+                                className="px-5 py-2.5 bg-white border-2 border-slate-300 text-slate-700 rounded-xl font-bold hover:bg-slate-100 hover:border-slate-400 transition-all"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={executeNoProducido}
+                                className="px-5 py-2.5 bg-gradient-to-r from-red-500 to-orange-500 text-white rounded-xl font-black hover:scale-[1.02] active:scale-95 shadow-lg transition-all"
+                            >
+                                Sí, marcar como NO producido
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

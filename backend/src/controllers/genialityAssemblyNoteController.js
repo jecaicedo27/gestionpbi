@@ -122,10 +122,14 @@ const assemblyNoteController = {
                     // For ENSAMBLE: SKIP recalculation — template quantityPerUnit stores
                     // absolute grams (already scaled), NOT per-unit ratios. Multiplying
                     // again by targetQuantity would produce wildly inflated values.
-                    // Live recalc would lose the scaling and show raw template values.
+                    // For GE_BASE_LIQUIDA / GE_PREMIX / GE_COCCION (Escarchador): SKIP
+                    // recalc — template inputs son gramos absolutos × scaleFactor (ya
+                    // calculado en generateNotes). targetQuantity = formula.baseQuantity,
+                    // así que multiplicar otra vez explota el valor.
                     const isPesajeNote = ['PESAJE', 'G_PESAJE'].includes(processCode);
                     const isEnsambleNote = ['ENSAMBLE', 'G_ENSAMBLE'].includes(processCode);
-                    if (isPesajeNote || isEnsambleNote) {
+                    const isEscarchadoNote = ['GE_BASE_LIQUIDA', 'GE_PREMIX', 'GE_COCCION'].includes(processCode);
+                    if (isPesajeNote || isEnsambleNote || isEscarchadoNote) {
                         // Keep stored DB values — they are already correct
                         // Just re-sort items to match template order (below)
                     } else {
@@ -157,7 +161,7 @@ const assemblyNoteController = {
                     // Skip virtual item injection for flavor-substituted notes, PESAJE, or ENSAMBLE
                     // (their items intentionally differ from the template inputs)
                     const isFlavorSubstituted = note.processParameters?.flavorKey;
-                    if (!isFlavorSubstituted && !isPesajeNote && !isEnsambleNote) {
+                    if (!isFlavorSubstituted && !isPesajeNote && !isEnsambleNote && !isEscarchadoNote) {
                         for (const ti of templateInputs) {
                             if (!existingComponentIds.has(ti.productId)) {
                                 note.items.unshift({
@@ -1762,6 +1766,8 @@ const assemblyNoteController = {
                                 : isPesaje ? input.quantityPerUnit * baseQty * scaleFactor
                                 : isEnsamble && ensambleInputsAreRatios ? input.quantityPerUnit * noteQty
                                 : isEnsamble ? input.quantityPerUnit * baseQty * scaleFactor
+                                : isGEProduction && pesajeBaseQuantity ? input.quantityPerUnit * pesajeBaseQuantity * baseQty * scaleFactor
+                                : isGEProduction ? input.quantityPerUnit * baseQty * scaleFactor
                                 : input.quantityPerUnit * noteQty,
                             unit: input.unit || 'gramo',
                             notes: null

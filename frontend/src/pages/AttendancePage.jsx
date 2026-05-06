@@ -56,6 +56,7 @@ const fmtTime = (ts) => ts
 
 const todayISO = () => new Date().toISOString().split('T')[0];
 const monthStart = () => { const d = new Date(); d.setDate(1); return d.toISOString().split('T')[0]; };
+const daysAgoISO = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().split('T')[0]; };
 
 // ── Helpers UI ───────────────────────────────────────────────────────────────
 function Badge({ children, className = '' }) {
@@ -292,10 +293,34 @@ function TabEmployees() {
     );
 }
 
-const AREAS = ['PRODUCCION', 'LOGISTICA', 'CALIDAD', 'COMERCIAL', 'CARTERA', 'CONTABILIDAD', 'RECURSOS_HUMANOS', 'OFICINA', 'OPERACIONES'];
+// Áreas del cuadro de turnos (debe coincidir con SHIFT_OPERATION_AREAS del backend)
+const AREAS = [
+    { value: 'PRODUCCION', label: 'Producción' },
+    { value: 'SIROPES', label: 'Siropes' },
+    { value: 'EMPAQUE', label: 'Empaque' },
+    { value: 'LOGISTICA', label: 'Logística' },
+    { value: 'ASEO', label: 'Servicios Generales' },
+    { value: 'PERSONAL_OFICINA', label: 'Personal Oficina' },
+];
+
+const suggestAreaForRole = (role) => {
+    const map = {
+        PRODUCCION: 'PRODUCCION',
+        OPERARIO_PICKING: 'EMPAQUE',
+        LOGISTICA: 'LOGISTICA',
+        CARTERA: 'PERSONAL_OFICINA',
+        CONTABILIDAD: 'PERSONAL_OFICINA',
+        RECURSOS_HUMANOS: 'PERSONAL_OFICINA',
+        CALIDAD: 'PERSONAL_OFICINA',
+        QUIMICO: 'PERSONAL_OFICINA',
+        COMERCIAL: 'PERSONAL_OFICINA',
+        ADMIN: 'PERSONAL_OFICINA',
+    };
+    return map[role] || '';
+};
 
 function PendingUserPanel({ user, onSaved, onCancel }) {
-    const [area, setArea]     = useState(user.role === 'PRODUCCION' ? 'PRODUCCION' : user.role === 'LOGISTICA' ? 'LOGISTICA' : user.role === 'CALIDAD' ? 'CALIDAD' : '');
+    const [area, setArea]     = useState(suggestAreaForRole(user.role));
     const [cedula, setCedula] = useState('');
     const [saving, setSaving] = useState(false);
     const [msg, setMsg]       = useState(null);
@@ -342,7 +367,7 @@ function PendingUserPanel({ user, onSaved, onCancel }) {
                     onChange={e => setArea(e.target.value)}
                 >
                     <option value="">Seleccionar área...</option>
-                    {AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+                    {AREAS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
                 </select>
             </div>
 
@@ -500,23 +525,66 @@ function FaceEnroller({ employeeId, onDone, onCancel }) {
     const videoRef  = useRef(null);
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
+    const fileInputRef = useRef(null);
     const [status, setStatus] = useState('Cargando librería de reconocimiento...');
-    const [phase, setPhase]   = useState('loading'); // loading | scanning | captured | saving
+    const [phase, setPhase]   = useState('loading'); // loading | scanning | captured | saving | error
     const [descriptor, setDescriptor] = useState(null);
     const [photoDataUrl, setPhotoDataUrl] = useState(null);
+    const [capturedDescriptors, setCapturedDescriptors] = useState([]);
+    const [capturedPhotos, setCapturedPhotos] = useState([]);
     const intervalRef = useRef(null);
+    const TOTAL_CAPTURES = 3;
 
     useEffect(() => {
         let cancelled = false;
         (async () => {
             try {
-                // 1) Asegurar que face-api.js está cargada en window
+                // 0) Verificar pre-requisitos del entorno
+                if (!window.isSecureContext) {
+                    throw new Error('Esta página debe abrirse con HTTPS para acceder a la cámara. Verifica la URL.');
+                }
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('Tu navegador no soporta acceso a cámara. Usa Chrome, Edge o Safari actualizado.');
+                }
+
+                // 1) Activar cámara PRIMERO (feedback inmediato al usuario)
+                setStatus('Solicitando permiso de cámara...');
+                let stream;
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
+                    });
+                } catch (camErr) {
+                    if (camErr.name === 'NotAllowedError' || camErr.name === 'PermissionDeniedError') {
+                        throw new Error('Permiso de cámara denegado. Habilítalo en la configuración del navegador (icono de candado en la URL).');
+                    }
+                    if (camErr.name === 'NotFoundError' || camErr.name === 'DevicesNotFoundError') {
+                        throw new Error('No se encontró ninguna cámara en este dispositivo.');
+                    }
+                    if (camErr.name === 'NotReadableError') {
+                        throw new Error('La cámara está siendo usada por otra aplicación. Ciérrala e inténtalo de nuevo.');
+                    }
+                    throw new Error('No se pudo activar la cámara: ' + (camErr.message || camErr.name));
+                }
+                if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+                streamRef.current = stream;
+                if (!videoRef.current) {
+                    stream.getTracks().forEach(t => t.stop());
+                    throw new Error('Video no inicializado. Cierra y vuelve a abrir el panel.');
+                }
+                videoRef.current.srcObject = stream;
+                await new Promise(r => {
+                    videoRef.current.onloadedmetadata = () => videoRef.current.play().then(r).catch(r);
+                    setTimeout(r, 3000);
+                });
+                if (cancelled) return;
+
+                // 2) Cargar face-api.js + modelos (después de tener cámara visible)
+                setStatus('Cargando modelos de reconocimiento...');
                 await loadFaceApiScriptAttendance();
                 if (cancelled) return;
-                if (!window.faceapi) throw new Error('face-api.js no disponible');
+                if (!window.faceapi) throw new Error('face-api.js no disponible (verifica conexión a internet)');
 
-                // 2) Cargar modelos (con fallback si CDN principal falla)
-                setStatus('Cargando modelos de IA...');
                 const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
                 const FALLBACK = 'https://raw.githubusercontent.com/nicolo-ribaudo/face-api.js-models/refs/heads/master/';
                 const needsLoad = !window.faceapi.nets.tinyFaceDetector.params;
@@ -537,56 +605,154 @@ function FaceEnroller({ employeeId, onDone, onCancel }) {
                 }
                 if (cancelled) return;
 
-                // 3) Activar cámara
-                setStatus('Activando cámara...');
-                const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480} } });
-                streamRef.current = stream;
-                videoRef.current.srcObject = stream;
-                await new Promise(r => { videoRef.current.onloadedmetadata = () => videoRef.current.play().then(r).catch(r); setTimeout(r,3000); });
-                if (cancelled) return;
                 setStatus('Busque su rostro en la cámara...');
                 setPhase('scanning');
                 startDetection();
-            } catch(e) {
-                setStatus('Error: ' + (e.message || 'No se pudo acceder a la cámara'));
+            } catch (e) {
+                console.error('[FaceEnroller]', e);
+                setStatus('❌ ' + (e.message || 'No se pudo acceder a la cámara'));
+                setPhase('error');
             }
         })();
-        return () => { cancelled=true; stopAll(); };
+        return () => { cancelled = true; stopAll(); };
     }, []);
+
+    // Fallback: procesar foto cargada desde archivo cuando la cámara no funciona
+    const handleFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            setPhase('loading');
+            setStatus('Procesando foto...');
+
+            // Asegurar que face-api esté cargada
+            if (!window.faceapi) await loadFaceApiScriptAttendance();
+            const CDN = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model/';
+            const FALLBACK = 'https://raw.githubusercontent.com/nicolo-ribaudo/face-api.js-models/refs/heads/master/';
+            if (!window.faceapi.nets.tinyFaceDetector.params) {
+                try {
+                    await Promise.all([
+                        window.faceapi.nets.tinyFaceDetector.loadFromUri(CDN),
+                        window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(CDN),
+                        window.faceapi.nets.faceRecognitionNet.loadFromUri(CDN),
+                    ]);
+                } catch {
+                    await Promise.all([
+                        window.faceapi.nets.tinyFaceDetector.loadFromUri(FALLBACK),
+                        window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(FALLBACK),
+                        window.faceapi.nets.faceRecognitionNet.loadFromUri(FALLBACK),
+                    ]);
+                }
+            }
+
+            // Cargar imagen al DOM para procesar
+            const dataUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            const img = new Image();
+            await new Promise((resolve, reject) => {
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = dataUrl;
+            });
+
+            setStatus('Detectando rostro en la foto...');
+            const det = await window.faceapi
+                .detectSingleFace(img, new window.faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 }))
+                .withFaceLandmarks(true)
+                .withFaceDescriptor();
+            if (!det) {
+                setStatus('❌ No se detectó un rostro en la foto. Toma otra con mejor iluminación y rostro centrado.');
+                setPhase('error');
+                return;
+            }
+            setPhotoDataUrl(dataUrl);
+            setDescriptor(Array.from(det.descriptor));
+            setPhase('captured');
+            setStatus('✅ Rostro detectado en la foto. Confirma para guardar.');
+        } catch (err) {
+            console.error('[FaceEnroller upload]', err);
+            setStatus('❌ Error procesando la foto: ' + (err.message || err));
+            setPhase('error');
+        } finally {
+            if (e.target) e.target.value = '';
+        }
+    };
 
     function stopAll() {
         if (intervalRef.current) clearInterval(intervalRef.current);
         if (streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
     }
 
+    // Instrucciones de pose por foto (índice 0, 1, 2)
+    const POSE_INSTRUCTIONS = [
+        { emoji: '👤',   title: 'Mire al frente',          hint: 'Cabeza centrada, mirando directamente a la cámara' },
+        { emoji: '👈',   title: 'Gire ligeramente a la izquierda', hint: 'Mueva la cabeza ~20° hacia su izquierda' },
+        { emoji: '👉',   title: 'Gire ligeramente a la derecha',   hint: 'Mueva la cabeza ~20° hacia su derecha' },
+    ];
+
     function startDetection() {
         let detecting = false;
         let goodFrames = 0;
+        let localCaptures = []; // descriptores capturados en esta ronda
+        let localPhotos = [];
+        let cooldown = 0; // frames de espera entre capturas para que la persona ajuste pose
+
         intervalRef.current = setInterval(async () => {
             if (detecting || !videoRef.current) return;
             detecting = true;
             try {
+                const idx = localCaptures.length; // 0, 1 o 2
+                const pose = POSE_INSTRUCTIONS[idx] || POSE_INSTRUCTIONS[0];
+
+                if (cooldown > 0) {
+                    cooldown--;
+                    const nextPose = POSE_INSTRUCTIONS[idx];
+                    setStatus(`✓ Foto ${idx} guardada — Ahora ${nextPose.emoji} ${nextPose.title.toLowerCase()}... (${cooldown})`);
+                    return;
+                }
+
                 const det = await window.faceapi
-                    .detectSingleFace(videoRef.current, new window.faceapi.TinyFaceDetectorOptions({ inputSize:224, scoreThreshold:0.5 }))
+                    .detectSingleFace(videoRef.current, new window.faceapi.TinyFaceDetectorOptions({ inputSize:416, scoreThreshold:0.4 }))
                     .withFaceLandmarks(true)
                     .withFaceDescriptor();
-                if (!det) { goodFrames=0; setStatus('No se detecta rostro. Mire a la cámara.'); return; }
+
+                if (!det) { goodFrames=0; setStatus(`📸 Foto ${idx+1}/${TOTAL_CAPTURES} — ${pose.emoji} ${pose.title} — No se detecta rostro`); return; }
                 const ratio = (det.detection.box.width * det.detection.box.height) / (videoRef.current.videoWidth * videoRef.current.videoHeight);
-                if (ratio < 0.08) { setStatus('⚠️ Acérquese más a la cámara'); goodFrames=0; return; }
+                if (ratio < 0.08) { setStatus(`📸 Foto ${idx+1}/${TOTAL_CAPTURES} — ${pose.emoji} ${pose.title} — ⚠️ Acérquese más`); goodFrames=0; return; }
+
                 goodFrames++;
-                setStatus(`Rostro detectado — ${goodFrames >= 3 ? 'capturando...' : `estabilizando (${goodFrames}/3)...`}`);
                 if (goodFrames >= 3) {
-                    clearInterval(intervalRef.current);
-                    // Capturar foto
+                    setStatus(`📸 Foto ${idx+1}/${TOTAL_CAPTURES} — ${pose.emoji} Capturando... ¡no se mueva!`);
+                } else {
+                    setStatus(`📸 Foto ${idx+1}/${TOTAL_CAPTURES} — ${pose.emoji} ${pose.title} — Estabilizando (${goodFrames}/3)`);
+                }
+
+                if (goodFrames >= 3) {
                     const cv = canvasRef.current;
                     cv.width = videoRef.current.videoWidth;
                     cv.height = videoRef.current.videoHeight;
                     cv.getContext('2d').drawImage(videoRef.current, 0, 0);
-                    setPhotoDataUrl(cv.toDataURL('image/jpeg', 0.85));
-                    setDescriptor(Array.from(det.descriptor));
-                    setPhase('captured');
-                    setStatus('¡Rostro capturado! Confirme para guardar.');
-                    stopAll();
+                    const dataUrl = cv.toDataURL('image/jpeg', 0.85);
+                    localCaptures.push(Array.from(det.descriptor));
+                    localPhotos.push(dataUrl);
+                    setCapturedDescriptors([...localCaptures]);
+                    setCapturedPhotos([...localPhotos]);
+
+                    if (localCaptures.length >= TOTAL_CAPTURES) {
+                        clearInterval(intervalRef.current);
+                        setDescriptor(localCaptures[0]);
+                        setPhotoDataUrl(localPhotos[0]);
+                        setPhase('captured');
+                        setStatus(`✅ ${TOTAL_CAPTURES} fotos capturadas (frente, izquierda, derecha). Confirme para guardar.`);
+                        stopAll();
+                    } else {
+                        goodFrames = 0;
+                        cooldown = 6; // ~2.4 seg para cambiar de pose
+                    }
                 }
             } catch { /* ignore */ }
             finally { detecting=false; }
@@ -595,14 +761,41 @@ function FaceEnroller({ employeeId, onDone, onCancel }) {
 
     const save = async () => {
         setPhase('saving');
-        setStatus('Guardando descriptor...');
+        const useMulti = capturedDescriptors.length >= 2;
+        const photosForInsightface = capturedPhotos.length > 0 ? capturedPhotos : (photoDataUrl ? [photoDataUrl] : []);
+
         try {
-            await api.put(`/attendance/employees/${employeeId}/face`, {
-                descriptor,
-                photoUrl: photoDataUrl,
-            });
-            setStatus('✅ Rostro enrollado correctamente');
-            setTimeout(onDone, 1000);
+            // 1) Legacy (face-api 128-d) — mantener por compatibilidad
+            setStatus('Guardando descriptor legacy (face-api)...');
+            const body = useMulti
+                ? { descriptors: capturedDescriptors, photoUrl: photoDataUrl }
+                : { descriptor, photoUrl: photoDataUrl };
+            await api.put(`/attendance/employees/${employeeId}/face`, body);
+
+            // 2) InsightFace ArcFace 512-d (modelo bueno) — envía las fotos al servicio Python
+            if (photosForInsightface.length > 0) {
+                setStatus(`Procesando ${photosForInsightface.length} foto(s) en YOLOv8 + InsightFace...`);
+                const fd = new FormData();
+                for (let i = 0; i < photosForInsightface.length; i++) {
+                    // dataUrl → Blob
+                    const res = await fetch(photosForInsightface[i]);
+                    const blob = await res.blob();
+                    fd.append('files', blob, `photo_${i+1}.jpg`);
+                }
+                try {
+                    const r = await api.put(`/attendance/employees/${employeeId}/face-insightface`, fd, {
+                        headers: { 'Content-Type': 'multipart/form-data' }
+                    });
+                    setStatus(`✅ Enrollado correctamente (face-api + InsightFace ArcFace, ${r.data.photos_used} fotos)`);
+                } catch (e2) {
+                    // Si InsightFace falla, no rompemos — al menos el legacy quedó guardado
+                    console.warn('InsightFace enroll falló:', e2.response?.data?.error || e2.message);
+                    setStatus(`⚠️ Legacy guardado, InsightFace falló: ${e2.response?.data?.error || e2.message}`);
+                }
+            } else {
+                setStatus('✅ Rostro enrollado (face-api)');
+            }
+            setTimeout(onDone, 1500);
         } catch(e) {
             setStatus('Error: ' + (e.response?.data?.error ?? 'No se pudo guardar'));
             setPhase('captured');
@@ -621,6 +814,28 @@ function FaceEnroller({ employeeId, onDone, onCancel }) {
                     {status}
                 </div>
             </div>
+            {/* Fallback: subir foto cuando la cámara falla o como alternativa */}
+            <div className="flex flex-wrap gap-2">
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="user"
+                    className="hidden"
+                    onChange={handleFileUpload}
+                />
+                {(phase === 'error' || phase === 'scanning') && (
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex-1 py-2.5 px-4 bg-amber-500 text-white rounded-xl text-sm font-bold hover:bg-amber-600 flex items-center justify-center gap-1"
+                    >
+                        <Camera size={14}/>
+                        {phase === 'error' ? 'Subir foto desde archivo' : 'O subir foto en su lugar'}
+                    </button>
+                )}
+            </div>
+
             <div className="flex gap-2">
                 {phase === 'captured' && (
                     <button onClick={save} className="flex-1 py-2.5 bg-violet-600 text-white rounded-xl text-sm font-bold hover:bg-violet-700 flex items-center justify-center gap-1">
@@ -644,7 +859,7 @@ function TabHistory() {
     const [total, setTotal]       = useState(0);
     const [page, setPage]         = useState(1);
     const [loading, setLoading]   = useState(true);
-    const [from, setFrom]         = useState(todayISO());
+    const [from, setFrom]         = useState(daysAgoISO(30));
     const [to, setTo]             = useState(todayISO());
     const [typeFilter, setType]   = useState('');
     const [employeeId, setEmployeeId] = useState('');
@@ -653,6 +868,17 @@ function TabHistory() {
     useEffect(() => {
         api.get('/attendance/employees').then(r => setEmployees(r.data || [])).catch(() => {});
     }, []);
+
+    // Cuando se selecciona un empleado, ampliar auto el rango a 90 días para que sea fácil encontrar marcas
+    const handleEmployeeChange = (newId) => {
+        setEmployeeId(newId);
+        setPage(1);
+        if (newId) {
+            const wide = daysAgoISO(90);
+            if (from > wide) setFrom(wide);
+            if (to < todayISO()) setTo(todayISO());
+        }
+    };
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -692,7 +918,7 @@ function TabHistory() {
                     </div>
                     <div className="min-w-[220px]">
                         <label className="block text-xs text-neutral-500 mb-1">Empleado</label>
-                        <select value={employeeId} onChange={e=>{setEmployeeId(e.target.value);setPage(1);}}
+                        <select value={employeeId} onChange={e=>handleEmployeeChange(e.target.value)}
                             className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300">
                             <option value="">Todos</option>
                             {employees.filter(e => !e.pending).map(emp => (
@@ -752,7 +978,14 @@ function TabHistory() {
                                     );
                                 })}
                                 {records.length === 0 && (
-                                    <tr><td colSpan={7} className="text-center text-neutral-400 py-12">Sin registros en el rango seleccionado</td></tr>
+                                    <tr><td colSpan={7} className="text-center text-neutral-400 py-12">
+                                        {employeeId
+                                            ? <>
+                                                <div className="text-sm font-semibold text-neutral-500 mb-1">Sin marcas para este empleado</div>
+                                                <div className="text-xs">No hay registros entre <strong>{from}</strong> y <strong>{to}</strong>. Amplía el rango de fechas o verifica si está marcando en el kiosko.</div>
+                                            </>
+                                            : 'Sin registros en el rango seleccionado'}
+                                    </td></tr>
                                 )}
                             </tbody>
                         </table>
@@ -776,18 +1009,515 @@ function TabHistory() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  TAB 4 — REPORTES
 // ══════════════════════════════════════════════════════════════════════════════
+// ── Componentes Nómina Quincenal ─────────────────────────────────────────────
+const PAYROLL_BAND_COLS = [
+    { key: 'ordDayHours',     label: 'Ord. Día',         pct: '0%',    color: 'text-neutral-700' },
+    { key: 'ordNightHours',   label: 'Ord. Noche',       pct: '+35%',  color: 'text-indigo-600' },
+    { key: 'ordSunDayHours',  label: 'Dom/Fest Día',     pct: '+80%',  color: 'text-rose-600' },
+    { key: 'ordSunNightHours',label: 'Dom/Fest Noche',   pct: '+115%', color: 'text-rose-700' },
+    { key: 'extDayHours',     label: 'Extra Día',        pct: '+25%',  color: 'text-amber-600' },
+    { key: 'extNightHours',   label: 'Extra Noche',      pct: '+75%',  color: 'text-amber-700' },
+    { key: 'extSunDayHours',  label: 'Ex. Dom Día',      pct: '+105%', color: 'text-pink-600' },
+    { key: 'extSunNightHours',label: 'Ex. Dom Noche',    pct: '+155%', color: 'text-pink-700' },
+];
+
+const fmtCOP = (n) => (n == null ? '—' : `$${Math.round(n).toLocaleString('es-CO')}`);
+
+function PayrollQuincenalView({ data, loading }) {
+    if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
+    if (!data) return null;
+    const rows = data.summary || [];
+    const holidays = data.holidays || [];
+    const anyPay = rows.some((r) => r.pay && r.pay.totalPay > 0);
+    const totalDevengado = rows.reduce((s, r) => s + (r.pay?.totalPay || 0), 0);
+
+    const totals = PAYROLL_BAND_COLS.reduce((acc, c) => ({ ...acc, [c.key]: 0 }), {});
+    rows.forEach((r) => PAYROLL_BAND_COLS.forEach((c) => { totals[c.key] += r[c.key] || 0; }));
+    const totalAll = Object.values(totals).reduce((s, v) => s + v, 0);
+
+    return (
+        <Card className="overflow-hidden">
+            {holidays.length > 0 && (
+                <div className="px-5 py-3 bg-rose-50 border-b border-rose-100 flex items-start gap-2">
+                    <Calendar size={14} className="text-rose-600 mt-0.5 shrink-0"/>
+                    <div className="text-xs text-rose-800">
+                        <span className="font-bold">Festivos en este período:</span>{' '}
+                        {holidays.map((h, i) => (
+                            <span key={h.date}>
+                                {i > 0 ? ' · ' : ''}{h.date} {h.name}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            )}
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead className="bg-neutral-50 border-b">
+                        <tr>
+                            <th className="px-3 py-2 text-left font-bold text-neutral-500 uppercase sticky left-0 bg-neutral-50 z-10 min-w-[200px]">Empleado</th>
+                            <th className="px-3 py-2 text-left font-bold text-neutral-500 uppercase">Área</th>
+                            <th className="px-2 py-2 text-center font-bold text-neutral-500 uppercase">Días</th>
+                            {PAYROLL_BAND_COLS.map((c) => (
+                                <th key={c.key} className="px-2 py-2 text-right font-bold text-neutral-500 uppercase whitespace-nowrap">
+                                    <div>{c.label}</div>
+                                    <div className={`text-[10px] font-semibold ${c.color}`}>{c.pct}</div>
+                                </th>
+                            ))}
+                            <th className="px-3 py-2 text-right font-bold text-neutral-700 uppercase bg-neutral-100">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                        {rows.map((r) => {
+                            const total = PAYROLL_BAND_COLS.reduce((s, c) => s + (r[c.key] || 0), 0);
+                            return (
+                                <tr key={r.employee.id} className="hover:bg-blue-50/30">
+                                    <td className="px-3 py-2 font-medium text-neutral-800 sticky left-0 bg-white hover:bg-blue-50/30">
+                                        {r.employee.name}
+                                        {r.employee.cedula && (
+                                            <div className="text-[10px] text-neutral-400">CC {r.employee.cedula}</div>
+                                        )}
+                                    </td>
+                                    <td className="px-3 py-2 text-neutral-500">{r.employee.area}</td>
+                                    <td className="px-2 py-2 text-center text-neutral-600">
+                                        {r.presentDays}/{r.scheduledDays}
+                                    </td>
+                                    {PAYROLL_BAND_COLS.map((c) => {
+                                        const v = r[c.key] || 0;
+                                        return (
+                                            <td key={c.key} className={`px-2 py-2 text-right ${v > 0 ? c.color + ' font-semibold' : 'text-neutral-300'}`}>
+                                                {v > 0 ? v.toFixed(2) : '—'}
+                                            </td>
+                                        );
+                                    })}
+                                    <td className="px-3 py-2 text-right font-bold text-neutral-900 bg-neutral-50">
+                                        {total.toFixed(2)}
+                                    </td>
+                                    {anyPay && (
+                                        <td className="px-3 py-2 text-right font-bold text-emerald-700 bg-emerald-50/50 whitespace-nowrap">
+                                            {r.pay ? fmtCOP(r.pay.totalPay) : <span className="text-neutral-300 font-normal">sin perfil</span>}
+                                        </td>
+                                    )}
+                                </tr>
+                            );
+                        })}
+                        {rows.length === 0 && (
+                            <tr><td colSpan={4 + PAYROLL_BAND_COLS.length + (anyPay ? 1 : 0)} className="text-center py-12 text-neutral-400">Sin datos para este período</td></tr>
+                        )}
+                    </tbody>
+                    {rows.length > 0 && (
+                        <tfoot className="bg-neutral-100 border-t-2 border-neutral-300">
+                            <tr>
+                                <td className="px-3 py-2 font-bold text-neutral-700 uppercase text-xs sticky left-0 bg-neutral-100">Total</td>
+                                <td colSpan={2}/>
+                                {PAYROLL_BAND_COLS.map((c) => (
+                                    <td key={c.key} className={`px-2 py-2 text-right font-bold ${c.color}`}>
+                                        {totals[c.key] > 0 ? totals[c.key].toFixed(2) : '—'}
+                                    </td>
+                                ))}
+                                <td className="px-3 py-2 text-right font-bold text-neutral-900">{totalAll.toFixed(2)}</td>
+                                {anyPay && (
+                                    <td className="px-3 py-2 text-right font-bold text-emerald-800 bg-emerald-100 whitespace-nowrap">
+                                        {fmtCOP(totalDevengado)}
+                                    </td>
+                                )}
+                            </tr>
+                        </tfoot>
+                    )}
+                </table>
+            </div>
+        </Card>
+    );
+}
+
+function HolidaysModal({ onClose }) {
+    const [holidays, setHolidays] = useState([]);
+    const [year, setYear] = useState(new Date().getFullYear());
+    const [newDate, setNewDate] = useState('');
+    const [newName, setNewName] = useState('');
+    const [busy, setBusy] = useState(false);
+
+    const load = useCallback(async () => {
+        try {
+            const r = await api.get('/attendance/holidays', { params: { year } });
+            setHolidays(r.data || []);
+        } catch (e) { console.error(e); }
+    }, [year]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const add = async () => {
+        if (!newDate || !newName) return;
+        setBusy(true);
+        try {
+            await api.post('/attendance/holidays', { date: newDate, name: newName });
+            setNewDate(''); setNewName(''); load();
+        } catch (e) {
+            alert(e.response?.data?.error || 'Error creando festivo');
+        } finally { setBusy(false); }
+    };
+
+    const remove = async (id) => {
+        if (!confirm('¿Eliminar este festivo?')) return;
+        try { await api.delete(`/attendance/holidays/${id}`); load(); } catch (e) { alert('Error'); }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="px-6 py-4 border-b flex items-center justify-between">
+                    <h2 className="font-bold text-neutral-800 flex items-center gap-2"><Calendar size={18}/>Festivos</h2>
+                    <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700"><XCircle size={22}/></button>
+                </div>
+                <div className="px-6 py-3 border-b flex items-center gap-2 bg-neutral-50">
+                    <label className="text-xs text-neutral-500">Año:</label>
+                    <select value={year} onChange={(e) => setYear(parseInt(e.target.value, 10))}
+                        className="px-2 py-1 border border-neutral-200 rounded text-sm">
+                        {[2025, 2026, 2027, 2028].map((y) => <option key={y} value={y}>{y}</option>)}
+                    </select>
+                    <span className="text-xs text-neutral-400 ml-auto">{holidays.length} festivos</span>
+                </div>
+                <div className="overflow-y-auto flex-1 p-4">
+                    <table className="w-full text-sm">
+                        <tbody className="divide-y divide-neutral-100">
+                            {holidays.map((h) => (
+                                <tr key={h.id}>
+                                    <td className="py-2 font-mono text-neutral-700 w-32">{new Date(h.date).toISOString().substring(0, 10)}</td>
+                                    <td className="py-2 text-neutral-600">{h.name}</td>
+                                    <td className="py-2 text-right">
+                                        <button onClick={() => remove(h.id)} className="text-red-500 hover:text-red-700 text-xs">Eliminar</button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {holidays.length === 0 && (
+                                <tr><td colSpan={3} className="text-center text-neutral-400 py-6">Sin festivos cargados</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="px-6 py-4 border-t bg-neutral-50 flex items-center gap-2">
+                    <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)}
+                        className="px-3 py-2 border border-neutral-200 rounded-lg text-sm"/>
+                    <input type="text" placeholder="Nombre del festivo" value={newName} onChange={(e) => setNewName(e.target.value)}
+                        className="px-3 py-2 border border-neutral-200 rounded-lg text-sm flex-1"/>
+                    <button onClick={add} disabled={busy || !newDate || !newName}
+                        className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-semibold hover:bg-primary-700 disabled:opacity-50">
+                        Agregar
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function PayrollConfigModal({ onClose }) {
+    const [cfg, setCfg] = useState(null);
+    const [busy, setBusy] = useState(false);
+    useEffect(() => {
+        api.get('/attendance/payroll-config').then((r) => setCfg(r.data)).catch(() => setCfg({}));
+    }, []);
+
+    const set = (key, val) => setCfg((c) => ({ ...c, [key]: val }));
+
+    const save = async () => {
+        setBusy(true);
+        try {
+            await api.put('/attendance/payroll-config', cfg);
+            onClose();
+        } catch (e) {
+            alert(e.response?.data?.error || 'Error guardando');
+        } finally { setBusy(false); }
+    };
+
+    if (!cfg) return null;
+
+    const NUM_FIELDS = [
+        ['weeklyHours',          'Horas semanales',                    'h/sem'],
+        ['monthlyHourDivisor',   'Divisor mensual (valor hora)',       'h/mes'],
+        ['surchargeNight',       'Recargo nocturno',                   '× ord.'],
+        ['surchargeSundayDay',   'Recargo dom/fest diurno',            '× ord.'],
+        ['surchargeSundayNight', 'Recargo dom/fest nocturno',          '× ord.'],
+        ['overtimeDay',          'Extra diurna',                       '× ord.'],
+        ['overtimeNight',        'Extra nocturna',                     '× ord.'],
+        ['overtimeSundayDay',    'Extra dom/fest diurna',              '× ord.'],
+        ['overtimeSundayNight',  'Extra dom/fest nocturna',            '× ord.'],
+    ];
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="px-6 py-4 border-b flex items-center justify-between sticky top-0 bg-white">
+                    <h2 className="font-bold text-neutral-800 flex items-center gap-2"><Settings size={18}/>Configuración de nómina</h2>
+                    <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700"><XCircle size={22}/></button>
+                </div>
+                <div className="p-6 space-y-4">
+                    <div className="grid grid-cols-3 gap-3">
+                        <div>
+                            <label className="block text-xs font-semibold text-neutral-500 mb-1">Inicio diurno</label>
+                            <input type="time" value={cfg.dayStart || '06:00'} onChange={(e) => set('dayStart', e.target.value)}
+                                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm"/>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-neutral-500 mb-1">Inicio nocturno</label>
+                            <input type="time" value={cfg.nightStart || '19:00'} onChange={(e) => set('nightStart', e.target.value)}
+                                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm"/>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-neutral-500 mb-1">Día corte quincena</label>
+                            <input type="number" min="1" max="28" value={cfg.fortnightCutoffDay ?? 15}
+                                onChange={(e) => set('fortnightCutoffDay', parseInt(e.target.value, 10))}
+                                className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm"/>
+                        </div>
+                    </div>
+                    <div className="border-t pt-4">
+                        <h3 className="text-xs font-bold text-neutral-500 uppercase mb-3">Recargos y extras (sobre hora ordinaria)</h3>
+                        <div className="grid grid-cols-2 gap-3">
+                            {NUM_FIELDS.map(([k, label, unit]) => (
+                                <div key={k}>
+                                    <label className="block text-xs text-neutral-600 mb-1">{label} <span className="text-neutral-400">({unit})</span></label>
+                                    <input type="number" step="0.01" value={cfg[k] ?? 0}
+                                        onChange={(e) => set(k, parseFloat(e.target.value))}
+                                        className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono"/>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-800">
+                        <p className="font-semibold mb-1">Referencia legal vigente (CST + Ley 2466/2025):</p>
+                        <p>Recargos: nocturno 0.35, dom/fest diurno 0.80 (sube a 0.90 en jul-2026), dom/fest nocturno 1.15.</p>
+                        <p>Extras: diurna 0.25, nocturna 0.75, dom/fest diurna 1.05, dom/fest nocturna 1.55.</p>
+                    </div>
+                </div>
+                <div className="px-6 py-4 border-t bg-neutral-50 flex justify-end gap-2 sticky bottom-0">
+                    <button onClick={onClose} className="px-4 py-2 rounded-lg border border-neutral-200 text-sm font-semibold text-neutral-600 hover:bg-neutral-100">Cancelar</button>
+                    <button onClick={save} disabled={busy}
+                        className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-semibold hover:bg-primary-700 disabled:opacity-50">
+                        Guardar
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function SalariesModal({ onClose }) {
+    const [employees, setEmployees] = useState([]);
+    const [profiles, setProfiles] = useState([]);
+    const [editing, setEditing] = useState(null); // {employeeId, salaryMonthly, startDate, transportAllowance, monthlyBonus}
+    const [filter, setFilter] = useState('');
+    const [busy, setBusy] = useState(false);
+
+    const load = useCallback(async () => {
+        try {
+            const [empRes, profRes] = await Promise.all([
+                api.get('/attendance/employees'),
+                api.get('/attendance/payroll-profiles'),
+            ]);
+            setEmployees(empRes.data || []);
+            setProfiles(profRes.data || []);
+        } catch (e) { console.error(e); }
+    }, []);
+    useEffect(() => { load(); }, [load]);
+
+    const profileMap = new Map(profiles.map((p) => [p.employeeId, p]));
+    const filtered = (employees || []).filter((e) =>
+        !filter || e.name?.toLowerCase().includes(filter.toLowerCase()) ||
+        (e.cedula || '').includes(filter)
+    );
+
+    const save = async () => {
+        if (!editing) return;
+        if (!editing.salaryMonthly || !editing.startDate) {
+            alert('Salario y fecha de ingreso son obligatorios');
+            return;
+        }
+        setBusy(true);
+        try {
+            await api.put('/attendance/payroll-profiles', editing);
+            setEditing(null);
+            load();
+        } catch (e) {
+            alert(e.response?.data?.error || 'Error guardando perfil');
+        } finally { setBusy(false); }
+    };
+
+    const remove = async (employeeId) => {
+        if (!confirm('¿Eliminar el perfil de salario de este empleado?')) return;
+        try {
+            await api.delete(`/attendance/payroll-profiles/${employeeId}`);
+            load();
+        } catch (e) { alert('Error'); }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="px-6 py-4 border-b flex items-center justify-between">
+                    <h2 className="font-bold text-neutral-800 flex items-center gap-2"><WalletCards size={18}/>Salarios de empleados</h2>
+                    <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700"><XCircle size={22}/></button>
+                </div>
+                <div className="px-6 py-3 border-b bg-neutral-50">
+                    <div className="relative">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400"/>
+                        <input type="text" placeholder="Buscar por nombre o cédula..." value={filter} onChange={(e)=>setFilter(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 border border-neutral-200 rounded-lg text-sm"/>
+                    </div>
+                </div>
+                <div className="overflow-y-auto flex-1">
+                    <table className="w-full text-sm">
+                        <thead className="bg-neutral-50 border-b sticky top-0">
+                            <tr>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Empleado</th>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Cédula</th>
+                                <th className="px-4 py-2 text-right text-xs font-bold text-neutral-500 uppercase">Salario base</th>
+                                <th className="px-4 py-2 text-right text-xs font-bold text-neutral-500 uppercase">Bono fijo</th>
+                                <th className="px-2 py-2 text-center text-xs font-bold text-neutral-500 uppercase">Aux. transp.</th>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Ingreso</th>
+                                <th className="px-2 py-2"></th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                            {filtered.map((e) => {
+                                const p = profileMap.get(e.id);
+                                return (
+                                    <tr key={e.id} className="hover:bg-blue-50/30">
+                                        <td className="px-4 py-2 font-medium text-neutral-800">{e.name}</td>
+                                        <td className="px-4 py-2 font-mono text-neutral-500 text-xs">{e.cedula || '—'}</td>
+                                        <td className="px-4 py-2 text-right">
+                                            {p ? <span className="font-semibold text-emerald-700">{fmtCOP(p.salaryMonthly)}</span>
+                                               : <span className="text-neutral-300">sin salario</span>}
+                                        </td>
+                                        <td className="px-4 py-2 text-right text-neutral-600">{p ? fmtCOP(p.monthlyBonus) : '—'}</td>
+                                        <td className="px-2 py-2 text-center">
+                                            {p ? (p.transportAllowance ? '✓' : '—') : '—'}
+                                        </td>
+                                        <td className="px-4 py-2 text-neutral-500 text-xs">{p?.startDate ? new Date(p.startDate).toISOString().substring(0,10) : '—'}</td>
+                                        <td className="px-2 py-2 text-right whitespace-nowrap">
+                                            <button onClick={() => setEditing({
+                                                employeeId: e.id,
+                                                salaryMonthly: p?.salaryMonthly || '',
+                                                startDate: p?.startDate ? new Date(p.startDate).toISOString().substring(0,10) : '',
+                                                transportAllowance: p?.transportAllowance ?? true,
+                                                monthlyBonus: p?.monthlyBonus || 0,
+                                                contractType: p?.contractType || 'INDEFINIDO',
+                                            })} className="text-blue-600 hover:text-blue-800 text-xs font-semibold">
+                                                {p ? 'Editar' : 'Asignar'}
+                                            </button>
+                                            {p && (
+                                                <button onClick={() => remove(e.id)} className="ml-2 text-red-500 hover:text-red-700 text-xs">Eliminar</button>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+                {editing && (
+                    <div className="border-t bg-neutral-50 px-6 py-4">
+                        <h3 className="text-xs font-bold text-neutral-500 uppercase mb-3">
+                            Editando perfil de: {employees.find((e) => e.id === editing.employeeId)?.name}
+                        </h3>
+                        <div className="grid grid-cols-5 gap-3 items-end">
+                            <div>
+                                <label className="block text-xs text-neutral-500 mb-1">Salario base mensual</label>
+                                <input type="number" min="0" step="1000" value={editing.salaryMonthly}
+                                    onChange={(e)=>setEditing({...editing, salaryMonthly: e.target.value})}
+                                    className="w-full px-3 py-2 border border-neutral-200 rounded text-sm font-mono"/>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-neutral-500 mb-1">Bono fijo</label>
+                                <input type="number" min="0" step="1000" value={editing.monthlyBonus}
+                                    onChange={(e)=>setEditing({...editing, monthlyBonus: e.target.value})}
+                                    className="w-full px-3 py-2 border border-neutral-200 rounded text-sm font-mono"/>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-neutral-500 mb-1">Fecha ingreso</label>
+                                <input type="date" value={editing.startDate}
+                                    onChange={(e)=>setEditing({...editing, startDate: e.target.value})}
+                                    className="w-full px-3 py-2 border border-neutral-200 rounded text-sm"/>
+                            </div>
+                            <label className="flex items-center gap-2 text-xs font-semibold text-neutral-700 pb-2">
+                                <input type="checkbox" checked={editing.transportAllowance}
+                                    onChange={(e)=>setEditing({...editing, transportAllowance: e.target.checked})}/>
+                                Auxilio transporte
+                            </label>
+                            <div className="flex gap-2 justify-end">
+                                <button onClick={() => setEditing(null)} className="px-3 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-200 rounded">Cancelar</button>
+                                <button onClick={save} disabled={busy}
+                                    className="px-4 py-2 bg-primary-600 text-white text-xs font-semibold rounded hover:bg-primary-700 disabled:opacity-50">
+                                    Guardar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function TabReports() {
-    const [activeReport, setActiveReport] = useState('hours');
+    const [activeReport, setActiveReport] = useState('payroll');
     const [from, setFrom] = useState(monthStart());
     const [to, setTo]     = useState(todayISO());
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(false);
     const [employees, setEmployees] = useState([]);
     const [empId, setEmpId] = useState('');
+    // Estado de nómina quincenal
+    const [payrollAnchor, setPayrollAnchor] = useState(todayISO());
+    const [payrollData, setPayrollData] = useState(null);
+    const [payrollLoading, setPayrollLoading] = useState(false);
+    const [showHolidaysModal, setShowHolidaysModal] = useState(false);
+    const [showConfigModal, setShowConfigModal] = useState(false);
+    const [showSalariesModal, setShowSalariesModal] = useState(false);
 
     useEffect(() => {
         api.get('/attendance/employees').then(r => setEmployees(r.data)).catch(()=>{});
     }, []);
+
+    const loadPayroll = useCallback(async (anchor = payrollAnchor) => {
+        setPayrollLoading(true);
+        try {
+            const r = await api.get('/attendance/payroll-summary', {
+                params: { periodType: 'fortnight', anchorDate: anchor },
+            });
+            setPayrollData(r.data);
+        } catch (err) {
+            console.error('payroll-summary error', err);
+        } finally {
+            setPayrollLoading(false);
+        }
+    }, [payrollAnchor]);
+
+    useEffect(() => {
+        if (activeReport === 'payroll') loadPayroll(payrollAnchor);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeReport, payrollAnchor]);
+
+    const movePayrollFortnight = (delta) => {
+        const d = new Date(`${payrollAnchor}T12:00:00`);
+        // saltamos exactamente media quincena (~16 días) para garantizar caer en la siguiente
+        d.setDate(d.getDate() + delta * 16);
+        setPayrollAnchor(d.toISOString().split('T')[0]);
+    };
+
+    const exportPayrollXLSX = async () => {
+        try {
+            const res = await api.get('/attendance/payroll-summary/export', {
+                params: { periodType: 'fortnight', anchorDate: payrollAnchor, format: 'xlsx' },
+                responseType: 'blob',
+            });
+            const url = URL.createObjectURL(new Blob([res.data]));
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `nomina_${payrollData?.period?.from}_${payrollData?.period?.to}.xlsx`;
+            document.body.appendChild(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            alert('No se pudo exportar: ' + (err.response?.data?.error || err.message));
+        }
+    };
 
     const run = async () => {
         setLoading(true); setData(null);
@@ -799,7 +1529,7 @@ function TabReports() {
             } else if (activeReport === 'punctuality') {
                 const r = await api.get('/attendance/punctuality', { params:{ from, to } });
                 setData(r.data);
-            } else {
+            } else if (activeReport === 'overtime') {
                 const r = await api.get('/attendance/overtime', { params:{ from, to } });
                 setData(r.data);
             }
@@ -813,6 +1543,7 @@ function TabReports() {
             <Card className="p-4">
                 <div className="flex flex-wrap gap-2 mb-4">
                     {[
+                        { id:'payroll',     label:'Nómina quincenal', icon: WalletCards },
                         { id:'hours',       label:'Horas trabajadas', icon: Timer },
                         { id:'punctuality', label:'Puntualidad',      icon: CheckCircle2 },
                         { id:'overtime',    label:'Horas extra',      icon: TrendingUp },
@@ -823,34 +1554,101 @@ function TabReports() {
                         </button>
                     ))}
                 </div>
-                <div className="flex flex-wrap gap-3 items-end">
-                    <div>
-                        <label className="block text-xs text-neutral-500 mb-1">Desde</label>
-                        <input type="date" value={from} onChange={e=>setFrom(e.target.value)}
-                            className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"/>
-                    </div>
-                    <div>
-                        <label className="block text-xs text-neutral-500 mb-1">Hasta</label>
-                        <input type="date" value={to} onChange={e=>setTo(e.target.value)}
-                            className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"/>
-                    </div>
-                    {activeReport === 'hours' && (
+                {activeReport !== 'payroll' && (
+                    <div className="flex flex-wrap gap-3 items-end">
                         <div>
-                            <label className="block text-xs text-neutral-500 mb-1">Empleado</label>
-                            <select value={empId} onChange={e=>setEmpId(e.target.value)}
-                                className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300 min-w-[180px]">
-                                <option value="">Seleccione...</option>
-                                {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                            </select>
+                            <label className="block text-xs text-neutral-500 mb-1">Desde</label>
+                            <input type="date" value={from} onChange={e=>setFrom(e.target.value)}
+                                className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"/>
                         </div>
-                    )}
-                    <button onClick={run} disabled={loading || (activeReport==='hours' && !empId)}
-                        className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-semibold hover:bg-primary-700 disabled:opacity-50 flex items-center gap-1">
-                        {loading ? <Loader2 size={14} className="animate-spin"/> : <BarChart2 size={14}/>}
-                        Generar
-                    </button>
-                </div>
+                        <div>
+                            <label className="block text-xs text-neutral-500 mb-1">Hasta</label>
+                            <input type="date" value={to} onChange={e=>setTo(e.target.value)}
+                                className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"/>
+                        </div>
+                        {activeReport === 'hours' && (
+                            <div>
+                                <label className="block text-xs text-neutral-500 mb-1">Empleado</label>
+                                <select value={empId} onChange={e=>setEmpId(e.target.value)}
+                                    className="px-3 py-2 border border-neutral-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-300 min-w-[180px]">
+                                    <option value="">Seleccione...</option>
+                                    {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                                </select>
+                            </div>
+                        )}
+                        <button onClick={run} disabled={loading || (activeReport==='hours' && !empId)}
+                            className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-semibold hover:bg-primary-700 disabled:opacity-50 flex items-center gap-1">
+                            {loading ? <Loader2 size={14} className="animate-spin"/> : <BarChart2 size={14}/>}
+                            Generar
+                        </button>
+                    </div>
+                )}
+
+                {activeReport === 'payroll' && (
+                    <div className="flex flex-wrap gap-3 items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => movePayrollFortnight(-1)}
+                                className="p-2 rounded-lg border border-neutral-200 hover:bg-neutral-50" title="Quincena anterior">
+                                <ArrowLeft size={16}/>
+                            </button>
+                            <div className="px-4 py-2 rounded-lg bg-neutral-50 border border-neutral-200 min-w-[280px] text-center">
+                                <p className="text-xs text-neutral-500">Quincena</p>
+                                <p className="text-sm font-bold text-neutral-800 capitalize">
+                                    {payrollData?.period?.label || '—'}
+                                </p>
+                                {payrollData?.period?.from && (
+                                    <p className="text-[11px] text-neutral-400">
+                                        {payrollData.period.from} → {payrollData.period.to}
+                                    </p>
+                                )}
+                            </div>
+                            <button onClick={() => movePayrollFortnight(1)}
+                                className="p-2 rounded-lg border border-neutral-200 hover:bg-neutral-50" title="Siguiente quincena">
+                                <ArrowRight size={16}/>
+                            </button>
+                            <button onClick={() => { setPayrollAnchor(todayISO()); }}
+                                className="px-3 py-2 rounded-lg border border-neutral-200 hover:bg-neutral-50 text-xs font-semibold text-neutral-600">
+                                Hoy
+                            </button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setShowSalariesModal(true)}
+                                className="px-3 py-2 rounded-lg border border-neutral-200 hover:bg-neutral-50 text-xs font-semibold text-neutral-600 flex items-center gap-1">
+                                <WalletCards size={14}/> Salarios
+                            </button>
+                            <button onClick={() => setShowHolidaysModal(true)}
+                                className="px-3 py-2 rounded-lg border border-neutral-200 hover:bg-neutral-50 text-xs font-semibold text-neutral-600 flex items-center gap-1">
+                                <Calendar size={14}/> Festivos
+                            </button>
+                            <button onClick={() => setShowConfigModal(true)}
+                                className="px-3 py-2 rounded-lg border border-neutral-200 hover:bg-neutral-50 text-xs font-semibold text-neutral-600 flex items-center gap-1">
+                                <Settings size={14}/> Configuración
+                            </button>
+                            <button onClick={exportPayrollXLSX} disabled={!payrollData}
+                                className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1">
+                                <Download size={14}/> Exportar Excel
+                            </button>
+                        </div>
+                    </div>
+                )}
             </Card>
+
+            {activeReport === 'payroll' && (
+                <PayrollQuincenalView
+                    data={payrollData}
+                    loading={payrollLoading}
+                />
+            )}
+
+            {showHolidaysModal && (
+                <HolidaysModal onClose={() => { setShowHolidaysModal(false); loadPayroll(payrollAnchor); }} />
+            )}
+            {showConfigModal && (
+                <PayrollConfigModal onClose={() => { setShowConfigModal(false); loadPayroll(payrollAnchor); }} />
+            )}
+            {showSalariesModal && (
+                <SalariesModal onClose={() => { setShowSalariesModal(false); loadPayroll(payrollAnchor); }} />
+            )}
 
             {/* Resultado */}
             {loading && <div className="flex justify-center py-12"><Spinner /></div>}

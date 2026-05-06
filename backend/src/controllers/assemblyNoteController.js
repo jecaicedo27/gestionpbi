@@ -1914,6 +1914,128 @@ const assemblyNoteController = {
             console.error('[getActiveEsferificacion]', error);
             res.status(500).json({ error: error.message });
         }
+    },
+
+    /**
+     * POST /api/assembly-notes/:id/carriots
+     * Endpoint dedicado de creación de carritos. Reemplaza el PATCH genérico
+     * que mandaba todo `processParameters` y causaba lentitud + race conditions.
+     *
+     * Body JSON: { productId, qty, photoUrl } — los 3 OBLIGATORIOS.
+     * La foto se sube primero vía /upload-photo y aquí solo se persiste el URL
+     * resultante. Si falta alguno → 422.
+     *
+     * Inserta atómicamente el carrito en `processParameters.carriots` sin
+     * sobreescribir el resto del JSON. Devuelve `{ carrito, allCarriots }`.
+     */
+    addCarrito: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { productId, qty, photoUrl, productName } = req.body || {};
+            if (!productId) return res.status(422).json({ error: 'productId requerido' });
+            const qtyNum = parseInt(qty, 10);
+            if (!Number.isFinite(qtyNum) || qtyNum <= 0) return res.status(422).json({ error: 'qty debe ser entero > 0' });
+            if (!photoUrl || typeof photoUrl !== 'string') {
+                return res.status(422).json({ error: 'photoUrl es OBLIGATORIO — sube la foto antes de registrar el carrito' });
+            }
+
+            const note = await prisma.assemblyNote.findUnique({
+                where: { id }, select: { id: true, processParameters: true }
+            });
+            if (!note) return res.status(404).json({ error: 'Note not found' });
+
+            const current = Array.isArray(note.processParameters?.carriots) ? note.processParameters.carriots : [];
+            const maxNum = current.reduce((m, c) => Math.max(m, c.carritoNum || 0), 0);
+            const newCarrito = {
+                id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                productId,
+                productName: productName || null,
+                qty: qtyNum,
+                carritoNum: maxNum + 1,
+                timestamp: new Date().toISOString(),
+                receivedAt: null,
+                productionPhotoUrl: photoUrl,
+            };
+            const allCarriots = [...current, newCarrito];
+
+            // Update SOLO la clave carriots — preserva el resto del JSON usando
+            // spread del processParameters actual fresco. Nota: Prisma no soporta
+            // jsonb_set nativo, pero al hacer findUnique + update inmediato dentro
+            // de transacción minimizamos la ventana de race.
+            await prisma.$transaction(async (tx) => {
+                const fresh = await tx.assemblyNote.findUnique({
+                    where: { id }, select: { processParameters: true }
+                });
+                const freshParams = fresh?.processParameters || {};
+                const merged = { ...freshParams, carriots: allCarriots };
+                await tx.assemblyNote.update({ where: { id }, data: { processParameters: merged } });
+            });
+
+            console.log(`[addCarrito] ✓ ${id} | carrito #${newCarrito.carritoNum} | qty=${qtyNum} | productId=${productId.slice(0,8)} | photo=${photoUrl.slice(0,50)}`);
+            res.json({ success: true, carrito: newCarrito, allCarriots });
+        } catch (error) {
+            console.error('[addCarrito]', error);
+            res.status(500).json({ error: error.message });
+        }
+    },
+
+    /**
+     * POST /api/assembly-notes/:id/package-labels
+     * Persiste las etiquetas Zebra impresas para que el flag de "ya impreso"
+     * sobreviva a reload/F5 y se pueda auditar después qué se imprimió.
+     *
+     * Body: { labels: [{ productId, lotNumber, sequence, totalPackages, quantity, packLabel, statusText, packContainerType? }] }
+     * Crea N filas en `package_labels` con `printedAt = now()` y status `ACTIVE`.
+     */
+    persistPackageLabels: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { labels } = req.body || {};
+            if (!Array.isArray(labels) || labels.length === 0) {
+                return res.status(422).json({ error: 'labels[] requerido' });
+            }
+
+            const note = await prisma.assemblyNote.findUnique({
+                where: { id }, select: { id: true, productionBatchId: true }
+            });
+            if (!note) return res.status(404).json({ error: 'Note not found' });
+
+            const operatorId = req.user?.id || null;
+            const created = [];
+            for (const lbl of labels) {
+                if (!lbl.productId || !lbl.lotNumber || !Number.isFinite(parseFloat(lbl.quantity))) {
+                    console.warn('[persistPackageLabels] skipped invalid label:', lbl);
+                    continue;
+                }
+                const packageCode = `PKG-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase();
+                const row = await prisma.packageLabel.create({
+                    data: {
+                        packageCode,
+                        productId: lbl.productId,
+                        lotNumber: lbl.lotNumber,
+                        zone: lbl.zone || 'PRODUCCION',
+                        quantity: parseFloat(lbl.quantity),
+                        unit: lbl.unit || 'und',
+                        packLabel: lbl.packLabel || null,
+                        packUnitQuantity: lbl.packUnitQuantity ? parseFloat(lbl.packUnitQuantity) : null,
+                        packContainerType: lbl.packContainerType || null,
+                        sequence: Number.isFinite(parseInt(lbl.sequence, 10)) ? parseInt(lbl.sequence, 10) : null,
+                        totalPackages: Number.isFinite(parseInt(lbl.totalPackages, 10)) ? parseInt(lbl.totalPackages, 10) : null,
+                        qrPayload: lbl.qrPayload || null,
+                        status: 'ACTIVE',
+                        printedAt: new Date(),
+                        printedById: operatorId,
+                        createdById: operatorId,
+                    },
+                });
+                created.push(row);
+            }
+            console.log(`[persistPackageLabels] ✓ ${created.length} labels persistidas para nota ${id}`);
+            res.json({ success: true, count: created.length, labels: created });
+        } catch (error) {
+            console.error('[persistPackageLabels]', error);
+            res.status(500).json({ error: error.message });
+        }
     }
 };
 

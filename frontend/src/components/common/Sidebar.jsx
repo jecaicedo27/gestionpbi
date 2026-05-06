@@ -23,7 +23,9 @@ const Sidebar = () => {
     const { user } = useAuth();
     const location = useLocation();
     const [isCollapsed, setIsCollapsed] = useState(false);
-    const [expandedGroups, setExpandedGroups] = useState({});
+    const [expandedGroups, setExpandedGroups] = useState(() =>
+        user?.isCleaningOnly === true ? { Aseo: true } : {}
+    );
 
     const allItems = [
         // ── General ──
@@ -67,6 +69,8 @@ const Sidebar = () => {
         { icon: Calendar,   label: 'Cuadro de Turnos',   path: '/shift-schedule', roles: ['ADMIN'] },
         { icon: ClipboardList, label: 'Historial Disciplinador', path: '/shift-discipline/history', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO'] },
         { icon: BarChart2, label: 'Bonificación Líderes', path: '/admin/leader-bonus', roles: ['ADMIN'] },
+        { icon: BarChart2, label: 'Analítica de Tiempos', path: '/admin/timing-analysis', roles: ['ADMIN'] },
+        { icon: Warehouse, label: 'Inventario Físico', path: '/admin/physical-inventory', roles: ['ADMIN'] },
 
         // ── Talento (Academia Popping Boba) ──
         { icon: GraduationCap, label: 'Academia', path: '/academia', roles: ['ADMIN', 'PRODUCCION', 'QUIMICO', 'LOGISTICA', 'CALIDAD', 'RECURSOS_HUMANOS'], section: 'Talento' },
@@ -113,6 +117,7 @@ const Sidebar = () => {
 
     // ADMIN sees ALL items; other roles see only their allowed items
     const isAdmin = user?.role === 'ADMIN';
+    const isCleaningOnly = user?.isCleaningOnly === true;
     let currentSection = null;
     const flatItems = [];
     const directItems = [];
@@ -122,7 +127,13 @@ const Sidebar = () => {
         if (item.section) currentSection = item.section;
         const matchesRole = item.roles.includes(user?.role);
         const matchesFlag = item.flag && user?.[item.flag] === true;
-        const canSeeItem = isAdmin || matchesRole || matchesFlag;
+        let canSeeItem = isAdmin || matchesRole || matchesFlag;
+
+        // Cleaning-only restriction: only show items in the "Aseo" section
+        if (isCleaningOnly) {
+            canSeeItem = matchesFlag && currentSection === 'Aseo';
+        }
+
         if (!canSeeItem) return;
 
         flatItems.push(item);

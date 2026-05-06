@@ -7,7 +7,7 @@ const prisma = new PrismaClient();
 
 const DEFAULT_COMPANY = {
     name: 'POPPING BOBA INTERNATIONAL S.A.S.',
-    nit: '901.123.456-7',
+    nit: '901.878.434',
     address: 'Colombia',
     phone: '',
 };

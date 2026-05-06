@@ -290,7 +290,11 @@ async function transferZone({ productId, lotNumber, fromZone, toZone, quantity, 
  * Only PRODUCTO_TERMINADO is valid for dispatch.
  */
 async function consumeForOrder({ productId, lotNumber, quantity, orderId, userId }) {
-    const ZONES_PRIORITY = ['PRODUCTO_TERMINADO', 'PRODUCCION'];
+    // Sin fallback a PRODUCCION — el flujo correcto es:
+    //   EMPAQUE crea Acta de Entrega → LOGISTICA recibe → lote pasa a PRODUCTO_TERMINADO
+    // Si se permite consumir directo de PRODUCCION se salta el handoff y queda fantasma
+    // en `productionZoneStock`. Para correcciones manuales un ADMIN puede transferir vía /finished-lots/transfer.
+    const ZONES_PRIORITY = ['PRODUCTO_TERMINADO'];
 
     return prisma.$transaction(async (tx) => {
         let stock = null;
@@ -325,8 +329,26 @@ async function consumeForOrder({ productId, lotNumber, quantity, orderId, userId
 
         if (!stock || stock.currentQuantity < quantity) {
             const available = stock?.currentQuantity || 0;
-            const foundZone = stock?.zone || 'NINGUNA';
-            throw new Error(`Stock insuficiente para lote ${lotNumber} (zona: ${foundZone}): disponible ${available}, solicitado ${quantity}`);
+            // Mensaje claro: si no hay en PRODUCTO_TERMINADO probablemente falta el Acta de Entrega.
+            // Verificar si hay stock en PRODUCCION para sugerir la solución correcta al usuario.
+            const enProduccion = await tx.finishedLotStock.findFirst({
+                where: {
+                    productId,
+                    zone: 'PRODUCCION',
+                    currentQuantity: { gt: 0 },
+                    OR: [
+                        { lotNumber },
+                        { lotNumber: { endsWith: lotNumber } },
+                    ],
+                },
+            });
+            if (enProduccion && enProduccion.currentQuantity > 0) {
+                throw new Error(
+                    `Lote ${lotNumber} aún está en zona PRODUCCION (disp ${enProduccion.currentQuantity}). ` +
+                    `Debe entregarse mediante Acta de Entrega creada por Empaque antes de despachar.`
+                );
+            }
+            throw new Error(`Stock insuficiente para lote ${lotNumber} en PRODUCTO_TERMINADO: disponible ${available}, solicitado ${quantity}`);
         }
 
         const newQty = stock.currentQuantity - quantity;
@@ -803,10 +825,80 @@ async function reverseForOrder({ orderId, userId }) {
     return results;
 }
 
+/**
+ * Consumir stock FEFO (sin lote específico) — usado por ventas Siigo donde
+ * solo sabemos productId + quantity. Recorre los lotes activos en orden
+ * FEFO (más antiguo primero por receivedAt/expiresAt) y los descuenta
+ * progresivamente hasta cubrir la cantidad solicitada.
+ *
+ * Si no hay stock suficiente: descuenta lo que pueda y devuelve un warning
+ * (no bloquea el flujo de Siigo, solo loguea).
+ */
+async function consumeFEFO({ productId, quantity, reason, source = 'SIIGO_INVOICE', referenceId = null }) {
+    if (!productId || !(quantity > 0)) return { consumed: 0, lotsHit: [], shortfall: 0 };
+
+    // Sistema-user fallback (Siigo no provee userId). Buscar primer ADMIN.
+    const sysUser = await prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
+    const sysUserId = sysUser?.id;
+
+    return prisma.$transaction(async (tx) => {
+        const lots = await tx.finishedLotStock.findMany({
+            where: {
+                productId,
+                currentQuantity: { gt: 0 },
+                zone: { in: ['PRODUCTO_TERMINADO', 'PRODUCCION'] },
+            },
+            orderBy: [
+                { zone: 'desc' }, // PRODUCTO_TERMINADO primero
+                { createdAt: 'asc' },
+            ],
+        });
+
+        let remaining = quantity;
+        const lotsHit = [];
+
+        for (const lot of lots) {
+            if (remaining <= 0) break;
+            const take = Math.min(lot.currentQuantity, remaining);
+            const newQty = lot.currentQuantity - take;
+            await tx.finishedLotStock.update({
+                where: { id: lot.id },
+                data: {
+                    currentQuantity: newQty,
+                    status: computeStatus(newQty, lot.initialQuantity),
+                },
+            });
+            if (sysUserId) {
+                await tx.finishedLotTransfer.create({
+                    data: {
+                        finishedLotStock: { connect: { id: lot.id } },
+                        product: { connect: { id: productId } },
+                        transferredBy: { connect: { id: sysUserId } },
+                        lotNumber: lot.lotNumber,
+                        fromZone: lot.zone,
+                        toZone: lot.zone,
+                        quantity: take,
+                        reason: reason || `Consumo FEFO (${source})`,
+                    },
+                });
+            }
+            lotsHit.push({ id: lot.id, lotNumber: lot.lotNumber, qty: take, before: lot.currentQuantity, after: newQty });
+            remaining -= take;
+        }
+
+        return {
+            consumed: quantity - remaining,
+            lotsHit,
+            shortfall: remaining,
+        };
+    });
+}
+
 module.exports = {
     ingestFromProduction,
     transferZone,
     consumeForOrder,
+    consumeFEFO,
     reverseForOrder,
     getStockByZone,
     getAvailableLots,

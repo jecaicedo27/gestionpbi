@@ -3,12 +3,11 @@ import { CheckCircle, Camera, AlertCircle, Thermometer } from 'lucide-react';
 import api from '../../../services/api';
 
 /**
- * GECoccionStep — Paso 3 Escarchado: Cocción y Enfriamiento
+ * GECoccionStep — Paso 3 Escarchado: Cocción Final
  *
- * 3 puntos de control secuenciales con foto obligatoria:
- *   1. Temperatura 65°C (calentamiento)
- *   2. Temperatura 45°C → agregar 43g sorbato de potasio
- *   3. Temperatura 40°C → listo para empacar
+ * 1 checkpoint según documento del ing. químico:
+ *   1. Elevar a 65°C con agitación → cerrar llave de calentamiento → empaque inmediato.
+ *   (El sorbato ya fue incorporado en la etapa anterior junto con la mezcla seca.)
  */
 
 const CHECKPOINTS = [
@@ -16,27 +15,9 @@ const CHECKPOINTS = [
         id: 'temp_65',
         temp: 65,
         color: 'red',
-        title: 'Calentamiento — 65°C',
-        instruction: 'Caliente la mezcla hasta alcanzar 65°C. Photograph el display del termómetro al llegar a esta temperatura.',
+        title: 'Cocción Final — 65°C',
+        instruction: 'Eleve la temperatura a 65°C con agitación constante. Al llegar, cierre la llave de calentamiento SIN abrir el sistema de enfriamiento y proceda inmediatamente al empaque. Fotografíe el termómetro.',
         context: 'coccion_65c',
-        accion: null,
-    },
-    {
-        id: 'temp_45',
-        temp: 45,
-        color: 'orange',
-        title: 'Primer Enfriamiento — 45°C + Sorbato',
-        instruction: 'Enfríe hasta 45°C. Al llegar, agregue 43g de sorbato de potasio y asegure su completa disolución mediante agitación. Fotografíe el termómetro.',
-        context: 'enfriamiento_45c_sorbato',
-        accion: { label: '+ 43g Sorbato de Potasio', icon: '🧪' },
-    },
-    {
-        id: 'temp_40',
-        temp: 40,
-        color: 'green',
-        title: 'Enfriamiento Final — 40°C',
-        instruction: 'Continúe el enfriamiento hasta 40°C. El sirope escarchado está listo para envasado. Fotografíe el termómetro como evidencia final.',
-        context: 'enfriamiento_40c_listo',
         accion: null,
     },
 ];

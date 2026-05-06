@@ -89,6 +89,7 @@ model User {
   academiaBonusesAwarded   AcademiaBonus[]           @relation("AcademiaBonusAwarder")
   isCleaningStaff          Boolean                   @default(false)
   isCleaningSupervisor     Boolean                   @default(false)
+  isCleaningOnly           Boolean                   @default(false)
   cleaningTasksAssigned    CleaningTask[]            @relation("CleaningTaskAssignee")
   cleaningTasksCreated     CleaningTask[]            @relation("CleaningTaskCreator")
   cleaningExecutions       CleaningExecution[]       @relation("CleaningExecutionUser")
@@ -1941,6 +1942,7 @@ model ShiftEmployee {
   // Campos de control de ingreso
   cedula             String?                  @unique
   faceDescriptor     Json?                    @map("face_descriptor")
+  faceDescriptorInsightface Json?             @map("face_descriptor_insightface")
   photoUrl           String?                  @map("photo_url")
   pin                String?
   isInPlant          Boolean                  @default(false) @map("is_in_plant")
@@ -1951,6 +1953,7 @@ model ShiftEmployee {
   overtimeApprovals  OvertimeApproval[]
   handoverSignatures ShiftHandoverSignature[] @relation("HandoverEmployee")
   user               User?                    @relation("ShiftUser", fields: [userId], references: [id])
+  payrollProfile     EmployeePayrollProfile?
 
   @@index([cedula])
   @@index([isInPlant])
@@ -2092,23 +2095,62 @@ enum AttendanceSource {
 // Overtime Approval (admin approves extra hours per day per employee)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+enum OvertimeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model OvertimeApproval {
-  id           String        @id @default(uuid())
-  employeeId   String        @map("employee_id")
-  date         DateTime      @db.Date
-  dayHours     Float         @default(0) @map("day_hours")
-  nightHours   Float         @default(0) @map("night_hours")
+  id           String         @id @default(uuid())
+  employeeId   String         @map("employee_id")
+  date         DateTime       @db.Date
+  dayHours     Float          @default(0) @map("day_hours")
+  nightHours   Float          @default(0) @map("night_hours")
   reason       String
-  approvedById String        @map("approved_by_id")
-  approvedAt   DateTime      @default(now()) @map("approved_at")
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
-  employee     ShiftEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  approvedBy   User          @relation(fields: [approvedById], references: [id])
+  category     String?
+  status       OvertimeStatus @default(PENDING)
+  reviewNotes  String?        @map("review_notes")
+  approvedById String?        @map("approved_by_id")
+  approvedAt   DateTime?      @map("approved_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  employee     ShiftEmployee  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  approvedBy   User?          @relation(fields: [approvedById], references: [id])
 
   @@index([employeeId, date])
   @@index([date])
+  @@index([status])
   @@map("overtime_approvals")
+}
+
+model PayrollHoliday {
+  id        String   @id @default(uuid())
+  date      DateTime @unique @db.Date
+  name      String
+  year      Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([year])
+  @@map("payroll_holidays")
+}
+
+model EmployeePayrollProfile {
+  id                 String        @id @default(uuid())
+  employeeId         String        @unique @map("employee_id")
+  salaryMonthly      Decimal       @map("salary_monthly") @db.Decimal(14, 2)
+  startDate          DateTime      @map("start_date") @db.Date
+  transportAllowance Boolean       @default(true) @map("transport_allowance")
+  monthlyBonus       Decimal       @default(0) @map("monthly_bonus") @db.Decimal(14, 2)
+  contractType       String        @default("INDEFINIDO") @map("contract_type")
+  active             Boolean       @default(true)
+  notes              String?
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+  employee           ShiftEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([active])
+  @@map("employee_payroll_profiles")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2410,6 +2452,7 @@ enum UserRole {
   COMERCIAL
   QUIMICO
   RECURSOS_HUMANOS
+  MECANICO
 }
 
 enum ProductType {

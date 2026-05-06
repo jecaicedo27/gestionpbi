@@ -221,7 +221,7 @@ const Layout = () => {
                 </div>
             </main>
 
-            {isTabletMode && <BottomNavBar userRole={user?.role} />}
+            {isTabletMode && <BottomNavBar userRole={user?.role} isCleaningOnly={!!user?.isCleaningOnly} isCleaningStaff={!!user?.isCleaningStaff} isCleaningSupervisor={!!user?.isCleaningSupervisor} />}
 
             {/* DISABLED — Shift handoff system paused */}
             {/* <ShiftBlockScreen userRole={user?.role} /> */}

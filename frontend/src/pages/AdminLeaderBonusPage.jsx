@@ -8,9 +8,19 @@ import { ChevronLeft, RefreshCw, TrendingDown, TrendingUp, AlertTriangle, Dollar
 // AdminLeaderBonusPage
 //
 // Vista solo-ADMIN para revisar el bono mensual proyectado de cada líder.
-// Modelo: $1.000.000 base por grupo / mes, repartido en 4 partes iguales.
-// Pérdida por turno: solo se mantiene si se hicieron 7 baches × score 100%.
-// Tabla con interpolación lineal de 4..7 baches y multiplicador de adherencia.
+// Modelo: $3.000.000 base por cuadrilla / mes (3 cuadrillas → $9M total).
+// % del bonus se calcula sobre TODO el cronograma productivo del turno
+// (BASES + ALGINATOS + PROTECCIÓN + ESFER), ponderado por tipo:
+//   • BASE: peso 1.0 · ALGINATO: 0.8-1.0 · PROTECCIÓN: 0.7-0.8 · COMIDA/ALISTAMIENTO: 0
+// Cada turno tiene su cronograma propio:
+//   • Lun-Vie MAÑANA / TARDE: 7 BASE + 2 ALG + 2 PROT (suma weights ≈ 10)
+//   • Lun-Vie NOCHE: 7 BASE + 3 ALG + 3 PROT (≈ 11.7)
+//   • Sábado MAÑANA: 6 BASE + 2 ALG + 2 PROT
+//   • Sábado TARDE: 5 BASE + 2 ALG + 2 PROT
+//   • Domingo NOCHE arranque: 4 BASE + 3 ALG + 2 PROT (≈ 8.4) — sin presión inalcanzable
+// pct = sum(weight de pasos hechos) / sum(weight de pasos productivos esperados)
+// Si el equipo cumple TODO el cronograma → 100% del bonus de ese turno.
+// FALLA registrada no penaliza. Adherencia (puntualidad) es informativa.
 // FALLAS registradas no penalizan baches pero adherencia sigue aplicando.
 // ──────────────────────────────────────────────────────────────────────
 
@@ -83,7 +93,7 @@ const AdminLeaderBonusPage = () => {
                         </button>
                         <div>
                             <h1 className="text-xl md:text-2xl font-extrabold text-slate-800">💰 Bonificación de líderes</h1>
-                            <p className="text-xs text-slate-500">Modelo de pérdida — base $1.000.000/mes/grupo · vista ADMIN</p>
+                            <p className="text-xs text-slate-500">Modelo de pérdida — base $3.000.000/mes/cuadrilla · vista ADMIN</p>
                         </div>
                     </div>
                     <button onClick={load} className="flex items-center gap-2 px-3 py-2 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-700">
@@ -163,8 +173,9 @@ const AdminLeaderBonusPage = () => {
                                         <tr>
                                             <th className="text-left px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Fecha</th>
                                             <th className="text-left px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Turno</th>
-                                            <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Baches</th>
-                                            <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">% baches</th>
+                                            <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Esfer</th>
+                                            <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Bases</th>
+                                            <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">% efectivo</th>
                                             <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Adher.</th>
                                             <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Falla</th>
                                             <th className="text-right px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Base</th>
@@ -175,18 +186,23 @@ const AdminLeaderBonusPage = () => {
                                     </thead>
                                     <tbody>
                                         {data.details.length === 0 && (
-                                            <tr><td colSpan={10} className="text-center py-8 text-slate-400">Sin turnos cerrados aún en este mes</td></tr>
+                                            <tr><td colSpan={11} className="text-center py-8 text-slate-400">Sin turnos cerrados aún en este mes</td></tr>
                                         )}
-                                        {data.details.map(d => (
+                                        {data.details.map(d => {
+                                            const pct = d.pctEfectivo ?? d.pctBaches ?? 0;
+                                            const esfer = d.esfer ?? 0;
+                                            const bases = d.bases ?? d.batches ?? 0;
+                                            return (
                                             <tr key={d.runId} className="border-b border-slate-100 hover:bg-blue-50/40">
                                                 <td className="px-3 py-2 font-medium text-slate-700">{d.date}</td>
                                                 <td className="px-3 py-2 text-slate-600">{SHIFT_LABEL[d.shift] || d.shift}</td>
-                                                <td className="px-3 py-2 text-center font-bold text-slate-700">{d.batches.toFixed(1)} <span className="text-[10px] text-slate-400">/7</span></td>
+                                                <td className="px-3 py-2 text-center font-bold text-slate-700">{Number(esfer).toFixed(2)} <span className="text-[10px] text-slate-400">({d.pctEsfer ?? 0}%)</span></td>
+                                                <td className="px-3 py-2 text-center font-bold text-slate-700">{Number(bases).toFixed(1)} <span className="text-[10px] text-slate-400">({d.pctBases ?? 0}%)</span></td>
                                                 <td className={`px-3 py-2 text-center font-bold ${
-                                                    d.pctBaches >= 100 ? 'text-emerald-600' :
-                                                    d.pctBaches >= 75 ? 'text-blue-600' :
-                                                    d.pctBaches >= 50 ? 'text-amber-600' : 'text-red-600'
-                                                }`}>{d.pctBaches}%</td>
+                                                    pct >= 100 ? 'text-emerald-600' :
+                                                    pct >= 75 ? 'text-blue-600' :
+                                                    pct >= 50 ? 'text-amber-600' : 'text-red-600'
+                                                }`}>{pct}%</td>
                                                 <td className={`px-3 py-2 text-center font-bold ${
                                                     d.adherence >= 90 ? 'text-emerald-600' :
                                                     d.adherence >= 75 ? 'text-blue-600' :
@@ -202,7 +218,8 @@ const AdminLeaderBonusPage = () => {
                                                 </td>
                                                 <td className="px-3 py-2 text-xs text-slate-500">{d.reason}</td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
@@ -211,10 +228,18 @@ const AdminLeaderBonusPage = () => {
                         {/* Tabla de referencia */}
                         <div className="mt-4 bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
                             <div className="font-bold mb-1">📐 Cómo se calcula:</div>
-                            <div>• <b>Por turno:</b> valor = (base / # turnos del mes) × % baches × % adherencia</div>
-                            <div>• <b>% baches</b> (interpolación lineal): 7 → 100% · 6 → 75% · 5 → 50% · ≤4 → 0%</div>
-                            <div>• <b>FALLA registrada:</b> mantiene 100% de baches, pero adherencia sigue aplicando</div>
-                            <div>• <b>Cross-turnos:</b> baches prorrateados por % de tiempo de esferificación dentro del turno</div>
+                            <div>• <b>Por turno:</b> valor = (base / # turnos del mes) × <b>% esfer extras</b> × <b>% cronograma soporte</b></div>
+                            <div className="text-[11px] italic text-blue-600">  ↳ El bono se paga SOLO sobre las esferificaciones que la empresa empieza a ganar (las primeras son lo normal, cubiertas por el sueldo).</div>
+                            <div className="mt-1">• <b>% esfer extras</b> (curva por meta del turno):</div>
+                            <div className="ml-4 text-[11px]">– <b>Lun-Vie meta=7:</b> ≤4 = 0% (normal) · <b>5 = 20%</b> · <b>6 = 50%</b> · <b>7 = 100%</b></div>
+                            <div className="ml-4 text-[11px]">– <b>Sáb-mañana meta=6:</b> ≤3 = 0% · 4 = 20% · 5 = 50% · 6 = 100%</div>
+                            <div className="ml-4 text-[11px]">– <b>Sáb-tarde / Dom-noche arranque meta=3:</b> ≤1 = 0% · 2 = 20% · 3 = 100%</div>
+                            <div className="mt-1">• <b>% cronograma soporte</b> (multiplicador 0–1) = pesos pasos hechos / pesos productivos esperados</div>
+                            <div className="ml-4 text-[11px]">– Pesos: <b>BASE 1.0</b> · <b>ALGINATO 0.8–1.0</b> · <b>PROTECCIÓN 0.7–0.8</b> · COMIDA/ALISTAMIENTO 0</div>
+                            <div className="ml-4 text-[11px] italic text-blue-600">  ↳ Si no cumple bases/alginatos/protección, descuenta proporcionalmente — sin soporte la cadena se rompe para la siguiente cuadrilla.</div>
+                            <div>• <b>FALLA registrada:</b> mantiene 100% en esferificaciones — no penaliza</div>
+                            <div>• <b>Adherencia (puntualidad):</b> métrica educativa, NO descuenta del bono</div>
+                            <div>• <b>Cross-turnos:</b> un bache cuenta para el turno donde INICIA, aunque la esferificación caiga al siguiente</div>
                             <div>• <b>Reparto:</b> total ÷ {data.peoplePerGroup} personas (líder + operarios)</div>
                         </div>
                     </>

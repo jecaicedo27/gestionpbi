@@ -312,6 +312,34 @@ const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) =
         ? batch.notes.filter(n => n.completedAt).map(n => new Date(n.completedAt)).sort((a, b) => b - a)[0] || null
         : null;
 
+    // ── Detección de bache HEREDADO (cross-turno) ──
+    // Calcula el inicio del turno actual en COT. Si el bache empezó antes
+    // del turno actual, lo marcamos como heredado y diferenciamos:
+    //   • inheritedBase: la base se preparó en el turno anterior (esferifica este equipo)
+    //   • inheritedEsfer: la esferificación arrancó en el turno anterior (este equipo solo cierra)
+    let inheritedKind = null; // null | 'base' | 'esfer'
+    if (batchStartedAt && !isDone) {
+        const now = new Date();
+        const cot = new Date(now.toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+        const h = cot.getHours();
+        const shiftStart = new Date(cot);
+        shiftStart.setMinutes(0, 0, 0);
+        if (h >= 6 && h < 14) shiftStart.setHours(6);
+        else if (h >= 14 && h < 22) shiftStart.setHours(14);
+        else {
+            shiftStart.setHours(22);
+            if (h < 6) shiftStart.setDate(shiftStart.getDate() - 1);
+        }
+        if (batchStartedAt < shiftStart) {
+            const formacion = batch.notes.find(n => ['FORMACION', 'G_FORMACION'].includes(n.processType?.code));
+            if (formacion?.startedAt && new Date(formacion.startedAt) < shiftStart) {
+                inheritedKind = 'esfer'; // esferificación arrancó turno anterior
+            } else {
+                inheritedKind = 'base'; // solo base/preparación turno anterior
+            }
+        }
+    }
+
     // ── Build radiography data for completed batches ──
     const ingredients = [];
     if (isDone) {
@@ -357,12 +385,27 @@ const BatchCard = ({ batch, onStart, onDelete, onRefresh, isAdmin, userRole }) =
                             {isDone ? '✓ Completado' : isRunning ? 'En Proceso' : 'Pendiente'}
                         </span>
                         <AdherenceBadge batch={batch} />
+                        {inheritedKind === 'base' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-amber-700 text-[10px] font-extrabold uppercase tracking-wider"
+                                title="Base preparada en el turno anterior — este equipo se encarga de la esferificación">
+                                ↩ Base heredada
+                            </span>
+                        )}
+                        {inheritedKind === 'esfer' && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-violet-50 border border-violet-300 text-violet-700 text-[10px] font-extrabold uppercase tracking-wider"
+                                title="Esferificación iniciada en el turno anterior — este equipo solo la cierra">
+                                ↩ Esfer heredada
+                            </span>
+                        )}
                     </div>
                     <div className="flex items-center gap-2">
                         {batchStartedAt && !isDone && (
                             <div className="flex items-center gap-1 text-[11px] text-blue-500 font-semibold">
                                 <Timer size={10} />
                                 <LiveTimer startedAt={batchStartedAt} />
+                                <span className="ml-1 text-slate-400 font-normal" title="Hora real en que el bache arrancó">
+                                    · ▶ {fmtTime(batchStartedAt)}
+                                </span>
                             </div>
                         )}
                         {isDone && batchStartedAt && batchCompletedAt && (

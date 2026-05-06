@@ -18,4 +18,7 @@ router.get('/non-work-days', auth, ctrl.listNonWorkDays);
 router.post('/non-work-days', auth, ctrl.addNonWorkDay);
 router.delete('/non-work-days/:date', auth, ctrl.removeNonWorkDay);
 
+// Analítica de tiempos para ajustar cronograma a la dinámica real
+router.get('/analytics/timing-stats', auth, ctrl.timingStats);
+
 module.exports = router;

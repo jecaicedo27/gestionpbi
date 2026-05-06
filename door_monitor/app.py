@@ -171,10 +171,24 @@ async def lifespan(app: FastAPI):
 
     log.info("Cargando InsightFace buffalo_sc...")
     face_app = FaceAnalysis(name="buffalo_sc", providers=["CPUExecutionProvider"])
-    face_app.prepare(ctx_id=0, det_size=(320, 320))
+    # det_size 480 — mejor para caras en kiosko (compensa distancia y resolución de tablet)
+    face_app.prepare(ctx_id=0, det_size=(480, 480))
 
     load_enrolled()
-    log.info(f"Servicio listo en :3063 — {len(enrolled_cache)} identidades cargadas")
+
+    # Warm-up único en arranque: precalienta los pesos del ONNX runtime para
+    # que la primera petición real no pague el JIT de la primera inferencia.
+    # No corremos un keep-warm periódico porque el modelo ya está en RAM y
+    # cada inferencia dummy puede bloquear ~100-300 ms una petición /match
+    # concurrente del kiosko.
+    try:
+        warm = np.zeros((480, 480, 3), dtype=np.uint8)
+        face_app.get(warm)
+        log.info("InsightFace pre-calentado (warm-up exitoso)")
+    except Exception as e:
+        log.warning(f"Warm-up falló: {e}")
+
+    log.info(f"Servicio listo en :3063 — {len(enrolled_cache)} identidades cargadas | det_size=480")
     yield
     log.info("Cerrando door-monitor...")
 
@@ -245,6 +259,99 @@ def reload_enrolled():
     """Recarga el cache de descriptores desde la DB (útil tras enrolar desde otro proceso)."""
     load_enrolled()
     return {"enrolled": len(enrolled_cache)}
+
+
+@app.post("/match")
+async def match(file: UploadFile = File(...)):
+    """
+    Identifica a quién pertenece la cara en la imagen.
+    Devuelve {employee_id, name, distance, similarity, matched: bool}.
+    """
+    raw   = await file.read()
+    arr   = np.frombuffer(raw, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(400, "Imagen inválida")
+
+    faces = face_app.get(frame)
+    if not faces:
+        return {"matched": False, "reason": "no_face_detected"}
+
+    # Tomar la cara más grande
+    face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
+    embedding = face.embedding
+
+    if not enrolled_cache:
+        return {"matched": False, "reason": "no_enrolled_employees"}
+
+    eid, ename, dist = identify_face(embedding)
+    if not eid:
+        return {
+            "matched": False,
+            "reason": "below_threshold",
+            "best_distance": round(dist, 4),
+            "threshold": FACE_THRESHOLD,
+        }
+
+    return {
+        "matched": True,
+        "employee_id": eid,
+        "name": ename,
+        "distance": round(dist, 4),
+        "similarity": round(1.0 - dist, 4),
+        "threshold": FACE_THRESHOLD,
+    }
+
+
+@app.post("/enroll-multi/{employee_id}")
+async def enroll_multi(
+    employee_id: str,
+    files: list[UploadFile] = File(...),
+):
+    """
+    Enrola/actualiza con MÚLTIPLES fotos. Promedia los embeddings (más robusto).
+    """
+    embeddings = []
+    for f in files:
+        raw = await f.read()
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        faces = face_app.get(frame)
+        if not faces:
+            continue
+        face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
+        embeddings.append(face.embedding)
+
+    if not embeddings:
+        raise HTTPException(422, "No se detectó cara en ninguna de las fotos")
+
+    # Promedio normalizado
+    avg = np.mean(np.stack(embeddings), axis=0)
+    avg = avg / (np.linalg.norm(avg) + 1e-10)
+
+    conn = db_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, name FROM shift_employees WHERE id = %s", (employee_id,))
+    emp = cur.fetchone()
+    if not emp:
+        cur.close(); conn.close()
+        raise HTTPException(404, "Empleado no encontrado")
+    cur.execute(
+        "UPDATE shift_employees SET face_descriptor_insightface = %s WHERE id = %s",
+        (json.dumps(avg.tolist()), employee_id)
+    )
+    conn.commit(); cur.close(); conn.close()
+    load_enrolled()
+
+    log.info(f"Enrolado multi InsightFace: {emp['name']} ({employee_id}) — {len(embeddings)} fotos válidas")
+    return {
+        "success": True,
+        "employee": emp["name"],
+        "photos_used": len(embeddings),
+        "embedding_size": len(avg),
+    }
 
 
 @app.post("/process-frame")

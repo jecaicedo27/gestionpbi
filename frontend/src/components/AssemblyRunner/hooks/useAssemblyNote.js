@@ -331,10 +331,37 @@ export function useAssemblyNote(id) {
             steps.push({ type: 'IMPRESION_LOTE', data: noteData });
             skipOutput = true;
         } else if (isEscarchadoStep) {
-            // Escarchado dedicated steps — each has its own specialized UI
-            if (isGEPremix) steps.push({ type: 'GE_PREMIX', data: noteData });
-            if (isGEBaseLiquida) steps.push({ type: 'GE_BASE_LIQUIDA', data: noteData });
+            // Escarchado: GE_BASE_LIQUIDA y GE_PREMIX son pesajes — usan
+            // PESAJE_BATCH para garantizar foto + lote + cantidad por
+            // ingrediente, igual que PROTECCION/COMPUESTO/SABORIZACION.
+            // GE_COCCION sí mantiene su componente especializado (control
+            // de temperatura, no pesaje).
+            if (isGEBaseLiquida || isGEPremix) {
+                if (noteData.items?.length > 0) {
+                    // GE_PREMIX: si todos los items YA tienen actualQuantity > 0
+                    // (porque el operario los pesó en el panel "Mientras esperas"
+                    // del COCCION_INVERSION del stage anterior), saltar PESAJE_BATCH
+                    // y dejar solo ADICION_BATCH.
+                    const allPrePesado = isGEPremix && noteData.items.every(
+                        it => it.actualQuantity != null && it.actualQuantity > 0
+                    );
+                    if (!allPrePesado) {
+                        steps.push({ type: 'PESAJE_BATCH', data: noteData.items });
+                    }
+                    const adicionItems = (noteData.items || []).slice().sort(
+                        (a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999)
+                    );
+                    steps.push({ type: 'ADICION_BATCH', data: adicionItems });
+                }
+                // GE_BASE_LIQUIDA: después de adicionar, cocción + enfriamiento
+                // de la azúcar invertida (90°C calentamiento → 50°C enfriamiento)
+                // antes de incorporar el premix.
+                if (isGEBaseLiquida) steps.push({ type: 'COCCION_INVERSION', data: noteData });
+                // GE_PREMIX: ya está cubierto por PESAJE_BATCH + ADICION_BATCH;
+                // no se necesita la pantalla dedicada — sería repetir.
+            }
             if (isGECoccion) steps.push({ type: 'GE_COCCION', data: noteData });
+            skipOutput = true;
         } else if (isProteccionFlow && isPesaje && noteData.items?.length > 0) {
             // Flujo PROTECCION (TMPL015/019/025/Blueberry/Fresa/Mango/Café/etc.)
             // Mismo patrón que Azúcar Invertida: el agua es un ingrediente más

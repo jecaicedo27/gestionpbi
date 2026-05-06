@@ -419,6 +419,25 @@ const refreshStepsFromProduction = async (run) => {
     assignByType('ALGINATO');
     assignByType('PROTECCION');
 
+    // Auto-marcar ALISTAMIENTO como hecho si la primera BASE o el primer
+    // ALGINATO ya fue ejecutado — eso prueba que la maquinaria está alistada.
+    // PROTECCION NO se hace en máquina (se hace en tarro aparte), por lo que
+    // su ejecución no implica alistamiento de equipos.
+    const firstMachineStep = steps.find(s =>
+        ['BASE', 'ALGINATO'].includes(s.type) && s.doneAt
+    );
+    if (firstMachineStep) {
+        steps.forEach(s => {
+            if (s.type === 'ALISTAMIENTO' && !s.doneAt) {
+                s.doneAt = firstMachineStep.doneAt;
+                s.doneBy = firstMachineStep.doneBy || null;
+                s.deltaMin = 0;
+                s.score = 100;
+                s.notes = `Auto-marcado: el primer ${firstMachineStep.type} (${firstMachineStep.label}) prueba que la maquinaria ya estaba alistada.`;
+            }
+        });
+    }
+
     return steps;
 };
 
@@ -429,7 +448,14 @@ const refreshStepsFromProduction = async (run) => {
 const findLeaderIdForShift = async (shiftDate, shiftCode) => {
     try {
         // shiftDate es 'YYYY-MM-DD' — convertir a Date (00:00 UTC) para query de rango
-        const dateObj = new Date(`${shiftDate}T12:00:00.000Z`); // mediodía UTC para evitar saltos
+        let dateObj = new Date(`${shiftDate}T12:00:00.000Z`); // mediodía UTC para evitar saltos
+        // REGLA OPERATIVA: la semana laboral arranca con el DOM-NOCHE
+        // (alistamiento + primer ciclo). Para el lookup de líder, si el shift
+        // es DOMINGO NOCHE, lo atribuimos a la semana SIGUIENTE (la que cubre
+        // lunes-sábado), no a la semana saliente que terminó sábado tarde.
+        if (shiftCode === 'NOCHE' && dateObj.getUTCDay() === 0) {
+            dateObj = new Date(dateObj.getTime() + 24 * 3600000); // +1 día → lunes
+        }
         const week = await prisma.shiftWeek.findFirst({
             where: { weekStart: { lte: dateObj }, weekEnd: { gte: dateObj } },
             select: { id: true },
@@ -546,8 +572,35 @@ const ESFER_TARGET_MIN = 70;
 // turno. Mañana inicia 0.4 + tarde termina 0.6 → ambas suman para sus metas.
 // Para baches en curso, la fracción se calcula contra el tiempo objetivo (70 min)
 // para no esperar a que terminen.
-const buildEsferificacionSummary = async (shiftStart, shiftEnd) => {
-    const TARGET = 7;
+// Meta de esferificaciones por tipo de turno:
+//   • Normal: 7 baches por turno (cycle 7×~70min = 490min ≈ 8h).
+//   • Sábado MAÑANA (6 AM-12 M, 6h productivas): 6 baches.
+//   • Sábado TARDE (12 M-5 PM productivos antes del lavado): 5 baches.
+//   • Domingo NOCHE → Lunes amanecer (arranque): 3 baches reales.
+//     Razón: 22:00 entrar → 22:00-00:30 alistamiento (2.5h) → 00:30/01:00/01:30
+//     ALGINATOS → 02:00 BASE#1 → 03:00 ESFER#1 → 04:00 ESFER#2 → 06:00 ESFER#3.
+//     Físicamente máximo 3 esferificaciones + 4 bases. Antes era 5, era injusto.
+const _esferTargetForShift = (shiftDate, shiftCode) => {
+    if (!shiftDate || !shiftCode) return 7;
+    const d = new Date(`${shiftDate}T12:00:00.000Z`);
+    const dayIdx = d.getUTCDay(); // 0=Dom, 6=Sab
+    if (dayIdx === 0 && shiftCode === 'NOCHE') return 3; // arranque semana
+    if (dayIdx === 6 && shiftCode === 'MANANA') return 6; // sábado mañana (lo que alcance en 6h: 6am-12m)
+    if (dayIdx === 6 && shiftCode === 'TARDE') return 3;  // sábado tarde (4h lavado + 2h baches → 3 esfer máx)
+    return 7;
+};
+
+// Meta de BASES por tipo de turno (lo normal = baseline; extras dan bono).
+const _baseTargetForShift = (shiftDate, shiftCode) => {
+    if (!shiftDate || !shiftCode) return 7;
+    const d = new Date(`${shiftDate}T12:00:00.000Z`);
+    const dayIdx = d.getUTCDay();
+    if (dayIdx === 0 && shiftCode === 'NOCHE') return 4; // arranque: 4 bases en cronograma
+    return 7;
+};
+
+const buildEsferificacionSummary = async (shiftStart, shiftEnd, shiftDate, shiftCode) => {
+    const TARGET = _esferTargetForShift(shiftDate, shiftCode);
     const ws = shiftStart.getTime();
     const we = shiftEnd.getTime();
 
@@ -697,8 +750,8 @@ exports.getCurrent = async (req, res) => {
             where: { id: run.id },
             data: { steps: refreshedSteps },
         });
-        // Resumen de esferificaciones de la cuadrilla
-        const esferificacion = await buildEsferificacionSummary(run.shiftStart, run.shiftEnd);
+        // Resumen de esferificaciones de la cuadrilla (meta varía por turno)
+        const esferificacion = await buildEsferificacionSummary(run.shiftStart, run.shiftEnd, run.shiftDate, run.shiftCode);
         res.json({ success: true, data: { ...updated, esferificacion } });
     } catch (e) {
         logger.error('[shift-discipline] getCurrent error:', e);
@@ -802,13 +855,35 @@ exports.history = async (req, res) => {
         }) : [];
         const nameMap = new Map(employees.map(e => [e.id, e.name]));
 
-        const summarized = rows.map(r => {
+        // Calcular bono por turno (mismo cálculo que monthlyBonus para coherencia)
+        const valuePerShift = BONUS_DEFAULT_BASE / 24;
+        const summarizedPromises = rows.map(async (r) => {
             const steps = Array.isArray(r.steps) ? r.steps : [];
             const total = steps.length;
             const done = steps.filter(s => s.doneAt).length;
             const late = steps.filter(s => s.doneAt && typeof s.deltaMin === 'number' && s.deltaMin > 5).length;
             const missed = steps.filter(s => !s.doneAt).length;
             const alerted = Array.isArray(r.alertedSteps) ? r.alertedSteps.length : 0;
+
+            // Cálculo de bono por turno (alineado con monthlyBonus):
+            //   bono = base × (70% × pctExtras + 30% × pctCronograma)
+            // Privilegia extras (lo que la empresa empieza a ganar) pero deja
+            // piso por cumplimiento del cronograma normal.
+            let bonusValue = 0;
+            try {
+                const bases = await countBatchesForShift(r.shiftStart, r.shiftEnd);
+                const esfer = await countEsferForShift(r.shiftStart, r.shiftEnd);
+                const hadFailure = await shiftHadFailure(r.shiftStart, r.shiftEnd);
+                const esferTarget = _esferTargetForShift(r.shiftDate, r.shiftCode);
+                const baseTarget  = _baseTargetForShift(r.shiftDate, r.shiftCode);
+                const pctCron   = hadFailure ? 1.0 : computePctCronogramaTotal(steps);
+                const pctEsfer  = hadFailure ? 1.0 : interpolatePctByBaches(esfer, esferTarget);
+                const pctBases  = hadFailure ? 1.0 : interpolatePctByBaches(bases, baseTarget);
+                const pctExtras = (pctEsfer + pctBases) / 2;
+                const pct = (pctExtras * 0.7) + (pctCron * 0.3);
+                bonusValue = Math.round(valuePerShift * pct);
+            } catch (e) { /* ignore */ }
+
             return {
                 id: r.id,
                 shiftDate: r.shiftDate,
@@ -825,10 +900,38 @@ exports.history = async (req, res) => {
                 stepsLate: late,
                 stepsMissed: missed,
                 alertsCount: alerted,
+                bonusValue,
             };
         });
+        const summarized = await Promise.all(summarizedPromises);
 
-        res.json({ success: true, total, page, pageSize, data: summarized });
+        // Acumulado por líder (en el rango filtrado)
+        const leaderTotals = {};
+        for (const s of summarized) {
+            const k = s.leaderId || '__none__';
+            if (!leaderTotals[k]) {
+                leaderTotals[k] = {
+                    leaderId: s.leaderId,
+                    leaderName: s.leaderName,
+                    shifts: 0,
+                    totalBonus: 0,
+                    avgScore: 0,
+                    _scoreSum: 0,
+                };
+            }
+            leaderTotals[k].shifts++;
+            leaderTotals[k].totalBonus += s.bonusValue || 0;
+            leaderTotals[k]._scoreSum += s.finalScore || 0;
+        }
+        const leaderAccum = Object.values(leaderTotals).map(l => ({
+            leaderId: l.leaderId,
+            leaderName: l.leaderName,
+            shifts: l.shifts,
+            totalBonus: l.totalBonus,
+            avgScore: l.shifts ? Math.round(l._scoreSum / l.shifts) : 0,
+        })).sort((a, b) => b.totalBonus - a.totalBonus);
+
+        res.json({ success: true, total, page, pageSize, data: summarized, leaderAccum });
     } catch (e) {
         logger.error('[shift-discipline] history error:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -882,7 +985,7 @@ exports.getRunDetail = async (req, res) => {
         // Resumen histórico de esferificaciones de la cuadrilla en la ventana del turno
         let esferificacion = null;
         try {
-            esferificacion = await buildEsferificacionSummary(run.shiftStart, run.shiftEnd);
+            esferificacion = await buildEsferificacionSummary(run.shiftStart, run.shiftEnd, run.shiftDate, run.shiftCode);
         } catch (e) {
             logger.warn('[shift-discipline] esferificacion summary failed:', e?.message);
         }
@@ -966,28 +1069,118 @@ exports.leaderRanking = async (req, res) => {
 //   }
 // ──────────────────────────────────────────────────────────────────────
 
-const BONUS_DEFAULT_BASE         = 1_000_000;
+// Bono mensual por cuadrilla. $3M por cada cuadrilla (3 cuadrillas → $9M total)
+// pero el endpoint /bonus es por líder/cuadrilla individual: $3M.
+const BONUS_DEFAULT_BASE         = 3_000_000;
 const BONUS_DEFAULT_PEOPLE       = 4;
-const BONUS_BACHES_THRESHOLDS    = [
-    { batches: 4, pct: 0   },
-    { batches: 5, pct: 0.5 },
-    { batches: 6, pct: 0.75 },
-    { batches: 7, pct: 1.0 },
-];
 
-const interpolatePctByBaches = (b) => {
-    if (b <= 4) return 0;
-    if (b >= 7) return 1.0;
-    // Buscar segmento
-    for (let i = 0; i < BONUS_BACHES_THRESHOLDS.length - 1; i++) {
-        const lo = BONUS_BACHES_THRESHOLDS[i];
-        const hi = BONUS_BACHES_THRESHOLDS[i + 1];
-        if (b >= lo.batches && b <= hi.batches) {
-            const t = (b - lo.batches) / (hi.batches - lo.batches);
-            return lo.pct + t * (hi.pct - lo.pct);
-        }
+// Tiers de % desbloqueado por baches/turno. La meta perfecta (100%) varía:
+//   • Turno normal (Lun-Vie + AUX): 7 baches.
+//   • Sábado MAÑANA: 6 baches.
+//   • Sábado TARDE / Dom NOCHE arranque: 5 baches.
+// La escalera siempre es: ≤4 → 0%, meta-2 → 20%, meta-1 → 30%, meta → 100%
+// (para meta=5: ≤2→0%, 3→20%, 4→30%, 5→100%).
+// Filosofía: las primeras (target-3) esferificaciones son LO NORMAL (cubierto
+// por sueldo base, sin bono). A partir de ahí, la empresa empieza a ganar y
+// paga bono. Curva por escalones:
+//   target=7 (normal): ≤4 = 0% (normal) · 5 = 20% · 6 = 50% · 7 = 100%
+//   target=6 (sáb-mañ): ≤3 = 0% (normal) · 4 = 20% · 5 = 50% · 6 = 100%
+//   target=3 (arranque/sáb-tarde): ≤1 = 0% · 2 = 20% · 3 = 100%
+// Devuelve el % discreto para un # entero de baches (curva escalonada).
+//   target=3 (arranque/sáb-tarde): el primer bache YA es esfuerzo extra
+//     después del alistamiento, por eso curva generosa: 1=30%, 2=70%, 3=100%
+//   target≥5 (productivo): las primeras (t-3) son lo normal, no pagan bono
+//     5/6/7: ≤4=0%, 5=20%, 6=50%, 7=100%
+const _pctDiscreto = (n, t) => {
+    if (t === 3) {
+        if (n >= 3) return 1.0;
+        if (n === 2) return 0.70;
+        if (n === 1) return 0.30;
+        return 0;
     }
+    const baseline = t - 3;
+    if (n <= baseline) return 0;
+    if (n >= t)        return 1.0;
+    if (n === t - 1)   return 0.50;
+    if (n === t - 2)   return 0.20;
     return 0;
+};
+
+// Interpolación LINEAL entre escalones para baches fraccionales.
+// Una esfer al 57% del siguiente escalón aporta 57% del incremento.
+// Ejemplo: 4.57 con target=7 → 0% (4) + 0.57 × (20% − 0%) = 11.4%
+//          5.50 con target=7 → 20% (5) + 0.50 × (50% − 20%) = 35%
+//          6.20 con target=7 → 50% (6) + 0.20 × (100% − 50%) = 60%
+const interpolatePctByBaches = (b, target = 7) => {
+    const t = Math.max(3, Math.min(7, target));
+    if (b <= 0) return 0;
+    const floor = Math.floor(b + 0.001);
+    const fraction = Math.max(0, Math.min(1, b - floor));
+    const pctFloor = _pctDiscreto(floor, t);
+    const pctCeil  = _pctDiscreto(floor + 1, t);
+    return pctFloor + (pctCeil - pctFloor) * fraction;
+};
+
+// Cumplimiento del cronograma de SOPORTE (alginatos + protección) — usado
+// como multiplicador en turnos productivos (Lun-Vie + Sáb-mañana).
+const computePctSoporte = (steps) => {
+    if (!Array.isArray(steps) || steps.length === 0) return 1;
+    let totalW = 0, doneW = 0;
+    for (const s of steps) {
+        if (s.type !== 'ALGINATO' && s.type !== 'PROTECCION') continue;
+        const w = typeof s.weight === 'number' ? s.weight : 1;
+        totalW += w;
+        if (s.doneAt || s.actualBatchId) doneW += w;
+    }
+    if (totalW === 0) return 1;
+    return doneW / totalW;
+};
+
+// Cumplimiento TOTAL del cronograma productivo del turno (bases + alg + prot
+// ponderados). Usado como base del bono en turnos especiales (arranque,
+// sáb-tarde) donde el target esfer físicamente bajo (3) hace que la fórmula
+// de "extras" penalice injustamente. En estos turnos, hacer el cronograma
+// completo YA es el mérito — no se piden esfer extras imposibles.
+const computePctCronogramaTotal = (steps) => {
+    if (!Array.isArray(steps) || steps.length === 0) return 0;
+    let totalW = 0, doneW = 0;
+    for (const s of steps) {
+        if (s.type === 'COMIDA' || s.type === 'ALISTAMIENTO') continue;
+        const w = typeof s.weight === 'number' ? s.weight : 1;
+        totalW += w;
+        if (s.doneAt || s.actualBatchId) doneW += w;
+    }
+    if (totalW === 0) return 0;
+    return doneW / totalW;
+};
+
+// Cuenta esferificaciones que el operario INICIÓ dentro del turno.
+// Regla: igual que countBatchesForShift (bases), un bache cuenta para el
+// turno donde se INICIA, no donde termina. Si Gabriel arrancó la esfer
+// 10 min antes del cierre y termina 50 min después, igual cuenta como 1.0
+// completa — el trabajo (pesaje + adición + cocción + arranque del cronómetro)
+// fue suyo. Lo que se "termine" después es solo cronómetro corriendo.
+const countEsferForShift = async (shiftStart, shiftEnd) => {
+    const ws = shiftStart.getTime();
+    const we = shiftEnd.getTime();
+    const lookbackStart = new Date(ws - 24 * 3600000);
+    const notes = await prisma.assemblyNote.findMany({
+        where: {
+            processType: { code: 'FORMACION' },
+            status: { in: ['EXECUTING', 'COMPLETED'] },
+            productionBatch: { startedAt: { gte: lookbackStart } },
+        },
+        select: { processParameters: true },
+    });
+    let total = 0;
+    for (const n of notes) {
+        const t = n.processParameters?.esferificacion_timer;
+        if (!t || !t.startTime) continue;
+        const s = new Date(t.startTime).getTime();
+        // Cuenta si la esfer ARRANCÓ dentro del turno
+        if (s >= ws && s < we) total += 1;
+    }
+    return total;
 };
 
 // Cuenta baches BASE Liquipops FINALES cuyo `startedAt` cae DENTRO del turno.
@@ -1064,8 +1257,13 @@ exports.monthlyBonus = async (req, res) => {
             where: { weekId: { in: weekIds }, employeeId: leaderId },
             select: { id: true, shift: true },
         }) : [];
-        // 1 asignación = 6 turnos por semana del mismo turno (Lun-Sáb), aproximación
-        const totalShiftsInMonth = Math.max(1, assignments.length * 24); // 4 semanas × 6 días
+        // Estándar fijo: 24 turnos productivos por mes (4 semanas × 6 días
+        // Lun-Sáb del mismo turno). La programación se hace semanal, no
+        // mensual, así que asumimos un mes "completo" para tener un valor
+        // estable por turno. Al cierre de mes se prorratea según los
+        // turnos efectivos en `assignments`.
+        const STANDARD_SHIFTS_PER_MONTH = 24;
+        const totalShiftsInMonth = STANDARD_SHIFTS_PER_MONTH;
 
         // Runs cerrados del líder en el mes (excluye ventanas sin producción)
         const allRunsLeader = await prisma.shiftDisciplineRun.findMany({
@@ -1085,24 +1283,54 @@ exports.monthlyBonus = async (req, res) => {
         const details = [];
 
         for (const r of runs) {
-            const baches = await countBatchesForShift(r.shiftStart, r.shiftEnd);
+            const bases = await countBatchesForShift(r.shiftStart, r.shiftEnd);
+            const esfer = await countEsferForShift(r.shiftStart, r.shiftEnd);
             const hadFailure = await shiftHadFailure(r.shiftStart, r.shiftEnd);
-            const pctBaches = hadFailure ? 1.0 : interpolatePctByBaches(baches);
+            const esferTarget = _esferTargetForShift(r.shiftDate, r.shiftCode);
+            const baseTarget  = _baseTargetForShift(r.shiftDate, r.shiftCode);
+            const stepsArr = Array.isArray(r.steps) ? r.steps : [];
+
+            // Filosofía híbrida 70/30: el bono privilegia los EXTRAS (lo que la
+            // empresa empieza a ganar más allá de lo normal 4+4) pero deja un
+            // piso de cumplimiento del cronograma para que nadie quede en $0
+            // si sí trabajó.
+            //   • 70% EXTRAS: ½(pctEsfer + pctBases) — paga sobre 5/6/7 baches
+            //   • 30% CRONOGRAMA: pctCronogramaTotal (bases + alg + prot)
+            const pctCron   = hadFailure ? 1.0 : computePctCronogramaTotal(stepsArr);
+            const pctEsfer  = hadFailure ? 1.0 : interpolatePctByBaches(esfer, esferTarget);
+            const pctBases  = hadFailure ? 1.0 : interpolatePctByBaches(bases, baseTarget);
+            const pctExtras = (pctEsfer + pctBases) / 2;
+            const pctSoporte = computePctSoporte(stepsArr); // informativo
+            const pctProduccion = (pctExtras * 0.7) + (pctCron * 0.3);
+
             const adherence = (r.finalScore || 0) / 100;
             const baseValue = valuePerShift;
-            const retainedValue = baseValue * pctBaches * adherence;
+            const retainedValue = baseValue * pctProduccion;
             const lostValue = baseValue - retainedValue;
 
+            // Conteo por tipo (informativo)
+            const productiveSteps = stepsArr.filter(s => s.type !== 'COMIDA' && s.type !== 'ALISTAMIENTO');
+            const doneSteps = productiveSteps.filter(s => s.doneAt || s.actualBatchId);
+            const byType = {};
+            for (const s of productiveSteps) {
+                if (!byType[s.type]) byType[s.type] = { done: 0, total: 0 };
+                byType[s.type].total++;
+                if (s.doneAt || s.actualBatchId) byType[s.type].done++;
+            }
+            const breakdown = Object.entries(byType)
+                .map(([t, v]) => `${t}: ${v.done}/${v.total}`)
+                .join(' · ');
+
             const reasons = [];
-            if (!hadFailure && baches < 7) {
-                reasons.push(`Solo ${baches.toFixed(1)} baches (objetivo 7) → retiene ${(pctBaches*100).toFixed(0)}%`);
+            if (!hadFailure) {
+                reasons.push(`Esfer ${esfer}/${esferTarget} → ${(pctEsfer*100).toFixed(0)}% · Bases ${bases.toFixed(1)}/${baseTarget} → ${(pctBases*100).toFixed(0)}%`);
+                if (pctSoporte < 1) {
+                    reasons.push(`Soporte ${(pctSoporte*100).toFixed(0)}% (alginatos+protección) → ${breakdown}`);
+                }
+            } else {
+                reasons.push('FALLA registrada → mantiene 100% esfer y bases');
             }
-            if (hadFailure) {
-                reasons.push('FALLA registrada → no penaliza por baches');
-            }
-            if (adherence < 1) {
-                reasons.push(`Adherencia ${Math.round((r.finalScore || 0))}% (factor ${(adherence).toFixed(2)})`);
-            }
+            if (adherence < 1) reasons.push(`Adherencia ${Math.round(r.finalScore || 0)}% (informativo)`);
 
             totalEarned += retainedValue;
             totalLost   += lostValue;
@@ -1110,12 +1338,19 @@ exports.monthlyBonus = async (req, res) => {
                 runId: r.id,
                 date: r.shiftDate,
                 shift: r.shiftCode,
-                batches: parseFloat(baches.toFixed(2)),
+                bases: parseFloat(bases.toFixed(2)),
+                esfer,
+                stepsDone: doneSteps.length,
+                stepsTotal: productiveSteps.length,
+                breakdown,
                 score: r.finalScore || 0,
                 grade: r.finalGrade || null,
                 hadFailure,
                 baseValue: Math.round(baseValue),
-                pctBaches: parseFloat((pctBaches * 100).toFixed(1)),
+                pctEsfer: parseFloat((pctEsfer * 100).toFixed(1)),
+                pctBases: parseFloat((pctBases * 100).toFixed(1)),
+                pctSoporte: parseFloat((pctSoporte * 100).toFixed(1)),
+                pctEfectivo: parseFloat((pctProduccion * pctSoporte * 100).toFixed(1)),
                 adherence: parseFloat((adherence * 100).toFixed(1)),
                 retainedValue: Math.round(retainedValue),
                 lostValue: Math.round(lostValue),
@@ -1215,6 +1450,131 @@ exports._closeRun = async (id) => {
 };
 
 exports.SHIFT_TEMPLATE_BY_CODE = SHIFT_TEMPLATE_BY_CODE;
+
+// ────────────────────────────────────────────────────────────────────────
+// Analítica de tiempos — `GET /api/shift-discipline/analytics/timing-stats?month=YYYY-MM`
+//
+// Estadísticas de Δ (delta vs hora ideal) y duración de esferificación
+// agregadas por tipo de paso, hora del día y turno. Para que el admin pueda
+// ajustar el cronograma a la dinámica real (no a la teórica) y ver dónde
+// los operarios consistentemente se atrasan o adelantan.
+// ────────────────────────────────────────────────────────────────────────
+exports.timingStats = async (req, res) => {
+    try {
+        const month = req.query.month || new Date().toISOString().slice(0, 7);
+        const monthStart = `${month}-01`;
+        const [y, m] = month.split('-').map(Number);
+        const monthEnd = `${month}-${new Date(y, m, 0).getDate().toString().padStart(2, '0')}`;
+        await _loadNonWorkDays();
+
+        const runs = await prisma.shiftDisciplineRun.findMany({
+            where: { closedAt: { not: null }, shiftDate: { gte: monthStart, lte: monthEnd } },
+            select: { steps: true, shiftDate: true, shiftCode: true, shiftStart: true, shiftEnd: true, finalScore: true },
+        });
+        const productiveRuns = runs.filter(r => !isNonWorkWindow(r.shiftDate, r.shiftCode));
+
+        // 1) Δ por tipo de paso (BASE, ALGINATO, PROTECCION) — solo pasos hechos.
+        const deltaByType = { BASE: [], ALGINATO: [], PROTECCION: [] };
+        // 2) Score por tipo
+        const scoreByType = { BASE: [], ALGINATO: [], PROTECCION: [] };
+        // 3) Cycle time real entre BASES consecutivas (minutos)
+        const cycleTimes = [];
+        // 4) Tasa de cumplimiento de meta por turno (¿llegó a 7/6/5?)
+        let metGoalCount = 0;
+        let underGoalCount = 0;
+        const goalDistribution = {}; // { count: # turnos } — histograma
+        // 5) Heatmap por hora-del-día → score promedio
+        const heatmap = {}; // { 'HH': { sum, count } }
+        // 6) % turnos con score 100 (perfectos)
+        let perfectShifts = 0;
+        // 7) Tendencia diaria (score por shiftDate)
+        const dailyScore = {};
+
+        for (const run of productiveRuns) {
+            const steps = Array.isArray(run.steps) ? run.steps : [];
+            const target = _esferTargetForShift(run.shiftDate, run.shiftCode);
+            const baseStepsDone = steps.filter(s => s.type === 'BASE' && s.doneAt);
+            // Cycle time entre BASES
+            for (let i = 1; i < baseStepsDone.length; i++) {
+                const dt = new Date(baseStepsDone[i].doneAt) - new Date(baseStepsDone[i-1].doneAt);
+                const dtMin = dt / 60000;
+                if (dtMin > 0 && dtMin < 240) cycleTimes.push(dtMin); // filtra outliers
+            }
+            // Δ y score por tipo
+            for (const s of steps) {
+                if (!s.doneAt || s.type === 'COMIDA' || s.type === 'ALISTAMIENTO') continue;
+                if (typeof s.deltaMin === 'number' && deltaByType[s.type]) {
+                    deltaByType[s.type].push(s.deltaMin);
+                }
+                if (typeof s.score === 'number' && scoreByType[s.type]) {
+                    scoreByType[s.type].push(s.score);
+                }
+                // Heatmap por hora
+                const h = new Date(s.doneAt).getHours();
+                const key = String(h).padStart(2, '0');
+                if (!heatmap[key]) heatmap[key] = { sum: 0, count: 0 };
+                heatmap[key].sum += s.score || 0;
+                heatmap[key].count += 1;
+            }
+            // Cumplimiento meta = baches reales del turno (BASES hechas)
+            const bachesDone = baseStepsDone.length;
+            goalDistribution[bachesDone] = (goalDistribution[bachesDone] || 0) + 1;
+            if (bachesDone >= target) metGoalCount++; else underGoalCount++;
+            if ((run.finalScore || 0) >= 100) perfectShifts++;
+            // Tendencia diaria
+            const sd = run.shiftDate;
+            if (!dailyScore[sd]) dailyScore[sd] = { sum: 0, count: 0, baches: 0 };
+            dailyScore[sd].sum += run.finalScore || 0;
+            dailyScore[sd].count += 1;
+            dailyScore[sd].baches += bachesDone;
+        }
+
+        const stats = (arr) => {
+            if (!arr.length) return { count: 0, avg: 0, min: null, max: null, p50: null, p90: null };
+            const sorted = [...arr].sort((a, b) => a - b);
+            return {
+                count: arr.length,
+                avg: arr.reduce((a, b) => a + b, 0) / arr.length,
+                min: sorted[0],
+                max: sorted[sorted.length - 1],
+                p50: sorted[Math.floor(sorted.length / 2)],
+                p90: sorted[Math.floor(sorted.length * 0.9)],
+            };
+        };
+
+        res.json({
+            success: true,
+            month,
+            totalRuns: productiveRuns.length,
+            metGoalCount,
+            underGoalCount,
+            metGoalRate: productiveRuns.length > 0 ? metGoalCount / productiveRuns.length : 0,
+            perfectShifts,
+            deltaByType: {
+                BASE: stats(deltaByType.BASE),
+                ALGINATO: stats(deltaByType.ALGINATO),
+                PROTECCION: stats(deltaByType.PROTECCION),
+            },
+            scoreByType: {
+                BASE: stats(scoreByType.BASE),
+                ALGINATO: stats(scoreByType.ALGINATO),
+                PROTECCION: stats(scoreByType.PROTECCION),
+            },
+            cycleTime: stats(cycleTimes), // tiempo real entre bases en min
+            goalDistribution, // { 0: 2 turnos, 1: 5 turnos, ..., 7: 8 turnos }
+            heatmapByHour: Object.entries(heatmap).reduce((acc, [h, v]) => {
+                acc[h] = { avgScore: v.sum / v.count, samples: v.count };
+                return acc;
+            }, {}),
+            dailyTrend: Object.entries(dailyScore).map(([date, v]) => ({
+                date, avgScore: v.sum / v.count, runs: v.count, baches: v.baches
+            })).sort((a, b) => a.date < b.date ? -1 : 1),
+        });
+    } catch (e) {
+        logger.error('[shift-discipline] timingStats error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+};
 
 // ── Días especiales (festivos / no-laborados) ─────────────────────────────
 // CRUD sobre systemSettings.NON_WORK_DAYS. Estructura:

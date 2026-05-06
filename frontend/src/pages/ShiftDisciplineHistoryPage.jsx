@@ -53,10 +53,16 @@ const gradeColor = (score) => {
     return 'bg-red-50 text-red-700';
 };
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// Usar componentes locales para evitar shift de timezone (UTC)
+const localISO = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayISO = () => localISO(new Date());
+const monthStartISO = () => {
+    const d = new Date(); d.setDate(1);
+    return localISO(d);
+};
 const daysAgoISO = (n) => {
     const d = new Date(); d.setDate(d.getDate() - n);
-    return d.toISOString().slice(0, 10);
+    return localISO(d);
 };
 
 const ShiftDisciplineHistoryPage = () => {
@@ -66,12 +72,14 @@ const ShiftDisciplineHistoryPage = () => {
     // Restringido a ADMIN / LIDER. Los demás roles no deberían entrar a esta ruta.
     const allowed = ['ADMIN', 'LIDER', 'PRODUCCION'].includes(user?.role);
 
-    const [from, setFrom]               = useState(daysAgoISO(30));
+    // Default: del 1 del mes actual al día de hoy (no mezcla meses)
+    const [from, setFrom]               = useState(monthStartISO());
     const [to, setTo]                   = useState(todayISO());
     const [shiftCode, setShiftCode]     = useState('');
     const [leaderId, setLeaderId]       = useState('');
     const [leaders, setLeaders]         = useState([]);
     const [rows, setRows]               = useState([]);
+    const [leaderAccum, setLeaderAccum] = useState([]);
     const [total, setTotal]             = useState(0);
     const [page, setPage]               = useState(1);
     const [pageSize]                    = useState(50);
@@ -108,9 +116,10 @@ const ShiftDisciplineHistoryPage = () => {
             const r = await api.get(`/shift-discipline/history?${params.toString()}`);
             setRows(r.data?.data || []);
             setTotal(r.data?.total || 0);
+            setLeaderAccum(r.data?.leaderAccum || []);
         } catch (e) {
             console.warn('load history error:', e.message);
-            setRows([]); setTotal(0);
+            setRows([]); setTotal(0); setLeaderAccum([]);
         } finally {
             setLoading(false);
         }
@@ -174,9 +183,14 @@ const ShiftDisciplineHistoryPage = () => {
                     </div>
                     <div className="flex items-center gap-2">
                         {user?.role === 'ADMIN' && (
-                            <button onClick={() => navigate('/admin/leader-bonus')} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700">
-                                💰 Bonificación líderes
-                            </button>
+                            <>
+                                <button onClick={() => navigate('/admin/timing-analysis')} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700">
+                                    📊 Analítica
+                                </button>
+                                <button onClick={() => navigate('/admin/leader-bonus')} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700">
+                                    💰 Bonificación líderes
+                                </button>
+                            </>
                         )}
                         <button onClick={load} className="flex items-center gap-2 px-3 py-2 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-700">
                             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -187,7 +201,27 @@ const ShiftDisciplineHistoryPage = () => {
 
                 {/* Filtros */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-4">
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                        <div>
+                            <label className="text-[11px] font-bold text-emerald-600 uppercase block mb-1">📅 Mes (bono)</label>
+                            <input
+                                type="month"
+                                value={from.slice(0, 7)}
+                                onChange={e => {
+                                    const ym = e.target.value; // 'YYYY-MM'
+                                    if (!ym) return;
+                                    const [y, m] = ym.split('-').map(Number);
+                                    const first = `${ym}-01`;
+                                    const lastDay = new Date(y, m, 0).getDate();
+                                    const today = new Date();
+                                    const isCurrentMonth = today.getFullYear() === y && (today.getMonth()+1) === m;
+                                    const last = isCurrentMonth ? localISO(today) : `${ym}-${String(lastDay).padStart(2,'0')}`;
+                                    setFrom(first);
+                                    setTo(last);
+                                    setPage(1);
+                                }}
+                                className="w-full px-2 py-1.5 border-2 border-emerald-300 rounded-lg text-sm font-bold bg-emerald-50" />
+                        </div>
                         <div>
                             <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1">Desde</label>
                             <input type="date" value={from} onChange={e => { setFrom(e.target.value); setPage(1); }}
@@ -237,6 +271,34 @@ const ShiftDisciplineHistoryPage = () => {
                 {/* Días especiales (festivos / no laborados) */}
                 <NonWorkDaysCard />
 
+                {/* Acumulado de bono por líder en el rango filtrado */}
+                {leaderAccum.length > 0 && (
+                    <div className="bg-emerald-50 border-2 border-emerald-200 rounded-2xl p-4 mb-4">
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="text-2xl">💰</span>
+                            <h3 className="font-black text-emerald-800 text-base">Bono acumulado por líder · {from} → {to}</h3>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {leaderAccum.map(l => (
+                                <div key={l.leaderId || 'none'} className="bg-white rounded-xl border border-emerald-300 p-3 shadow-sm">
+                                    <div className="flex justify-between items-start mb-1">
+                                        <div className="font-bold text-slate-700 text-sm">{l.leaderName}</div>
+                                        <div className="text-[10px] text-slate-500 font-bold">{l.shifts} turnos</div>
+                                    </div>
+                                    <div className="text-2xl font-black text-emerald-600 font-mono">
+                                        {new Intl.NumberFormat('es-CO', {style:'currency',currency:'COP',maximumFractionDigits:0}).format(l.totalBonus)}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 mt-1">
+                                        Score promedio: <span className={`font-bold ${l.avgScore >= 75 ? 'text-emerald-600' : l.avgScore >= 60 ? 'text-amber-600' : 'text-red-600'}`}>{l.avgScore}%</span>
+                                        {' · '}
+                                        Por persona (÷4): <span className="font-mono font-bold text-slate-600">{new Intl.NumberFormat('es-CO', {style:'currency',currency:'COP',maximumFractionDigits:0}).format(Math.round(l.totalBonus/4))}</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
                 {/* Tabla */}
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                     <div className="overflow-x-auto">
@@ -253,15 +315,16 @@ const ShiftDisciplineHistoryPage = () => {
                                     <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Tarde</th>
                                     <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Sin hacer</th>
                                     <th className="text-center px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Alertas</th>
+                                    <th className="text-right px-3 py-2 font-bold text-emerald-700 uppercase text-[11px]">💰 Bono</th>
                                     <th className="text-right px-3 py-2 font-bold text-slate-600 uppercase text-[11px]">Cerrado</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {loading && (
-                                    <tr><td colSpan={11} className="text-center py-8 text-slate-400">Cargando…</td></tr>
+                                    <tr><td colSpan={12} className="text-center py-8 text-slate-400">Cargando…</td></tr>
                                 )}
                                 {!loading && rows.length === 0 && (
-                                    <tr><td colSpan={11} className="text-center py-8 text-slate-400">Sin resultados en el rango seleccionado</td></tr>
+                                    <tr><td colSpan={12} className="text-center py-8 text-slate-400">Sin resultados en el rango seleccionado</td></tr>
                                 )}
                                 {!loading && rows.map(r => {
                                     const isExpanded = expandedId === r.id;
@@ -280,13 +343,16 @@ const ShiftDisciplineHistoryPage = () => {
                                                 <td className={`px-3 py-2 text-center font-bold ${r.stepsLate > 0 ? 'text-amber-600' : 'text-slate-400'}`}>{r.stepsLate}</td>
                                                 <td className={`px-3 py-2 text-center font-bold ${r.stepsMissed > 0 ? 'text-red-600' : 'text-slate-400'}`}>{r.stepsMissed}</td>
                                                 <td className={`px-3 py-2 text-center ${r.alertsCount > 0 ? 'text-amber-600 font-bold' : 'text-slate-400'}`}>{r.alertsCount}</td>
+                                                <td className={`px-3 py-2 text-right font-mono font-bold ${r.bonusValue > 80000 ? 'text-emerald-600' : r.bonusValue > 40000 ? 'text-blue-600' : r.bonusValue > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
+                                                    {r.bonusValue ? new Intl.NumberFormat('es-CO', {style:'currency',currency:'COP',maximumFractionDigits:0}).format(r.bonusValue) : '—'}
+                                                </td>
                                                 <td className="px-3 py-2 text-right text-xs text-slate-400">
                                                     {r.closedAt ? new Date(r.closedAt).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                                                 </td>
                                             </tr>
                                             {isExpanded && (
                                                 <tr className="bg-slate-50 border-b-2 border-blue-200">
-                                                    <td colSpan={11} className="p-0">
+                                                    <td colSpan={12} className="p-0">
                                                         <RunDetail
                                                             detail={detail}
                                                             loading={loadingDetail === r.id}
@@ -484,48 +550,122 @@ const RunDetail = ({ detail, loading, summary, isAdmin, onRecomputed }) => {
                         </tr>
                     </thead>
                     <tbody>
-                        {steps.map((step, idx) => {
-                            const lbl = stepDisplayLabel(step);
-                            const isComida = step.type === 'COMIDA';
-                            const done = !!step.doneAt;
-                            const delta = typeof step.deltaMin === 'number' ? step.deltaMin : null;
-                            let estado = '—';
-                            let estadoClass = 'text-slate-500';
-                            if (isComida) { estado = '🍽️ Pausa comida'; estadoClass = 'text-slate-500'; }
-                            else if (!done) { estado = '✖ No realizado'; estadoClass = 'text-red-600 font-bold'; }
-                            else if (delta == null) { estado = '✓ Hecho'; estadoClass = 'text-emerald-600 font-bold'; }
-                            else if (Math.abs(delta) <= 5) { estado = '✓ A tiempo'; estadoClass = 'text-emerald-600 font-bold'; }
-                            else if (delta < 0) { estado = `✓ Adelantado ${Math.abs(delta)}m`; estadoClass = 'text-emerald-600 font-bold'; }
-                            else if (delta <= 15) { estado = `⚠️ Tarde +${delta}m`; estadoClass = 'text-amber-600 font-bold'; }
-                            else if (delta <= 45) { estado = `🟠 Iniciado tarde +${delta}m`; estadoClass = 'text-orange-600 font-bold'; }
-                            else { estado = `🔴 Muy tarde +${delta}m`; estadoClass = 'text-red-600 font-bold'; }
-                            return (
-                                <tr key={idx} className={`border-t border-slate-100 ${isComida ? 'bg-slate-50/50' : ''}`}>
-                                    <td className="px-2 py-1.5 text-slate-400">{idx + 1}</td>
-                                    <td className="px-2 py-1.5">
-                                        <span className="mr-1">{STEP_ICONS[step.type]}</span>
-                                        <span className="font-bold text-slate-700">{lbl.line1}</span>
-                                        <span className="text-slate-500"> · {lbl.line2}</span>
-                                        {step.type === 'BASE' && step.actualFlavor && (
-                                            <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-extrabold uppercase tracking-wider">
-                                                🫧 {step.actualFlavor}
-                                            </span>
-                                        )}
-                                    </td>
-                                    <td className="px-2 py-1.5 text-center font-mono text-slate-600">{fmtTime(step.idealTime)}</td>
-                                    <td className="px-2 py-1.5 text-center font-mono text-slate-600">{done ? fmtTime(step.doneAt) : '—'}</td>
-                                    <td className={`px-2 py-1.5 text-center font-bold ${
-                                        delta == null ? 'text-slate-400' :
-                                        delta <= 5 ? 'text-emerald-600' :
-                                        delta <= 15 ? 'text-amber-600' : 'text-red-600'
-                                    }`}>{delta != null ? `${delta > 0 ? '+' : ''}${delta}` : '—'}</td>
-                                    <td className="px-2 py-1.5 text-center font-extrabold text-slate-700">
-                                        {isComida ? '—' : (typeof step.score === 'number' ? step.score : (done ? '—' : '0'))}
-                                    </td>
-                                    <td className={`px-2 py-1.5 ${estadoClass}`}>{estado}</td>
-                                </tr>
-                            );
-                        })}
+                        {(() => {
+                            // Mezclar steps del cronograma + esferificaciones de la cuadrilla,
+                            // ordenadas cronológicamente por (doneAt || idealTime || startedAt).
+                            const stepRows = steps.map(s => ({
+                                kind: 'step',
+                                _t: s.doneAt ? new Date(s.doneAt).getTime() :
+                                    s.idealTime ? new Date(s.idealTime).getTime() : 0,
+                                data: s,
+                            }));
+                            const esferRows = (detail.esferificacion?.baches || []).map(b => ({
+                                kind: 'esfer',
+                                _t: b.startedAt ? new Date(b.startedAt).getTime() : 0,
+                                data: b,
+                            }));
+                            const all = [...stepRows, ...esferRows].sort((a, b) => a._t - b._t);
+
+                            return all.map((row, idx) => {
+                                if (row.kind === 'esfer') {
+                                    const b = row.data;
+                                    const elapsedTxt = b.elapsedNetMin != null
+                                        ? `${b.elapsedNetMin}m` : (b.elapsedMin != null ? `${b.elapsedMin}m (en curso)` : '—');
+                                    const stClass = b.status === 'done_good' ? 'text-emerald-600' :
+                                        b.status === 'done_late' ? 'text-amber-600' :
+                                        b.status === 'done_bad' ? 'text-red-600' :
+                                        b.status === 'in_progress' ? 'text-blue-600' : 'text-slate-500';
+                                    return (
+                                        <tr key={`esfer-${idx}`} className="border-t border-purple-100 bg-purple-50/40">
+                                            <td className="px-2 py-1.5 text-slate-400">{idx + 1}</td>
+                                            <td className="px-2 py-1.5">
+                                                <span className="mr-1">🫧</span>
+                                                <span className="font-bold text-purple-700">Esferificación</span>
+                                                <span className="text-slate-500"> · {b.flavor || '—'}</span>
+                                                {b.batchNumber && (
+                                                    <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-extrabold uppercase tracking-wider">
+                                                        {b.batchNumber.split('-').slice(-1)[0]}
+                                                    </span>
+                                                )}
+                                                {b.operatorName && <span className="ml-2 text-[10px] text-slate-400">op: {b.operatorName}</span>}
+                                            </td>
+                                            <td className="px-2 py-1.5 text-center font-mono text-slate-400">—</td>
+                                            <td className="px-2 py-1.5 text-center font-mono text-slate-700">
+                                                <span title="Hora de inicio de la esferificación">▶ {fmtTime(b.startedAt)}</span>
+                                                {b.endedAt && (
+                                                    <>
+                                                        <span className="text-slate-400 mx-1">→</span>
+                                                        <span title="Hora de fin de la esferificación" className="text-emerald-600">⏹ {fmtTime(b.endedAt)}</span>
+                                                    </>
+                                                )}
+                                                {!b.endedAt && b.status === 'in_progress' && (
+                                                    <span className="ml-1 text-blue-500 text-[10px]">(en curso)</span>
+                                                )}
+                                            </td>
+                                            <td className="px-2 py-1.5 text-center font-bold text-purple-600">{elapsedTxt}</td>
+                                            <td className="px-2 py-1.5 text-center font-extrabold text-slate-700">{b.score ?? '—'}</td>
+                                            <td className={`px-2 py-1.5 font-bold ${stClass}`}>
+                                                {b.status === 'done_good' ? `✓ Esfer ${b.elapsedNetMin}m` :
+                                                 b.status === 'done_late' ? `⚠️ Esfer tardía ${b.elapsedNetMin}m` :
+                                                 b.status === 'done_bad' ? `🔴 Esfer muy lenta ${b.elapsedNetMin}m` :
+                                                 b.status === 'in_progress' ? `◐ En curso ${b.elapsedMin}m` :
+                                                 b.status === 'paused' ? `⏸ Pausada` : '—'}
+                                                {typeof b.fraction === 'number' && b.fraction < 0.99 && (
+                                                    <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-[10px] font-extrabold uppercase tracking-wider"
+                                                        title="Mérito de la cuadrilla = % del tiempo de cronómetro dentro de este turno (resto pertenece a la cuadrilla anterior/siguiente)">
+                                                        ↩ {Math.round(b.fraction * 100)}% turno
+                                                    </span>
+                                                )}
+                                                {b.isInherited && (
+                                                    <span className="ml-2 text-[10px] text-violet-600 italic">(heredado)</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                }
+                                const step = row.data;
+                                const lbl = stepDisplayLabel(step);
+                                const isComida = step.type === 'COMIDA';
+                                const done = !!step.doneAt;
+                                const delta = typeof step.deltaMin === 'number' ? step.deltaMin : null;
+                                let estado = '—';
+                                let estadoClass = 'text-slate-500';
+                                if (isComida) { estado = '🍽️ Pausa comida'; estadoClass = 'text-slate-500'; }
+                                else if (!done) { estado = '✖ No realizado'; estadoClass = 'text-red-600 font-bold'; }
+                                else if (delta == null) { estado = '✓ Hecho'; estadoClass = 'text-emerald-600 font-bold'; }
+                                else if (Math.abs(delta) <= 5) { estado = '✓ A tiempo'; estadoClass = 'text-emerald-600 font-bold'; }
+                                else if (delta < 0) { estado = `✓ Adelantado ${Math.abs(delta)}m`; estadoClass = 'text-emerald-600 font-bold'; }
+                                else if (delta <= 15) { estado = `⚠️ Tarde +${delta}m`; estadoClass = 'text-amber-600 font-bold'; }
+                                else if (delta <= 45) { estado = `🟠 Iniciado tarde +${delta}m`; estadoClass = 'text-orange-600 font-bold'; }
+                                else { estado = `🔴 Muy tarde +${delta}m`; estadoClass = 'text-red-600 font-bold'; }
+                                return (
+                                    <tr key={`step-${idx}`} className={`border-t border-slate-100 ${isComida ? 'bg-slate-50/50' : ''}`}>
+                                        <td className="px-2 py-1.5 text-slate-400">{idx + 1}</td>
+                                        <td className="px-2 py-1.5">
+                                            <span className="mr-1">{STEP_ICONS[step.type]}</span>
+                                            <span className="font-bold text-slate-700">{lbl.line1}</span>
+                                            <span className="text-slate-500"> · {lbl.line2}</span>
+                                            {step.type === 'BASE' && step.actualFlavor && (
+                                                <span className="ml-2 inline-block px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-extrabold uppercase tracking-wider">
+                                                    🫧 {step.actualFlavor}
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="px-2 py-1.5 text-center font-mono text-slate-600">{fmtTime(step.idealTime)}</td>
+                                        <td className="px-2 py-1.5 text-center font-mono text-slate-600">{done ? fmtTime(step.doneAt) : '—'}</td>
+                                        <td className={`px-2 py-1.5 text-center font-bold ${
+                                            delta == null ? 'text-slate-400' :
+                                            delta <= 5 ? 'text-emerald-600' :
+                                            delta <= 15 ? 'text-amber-600' : 'text-red-600'
+                                        }`}>{delta != null ? `${delta > 0 ? '+' : ''}${delta}` : '—'}</td>
+                                        <td className="px-2 py-1.5 text-center font-extrabold text-slate-700">
+                                            {isComida ? '—' : (typeof step.score === 'number' ? step.score : (done ? '—' : '0'))}
+                                        </td>
+                                        <td className={`px-2 py-1.5 ${estadoClass}`}>{estado}</td>
+                                    </tr>
+                                );
+                            });
+                        })()}
                     </tbody>
                 </table>
             </div>

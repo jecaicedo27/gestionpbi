@@ -328,24 +328,33 @@ const AssemblyExecutionWizard = () => {
     }, [actualQuantities, lotNumbers, weighingPhotos, lotSelections, currentStepIndex, note?.id, submitting]); // eslint-disable-line
 
     // ── Handlers: carrito production side (CONTEO step) ──────────────────────
-    const handleAddCarrito = useCallback(async (productId, productName, qty) => {
-        // Capture current carriots BEFORE async state update
-        const carriotosBefore = carriots;
-        const newEntry = addCarritoLocal(productId, productName, qty);
-        // Use captured local state + new entry — avoids stale note.processParameters
-        try {
-            const allCarriots = [...carriotosBefore, newEntry];
-            await api.patch(`/assembly-notes/${note.id}`, {
-                processParameters: {
-                    ...note.processParameters,
-                    carriots: allCarriots,
-                }
-            });
-            message.success(`🛒 Carrito #${newEntry.carritoNum} registrado — ${qty} uds de ${productName}`);
-        } catch (e) {
-            console.warn('Error saving carrito:', e.message);
+    const handleAddCarrito = useCallback(async (productId, productName, qty, productionPhotoUrl) => {
+        // Endpoint dedicado: foto OBLIGATORIA, persistencia atómica.
+        // Si la red falla, encolar en localStorage y reintentar background.
+        if (!productionPhotoUrl) {
+            message.error('⚠️ La foto del carrito es obligatoria. Sube la foto antes de registrar.');
+            return;
         }
-    }, [note, carriots, addCarritoLocal]);
+        try {
+            const res = await api.post(`/assembly-notes/${note.id}/carriots`, {
+                productId, qty, photoUrl: productionPhotoUrl, productName
+            });
+            const { carrito, allCarriots } = res.data;
+            // Sincroniza el state local con la verdad del server
+            preloadCarriots(allCarriots);
+            message.success(`🛒 Carrito #${carrito.carritoNum} registrado — ${qty} uds de ${productName}`);
+            return carrito;
+        } catch (e) {
+            console.error('[addCarrito] error:', e?.response?.data?.error || e.message);
+            // Encolar para reintento offline
+            try {
+                const queue = JSON.parse(localStorage.getItem('carrito_retry_queue') || '[]');
+                queue.push({ noteId: note.id, productId, qty, photoUrl: productionPhotoUrl, productName, ts: Date.now() });
+                localStorage.setItem('carrito_retry_queue', JSON.stringify(queue));
+                message.warning('⚠️ Carrito en cola — se guardará al recuperar conexión');
+            } catch {}
+        }
+    }, [note?.id, preloadCarriots]);
 
     const handleRemoveCarrito = useCallback(async (carritoId) => {
         removeCarritoLocal(carritoId);
@@ -1087,35 +1096,25 @@ const AssemblyExecutionWizard = () => {
                 const aprobados = emp.approved_qty || Math.max(0, conteoQty - defectivos);
                 const totalEmpaque = conteoQty; // all units (buenos + malos)
 
-                // 1. Siigo RPA (fire-and-forget)
-                if (note.processParameters?.assembly_on_complete) {
+                // 1. RPA Siigo: lo dispara el BACKEND al cerrar la nota EMPAQUE
+                //    (ver assemblyService.completeNote — detecta processCode==='EMPAQUE' +
+                //    accountGroup=1401). NO se dispara desde el frontend.
+                //    Adjustment de defectuosos sí queda en frontend (es un endpoint
+                //    distinto, no la asamblea principal).
+                if (defectivos > 0) {
                     const productName = empData.product_name || note.product?.name || 'Producto';
                     const productSku = note.product?.sku || null;
+                    const defectReasons = emp.defect_reasons || empaqueDefectReasons;
+                    const photoUrls = emp.photo_urls || empaquePhotoUrls;
                     (async () => {
                         try {
-                            await api.post('/rpa/siigo-assembly', {
-                                productName, productSku, quantity: conteoQty, assemblyType: 'proceso',
-                                observations: `Empaque ${note.stageName}. Lote: ${note.productionBatch?.batchNumber || computeLotCode(productName)}. Real fabricado: ${conteoQty}. Aprobados: ${aprobados}. Defectuosos: ${defectivos}.`,
-                                assemblyNoteId: note.id
+                            await api.post('/rpa/siigo-adjustment', {
+                                productName, productSku, quantity: -defectivos,
+                                reason: `Defectuosos empaque - ${note.stageName}`,
+                                photoUrls, defectReasons,
                             });
-                            message.success(`🤖 Siigo: ${conteoQty} × ${productName}`);
-                        } catch (e) {
-                            message.warning('⚠️ Siigo no disponible — proceso continúa');
-                        }
+                        } catch (e) { console.warn('Adjustment skip:', e.message); }
                     })();
-                    if (defectivos > 0) {
-                        const defectReasons = emp.defect_reasons || empaqueDefectReasons;
-                        const photoUrls = emp.photo_urls || empaquePhotoUrls;
-                        (async () => {
-                            try {
-                                await api.post('/rpa/siigo-adjustment', {
-                                    productName, productSku, quantity: -defectivos,
-                                    reason: `Defectuosos empaque - ${note.stageName}`,
-                                    photoUrls, defectReasons,
-                                });
-                            } catch (e) { console.warn('Adjustment skip:', e.message); }
-                        })();
-                    }
                 }
 
                 // 2. Complete the EMPAQUE note
@@ -1163,8 +1162,18 @@ const AssemblyExecutionWizard = () => {
                     }
                 }
 
-                // 4. Auto-complete the separate ENSAMBLE note (mirror note for Siigo traceability)
-                // NOTE: Only Liquipops ENSAMBLE — Geniality (G_ENSAMBLE) is NOT touched here
+                // 4. Cerrar nota ENSAMBLE espejo si existe (baches en curso pre-migración)
+                // ──────────────────────────────────────────────────────────────────────
+                // Tras eliminar stages 9-11 (ENSAMBLE Siigo) de la plantilla BATCH-LIQUIPOPS,
+                // los baches NUEVOS no crean notas ENSAMBLE espejo. Pero los baches en curso
+                // (creados antes de la migración) sí las tienen abiertas, y deben cerrarse
+                // para que pendingNotes==0 y el bache pase a COMPLETED.
+                //
+                // El RPA Siigo lo dispara el BACKEND al cerrar la nota EMPAQUE (no aquí).
+                // Y el backend OMITE disparar RPA al cerrar la nota ENSAMBLE espejo de
+                // Liquipops finished good (ver assemblyService.completeNote — detecta
+                // processCode==='ENSAMBLE' + accountGroup=1401 y skipea). Por eso este
+                // bloque ya NO necesita marcar skipRpa.
                 try {
                     const batchId = note.productionBatchId;
                     const allNotesRes2 = await api.get(`/assembly-notes?batchId=${batchId}`);
@@ -1185,10 +1194,10 @@ const AssemblyExecutionWizard = () => {
                             await api.post(`/assembly-notes/${ensambleNote.id}/complete`, {
                                 operatorId: user?.id,
                                 actualQuantity: totalEmpaque,
-                                observations: `Auto-completado desde empaque unificado. ${ensambleObs}`
+                                observations: `Auto-completado desde empaque unificado (RPA disparado por EMPAQUE en backend). ${ensambleObs}`
                             });
-                            console.log(`[ENSAMBLE auto-complete] ✅ ${ensambleNote.id} completed`);
-                            // Also trigger ingest from ENSAMBLE note for finished goods
+                            console.log(`[ENSAMBLE auto-complete] ✅ ${ensambleNote.id} cerrada`);
+                            // Ingest se mantiene — backend deduplica por DUPLICATE_INGESTION
                             const empBatchNumber2 = note.productionBatch?.batchNumber
                                 || allBatchNotes?.find(n => n.productionBatch?.batchNumber)?.productionBatch?.batchNumber;
                             if (ensambleNote.productId && empBatchNumber2 && batchId) {
@@ -1538,19 +1547,28 @@ const AssemblyExecutionWizard = () => {
             const isFinishingEmpaqueWizard = note.processType?.code === 'EMPAQUE' && currentStep?.type === 'ENSAMBLE';
 
             if (isFinishingEmpaqueWizard) {
-                // The selector note is the lowest-stageOrder EMPAQUE note that is NOT the current sub-note.
+                // Buscar EMPAQUE PENDIENTE (no completado) distinto al actual.
+                // CRITICAL: filtrar status !== 'COMPLETED' — sin esto el frontend
+                // navega a un EMPAQUE ya cerrado y muestra "RESUMEN FINAL / COMPLETAR
+                // ETAPA" generando un bucle visible para el operario.
                 const selectorNote = allBatchNotesFresh
-                    .filter(n => n.processType?.code === 'EMPAQUE' && n.id !== note.id)
+                    .filter(n =>
+                        n.processType?.code === 'EMPAQUE' &&
+                        n.id !== note.id &&
+                        n.status !== 'COMPLETED'
+                    )
                     .sort((a, b) => (a.stageOrder || 0) - (b.stageOrder || 0))[0];
 
                 if (selectorNote) {
-                    console.log('[EMPAQUE wizard] Regresando al selector:', selectorNote.id);
+                    console.log('[EMPAQUE wizard] Hay otro EMPAQUE pendiente, navegando:', selectorNote.id);
                     setTimeout(() => {
                         navigate(`/assembly-execution/${selectorNote.id}`, { replace: true });
                         window.location.reload();
                     }, 800);
                 } else {
-                    // All EMPAQUE notes done — advance to the true next stage (skip ENSAMBLE mirrors)
+                    // Todos los EMPAQUE cerrados — avanzar al siguiente stage NO-ENSAMBLE
+                    // (las notas ENSAMBLE espejo de baches viejos pre-migración están en
+                    // stageOrder posterior pero ya se cerraron automáticamente con skipRpa).
                     const nextStage = allBatchNotesFresh.find(n =>
                         n.stageOrder > note.stageOrder &&
                         n.status !== 'COMPLETED' &&
@@ -1563,7 +1581,9 @@ const AssemblyExecutionWizard = () => {
                             window.location.reload();
                         }, 1200);
                     } else {
-                        message.success('🎉 ¡Todas las etapas completadas!');
+                        // Bache 100% cerrado — mostrar panel de completion (NO redirige
+                        // automáticamente, deja al operario ver el resultado y elegir).
+                        message.success('🎉 ¡Todas las etapas completadas! Bache cerrado.');
                         setShowCompletionPanel(true);
                     }
                 }
@@ -1793,6 +1813,13 @@ const AssemblyExecutionWizard = () => {
     // ADICION_BATCH: block until all ingredients are confirmed
     if (currentStep.type === 'ADICION_BATCH') {
         canAdvance = !!(adicionData?.allConfirmed);
+    }
+
+    // COCCION_INVERSION: block until BOTH thermometer photos exist (90°C heating + 55°C cooling).
+    // Verify the actual photo URLs so the lock cannot be bypassed by a stale flag.
+    if (currentStep.type === 'COCCION_INVERSION') {
+        const ciPhotos = note?.processParameters?.coccion_inversion_photos || {};
+        canAdvance = !!(ciPhotos.inv_temp_90 && ciPhotos.inv_temp_55);
     }
 
     // Block SIGUIENTE on EMPAQUE multi-presentation selector until ALL are completed

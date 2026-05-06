@@ -2542,6 +2542,59 @@ Backend reiniciado.
 
 Backend reiniciado en pm2 (`popping-backend`).
 
+## CAMBIO 88: Flag `isCleaningOnly` — restringir usuarias al módulo de aseo
+
+**Problema:** LEDDY LARREA tiene rol `OPERARIO_PICKING` para que el sistema de aseo la trate como personal, pero ese rol le da acceso a Inventario, Producción, Modo Operador, etc. — módulos donde no está autorizada para hacer cambios.
+
+**Solución:** Nuevo flag `isCleaningOnly` en el modelo `User`. Cuando está en `true`:
+- El sidebar oculta TODOS los items excepto los de la sección "Aseo".
+- ProtectedRoute redirige cualquier ruta que no empiece con `/aseo` hacia `/aseo`.
+- El grupo "Aseo" del sidebar arranca expandido automáticamente (no necesita clickear).
+
+**Archivos:**
+- `backend/prisma/schema.prisma` — campo `isCleaningOnly Boolean @default(false)` en User.
+- `backend/prisma/migrations/20260429190000_add_user_is_cleaning_only/migration.sql` — `ALTER TABLE users ADD COLUMN`.
+- `backend/src/controllers/userController.js` — `getUsers` y `updateUser` aceptan/devuelven el flag.
+- `frontend/src/components/common/ProtectedRoute.jsx` — `if (user.isCleaningOnly && !location.pathname.startsWith('/aseo')) return <Navigate to="/aseo" />`.
+- `frontend/src/components/common/Sidebar.jsx` — filtra items: `canSeeItem = matchesFlag && currentSection === 'Aseo'`. `expandedGroups` arranca con `{ Aseo: true }` si `isCleaningOnly`.
+- `frontend/src/pages/admin/Users.jsx` — modal de aseo agrega checkbox "🔒 Solo módulo de aseo".
+
+**Activado para:** LEDDY LARREA HERNANDEZ (id `9f492632-3ce9-489f-bda0-3d2a48245ec5`). Otras usuarias se activan desde `/admin/users` → ícono 🧽 → checkbox.
+
+**NO afecta:** ADMINs ni usuarias que solo tengan `isCleaningStaff: true` sin `isCleaningOnly` (estas siguen viendo todo lo de su rol + el módulo aseo).
+
+Build frontend ejecutado, backend reiniciado.
+
+## CAMBIO 89: Área PERSONAL_OFICINA + corrección OFFICE_SHIFT_CODES
+
+(Originalmente nombrada `ADMINISTRACION`; se renombró a `PERSONAL_OFICINA` con label "Personal Oficina" para no confundirla con el rol ADMIN del sistema.)
+
+**Archivos:**
+- `frontend/src/pages/ShiftSchedulePage.jsx` — agregada `'PERSONAL_OFICINA'` a `AREAS`, `MIGRATION_AREAS`, `FIXED_AREAS`. Label "Administración", icono 💼.
+- `backend/src/controllers/attendanceController.js`:
+  - `OFFICE_SHIFT_CODES = ['OFICINA', 'DIURNO']` — antes era solo `['OFICINA']`, lo que provocaba que NUNCA se descontaran descansos en horas netas (mismatch con la BD que usa `'DIURNO'`).
+  - Nueva constante `KIOSK_ELIGIBLE_ROLES = [...KIOSK_REQUIRED_ROLES, 'ADMIN']` — usada solo por `getEmployees` para listar usuarios pendientes de migrar a `shift_employees`. Permite que el equipo ADMIN aparezca en el cuadro de turnos sin obligarles a marcar ingreso para acceder al sistema (login externo de admin sigue intacto).
+
+**Por qué:** El equipo de administración tiene horario 8:00–17:00 (igual que el turno DIURNO existente) y debe registrar entrada/desayuno/almuerzo/salida. El kiosko ya soporta los 4 tipos de marcas (ENTRY, EXIT BREAK, EXIT LUNCH, EXIT FINAL); solo faltaba el área en el cuadro y el reconocimiento del turno como "oficina" para descontar descansos correctamente.
+
+**Cómo migrar admins al cuadro:** `/shift-schedule` → buscar al admin en lista pendiente → asignar área `PERSONAL_OFICINA` → automáticamente queda en turno DIURNO (área fija).
+
+Frontend rebuild + backend reiniciado.
+
+## CAMBIO 90: Ampliar roles elegibles + auto-aparición en cuadro de turnos + cleanup al eliminar + fix FaceEnroller
+
+**Archivos:**
+- `backend/src/services/shiftEmployeeSyncService.js` — `SHIFT_OPERATION_USER_ROLES` ahora incluye CARTERA, CONTABILIDAD, RECURSOS_HUMANOS, CALIDAD, QUIMICO, COMERCIAL, ADMIN. `SHIFT_OPERATION_AREAS` y `FIXED_SHIFT_AREAS` incluyen `PERSONAL_OFICINA`. `DEFAULT_AREA_BY_USER_ROLE` mapea esos roles a PERSONAL_OFICINA. `AREA_ALIASES` admite `OFICINA`/`ADMINISTRACION`/`OFFICE` como alias.
+- `backend/src/controllers/userController.js` — `deleteUser` ahora limpia `shift_employees` antes de borrar el `user`: si tiene historial de asistencias se desvincula (`userId=null, active=false`), si no se borran asignaciones/ausencias y luego el shift_employee.
+- `frontend/src/pages/AttendancePage.jsx` — `FaceEnroller` reescrito: verifica `window.isSecureContext` y `navigator.mediaDevices`, activa cámara antes de cargar modelos (feedback inmediato), maneja errores específicos (`NotAllowedError`/`NotFoundError`/`NotReadableError`) con mensajes claros, log a consola para debugging.
+
+**Por qué:** 
+1. VALERIA (CONTABILIDAD), YAZMIN (CARTERA) y otros usuarios de oficina no aparecían como pendientes en el cuadro de turnos porque solo PRODUCCION/OPERARIO_PICKING/LOGISTICA estaban en la lista elegible.
+2. Los usuarios eliminados desde `/admin/users` fallaban si tenían `shift_employee` asociado (FK sin onDelete:Cascade).
+3. La cámara del enrollment facial fallaba silenciosamente sin indicar la causa (HTTPS, permiso denegado, etc.).
+
+Frontend rebuild + backend reiniciado.
+
 ## CHECKLIST ANTES DE ACEPTAR EL MERGE DEL OTRO EQUIPO
 
 1. Guardar este documento (`CAMBIOS_PENDIENTES_2026-04-18.md`) en git o respaldo externo.
@@ -2880,3 +2933,398 @@ Si el equipo externo trae versión de cualquiera de estos archivos:
 3. Verificar que las migraciones de BD no se duplican (los timestamps `20260320*-20260427*` son nuestros).
 4. Confirmar que `systemSettings.NON_WORK_DAYS` y plantillas SABORIZACION+MEDICION sigan en BD post-merge.
 
+---
+
+## CAMBIO 2026-05-05 — Auto-cierre de bache Geniality al TERMINAR EMPAQUE
+
+**Síntoma:** los operarios cerraban TERMINAR EMPAQUE (toast "Conteo completado / Proceso Completado") pero al volver al programador el bache seguía apareciendo "EN PROCESO" / pendiente, y el scheduler de Geniality contaba esos baches en la columna Prog. con sus `plannedUnits` completos (caso CEREZA-260424-0958: +275/+420 fantasma).
+
+**Causa raíz:** la rama `currentStep.type === 'ENSAMBLE' && processType === 'EMPAQUE'` del wizard sólo cerraba la nota EMPAQUE del tamaño actual + las notas `ENSAMBLE` (Liquipops). Las notas `G_ENSAMBLE` (Ensamble Siigo de Geniality) y los EMPAQUE de los OTROS tamaños del mismo bache quedaban en `EXECUTING`/`PENDING`. El backend ([genialityAssemblyService.js:1451-1469](backend/src/services/genialityAssemblyService.js#L1451-L1469)) sólo cierra `productionBatch.status = COMPLETED` cuando `pendingNotes === 0`, así que el bache nunca cerraba → reaparecía pendiente.
+
+**Fix:** [GenialityExecutionWizard.jsx](frontend/src/components/GenialityRunner/GenialityExecutionWizard.jsx) — en la rama EMPAQUE de Geniality, después del paso 4 (auto-complete ENSAMBLE Liquipops), añadir paso 5:
+- 5a) Auto-completar todas las `G_ENSAMBLE` pendientes del bache. Para producto terminado se marca `skipRpa: true` (la RPA Siigo ya disparó por carrito); productos intermedios pre-CONTEO mantienen su lógica.
+- 5b) Auto-completar `EMPAQUE`/`G_EMPAQUE` de los OTROS tamaños del mismo bache. Si tienen `carriots_consumed` se usa esa cantidad real y se marca `skipRpa`; si no, `targetQuantity`.
+
+**Resultado:** al cerrar el empaque del primer tamaño, todo el bache cierra y el scheduler deja de contarlo en Prog.
+
+**Archivos tocados:**
+- `frontend/src/components/GenialityRunner/GenialityExecutionWizard.jsx` (lógica auto-cierre paso 5)
+
+---
+
+## CAMBIO 2026-05-05 (b) — Cierre de bache Geniality cuando faltan cantidades en presentaciones
+
+**Contexto:** continuación del fix anterior. Caso TAMARINDO-260428-0213: 1000ml programado 504 / entregado real 478, 360ml programado 150 / entregado 148. Las notas G_EMPAQUE quedaban EXECUTING porque el auto-cierre usaba `targetQuantity` cuando no había carritos suficientes — Siigo recibía cantidades inventadas. Adicional: si un tamaño del bache no tenía NINGÚN carrito (presentación que no se produjo), su nota EMPAQUE/G_ENSAMBLE jamás cerraba.
+
+**Síntoma:** operario daba TERMINAR EMPAQUE, sistema mostraba "éxito", pero el bache reaparecía pendiente y el scheduler lo seguía contando en Prog.
+
+**Fix:** [GenialityExecutionWizard.jsx](frontend/src/components/GenialityRunner/GenialityExecutionWizard.jsx) en las dos ramas de auto-cierre (rama CONTEO ~1252 y rama EMPAQUE ~1492):
+
+1. **Cantidad real, no target.** En lugar de caer a `empNote.targetQuantity` cuando no hay carritos, usar `qty=0` y marcar `skipRpa:true` con observación `"Presentación sin producción — bache cerrado sin esta referencia"`. Para G_ENSAMBLE de productos terminados de OTRO tamaño, se calcula la qty leyendo `carriots_consumed` de su EMPAQUE correspondiente.
+
+2. **Productos parciales (caso TAMARINDO).** Si tiene carritos parciales (ej. 478 de 504), se cierra con la suma real de los carritos, no con el target. Siigo refleja lo realmente producido.
+
+3. **Visibilidad de fallos.** Acumulador `failedAutoCloses` que junta nombres de notas cuyo `complete` lance excepción. Al final del bucle se muestra `message.warning("No se cerraron automáticamente: ...")` para que el operario detecte cuándo el cierre quedó parcial — antes el `console.warn` era invisible.
+
+**Reglas finales:**
+- Producto terminado con carritos → qty = suma(carritos), skipRpa (RPA per-carrito ya disparó).
+- Producto terminado sin carritos → qty = 0, skipRpa.
+- Intermedio (BASE/SABORIZACION) con producción → qty = targetQuantity, RPA dispara.
+- Intermedio sin producción → qty = 0, skipRpa.
+
+**Lo que NO se tocó:** rama PRODUCCION (línea ~1686+), validación canAdvance del else PRODUCTION (~2147), llamadas RPA por carrito en MARCADO_CAJAS, watcher startAutoRetryScheduler, schema de BD.
+
+**Archivos tocados:**
+- `frontend/src/components/GenialityRunner/GenialityExecutionWizard.jsx` (qty=0 + skipRpa + visibilidad de fallos en ambas ramas).
+
+---
+
+## CAMBIO 2026-05-05 (c) — Auto-cierre Liquipops EMPAQUE: presentaciones sin producción real
+
+**Contexto:** caso típico Liquipops siropes (ej. FRESA-260430-0238) — un bache puede tener varias presentaciones (1150g, 350g, 3400g) y al final sólo una se fabrica realmente. Las 1150g y 350g quedan en `realRecibido=0`. El operario no puede imprimir etiquetas ni ensamblar Siigo de algo que no existe, pero el banner exige "completar TODAS las presentaciones" y bloquea el avance.
+
+**Solución antes:** existía botón manual "❌ No se produjo esta presentación" (`handleNoProducido`) que cierra la nota con qty=0 + cierra ENSAMBLE/G_ENSAMBLE asociadas. Requería clic operario por cada presentación.
+
+**Cambio:** [IntroStep.jsx](frontend/src/components/AssemblyRunner/steps/IntroStep.jsx) — `useEffect` automático que detecta presentaciones EMPAQUE/G_EMPAQUE con `realRecibido === 0` (no null) y las cierra solas.
+
+**Cómo decide qué cerrar:**
+1. La nota CONTEO está COMPLETED, **o** alguna nota EMPAQUE tiene `conteo_qty` ya guardado (no en draft).
+2. **Existe al menos una presentación con producción > 0** — si todas están en 0/null no se toca (probable que aún no se haya registrado nada).
+3. Para cada nota EMPAQUE pendiente con `actualConteo === 0`: PATCH `skipRpa:true` + complete `actualQuantity=0` + cerrar ENSAMBLE/G_ENSAMBLE asociadas con la misma regla.
+4. `sessionStorage` flag por `batchId` evita re-disparar tras el `window.location.reload()` final.
+
+**Cálculo de `actualConteo`:** mismo que el JSX (~línea 1054) — preferir suma de carritos si existen, si no leer `conteoMap[productId].actual ?? empData.conteo_qty ?? empRef.conteo_qty`.
+
+**Banner actualizado:** ya no dice "Debes completar TODAS las presentaciones (3 pendientes)" cuando 2 están en 0. Ahora distingue:
+- "Debes completar 1 presentación con producción real (2 sin producción se cerrarán solas)" → operario sólo se enfoca en lo importante.
+- "Cerrando automáticamente 2 presentación(es) sin producción…" → mientras se procesa.
+- "Todas las presentaciones completadas" → cuando termina.
+
+**Lo que NO se tocó:**
+- `handleNoProducido` (manual) sigue existiendo como fallback.
+- Rama PRODUCCION del wizard.
+- RPA per-carrito.
+
+**Archivos tocados:**
+- `frontend/src/components/AssemblyRunner/steps/IntroStep.jsx` (useEffect auto-skip + banner reformulado).
+
+NOTA POST: el `useEffect` automático fue revertido (el usuario prefiere clic manual en "❌ No se produjo"). Solo queda el botón manual existente — el banner reformulado se mantuvo.
+
+---
+
+## CAMBIO 2026-05-05 (d) — Eliminación de duplicidad EMPAQUE+ENSAMBLE en plantilla BATCH-LIQUIPOPS
+
+**Problema identificado:** la plantilla `BATCH-LIQUIPOPS` tenía 11 stages — los stages 9/10/11 (ENSAMBLE Siigo por tamaño 3400/1150/350g) eran redundantes con el sub-step ENSAMBLE interno del wizard de la nota EMPAQUE. El frontend ya unificaba ambos: cuando el operario terminaba el sub-step ENSAMBLE interno de un EMPAQUE, automáticamente buscaba la nota ENSAMBLE espejo del mismo `productId` y la cerraba ([AssemblyExecutionWizard.jsx:1175-1222](frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx#L1175-L1222)). Esto generaba 2 notas en BD para la misma operación (ej. S10 EMPAQUE 1150g y S12 ENSAMBLE 1150g, ambas con qty=168 cuando se produjo, o ambas con qty=0 cuando no se produjo).
+
+**Decisión:** eliminar los stages ENSAMBLE 9/10/11 y absorber su responsabilidad (RPA Siigo + clasificación FINISHED_GOOD) en los stages EMPAQUE 6/7/8.
+
+**Cambios aplicados:**
+
+1. **BD plantilla `BATCH-LIQUIPOPS`** (script `migrate_batch_liquipops.js`, backup en `backend/BACKUP_batch_liquipops_2026-05-05.json`):
+   - **Borrados** stages 9, 10, 11 (ENSAMBLE Siigo 3400/1150/350g).
+   - **Actualizados** stages 6, 7, 8 (EMPAQUE):
+     - `processParameters.assembly_on_complete = true` → activa el RPA Siigo desde el sub-step ENSAMBLE interno del wizard.
+     - `outputClassification = 'FINISHED_GOOD'` → ingreso al stock como producto terminado.
+   - `totalStages: 11 → 8`.
+
+2. **Frontend** [AssemblyExecutionWizard.jsx:1175-1226](frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx#L1175-L1226):
+   - Bloque de auto-cierre de nota ENSAMBLE espejo se mantiene como **compatibilidad para baches en curso** (los creados antes de la migración ya tienen S10/S11/S12 abiertas en BD y deben cerrarse para que pendingNotes=0).
+   - **NUEVO:** antes de cerrar la nota espejo se hace `PATCH processParameters.skipRpa = true` para evitar RPA Siigo DUPLICADO (el RPA ya disparó arriba en el sub-step ENSAMBLE interno gracias a `assembly_on_complete=true`).
+   - Para baches NUEVOS (post-migración) este bloque no encuentra nota espejo (stages 9-11 ya no existen) → `filter` devuelve [] → no hace nada.
+
+**Resultado esperado:**
+- Baches **nuevos**: 8 stages, sin nota ENSAMBLE espejo. EMPAQUE 6/7/8 dispara RPA Siigo + ingest stock como FINISHED_GOOD. Una sola operación por presentación.
+- Baches **en curso** (ej. MANGO-BICHE-CON-SAL-260427-2354 con S10/S11 ENSAMBLE espejo abiertas): seguirán cerrando correctamente — el frontend cierra la espejo con skipRpa para no duplicar Siigo.
+
+**Lo que NO se tocó:**
+- Plantillas hijas (TMPL010/TMPL011/TMPL012 — siguen como están, son legacy o uso especial).
+- Backend `completeNote` — el frontend ya dispara el RPA via `assembly_on_complete:true` por compatibilidad.
+- Otros tipos de bache (Geniality, sub-templates BASE/COMPUESTO, etc.).
+
+**Archivos tocados:**
+- BD: `assemblyTemplate` `BATCH-LIQUIPOPS` (3 stages borrados + 3 actualizados + totalStages updated). Backup en `backend/BACKUP_batch_liquipops_2026-05-05.json`.
+- `frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx` (skipRpa al cerrar nota espejo).
+
+**Pruebas pendientes (a cargo del usuario):**
+1. Bache nuevo Liquipops cualquier sabor: verificar que se generen sólo 8 stages (no 11) y que al cerrar EMPAQUE de cada tamaño dispare RPA Siigo + ingest stock una sola vez (no duplicado).
+2. Bache en curso MANGO-BICHE-CON-SAL-260427-2354: cerrar EMPAQUE 3400g (S8) y EMPAQUE 350g (S9) y verificar que las notas ENSAMBLE espejo S10/S11 cierren con skipRpa y NO disparen RPA adicional.
+
+---
+
+## CAMBIO 2026-05-05 (e) — Fix bucle "RESUMEN FINAL / COMPLETAR ETAPA" tras cerrar EMPAQUE
+
+**Síntoma:** Tras cerrar el último EMPAQUE de un bache Liquipops (ej. MANGO-BICHE-CON-SAL-260427-2354), el operario era redirigido al wizard de un EMPAQUE ya COMPLETED, viendo otra vez la pantalla "RESUMEN FINAL — ENSAMBLE / COMPLETAR ETAPA". Si daba clic, el backend respondía con `RPA SKIPPED` + `DUPLICATE_INGESTION blocked` y el operario seguía atrapado en un bucle.
+
+**Causa:** [AssemblyExecutionWizard.jsx:1561-1573](frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx#L1561-L1573) buscaba "el siguiente EMPAQUE selector" filtrando sólo `n.id !== note.id` pero **sin filtrar `n.status !== 'COMPLETED'`**. Cuando todos los EMPAQUE estaban cerrados, el filtro retornaba el primer EMPAQUE COMPLETED (ej. S8 3400g), y el frontend navegaba ahí — al re-abrir el wizard de una nota ya cerrada se mostraba el último step del wizard ("RESUMEN FINAL") con botón habilitado.
+
+**Fix:** agregar `n.status !== 'COMPLETED'` al filtro del `selectorNote`. Si no hay EMPAQUE pendiente, cae al `else` que avanza al siguiente stage NO-ENSAMBLE; si tampoco hay (bache 100% cerrado), muestra el `setShowCompletionPanel(true)` con mensaje "🎉 Todas las etapas completadas! Bache cerrado."
+
+**Lo que NO se tocó:** lógica de cierre de notas ENSAMBLE espejo (sigue ejecutándose con skipRpa), navegación de baches en curso (los que tienen S10/S11 viejas).
+
+**Archivos tocados:**
+- `frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx` (filtro selectorNote en handleComplete rama EMPAQUE).
+
+---
+
+## CAMBIO 2026-05-05 (f) — Patch retroactivo `assembly_on_complete` en notas EMPAQUE de baches Liquipops abiertos
+
+**Problema:** la migración de plantilla (cambio (d)) añadió `assembly_on_complete:true` a los stages 6/7/8 EMPAQUE. Pero los baches creados ANTES de la migración tienen sus notas EMPAQUE con `processParameters` heredados del template viejo — sin ese flag. Cuando el operario cerraba uno de esos baches:
+- Frontend NO disparaba RPA Siigo desde el sub-step ENSAMBLE interno (no estaba `assembly_on_complete:true`).
+- Backend cerraba la nota ENSAMBLE espejo con `skipRpa:true` (cambio (d)) → tampoco disparaba RPA.
+- **Resultado: el producto terminado NO entraba a Siigo.**
+
+**Fix:** UPDATE retroactivo a TODAS las notas EMPAQUE en estado PENDING/EXECUTING de baches Liquipops abiertos para añadir `assembly_on_complete:true` en `processParameters`.
+
+**Resultado:** 28 notas EMPAQUE parchadas en 14 baches abiertos (CEREZA, MANGO-BICHE-CON-SAL, MANZANA-VERDE, MARACUYA). Cuando el operario cierre cualquiera de esos EMPAQUE, el wizard dispara RPA Siigo correctamente.
+
+**Lo que NO se tocó:**
+- Baches ya COMPLETED (no necesitan).
+- Notas ENSAMBLE espejo S10/S11/S12... (siguen con la lógica de skipRpa).
+- Otros grupos (Geniality).
+
+**Archivos/datos tocados:**
+- BD: `assemblyNote.processParameters` de 28 notas EMPAQUE Liquipops abiertas.
+
+---
+
+## CAMBIO 2026-05-05 (g) — RPA Siigo dispatch SOLO desde el backend (eliminación del frontend)
+
+**Problema:** después del cambio (d) el RPA Siigo se disparaba desde DOS lugares:
+1. Frontend [`AssemblyExecutionWizard.jsx:1099-1128`] cuando la nota EMPAQUE tenía `assembly_on_complete:true`.
+2. Backend [`assemblyService.completeNote`] cuando cerraba una nota ENSAMBLE espejo.
+
+Para evitar duplicado el frontend marcaba la nota espejo con `skipRpa:true` antes de cerrarla. **Pero eso falló en el caso real** del bache MANGO-BICHE-CON-SAL-260428-0134 (350g, 1 unidad): el PATCH skipRpa no se aplicó (race condition / `.catch(() => {})`) y la nota S13 ENSAMBLE quedó con `skipRpa=undefined`. Resultado: 2 RPAs Siigo para la misma unidad (`c73b8765` desde frontend + `e11fbcbb` desde backend).
+
+**Decisión arquitectónica del usuario:** "el backend es quien decide cuándo disparar RPA, no el frontend". Reescritura para que el RPA viva exclusivamente en backend.
+
+**Cambios:**
+
+1. **Backend** [`assemblyService.completeNote`] (~líneas 1646-1680): la decisión `isEnsambleStep` (que controla si se dispara RPA) ahora considera el grupo contable del producto:
+   - `EMPAQUE` con `accountGroup=1401` (Liquipops finished good) y `type !== 'MATERIA_PRIMA'` → **dispara RPA**.
+   - `ENSAMBLE` con `accountGroup=1401` (espejo de Liquipops finished good, baches en curso) → **NO dispara** (la EMPAQUE del mismo productId ya lo hizo).
+   - `EMPAQUE` con `accountGroup=1402` (Geniality) → **NO dispara** (per-carrito durante MARCADO_CAJAS).
+   - `ENSAMBLE`/`FORMACION` de productos intermedios (BASE, COMPUESTO, PROTECCION, ESFERAS) → comportamiento original, dispara.
+
+2. **Frontend** [`AssemblyExecutionWizard.jsx`]:
+   - Eliminado el bloque que disparaba RPA desde el sub-step ENSAMBLE interno del wizard EMPAQUE (~líneas 1099-1128). Sólo queda el dispatch de adjustment de defectuosos (otro endpoint).
+   - El bloque que cierra la nota ENSAMBLE espejo (~líneas 1175-1226) ya NO marca `skipRpa:true` — el backend ya bloquea por accountGroup.
+
+3. **Plantilla** `BATCH-LIQUIPOPS`: removido `assembly_on_complete` de `processParameters` de los 3 stages EMPAQUE (6/7/8). Ya no se necesita esa señal.
+
+4. **Patch retroactivo**: removido `assembly_on_complete` de las 28 notas EMPAQUE Liquipops abiertas (CEREZA, MANZANA-VERDE, MARACUYA, MANGO-BICHE-CON-SAL).
+
+**Resultado:**
+- Baches NUEVOS: cierre EMPAQUE → backend dispara RPA Siigo único + ingest stock. Cero duplicados.
+- Baches EN CURSO (con notas ENSAMBLE espejo): cierre EMPAQUE → backend dispara RPA. Frontend cierra nota espejo. Backend al cerrar la espejo detecta que es ENSAMBLE de finished good Liquipops y omite el RPA. Cero duplicados.
+
+**Lo que NO se tocó:**
+- Lógica de Geniality (per-carrito).
+- ENSAMBLE/FORMACION de productos intermedios (sigue disparando RPA correctamente).
+- Adjustment de defectuosos (sigue desde frontend, otro endpoint).
+
+**Archivos tocados:**
+- `backend/src/services/assemblyService.js` (lógica `isEnsambleStep` extendida).
+- `frontend/src/components/AssemblyRunner/AssemblyExecutionWizard.jsx` (bloque RPA frontend eliminado, skipRpa eliminado).
+- BD: `assemblyTemplate` BATCH-LIQUIPOPS (3 stages limpiados) + 28 notas EMPAQUE en curso.
+
+**Backend reload requerido:** `pm2 reload popping-backend` (hecho).
+**Frontend build requerido:** `npm run build` (hecho).
+**Operarios:** Ctrl+Shift+R para cargar bundle nuevo.
+
+
+---
+
+## CAMBIO (2026-05-05): justifyOvertime no leía isFixed → bloqueaba autorización admin
+
+**Archivo:** `backend/src/controllers/attendanceController.js` (~línea 2372)
+
+**Problema:** Al marcar EXIT FINAL fuera del horario (>30 min), el kiosko muestra el modal "Tiempo extra detectado" y pide PIN del admin. Cuando el admin lo autoriza, el endpoint `/api/attendance/justify-overtime` re-consulta al empleado pero el `select` no incluía `isFixed`. La función `getScheduledShiftEnd` exige `isFixed === true`, así que devolvía `null`, `assessOvertime` decía `applies:false`, y el endpoint respondía error: "No hay tiempo extra que justificar (estás dentro del horario)" — bloqueando la autorización aunque sí hubiera tiempo extra real.
+
+**Fix:** Agregar `isFixed: true` al `select` del `findUnique` en `justifyOvertime`:
+
+```js
+const employee = await prisma.shiftEmployee.findUnique({
+    where: { cedula: String(cedula).trim() },
+    select: { id: true, name: true, area: true, active: true, isFixed: true }  // ← agregar isFixed
+});
+```
+
+**Backend reload requerido:** `pm2 restart popping-backend` (hecho).
+
+---
+
+## CAMBIO 2026-05-05 (h) — Bloqueo de transferencia LOGISTICA desde zona PRODUCCION
+
+**Problema raíz del descuadre:** EMPAQUE no creaba "Actas de Entrega" (`ProductHandoff`) al entregar a LOGISTICA. Como LOGISTICA tenía permiso para transferir desde **cualquier zona**, agarraba lotes directo desde zone='PRODUCCION' o, peor, los pedidos los consumían de PRODUCCION (vía fallback de `consumeForOrder`). Resultado: `Product.productionZoneStock` quedaba inflado con fantasmas porque `consumeForOrder` con `fromZone === toZone` no actualiza el cache.
+
+**Decisión del usuario:** quitar a LOGISTICA la opción de transferir desde zona PRODUCCION. Solo ADMIN podrá hacerlo (escape hatch para correcciones manuales). Forzar a EMPAQUE a crear Acta de Entrega.
+
+**Cambios aplicados:**
+
+1. **Backend** [`finishedLotRoutes.js:276-310`](backend/src/routes/finishedLotRoutes.js#L276-L310): nuevo guard en `POST /finished-lots/transfer`:
+   ```js
+   if (fromZone === 'PRODUCCION' && req.user.role !== 'ADMIN') {
+       return res.status(403).json({
+           error: 'No puedes transferir desde la zona de Producción. El producto debe entregarse mediante Acta de Entrega creada por Empaque.'
+       });
+   }
+   ```
+
+2. **Frontend** [`FinishedProductZonePage.jsx`](frontend/src/pages/FinishedProductZonePage.jsx) — el botón "Transferir" en la pestaña PRODUCCION sólo se renderiza si:
+   - `user.role === 'ADMIN'`, **o**
+   - `user.role === 'LOGISTICA' && activeZone !== 'PRODUCCION'`
+
+   LOGISTICA puede seguir transfiriendo entre PRODUCTO_TERMINADO ↔ NO_CONFORME / CUARENTENA / MAQUILA / PUBLICIDAD pero **no desde PRODUCCION**.
+
+**Operación correcta a partir de ahora:**
+1. EMPAQUE termina un bache → producto queda en zone='PRODUCCION'.
+2. EMPAQUE crea **Acta de Entrega** (`POST /handoffs`) listando los lotes a entregar a LOGISTICA.
+3. LOGISTICA recibe el Acta (`POST /handoffs/:id/receive`) → `transferZone(PRODUCCION → PRODUCTO_TERMINADO)` automáticamente, y `productionZoneStock` se decrementa correctamente.
+4. LOGISTICA despacha pedidos consumiendo de PRODUCTO_TERMINADO.
+
+**Lo que NO se tocó (pendiente bajo confirmación del usuario):**
+- `consumeForOrder` aún tiene `ZONES_PRIORITY = ['PRODUCTO_TERMINADO', 'PRODUCCION']` — el despacho podría consumir de PRODUCCION si LOGISTICA fuerza un escenario raro. Para forzar disciplina total habría que cambiar a `['PRODUCTO_TERMINADO']`.
+- El cache fantasma `productionZoneStock` ya acumulado (descuadre histórico) sigue inflado. Se necesita reconciliación si quieres limpiarlo de un golpe.
+
+**Backend reload:** `pm2 reload popping-backend` (hecho).
+**Frontend build:** `npm run build` (hecho).
+**Operarios:** Ctrl+Shift+R para cargar el bundle nuevo.
+
+**Archivos tocados:**
+- `backend/src/routes/finishedLotRoutes.js` (guard fromZone=PRODUCCION).
+- `frontend/src/pages/FinishedProductZonePage.jsx` (botón Transferir condicional por rol/zona).
+
+---
+
+## CAMBIO 2026-05-05 (i) — Bloqueo total de despacho desde zona PRODUCCION + Reconciliación de fantasmas
+
+**Contexto:** continuación de (h). El bloqueo de transferencia para LOGISTICA cerró una vía. Pero quedaba abierta la otra: `consumeForOrder` (despacho de pedido al picking) tenía `ZONES_PRIORITY = ['PRODUCTO_TERMINADO', 'PRODUCCION']` — si LOGISTICA forzaba despachar antes de que EMPAQUE creara Acta de Entrega, el sistema consumía directo desde PRODUCCION sin actualizar el cache `productionZoneStock`.
+
+Adicionalmente, el descuadre histórico acumulado: 1,226 unidades fantasma en lotes zone='PRODUCCION' de baches ya COMPLETED, y un cache `productionZoneStock` total inflado en 5,225 (real era ≤1,226).
+
+**Cambios aplicados:**
+
+### 1. Backend `consumeForOrder` ([finishedLotService.js:292-358](backend/src/services/finishedLotService.js#L292-L358))
+
+```js
+// ANTES
+const ZONES_PRIORITY = ['PRODUCTO_TERMINADO', 'PRODUCCION'];
+
+// DESPUÉS
+const ZONES_PRIORITY = ['PRODUCTO_TERMINADO'];
+```
+
+Cuando no hay stock en PRODUCTO_TERMINADO, el error es claro y orienta al operario:
+```
+"Lote ${lotNumber} aún está en zona PRODUCCION (disp ${X}). Debe entregarse mediante
+Acta de Entrega creada por Empaque antes de despachar."
+```
+
+### 2. Reconciliación de datos (script atómico)
+
+Para cada producto finished Liquipops+Geniality:
+- Identificar lotes en zone='PRODUCCION' con `currentQuantity > 0`.
+- Filtrar SÓLO los huérfanos (batchId apunta a bache `COMPLETED` o batchId nulo).
+- Setear `currentQuantity = 0`, `status = 'DEPLETED'`.
+- Crear `FinishedLotTransfer` de auditoría (motivo: "Reconciliación 2026-05-05: lote huérfano de bache COMPLETED — Siigo es fuente de verdad").
+- Recalcular `Product.productionZoneStock = SUM(FinishedLotStock.currentQuantity WHERE zone='PRODUCCION' AND batch.status NOT IN [COMPLETED, FAILED])`.
+
+**Resultado:**
+- Productos ajustados: **24**
+- Lotes cerrados a 0: **15** (todos con auditoría en `FinishedLotTransfer`)
+- Unidades fantasma borradas: **1,226**
+- `productionZoneStock` total ANTES: 5,225 → DESPUÉS: **0**
+- Lotes con stock en zone=PRODUCCION (Liquipops+Geniality): 0
+
+### 3. Lo que NO se tocó
+
+- `currentStock` (Siigo es la fuente de verdad).
+- `FinishedLotStock` con zone='PRODUCTO_TERMINADO' (no se tocó).
+- Lotes asociados a baches abiertos (PENDING / EXECUTING / STAGE_*) — su stock se preserva para que producción en curso no se rompa.
+
+### 4. Disciplina nueva del flujo (resumen final)
+
+```
+EMPAQUE termina bache
+  → FinishedLotStock(zone='PRODUCCION', batchId=X)
+EMPAQUE crea Acta de Entrega (POST /handoffs)
+  → ProductHandoff PENDING
+LOGISTICA recibe Acta (POST /handoffs/:id/receive)
+  → transferZone PRODUCCION → PRODUCTO_TERMINADO
+  → productionZoneStock decrementa, currentStock se actualiza vía sync Siigo
+LOGISTICA hace picking del pedido
+  → consumeForOrder consume SÓLO de PRODUCTO_TERMINADO
+  → si no hay stock allí → error claro pidiendo Acta
+LOGISTICA despacha
+  → orden DISPATCHED, currentStock baja por el dispatchOrder
+```
+
+**Backend reload:** `pm2 reload popping-backend` (hecho).
+**Frontend:** sin cambios adicionales (la UI ya está OK desde (h)).
+
+**Archivos/datos tocados:**
+- `backend/src/services/finishedLotService.js` (ZONES_PRIORITY + mensaje error).
+- BD: 15 `FinishedLotStock` cerrados, 24 `Product.productionZoneStock` reseteados, 15 `FinishedLotTransfer` creados (auditoría).
+
+---
+
+## CAMBIO (2026-05-05): Optimización del reconocimiento facial en kiosko
+
+**Archivos:** `kiosko/index.html`, `door_monitor/app.py`
+
+**Síntoma:** Operarios reportaban lentitud al marcar entrada/salida de descanso (face recognition).
+
+**Causa raíz (5 puntos):**
+
+1. El loop de detección en frontend (`startFaceDetection`, cada 300 ms) ejecutaba `.detectSingleFace().withFaceLandmarks(true).withFaceDescriptor()`, pero el descriptor y los landmarks **nunca se enviaban al backend** — el único campo usado era `det.detection.box`. Calcular el descriptor con face-api.js corre la red de reconocimiento (~6 MB) en CPU de tablet por nada.
+2. `loadFaceModels()` bajaba 3 modelos del CDN (`tinyFaceDetector`, `faceLandmark68TinyNet`, `faceRecognitionNet`) cuando solo se usa el primero.
+3. `inputSize: 416` en TinyFaceDetectorOptions — innecesariamente grande.
+4. JPEG capturado al 85 % de calidad — overkill para el match de InsightFace.
+5. Python `door_monitor/app.py` tenía un hilo `keep_warm` que cada 30 s corría `face_app.get(np.zeros(480,480,3))` "para mantener calientes los pesos". El modelo ya está en RAM, ese keep-warm puede bloquear ~100-300 ms una petición `/match` concurrente.
+
+**Fix:**
+
+1. **`kiosko/index.html` — `loadFaceModels()`** — solo carga `tinyFaceDetector`:
+   ```js
+   await faceapi.nets.tinyFaceDetector.loadFromUri(CDN);
+   ```
+
+2. **`kiosko/index.html` — loop de detección** (alrededor de la línea 631):
+   ```js
+   const det = await faceapi
+       .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize:320, scoreThreshold:0.30 }));
+   if (!det) { status.textContent = 'No se detecta rostro. Mire a la cámara.'; return; }
+   const box = det.box;   // antes era det.detection.box
+   ```
+   - Quitado `.withFaceLandmarks(true)` y `.withFaceDescriptor()`.
+   - `inputSize: 416` → `320`.
+   - Acceso `det.detection.box` → `det.box` (ya no hay envoltorio de landmarks).
+
+3. **`kiosko/index.html`** — JPEG quality 0.85 → 0.72:
+   ```js
+   const blob = await new Promise(r => cap.toBlob(r, 'image/jpeg', 0.72));
+   ```
+
+4. **`door_monitor/app.py`** — eliminado el bloque `keep_warm`. Solo queda el warm-up único en arranque:
+   ```python
+   try:
+       warm = np.zeros((480, 480, 3), dtype=np.uint8)
+       face_app.get(warm)
+       log.info("InsightFace pre-calentado (warm-up exitoso)")
+   except Exception as e:
+       log.warning(f"Warm-up falló: {e}")
+   ```
+
+**LO QUE NO SE TOCÓ (importante para seguridad):**
+
+- **InsightFace en backend Python (`/match`) sigue idéntico** — sigue siendo el único responsable de identificar al empleado por su embedding ArcFace de 512 dimensiones contra el cache enrolado. Cualquier "optimización" que toque eso degrada la seguridad.
+- **Liveness sigue idéntico** — 4 frames con desviación >1.2 px obligatorios.
+- **Anti-spoofing de pantalla sigue idéntico** — escaneo de bordes para bloquear fotos de tablets.
+- **Threshold de match en Python (`FACE_THRESHOLD = 0.50`)** sigue igual.
+- **`det_size = (480, 480)` en InsightFace** — bajarlo a 320 sí degradaría reconocimiento de caras lejanas; **NO bajar**.
+
+**Reload requerido:**
+- `pm2 restart door-monitor` (hecho).
+- Tablets recargan automáticamente (`Cache-Control: no-store` en nginx).
+
+**Resultado esperado:** ~40-50 % más rápido en la fase "Buscando rostro...", payload de subida ~35 % más liviano para 4G.

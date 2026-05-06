@@ -232,7 +232,22 @@ class SiigoService {
             const flavor = this.extractFlavor(siigoProduct.name);
             const size = this.extractSize(siigoProduct.name);
             // Assign Classification based on Group Name (User Request Rules)
-            const assignClassification = (groupName) => {
+            const assignClassification = (groupName, sku, productName) => {
+                const skuU = (sku || '').toUpperCase();
+                const nameU = (productName || '').toUpperCase();
+
+                // ── 0. OVERRIDES por SKU/nombre ──────────────────────────────────────────
+                // Algunos productos vienen con account_group de Geniality/Liquipops desde Siigo
+                // pero conceptualmente son insumos/materia prima (etiquetas MPET, premezclas
+                // PROCE, sellos, tapas, etc.). NO deben clasificar como PRODUCTO_TERMINADO,
+                // porque eso los manda a la zona de empaque/picking en lugar de bodega.
+                const isLabelOrSeal = skuU.startsWith('MPET') || skuU.startsWith('MPME') || skuU.startsWith('MPSE') ||
+                    nameU.includes('ETIQUETA') || nameU.includes('SELLO DE SEGURIDAD');
+                const isPremixOrIntermediate = skuU.startsWith('PROCE') ||
+                    nameU.startsWith('PREMEZCLA') || nameU.startsWith('PROTONICO') || nameU.startsWith('ALGINATO PREPARADO');
+                if (isLabelOrSeal) return 'MATERIA_PRIMA';
+                if (isPremixOrIntermediate) return 'PRODUCTO_EN_PROCESO';
+
                 if (!groupName) return null;
                 const g = groupName.toUpperCase();
 
@@ -266,7 +281,11 @@ class SiigoService {
             };
 
             const groupName = this.mapGroupType(siigoProduct.account_group ? siigoProduct.account_group.name : null);
-            const classification = assignClassification(siigoProduct.account_group ? siigoProduct.account_group.name : '');
+            const classification = assignClassification(
+                siigoProduct.account_group ? siigoProduct.account_group.name : '',
+                siigoProduct.code,
+                siigoProduct.name
+            );
 
             // Handle Group Relation
             let group = null;
@@ -539,6 +558,7 @@ class SiigoService {
                             quantity: item.quantity
                         });
 
+                        const existing = await prisma.movement.findUnique({ where: { id: movementId } });
                         await prisma.movement.upsert({
                             where: { id: movementId },
                             update: {
@@ -559,6 +579,27 @@ class SiigoService {
                                 source: 'SIIGO'
                             }
                         });
+
+                        // Descontar finishedLotStock FEFO solo si el movement es NUEVO
+                        // (no al re-procesar la misma factura). Mantiene el espejo
+                        // gestionpbi ↔ Siigo: cuando Siigo factura, gestionpbi descuenta.
+                        if (!existing) {
+                            try {
+                                const finishedLotService = require('./finishedLotService');
+                                const result = await finishedLotService.consumeFEFO({
+                                    productId: product.id,
+                                    quantity: item.quantity,
+                                    reason: `Factura Siigo ${documentNumber}`,
+                                    source: 'SIIGO_INVOICE',
+                                    referenceId: movementId,
+                                });
+                                if (result.shortfall > 0) {
+                                    logger.warn(`[siigo VTA] ${product.sku} factura ${documentNumber}: pidió ${item.quantity}, descontó ${result.consumed}, faltó ${result.shortfall} en finishedLotStock`);
+                                }
+                            } catch (e) {
+                                logger.warn(`[siigo VTA] No se pudo descontar finishedLotStock para ${product.sku}: ${e.message}`);
+                            }
+                        }
                     }
                 }
             }

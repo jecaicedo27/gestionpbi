@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList, Microscope } from 'lucide-react';
+import { LayoutDashboard, Package, Calendar, PlayCircle, FlaskConical, Activity, Layers, ShoppingCart, Tag, Truck, ClipboardList, Microscope, Sparkles } from 'lucide-react';
 
 // ── Tabs by role ────────────────────────────────────────────────────────────
 const tabsByRole = {
@@ -58,12 +58,28 @@ const tabsByRole = {
     ],
 };
 
+const cleaningOnlyTabs = [
+    { icon: Sparkles, label: 'Mis Tareas', path: '/aseo' },
+    { icon: Package, label: 'Insumos', path: '/aseo/insumos' },
+];
+
 const getTabs = (role) => tabsByRole[role] || tabsByRole.PRODUCCION;
 
-const BottomNavBar = ({ userRole }) => {
+const BottomNavBar = ({ userRole, isCleaningOnly = false, isCleaningSupervisor = false }) => {
+    let tabs;
+    if (isCleaningOnly) {
+        // Restricted users: only cleaning tabs (+ supervision if applicable)
+        tabs = [...cleaningOnlyTabs];
+        if (isCleaningSupervisor) {
+            tabs.push({ icon: ClipboardList, label: 'Supervisión', path: '/aseo/supervisor' });
+        }
+    } else {
+        tabs = getTabs(userRole);
+    }
+
     return (
         <nav className="btm-nav">
-            {getTabs(userRole).map((tab) => (
+            {tabs.map((tab) => (
                 <NavLink
                     key={tab.path}
                     to={tab.path}

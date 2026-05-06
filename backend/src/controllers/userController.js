@@ -17,7 +17,8 @@ const VALID_USER_ROLES = new Set([
     'CONTABILIDAD',
     'COMERCIAL',
     'QUIMICO',
-    'RECURSOS_HUMANOS'
+    'RECURSOS_HUMANOS',
+    'MECANICO'
 ]);
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -96,7 +97,7 @@ const handleUserWriteError = (res, error, fallbackMessage) => {
 const getUsers = async (req, res) => {
     try {
         const users = await prisma.user.findMany({
-            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true, createdAt: true, pin: true }
+            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true, isCleaningOnly: true, createdAt: true, pin: true }
         });
         // Map pin hash → boolean flag (never expose the hash)
         const safeUsers = users.map(({ pin, ...u }) => ({ ...u, hasPin: !!pin }));
@@ -228,7 +229,32 @@ const createUser = async (req, res) => {
 const deleteUser = async (req, res) => {
     try {
         const { id } = req.params;
-        await prisma.user.delete({ where: { id } });
+        await prisma.$transaction(async (tx) => {
+            // Limpiar referencias en shift_employees antes de borrar el user
+            // (ShiftEmployee.userId no tiene onDelete:Cascade en el schema).
+            const shiftEmp = await tx.shiftEmployee.findFirst({
+                where: { userId: id },
+                select: { id: true },
+            });
+            if (shiftEmp) {
+                // Si tiene asistencias/historial, solo desvincular (no borrar) para preservar trazabilidad.
+                const hasAttendance = await tx.attendanceRecord.count({
+                    where: { employeeId: shiftEmp.id },
+                });
+                if (hasAttendance > 0) {
+                    await tx.shiftEmployee.update({
+                        where: { id: shiftEmp.id },
+                        data: { userId: null, active: false },
+                    });
+                } else {
+                    // Sin historial: limpiar asignaciones de turno y borrar el shiftEmployee
+                    await tx.shiftAssignment.deleteMany({ where: { employeeId: shiftEmp.id } });
+                    await tx.shiftAbsence.deleteMany({ where: { employeeId: shiftEmp.id } });
+                    await tx.shiftEmployee.delete({ where: { id: shiftEmp.id } });
+                }
+            }
+            await tx.user.delete({ where: { id } });
+        });
         res.json({ success: true, message: 'User deleted' });
     } catch (error) {
         handleUserWriteError(res, error, 'Error deleting user');
@@ -238,7 +264,7 @@ const deleteUser = async (req, res) => {
 const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nit, name, role, idType, discountPercent, reteFuente, isCleaningStaff, isCleaningSupervisor } = req.body;
+        const { nit, name, role, idType, discountPercent, reteFuente, isCleaningStaff, isCleaningSupervisor, isCleaningOnly } = req.body;
         const data = {};
         if (nit !== undefined) data.nit = normalizeText(nit) || null;
         if (idType !== undefined) data.idType = normalizeText(idType) || '13';
@@ -252,6 +278,7 @@ const updateUser = async (req, res) => {
         if (reteFuente !== undefined) data.reteFuente = parseBoolean(reteFuente, true);
         if (isCleaningStaff !== undefined) data.isCleaningStaff = parseBoolean(isCleaningStaff, false);
         if (isCleaningSupervisor !== undefined) data.isCleaningSupervisor = parseBoolean(isCleaningSupervisor, false);
+        if (isCleaningOnly !== undefined) data.isCleaningOnly = parseBoolean(isCleaningOnly, false);
         if (name !== undefined) {
             const cleanName = normalizeText(name);
             if (!cleanName) return res.status(400).json({ error: 'El nombre no puede estar vacío.' });
@@ -268,7 +295,7 @@ const updateUser = async (req, res) => {
         const user = await prisma.user.update({
             where: { id },
             data,
-            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true }
+            select: { id: true, name: true, email: true, role: true, nit: true, idType: true, discountPercent: true, reteFuente: true, isCleaningStaff: true, isCleaningSupervisor: true, isCleaningOnly: true }
         });
         res.json({ success: true, data: user });
     } catch (error) {

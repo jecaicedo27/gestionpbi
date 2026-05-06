@@ -31,16 +31,16 @@ const SHIFTS = {
     },
 };
 
-const AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'];
-const MIGRATION_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'];
-const FIXED_AREAS = ['LOGISTICA', 'ASEO'];
+const AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO', 'PERSONAL_OFICINA'];
+const MIGRATION_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO', 'PERSONAL_OFICINA'];
+const FIXED_AREAS = ['LOGISTICA', 'ASEO', 'PERSONAL_OFICINA'];
 const AREA_LABELS = {
     PRODUCCION: 'Producción', SIROPES: 'Siropes', EMPAQUE: 'Empaque',
-    LOGISTICA: 'Logística', ASEO: 'Servicios Generales'
+    LOGISTICA: 'Logística', ASEO: 'Servicios Generales', PERSONAL_OFICINA: 'Personal Oficina'
 };
 const AREA_ICONS = {
     PRODUCCION: '⚙️', SIROPES: '🧪', EMPAQUE: '📦',
-    LOGISTICA: '🚛', ASEO: '🧹'
+    LOGISTICA: '🚛', ASEO: '🧹', PERSONAL_OFICINA: '💼'
 };
 
 function getAreaShiftOptions(area) {
@@ -952,6 +952,7 @@ export default function ShiftSchedulePage() {
                             <select value={empForm.role} onChange={e => setEmpForm({ ...empForm, role: e.target.value })} style={inputStyle}>
                                 <option value="OPERARIO">Operario</option>
                                 <option value="LIDER">Líder</option>
+                                <option value="MECANICO">Mecánico</option>
                             </select>
                             <input placeholder="# Grupo (1, 2 o 3)" type="number" min="1" max="3" value={empForm.groupNumber}
                                 disabled={empForm.isFixed}
@@ -1093,6 +1094,7 @@ export default function ShiftSchedulePage() {
                                                 <select value={row.role || 'OPERARIO'} onChange={e => updateMigrationRow(user.id, { role: e.target.value })} style={{ ...inputStyle, padding: '7px 8px', fontSize: 12 }}>
                                                     <option value="OPERARIO">Operario</option>
                                                     <option value="LIDER">Líder</option>
+                                                    <option value="MECANICO">Mecánico</option>
                                                 </select>
                                                 <input
                                                     placeholder="Grupo"
@@ -1154,10 +1156,10 @@ export default function ShiftSchedulePage() {
                                             <span style={{
                                                 fontSize: 13, fontWeight: 600,
                                                 padding: '3px 10px', borderRadius: 8,
-                                                background: emp.role === 'LIDER' ? '#fef3c7' : '#f1f5f9',
-                                                color: emp.role === 'LIDER' ? '#92400e' : '#64748b'
+                                                background: emp.role === 'LIDER' ? '#fef3c7' : emp.role === 'MECANICO' ? '#dbeafe' : '#f1f5f9',
+                                                color: emp.role === 'LIDER' ? '#92400e' : emp.role === 'MECANICO' ? '#1e40af' : '#64748b'
                                             }}>
-                                                {emp.role === 'LIDER' ? '👑 Líder' : 'Operario'}
+                                                {emp.role === 'LIDER' ? '👑 Líder' : emp.role === 'MECANICO' ? '🔧 Mecánico' : 'Operario'}
                                             </span>
                                         </td>
                                         <td style={empTdStyle}>

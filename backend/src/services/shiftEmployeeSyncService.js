@@ -1,14 +1,26 @@
 const WEEK_NOTE = 'NOCHE: Dom 22:00 -> Vie amanecer Sab 6:00 | MANANA: Lun-Sab(12PM) | TARDE: Lun-Sab(18h)';
 
-const SHIFT_OPERATION_USER_ROLES = ['PRODUCCION', 'OPERARIO_PICKING', 'LOGISTICA'];
-const SHIFT_OPERATION_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'];
+const SHIFT_OPERATION_USER_ROLES = [
+    'PRODUCCION', 'OPERARIO_PICKING', 'LOGISTICA',
+    'CARTERA', 'CONTABILIDAD', 'RECURSOS_HUMANOS',
+    'CALIDAD', 'QUIMICO', 'COMERCIAL', 'ADMIN', 'MECANICO'
+];
+const SHIFT_OPERATION_AREAS = ['PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO', 'PERSONAL_OFICINA'];
 const ROTATION_ORDER = ['MANANA', 'TARDE', 'NOCHE'];
-const FIXED_SHIFT_AREAS = ['LOGISTICA', 'ASEO'];
+const FIXED_SHIFT_AREAS = ['LOGISTICA', 'ASEO', 'PERSONAL_OFICINA'];
 
 const DEFAULT_AREA_BY_USER_ROLE = {
     PRODUCCION: 'PRODUCCION',
     OPERARIO_PICKING: 'EMPAQUE',
     LOGISTICA: 'LOGISTICA',
+    CARTERA: 'PERSONAL_OFICINA',
+    CONTABILIDAD: 'PERSONAL_OFICINA',
+    RECURSOS_HUMANOS: 'PERSONAL_OFICINA',
+    CALIDAD: 'PERSONAL_OFICINA',
+    QUIMICO: 'PERSONAL_OFICINA',
+    COMERCIAL: 'PERSONAL_OFICINA',
+    ADMIN: 'PERSONAL_OFICINA',
+    MECANICO: 'PRODUCCION',
 };
 
 const KNOWN_USER_SHIFT_DEFAULTS = {
@@ -28,6 +40,10 @@ const AREA_ALIASES = {
     LOGISTICA: 'LOGISTICA',
     ASEO: 'ASEO',
     SERVICIOS_GENERALES: 'ASEO',
+    PERSONAL_OFICINA: 'PERSONAL_OFICINA',
+    OFICINA: 'PERSONAL_OFICINA',
+    ADMINISTRACION: 'PERSONAL_OFICINA',
+    OFFICE: 'PERSONAL_OFICINA',
 };
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -72,7 +88,12 @@ const suggestIsFixedForUser = (user) => {
     return isFixedShiftArea(suggestShiftAreaForUser(user));
 };
 
-const normalizeShiftEmployeeRole = (value) => (normalizeKey(value) === 'LIDER' ? 'LIDER' : 'OPERARIO');
+const normalizeShiftEmployeeRole = (value) => {
+    const k = normalizeKey(value);
+    if (k === 'LIDER') return 'LIDER';
+    if (k === 'MECANICO') return 'MECANICO';
+    return 'OPERARIO';
+};
 
 const normalizeRestrictions = (value) => {
     if (!Array.isArray(value)) return [];
@@ -162,7 +183,7 @@ async function createShiftEmployeeFromUser(prisma, user, options = {}) {
     }
 
     if (!isOperationalUserRole(user.role)) {
-        throw new Error('Solo usuarios de Produccion, Picking/Empaque o Logistica se migran al cuadro de turnos.');
+        throw new Error('Este usuario tiene un rol que no es elegible para el cuadro de turnos.');
     }
 
     const employeeArea = normalizeShiftArea(options.area || suggestShiftAreaForUser(user), user.role);
@@ -174,7 +195,9 @@ async function createShiftEmployeeFromUser(prisma, user, options = {}) {
         data: {
             name: normalizeText(user.name) || user.email,
             area: employeeArea,
-            role: normalizeShiftEmployeeRole(options.role),
+            role: normalizeShiftEmployeeRole(
+                options.role || (normalizeKey(user.role) === 'MECANICO' ? 'MECANICO' : undefined)
+            ),
             groupNumber: employeeIsFixed ? null : normalizeGroupNumber(options.groupNumber),
             isFixed: employeeIsFixed,
             restrictions: normalizeRestrictions(options.restrictions),

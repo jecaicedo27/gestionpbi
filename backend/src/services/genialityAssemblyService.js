@@ -331,6 +331,26 @@ class AssemblyService {
                         }
                     }
 
+                    // GE_PREMIX / GE_BASE_LIQUIDA / GE_COCCION (Escarchador):
+                    // stages que producen una BASE intermedia (ej: BASE ESCARCHADOR).
+                    // Usa la fórmula del producto de salida × scaleFactor para
+                    // que el cálculo plannedQuantity = qpu × scaleFactor sea correcto.
+                    const isEscarchadoStage = ['GE_PREMIX', 'GE_BASE_LIQUIDA', 'GE_COCCION'].includes(stage.processType?.code);
+                    if (isEscarchadoStage) {
+                        const escProductId = stage.outputProductId || stage._subTemplateProductId || template.productId;
+                        if (escProductId) {
+                            const escFormula = await prisma.formula.findFirst({
+                                where: { productId: escProductId, isActive: true },
+                                select: { baseQuantity: true, baseUnit: true },
+                                orderBy: { version: 'desc' }
+                            });
+                            if (escFormula) {
+                                targetQuantity = (escFormula.baseQuantity || 1) * scaleFactor;
+                                targetUnit = escFormula.baseUnit || 'gramo';
+                            }
+                        }
+                    }
+
                     // FORMACIÓN: use ESFERAS formula baseQuantity (150,000g standard)
                     // Template is generic (BATCH-LIQUIPOPS) for all flavors, so:
                     // 1. Try batch product formula
