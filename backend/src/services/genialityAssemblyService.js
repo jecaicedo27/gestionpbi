@@ -1337,21 +1337,27 @@ class AssemblyService {
                 // so they can be consumed by downstream assembly stages.
                 const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup) && note.product?.type !== 'MATERIA_PRIMA';
                 if (!isFinishedProduct) {
-                    await tx.materialLot.create({
-                        data: {
-                            productId: note.productId,
-                            siigoProductCode: note.product?.sku || '',
-                            siigoProductName: note.product?.name || '',
-                            lotNumber,
-                            initialQuantity: qty,
-                            currentQuantity: qty,
-                            unit: note.unit || note.product?.unit || 'unidad',
-                            receivedAt: new Date(),
-                            status: 'AVAILABLE',
-                            zone: 'PRODUCTION'
-                        }
-                    });
-                    console.log(`[completeNote] ✅ MaterialLot created for ${note.product?.name} — lot: ${lotNumber} (${qty} uds)`);
+                    try {
+                        const createdLot = await tx.materialLot.create({
+                            data: {
+                                productId: note.productId,
+                                siigoProductCode: note.product?.sku || '',
+                                siigoProductName: note.product?.name || '',
+                                lotNumber,
+                                initialQuantity: qty,
+                                currentQuantity: qty,
+                                unit: note.unit || note.product?.unit || 'unidad',
+                                receivedAt: new Date(),
+                                status: 'AVAILABLE',
+                                zone: 'PRODUCTION'
+                            }
+                        });
+                        console.log(`[completeNote] ✅ MaterialLot created — bache=${note.productionBatch?.batchNumber} sku=${note.product?.sku} lote=${lotNumber} qty=${qty} id=${createdLot.id}`);
+                    } catch (lotErr) {
+                        // Si falla, romper toda la transacción (no dejar bache "completado" sin lote)
+                        console.error(`[completeNote] ❌ Falló creación MaterialLot — bache=${note.productionBatch?.batchNumber} sku=${note.product?.sku} lote=${lotNumber}: ${lotErr.message}`);
+                        throw new Error(`PRODUCCION_NO_REGISTRADA: No se pudo crear material_lot para ${note.product?.sku} (lote ${lotNumber}): ${lotErr.message}`);
+                    }
                 } else {
                     // ── FINISHED PRODUCTS: create finishedLotStock per carrito ──
                     // So logistics can receive carts via handoffs without waiting

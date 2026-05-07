@@ -3328,3 +3328,464 @@ LOGISTICA despacha
 - Tablets recargan automáticamente (`Cache-Control: no-store` en nginx).
 
 **Resultado esperado:** ~40-50 % más rápido en la fase "Buscando rostro...", payload de subida ~35 % más liviano para 4G.
+
+---
+
+## CAMBIO 2026-05-05 (j) — Nuevo rol DISEÑO + módulo Imprimir Etiquetas (RPA Siigo Ensamble)
+
+**Problema:** El área de impresión imprime etiquetas físicamente pero la entrada al sistema (Ensamble Siigo tipo B que descuenta MP y suma N etiquetas al inventario) la registraba CONTABILIDAD con días de retraso, causando stock negativo y desfase con producción.
+
+**Solución:** rol nuevo `DISEÑO` con 3 vistas — la operaria registra al imprimir, el RPA dispara el Ensamble Siigo en el acto.
+
+### Backend
+
+1. **Enum `UserRole`** ([backend/prisma/schema.prisma](backend/prisma/schema.prisma)) — agregado valor `DISEÑO`.
+   - Aplicado en BD: `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'DISEÑO';`
+   - `npx prisma generate` regenerado.
+
+2. **Controller nuevo** [`backend/src/controllers/printController.js`](backend/src/controllers/printController.js):
+   - `GET /api/print/labels` — lista etiquetas activas (filtro grupo `MATERIA PRIMA ETIQUETAS Y SELLOS` o SKU `MPET*` / `MPME*` / `MPSE*`) con stock + sugerencia (negativo, bajo mínimo).
+   - `POST /api/print/register` — body `{ productId, quantity, observations? }` — crea `rpaExecution` (`SIIGO_ASSEMBLY`, `assemblyType: 'proceso'`) y encola al `siigoBrowserManager`. La respuesta es asíncrona (RPA en segundo plano).
+   - `GET /api/print/history?limit=N` — últimas N impresiones con estado del RPA (`RUNNING`/`SUCCESS`/`FAILED`).
+
+3. **Routes nuevas** [`backend/src/routes/printRoutes.js`](backend/src/routes/printRoutes.js):
+   - Middleware `allowDesignOrAdmin` — bloquea cualquier rol que no sea `DISEÑO` o `ADMIN`.
+   - Registradas en [`backend/src/routes/index.js`](backend/src/routes/index.js) bajo `/print`.
+
+### Frontend
+
+4. **Página nueva** [`frontend/src/pages/diseno/PrintLabelsPage.jsx`](frontend/src/pages/diseno/PrintLabelsPage.jsx):
+   - 4 cards de resumen (total etiquetas, en negativo, bajo mínimo, RPA hoy).
+   - Tabla con buscador + filas resaltadas por status.
+   - Panel lateral de selección + form (cantidad obligatoria, observaciones opcionales).
+   - Historial RPA en vivo (auto-refresh cada 30 s) con badges de estado.
+
+5. **Routing** ([frontend/src/App.jsx](frontend/src/App.jsx)) — ruta `/diseno/imprimir`.
+
+6. **Sidebar** ([frontend/src/components/common/Sidebar.jsx](frontend/src/components/common/Sidebar.jsx)) — sección "Diseño" con 3 entradas para rol `DISEÑO`:
+   - Imprimir Etiquetas → `/diseno/imprimir`
+   - Cronograma Producción → `/production/view` (read-only, igual que ven los distribuidores)
+   - Inventario → `/inventory`
+
+### Flujo end-to-end (lo que reemplaza)
+
+ANTES: imprime etiquetas → (espera 1-3 días) → contabilidad sube ensamble Siigo → recién ahora gestionpbi ve el inventario aumentar.
+
+AHORA: imprime etiquetas → la operaria abre `/diseno/imprimir` → selecciona SKU + cantidad + confirma → RPA Siigo dispara Ensamble en segundo plano → en ~30-60 s el inventario ya refleja la entrada y se descuentan las MP de etiqueta.
+
+### Lo que NO se tocó
+
+- ❌ Lógica de Ensamble Siigo (`siigoBrowserManager.enqueue`) sigue idéntica — solo se invoca desde un punto nuevo.
+- ❌ `syncAllProducts` (cron 30 min) sigue siendo la fuente de verdad de `Product.currentStock`.
+- ❌ Inventario / formulario / movements / etc.
+
+### Cómo crear una operaria DISEÑO
+
+Admin → Usuarios → Crear → Rol: `DISEÑO`. Solo verá la sección "Diseño" en el sidebar (más nada).
+
+---
+
+## CAMBIO 2026-05-06 — Restauración de lotes y fix permanente al script de reconciliación
+
+**Contexto:** El script ad-hoc del 2026-05-05 (CAMBIO i, "Reconciliación de fantasmas") borró 15 lotes / 1.226 unidades en zona PRODUCCION asociados a baches COMPLETED. Pero ~600 unidades eran lotes **legítimos recién creados** el mismo día — el script no esperó a que Siigo sincronizara y los borró por error.
+
+**Caso testigo:** `CEREZA-260505-0314` — bache cerró 2026-05-05 22:30:53, script corrió 23:26:33 (56 min después), borró las 175 unidades reportándolas como huérfanas.
+
+### 1. Restauración
+
+`UPDATE finished_lot_stock SET currentQuantity = X, status = 'AVAILABLE'` para 11 lotes de productos terminados, con asiento de auditoría en `finished_lot_transfers` (motivo: "Restauración 2026-05-06: lote borrado por error en reconciliación 5/5 — físico confirmado").
+
+| SKU | Lote | Restaurado |
+|---|---|---|
+| LIQC02 | CEREZA-260505-0314 / 0442 | 343 |
+| LIQUIPG13 | MANGO-BICHE-260427-1944 / 2354 / 0134 | 103 |
+| LIQUIPP13 | MANGO-BICHE-260427-1944 / 0134 / 2354 | 75 |
+| LIQA09 / LIQD09 | MANZANA-VERDE-260504-1857 | 67 |
+| GENI28 | TAMARINDO-260428-0213 | 12 |
+
+**Total: 600 unidades en 11 lotes.**
+
+Lo que NO se restauró (sí eran fantasmas reales o sobraban):
+- GENI07 / BLUEBERRY-260423-0418 (Siigo=0)
+- LIQUIPM13 / MANGO-BICHE-260427-1416 (sobraban 71)
+- LIQD02 / CEREZA-260505 0314+0442 (sobraban 31)
+- LIQUIPP13 / MANGO-BICHE-260427-2354 (parcial — 138 reales eran fantasma)
+
+### 2. Fix permanente — [`backend/src/scripts/reconcileGhostLots.js`](backend/src/scripts/reconcileGhostLots.js)
+
+Script persistente reemplaza la ejecución ad-hoc. Reglas nuevas:
+
+- **`MIN_AGE_HOURS = 24`** (configurable vía `--min-age-hours=N`): NO toca lotes creados en las últimas 24h. Esto da margen para que Siigo sincronice (`syncAllProducts` cron 30 min) antes de declarar "fantasma".
+- **Solo grupos LIQUIPOPS y GENIALITY** — no toca material de empaque, perlas ni productos en proceso. Cada uno tiene flujos separados.
+- **FEFO inverso** — al borrar exceso, empieza por los lotes más viejos.
+- **`--dry-run`** — verificación sin modificar.
+- **Auditoría completa** — cada cambio crea un `FinishedLotTransfer`.
+
+```bash
+# Ver qué tocaría (sin aplicar)
+node src/scripts/reconcileGhostLots.js --dry-run
+
+# Aplicar
+node src/scripts/reconcileGhostLots.js
+
+# Cambiar margen (ej: solo lotes >48h)
+node src/scripts/reconcileGhostLots.js --min-age-hours=48
+```
+
+### 3. Estado post-restauración
+
+- `LIQUIPOPS + GENIALITY`: 0 lotes a reconciliar (cuadrado vs Siigo).
+- Productos restantes (MP, empaque): no aplicable — no se reconcilian aquí.
+
+---
+
+## CAMBIO 2026-05-06 (b) — Kiosko: vigilancia continua desactivada (CPU 500% → 0%)
+
+**Problema:** el endpoint `/process-frame` del door-monitor era invocado por el kiosko (tablet) cada 1 segundo. Cada llamada ejecutaba YOLOv8 + InsightFace por persona detectada, saturando el CPU al 500% y bloqueando los marcajes (`/match` timeout-eaba a los 10s — usuarios veían "fallo de la IA").
+
+Adicionalmente, el `store_crossing()` siempre fallaba porque la tabla `door_crossing_events` no existe → todo el trabajo de YOLO/InsightFace era desperdiciado.
+
+**Cambios:**
+
+1. **`door_monitor/app.py:357-365`** — `/process-frame` ahora retorna `{"detections": [], "crossings": [], "disabled": true}` inmediato sin invocar modelos. Red de seguridad por si llegan clientes viejos.
+
+2. **`kiosko/index.html`**:
+   - Línea ~1160: comentado `setTimeout(startMonitor, 3000)` y oculto el badge.
+   - Línea ~1146: removido el `setTimeout(startMonitor, 800)` del `visibilitychange` para que NO se reactive al cambiar de pestaña.
+
+**Resultado inmediato:**
+- door-monitor CPU: 500% → 0%
+- door-monitor RAM: 928 MB → 870 MB (modelos cargados pero ociosos)
+- `/match` (cédula + cara) responde en <500ms
+
+**Lo que NO se tocó:**
+- `/match` (matching facial puntual al marcar) sigue activo y rápido.
+- InsightFace + ArcFace 512-d sigue siendo el motor de identificación.
+- Si en el futuro se quiere recuperar la vigilancia con cámara IP de la puerta, basta con: crear la tabla `door_crossing_events`, descomentar `setTimeout(startMonitor, 3000)` y restaurar el cuerpo de `/process-frame` — todo está marcado con `DESACTIVADO 2026-05-06` para localización rápida.
+
+---
+
+## CAMBIO 2026-05-06 (c) — Bodegas MAQUILAS y MATERIA PRIMA TRANSITORIA ocultas en matriz inventario
+
+**Problema:** el inventario por bodega mostraba secciones "MAQUILAS" y "MATERIA PRIMA TRANSITORIA" con stock 0 en todas las celdas. Ya no se usan esas bodegas (Maquilas: outsourcing terminado; Materia Prima Transitoria: bodega virtual obsoleta), pero las secciones seguían apareciendo y confundían a los usuarios.
+
+**Cambio:**
+
+`frontend/src/components/inventory/InventoryMatrix.jsx:96-117` — refactor del filtro `HIDDEN_WAREHOUSES`:
+- Era un Set inconsistente (`['MAQUILAS']` global + `['Maquilas']` local con case mismatch).
+- Ahora es un array case-insensitive con helper `isHiddenWarehouse(name)`:
+  ```js
+  const HIDDEN_WAREHOUSES = ['MAQUILAS', 'MATERIA PRIMA TRANSITORIA'];
+  const isHiddenWarehouse = (name) =>
+      HIDDEN_WAREHOUSES.includes(String(name || '').trim().toUpperCase());
+  ```
+
+**Cómo recuperar una bodega:** quitar el nombre del array `HIDDEN_WAREHOUSES`.
+
+---
+
+## CAMBIO 2026-05-06 (d) — Fix de fórmulas BASE LIQUIPOPS y COMPUESTO CHAMOY (cuadre de inventario)
+
+**Problema:** desfase entre `base_quantity` declarada y suma real de ingredientes en 2 fórmulas activas, que generaba ~2 kg de "fantasma" por bache.
+
+| Fórmula | Antes | Suma real ingredientes | Después |
+|---|---|---|---|
+| FORM005 BASE LIQUIPOPS (PROCELIQUIPOPS01) | 120.223 g | 118.004 g | **118.004 g** |
+| FORM035 COMPUESTO CHAMOY (PROCELIQUIPOPS46) | 121.310 g | 121.137 g | **121.137 g** |
+
+**SQL aplicado** (BD, no requiere merge de archivos):
+```sql
+UPDATE formulas SET base_quantity = 118004 WHERE formula_code = 'FORM005';
+UPDATE formulas SET base_quantity = 121137 WHERE formula_code = 'FORM035';
+```
+
+**Verificación:** las 12 fórmulas COMPUESTO X consumen 118.004 g de BASE LIQUIPOPS — ya cuadradas, no requieren ajuste.
+
+**Importante para Siigo:** las fórmulas equivalentes en Siigo deben tener los mismos valores. Verificar manualmente:
+- `BASE LIQUIPOPS` cantidad base = 118.004 g
+- `COMPUESTO CHAMOY` cantidad base = 121.137 g
+
+---
+
+## CAMBIO 2026-05-06 (e) — Renombrar enum `DISEÑO` → `DISENO` (Prisma no acepta `Ñ`)
+
+**Problema:** el rol `DISEÑO` agregado al enum `UserRole` (CAMBIO j del 05-05) usaba `Ñ` que Prisma no acepta como valor de enum (`prisma generate` falla con `Validation Error: This line is not an enum value definition`).
+
+**Cambio aplicado:**
+
+1. **BD**: `ALTER TYPE "UserRole" RENAME VALUE 'DISEÑO' TO 'DISENO';`
+
+2. **`backend/prisma/schema.prisma`** — enum UserRole: `DISEÑO` → `DISENO`.
+
+3. **`backend/src/controllers/userController.js`** — `VALID_USER_ROLES.add('DISENO')`.
+
+4. **`backend/src/routes/printRoutes.js`** — middleware `allowDesignOrAdmin` compara contra `'DISENO'`.
+
+5. **Frontend**:
+   - `frontend/src/components/common/Sidebar.jsx` — sección Diseño con `roles: ['DISENO']`.
+   - `frontend/src/pages/admin/Users.jsx` — `<option value="DISENO">Diseño</option>` (el label visible sigue siendo "Diseño", solo cambia el código interno).
+
+**Nota:** documentación del CAMBIO 2026-05-05 (j) sigue mencionando "DISEÑO" como nombre conceptual del rol — eso está OK, la `Ñ` es solo del label visible. Internamente el código del rol es `DISENO`.
+
+---
+
+## CAMBIO 2026-05-07 — Bono de líderes proporcional a duración de falla + categorías de falla
+
+**Problema:** la regla anterior pagaba **100% del bono ($125.000) automáticamente** si había un bache `FALLA` en el turno, sin importar el cumplimiento del cronograma. Caso testigo: **Luis Fernando MORENO** (MAÑANA 06/05) recibió $125.000 con score 38% (DEFICIENTE) y 6/12 pasos hechos. Análisis fino: 3 de 5 pasos perdidos coincidieron con la ventana de falla (legítimos), pero **2 fueron prevenibles** (fuera de la ventana). Pagar 100% sin cumplir el cronograma era demasiado generoso.
+
+### 1. Cambio de fórmula
+
+`backend/src/controllers/shiftDisciplineController.js`:
+
+- **Reemplaza `shiftHadFailure(start, end)` (boolean) por `shiftFailureDurationMin(start, end)` (minutos solapados con el turno).** Solape parcial cuenta solo el tramo solapado.
+- En endpoints `/history` (líneas ~873-892) y `/bonus` mensual (líneas ~1306-1330): calcula `fallRatio = min(1, failMin / shiftMin)`.
+
+**Fórmula nueva (Opción B híbrida):**
+```js
+const realPctEsfer = interpolatePctByBaches(esfer, esferTarget);
+const realPctBases = interpolatePctByBaches(bases, baseTarget);
+const pctEsfer = realPctEsfer * (1 - fallRatio) + fallRatio;  // mezcla real + 100%
+const pctBases = realPctBases * (1 - fallRatio) + fallRatio;
+const pctCron  = computePctCronogramaTotal(steps);             // SIEMPRE real
+const pct = (pctEsfer + pctBases)/2 * 0.7 + pctCron * 0.3;
+```
+
+**Lectura:** la falla "regala" la parte de extras proporcional al % del turno cubierto. El cronograma sigue evaluándose real porque los pasos administrativos no se ven afectados por falla mecánica.
+
+### 2. Categorías de falla
+
+`frontend/src/pages/ProductionOperatorPage.jsx` — al presionar el botón **FALLA** ahora aparece un select con tipos:
+
+1. Falta de ingredientes
+2. Falla mecánica
+3. Falla eléctrica
+4. Limpieza no programada
+5. Otro
+
+La categoría queda como prefijo `[Tipo]` en el campo `notes` del bache. Útil para reportería futura ("¿cuántas fallas fueron por falta de ingredientes?").
+
+### 3. Ajustes retroactivos en BD
+
+- **Bache FALLA retroactivo para Gabriel** (NOCHE 05/05) — `FALLA-260506-030000-RTC`, 2h30min (03:00–05:30 del 06/05). Justificación: Gabriel sufrió por falta de glucosa en su turno pero no quedó registrada formalmente como FALLA en su ventana.
+
+### 4. Recálculo automático
+
+El bono se calcula en runtime en cada consulta (no se guarda en BD). Por lo tanto el cambio aplica **retroactivamente a todos los turnos pasados**:
+
+| Líder/turno | Antes | Ahora |
+|---|---|---|
+| Luis Fernando 06/05 MAÑANA | $125.000 (100% por falla) | ~$48-50K (refleja 4/7 baches, fallRatio 33%, cronograma real 52%) |
+| Gabriel 05/05 NOCHE | (sin protección, real) | sube ~$86K (gana protección parcial por falla retroactiva) |
+
+### Funciones reusadas (sin cambios)
+
+- `computePctCronogramaTotal(steps)` — sin cambios
+- `interpolatePctByBaches(b, target)` — sin cambios
+- `_esferTargetForShift`, `_baseTargetForShift`, `countBatchesForShift`, `countEsferForShift` — sin cambios
+
+### Lo que NO se tocó
+
+- Constantes `BONUS_DEFAULT_BASE = 3.000.000`, `valuePerShift = 125.000`
+- Curva de extras (`_pctDiscreto` 5=20% / 6=50% / 7=100%)
+- Filosofía 70/30 (extras vs cronograma)
+- Reparto por persona (÷4 default)
+
+---
+
+## CAMBIO 2026-05-07 (b) — Eliminado cron syncInvoicesRange (causaba doble descuento)
+
+**Problema:** el CAMBIO 2026-05-05 (i) agregó descuento de `finished_lot_stock` cuando llegaban facturas Siigo (vía `consumeFEFO` desde `processInvoiceAsMovement`). Pero los pedidos internos en gestionpbi YA descuentan los lotes al pasar por picking/despacho. Resultado: **doble descuento** — picking interno descontaba, y luego el cron horario `syncSales` descontaba otra vez los MISMOS lotes cuando el sync traía las facturas Siigo correspondientes.
+
+**Caso testigo:** LIQC08 (CHICLE 1150) — produjo 505 unds en 4 baches el 06/05. Picking despachó 276 unds. Pero el cron a las 00:59 del 07/05 descontó 229 unds más por "Factura Siigo XXXX". Stock app: 0. Stock Siigo: 241. **241 unds quedaron como fantasma negativo en la app**. Total daño: **218 transferencias / 4.306 unds** (todos los productos terminados afectados).
+
+Adicionalmente, `consumeFEFO` consumía lotes de zona `PRODUCCION` cuando aún no se habían entregado a logística (Acta de Entrega). Esto vaciaba lotes recién producidos antes de que Logística los recibiera, haciendo fallar las Actas con "Stock insuficiente: disponible 0".
+
+**Cambios aplicados:**
+
+### 1. Cron desactivado — `backend/src/server.js:70-90`
+
+```js
+// ANTES
+const syncSales = () => siigoQueue.enqueue('sync-ventas', async () => {
+    const result = await siigoService.syncInvoicesRange(dateStart, dateEnd);
+    ...
+});
+setTimeout(syncSales, 30000);
+setInterval(syncSales, 3600000);
+
+// DESPUÉS — DESACTIVADO 2026-05-07
+// El sync de ventas Siigo causaba doble descuento. Los pedidos internos
+// de gestionpbi ya descuentan finished_lot_stock al confirmarse el picking;
+// el sync horario repetía la operación para las MISMAS facturas. Solo se
+// mantiene el recálculo de velocidades cada 1h.
+```
+
+### 2. `consumeFEFO` removido del flujo Siigo — `backend/src/services/siigoService.js:583-602`
+
+```js
+// ANTES (en processInvoiceAsMovement)
+if (!existing) {
+    const result = await finishedLotService.consumeFEFO({
+        productId, quantity, reason: `Factura Siigo ${documentNumber}`,
+        source: 'SIIGO_INVOICE', referenceId: movementId,
+    });
+    ...
+}
+
+// DESPUÉS — bloque eliminado.
+// La factura solo registra el Movement (auditoría/dashboard), no toca
+// finished_lot_stock.
+```
+
+### 3. Reversión masiva — datos
+
+```sql
+-- Restauración: para cada lote afectado, devolver la cantidad consumida por el cron.
+UPDATE finished_lot_stock fls
+SET "currentQuantity" = fls."currentQuantity" + sub.total_to_restore
+FROM (SELECT "finishedLotStockId", SUM(quantity) AS total_to_restore
+      FROM finished_lot_transfers
+      WHERE reason LIKE 'Factura Siigo %'
+      GROUP BY "finishedLotStockId") sub
+WHERE fls.id = sub."finishedLotStockId";
+
+-- Reclasificar status según ratio (0 = DEPLETED, <10% = LOW, sino AVAILABLE)
+-- Marcar transferencias como '[REVERTIDO 2026-05-07] Factura Siigo …'
+```
+
+**Resultado:** 191 lotes restaurados (4.306 unds devueltas), 218 transferencias marcadas como revertidas.
+
+### 4. Lo que NO se tocó
+
+- `syncInvoicesRange()` y `processInvoiceAsMovement()` **siguen creando registros en `Movement`** (sirven para reportería/auditoría histórica de ventas) — pero ya no descuentan inventario.
+- El endpoint `/api/movements/sync` sigue disponible para llamadas manuales.
+- El descuento por picking interno (`consumeForOrder` en `orderControllerExtensions.js`) sigue siendo el ÚNICO punto que descuenta `finished_lot_stock`. Es coherente: los pedidos en gestionpbi se procesan ahí.
+
+### Filosofía restaurada
+
+**Antes del CAMBIO 2026-05-05 (i):** Siigo y gestionpbi tenían inventarios independientes. Esto causaba el problema original (LIQA07 con 380 unds fantasma) porque las VTAs Siigo no se reflejaban en gestionpbi.
+
+**Después del CAMBIO 2026-05-05 (i):** intentamos sincronizar descontando ambos lados. Pero rompió el flujo interno (picking) por doble descuento.
+
+**Ahora (CAMBIO 2026-05-07 b):** gestionpbi mantiene su inventario INTERNO (picking descuenta correctamente). Si el inventario gestionpbi y Siigo difieren, la corrección se hace por:
+- Conteo físico ocasional + ajuste manual
+- O un cron de ALERTA (no de ajuste automático) que reporte descuadres > X%
+
+El objetivo del CAMBIO i (LIQA07 fantasma) se logra mejor con el flujo de picking + actas de entrega bien hechos, no con un sync que doble-cuenta.
+
+---
+
+## CAMBIO 2026-05-07 (c) — Robustecer flujos de inventario (validaciones + logging + endpoint auditoría)
+
+**Contexto:** Tras eliminar el cron VTAs (2026-05-07 b), preparar el código para que los 3 flujos críticos (recepción, producción, consumo) garanticen que NO se pierda ni duplique movimientos antes del próximo conteo físico.
+
+### 1. Recepción de OC validada — `backend/src/controllers/receptionController.js`
+
+Al validar contabilidad una recepción (paso final que pasa la OC a COMPLETED), AHORA verifica que **cada item con `quantityReceived > 0` tenga material_lots creados que cubran la cantidad recibida**. Si no, la OC queda en `ACCOUNTING_PENDING` (no avanza a COMPLETED) y se loguea warning con detalle:
+
+```
+⚠️ [Recepción] OC X: 2 items SIN loteo completo. OC NO pasa a COMPLETED.
+   Detalle: MP1F02: recibido=100000, loteado=0, falta=100000 | ...
+```
+
+Resultado: las recepciones que no fueron loteadas en gestionpbi quedan visibles en la pestaña Pendientes hasta completar el loteo. Causa raíz del descuadre crónico de MP atendida.
+
+### 2. Producción robustecida — `genialityAssemblyService.js` y `assemblyService.js`
+
+Al completar nota tipo ENSAMBLE/ENSAMBLE_SIIGO de producto intermedio, la creación de `material_lot` ahora va envuelta en try/catch:
+
+```js
+try {
+    const createdLot = await tx.materialLot.create({ ... });
+    console.log(`[completeNote] ✅ MaterialLot created — bache=X sku=Y lote=Z qty=W id=...`);
+} catch (lotErr) {
+    console.error(...);
+    throw new Error(`PRODUCCION_NO_REGISTRADA: No se pudo crear material_lot para ...`);
+}
+```
+
+Si falla la creación, **rompe la transacción** — el bache no queda como completado sin lote. Antes silenciosamente podía pasar al siguiente paso.
+
+### 3. Consumo PESAJE bloqueado si hay shortfall — `assemblyService.js:1436-1465`
+
+Si una nota PESAJE se completa con ingredientes que **no se pudieron descontar** (NO_CONSUMPTION), la nota SE BLOQUEA con error:
+
+```
+CONSUMO_NO_REGISTRADO: Los siguientes ingredientes no se pudieron descontar:
+GOMA GUAR (esperado 680g), AZUCAR (esperado 4002g)...
+Verifica que haya stock disponible en zona PRODUCCIÓN o transfiere desde Bodega.
+```
+
+El audit log `CONSUMPTION_ALERT` sigue creándose. Antes solo loggeaba; ahora también bloquea para PESAJE.
+
+### 4. deleteBatch preserva trazabilidad de lotes con salidas — `routes/index.js:223-265`
+
+Antes: al borrar un bache, los `finished_lot_stock` asociados se borraban con `deleteMany`. Si tenían transferencias de salida (despachos/ventas), esos transfers quedaban huérfanos.
+
+Ahora: si el lote tiene transfers con razón distinta a "Ingreso desde producción", **NO se borra** — se pone en 0/DEPLETED para preservar histórico:
+
+```
+[deleteBatch] Zeroed FinishedLotStock X (lote Y, Z uds) — N salidas/ventas previas, no se borra
+```
+
+### 5. Endpoint y script de auditoría — NUEVO
+
+**Script CLI**: `backend/src/scripts/auditInventorySync.js`
+```bash
+node src/scripts/auditInventorySync.js                  # threshold 1kg
+node src/scripts/auditInventorySync.js --threshold=2000 # threshold 2kg
+```
+
+Reporta (sin modificar nada):
+- Productos con `Siigo > app` (recepciones missing) y `app > Siigo` (descuentos missing)
+- Lotes con `currentQuantity > initialQuantity`
+- Baches COMPLETED últimos 14d sin lotes creados
+- Notas PESAJE COMPLETED últimos 14d sin lot_consumptions
+
+**Endpoint API** (admin only):
+```
+GET /api/admin/inventory-sync-report?threshold=1000
+```
+Retorna mismo JSON. Se puede integrar en una vista admin para revisar diariamente.
+
+**Resultado primer run (2026-05-07):**
+- 61 productos con Siigo > app
+- 28 productos con app > Siigo
+- 1 lote anómalo (MPCL11/229278: init=1, current=276)
+- Total descuadre: ~19 t (incluye productos intermedios PROCE)
+- 0 baches sin lotes / 0 pesajes sin consumos en últimos 14 días → **flujos actuales están correctos**
+
+### Lo que NO se tocó (decisión del usuario)
+
+- **Datos actuales**: el conteo físico viene después. Los descuadres reportados quedan ahí hasta el ajuste físico.
+- Picking interno (`consumeForOrder`): ya estaba robusto desde CAMBIO 2026-05-05 (i).
+- Lógica de fórmulas y plantillas.
+
+### Verificación
+
+1. ✅ Backend reload sin errores.
+2. ✅ Script de auditoría corre y reporta datos consistentes.
+3. ⏳ Pendiente: en próximas recepciones/producciones, monitorear logs y validar que las nuevas validaciones no rompan flujos legítimos.
+
+---
+
+## CAMBIO 2026-05-07 (d) — Recuperación automática de RPAs huérfanos por restart
+
+**Problema:** cuando el backend se reinicia (`pm2 reload` o crash), los RPAs que estaban en ejecución mueren con error `"Backend reiniciado durante ejecución"`. El auto-retry scheduler solo capturaba FAILEDs de los últimos 30 min; pasada esa ventana, requerían reintento manual uno por uno desde la UI.
+
+Caso testigo: 7 RPAs FAILED (BASE LIQUIPOPS, ALGINATO, COMPUESTO BLUEBERRY, ESFERAS BLUEBERRY, etc.) tras varios reloads. El operario tuvo que clic en "Reintentar" 7 veces.
+
+**Cambios — `backend/src/services/siigoBrowserManager.js`:**
+
+1. **`LOOKBACK_MS: 30 min → 6 horas`** (línea ~1604). El auto-retry scheduler ahora reintenta FAILEDs de las últimas 6 horas, no solo 30 min.
+
+2. **Post-restart sweep** (líneas ~1734-1755) — nuevo bloque al final del archivo que se ejecuta 5s después de cargar el módulo:
+   ```js
+   const orphans = await _prisma.rpaExecution.updateMany({
+       where: { status: 'RUNNING' },
+       data: { status: 'FAILED', errorMessage: 'Backend reiniciado durante ejecución' },
+   });
+   ```
+   Cualquier RPA que quedó en RUNNING al morir el backend se marca como FAILED. El auto-retry los recoge en su siguiente ciclo (5 min) sin intervención manual.
+
+**Resultado:** futuros `pm2 reload` no requerirán reintentos manuales. El operario ve un breve hueco de ~5-10 min y los Ensambles continúan automáticamente.

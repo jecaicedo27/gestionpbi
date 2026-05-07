@@ -282,6 +282,7 @@ const Users = () => {
                                                 <option value="QUIMICO">Químico</option>
                                                 <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
                                                 <option value="MECANICO">Mecánico</option>
+                                                <option value="DISENO">Diseño</option>
                                             </select>
                                         ) : (
                                             <div className="flex items-center gap-1 flex-wrap">
@@ -682,6 +683,7 @@ const Users = () => {
                                     <option value="QUIMICO">Químico</option>
                                     <option value="RECURSOS_HUMANOS">Recursos Humanos</option>
                                     <option value="MECANICO">Mecánico</option>
+                                    <option value="DISENO">Diseño</option>
                                 </select>
                             </div>
                             {SHIFT_SYNC_ROLES.includes(formData.role) && (

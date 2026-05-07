@@ -18,7 +18,8 @@ const VALID_USER_ROLES = new Set([
     'COMERCIAL',
     'QUIMICO',
     'RECURSOS_HUMANOS',
-    'MECANICO'
+    'MECANICO',
+    'DISENO'
 ]);
 
 const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');

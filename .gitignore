@@ -43,3 +43,10 @@ backups/
 
 # Temp
 tmp/
+
+# Door monitor snapshots (imágenes generadas, no fuente)
+door_monitor/snapshots/
+
+# Backups locales JSON (mover a almacenamiento externo si se necesitan)
+backend/BACKUP_*.json
+check_logs.js

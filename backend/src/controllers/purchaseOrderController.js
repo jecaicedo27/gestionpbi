@@ -195,11 +195,34 @@ exports.update = async (req, res) => {
         }
 
         if (items && items.length > 0) {
-            await prisma.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: order.id } });
-            await prisma.purchaseOrderItem.createMany({
-                data: items.map(item => ({
-                    id: require('crypto').randomUUID(),
-                    purchaseOrderId: order.id,
+            const existingItems = order.items || [];
+            const existingByCode = new Map(existingItems.map(it => [it.siigoProductCode, it]));
+            const incomingCodes = new Set(items.map(it => it.siigoProductCode));
+
+            const removable = [];
+            const blockedRemovals = [];
+            for (const ex of existingItems) {
+                if (incomingCodes.has(ex.siigoProductCode)) continue;
+                const refs = await prisma.receptionItem.count({ where: { orderItemId: ex.id } });
+                const lots = await prisma.materialLot.count({ where: { purchaseOrderItemId: ex.id } });
+                if (refs === 0 && lots === 0) {
+                    removable.push(ex.id);
+                } else {
+                    blockedRemovals.push({ id: ex.id, name: ex.siigoProductName, refs, lots });
+                }
+            }
+            if (blockedRemovals.length > 0) {
+                return res.status(400).json({
+                    error: `No se pueden eliminar productos con recepciones o lotes asociados: ${blockedRemovals.map(b => b.name).join(', ')}. Edita la cantidad en lugar de eliminar.`
+                });
+            }
+            if (removable.length > 0) {
+                await prisma.purchaseOrderItem.deleteMany({ where: { id: { in: removable } } });
+            }
+
+            for (const item of items) {
+                const existing = existingByCode.get(item.siigoProductCode);
+                const baseData = {
                     siigoProductCode: item.siigoProductCode,
                     siigoProductName: item.siigoProductName,
                     quantityOrdered: item.quantityOrdered,
@@ -207,8 +230,27 @@ exports.update = async (req, res) => {
                     packagingDesc: item.packagingDesc || null,
                     unitCost: item.unitCost || null,
                     productId: item.productId || null,
-                }))
-            });
+                };
+                if (existing) {
+                    if (item.quantityOrdered < existing.quantityReceived) {
+                        return res.status(400).json({
+                            error: `No se puede dejar la cantidad de "${item.siigoProductName}" en ${item.quantityOrdered} porque ya se recibieron ${existing.quantityReceived}.`
+                        });
+                    }
+                    await prisma.purchaseOrderItem.update({ where: { id: existing.id }, data: baseData });
+                } else {
+                    await prisma.purchaseOrderItem.create({
+                        data: { ...baseData, id: require('crypto').randomUUID(), purchaseOrderId: order.id }
+                    });
+                }
+            }
+
+            const refreshed = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: order.id } });
+            const allReceived = refreshed.length > 0 && refreshed.every(i => i.quantityReceived >= i.quantityOrdered);
+            const anyReceived = refreshed.some(i => i.quantityReceived > 0);
+            if (anyReceived && allReceived && order.status === 'PARTIALLY_RECEIVED') {
+                data.status = 'ACCOUNTING_PENDING';
+            }
         }
 
         const updated = await prisma.purchaseOrder.update({

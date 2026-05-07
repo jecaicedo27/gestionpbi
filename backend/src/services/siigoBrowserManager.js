@@ -1597,11 +1597,13 @@ class SiigoBrowserManager {
 
     /**
      * Auto-retry scheduler: every 5 min, re-enqueue FAILED executions (max 3 auto-retries).
+     * 2026-05-07: LOOKBACK_MS aumentado de 30min → 6h para capturar FAILEDs por
+     * restart del backend (mensaje "Backend reiniciado durante ejecución").
      */
     startAutoRetryScheduler() {
         const MAX_AUTO_RETRIES = 3;
         const INTERVAL_MS = 5 * 60 * 1000;
-        const LOOKBACK_MS = 30 * 60 * 1000;
+        const LOOKBACK_MS = 6 * 60 * 60 * 1000;
 
         const { PrismaClient } = require('@prisma/client');
         const prisma = new PrismaClient();
@@ -1731,5 +1733,32 @@ class SiigoBrowserManager {
 // Singleton
 const manager = new SiigoBrowserManager();
 manager.startAutoRetryScheduler();
+
+// ─────────────────────────────────────────────────────────────────────────
+// Recuperación post-restart (2026-05-07):
+// Al arrancar el backend, marcar como FAILED cualquier RPA que haya quedado
+// en estado RUNNING (huérfano por crash o reload). El auto-retry scheduler
+// los retomará en su próximo ciclo (LOOKBACK 6h).
+// ─────────────────────────────────────────────────────────────────────────
+setTimeout(async () => {
+    try {
+        const { PrismaClient } = require('@prisma/client');
+        const _prisma = new PrismaClient();
+        const orphans = await _prisma.rpaExecution.updateMany({
+            where: { status: 'RUNNING' },
+            data: {
+                status: 'FAILED',
+                errorMessage: 'Backend reiniciado durante ejecución',
+                completedAt: new Date(),
+            },
+        });
+        if (orphans.count > 0) {
+            manager.log(`♻️ Post-restart: ${orphans.count} RPA(s) huérfanos marcados FAILED — auto-retry los recogerá`);
+        }
+        await _prisma.$disconnect();
+    } catch (e) {
+        manager.log(`⚠️ Post-restart sweep error: ${e.message}`);
+    }
+}, 5000);
 
 module.exports = manager;

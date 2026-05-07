@@ -12,6 +12,7 @@ const sectionIcons = {
     'Reportes': BarChart2,
     'Talento': GraduationCap,
     'Aseo': Sparkles,
+    'Diseño': Printer,
 };
 
 const isPathActive = (pathname, path) => {
@@ -96,6 +97,11 @@ const Sidebar = () => {
 
         // ── Distribuidores (PQR) ──
         { icon: FileText, label: 'Garantías (PQR)', path: '/pqr/list', roles: ['DISTRIBUIDOR'], section: 'Distribución' },
+
+        // ── Diseño (Área de Impresión Etiquetas) ──
+        { icon: Printer, label: 'Imprimir Etiquetas', path: '/diseno/imprimir', roles: ['DISENO'], section: 'Diseño' },
+        { icon: Calendar, label: 'Cronograma Producción', path: '/production/view', roles: ['DISENO'] },
+        { icon: LayoutDashboard, label: 'Inventario', path: '/inventory', roles: ['DISENO'] },
 
         // ── Reportes & Admin ──
         { icon: Building2,  label: 'Control de Ingreso', path: '/attendance', roles: ['ADMIN', 'RECURSOS_HUMANOS'], section: 'Reportes' },

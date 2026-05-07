@@ -2,22 +2,40 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
-// Configuración por defecto alineada al CST + Ley 2466/2025 vigente.
+// Configuración por defecto alineada al CST + Ley 2466/2025 vigente y
+// Ley 100/1993 (seguridad social) + Ley 21/1982 (parafiscales) + Art. 114-1 ET (exoneraciones).
 // nightStart = 19:00 desde el 26-dic-2025 (transición de la reforma laboral).
 // Porcentajes son recargos sobre la hora ordinaria (sin contar el 100% base).
 const DEFAULT_CONFIG = {
+    // Bandas y jornada
     dayStart: '06:00',
     nightStart: '19:00',
     fortnightCutoffDay: 15,
     weeklyHours: 44,            // baja a 42 desde 15-jul-2026
     monthlyHourDivisor: 220,    // = weeklyHours × 5; sube a 230 con 42h/sem
-    surchargeNight: 0.35,       // recargo nocturno (Art. 168 CST)
-    surchargeSundayDay: 0.80,   // dom/fest diurno (Ley 2466/2025; sube a 0.90 jul-2026, 1.00 jul-2027)
-    surchargeSundayNight: 1.15, // dom/fest nocturno = 0.80 + 0.35
-    overtimeDay: 0.25,          // extra diurna
-    overtimeNight: 0.75,        // extra nocturna
-    overtimeSundayDay: 1.05,    // extra dom/fest diurna = 0.25 + 0.80
-    overtimeSundayNight: 1.55,  // extra dom/fest nocturna = 0.75 + 0.80
+    // Recargos sobre hora ordinaria (CST Art. 168 + Ley 2466/2025)
+    surchargeNight: 0.35,
+    surchargeSundayDay: 0.80,   // sube a 0.90 jul-2026, 1.00 jul-2027
+    surchargeSundayNight: 1.15,
+    overtimeDay: 0.25,
+    overtimeNight: 0.75,
+    overtimeSundayDay: 1.05,
+    overtimeSundayNight: 1.55,
+    // Valores legales 2026 (Decretos 1469 y 1470 de 29-dic-2025)
+    smmlv: 1_750_905,                       // Decreto 1469/2025 — SMMLV 2026
+    transportAllowance: 249_095,            // Decreto 1470/2025 — auxilio transporte 2026
+    transportAllowanceThresholdSMMLV: 2,    // aplica si gana <= 2 SMMLV
+    // Deducciones del empleado (Ley 100/1993)
+    healthEmployeePct: 0.04,                // EPS 4%
+    pensionEmployeePct: 0.04,               // AFP 4%
+    // Aportes patronales (Ley 100 + Ley 21/1982)
+    healthEmployerPct: 0.085,               // 8.5% (0% si art114Exonerated y empleado <= 10 SMMLV)
+    pensionEmployerPct: 0.12,               // 12%
+    arlPct: 0.01044,                        // ARL clase II default; ajustable
+    ccfPct: 0.04,                           // Caja de Compensación
+    icbfPct: 0.03,                          // ICBF (0% si art114Exonerated y empleado <= 10 SMMLV)
+    senaPct: 0.02,                          // SENA (0% si art114Exonerated y empleado <= 10 SMMLV)
+    art114Exonerated: true,                 // Art. 114-1 ET: exonera salud, ICBF, SENA para empleados <10 SMMLV
 };
 
 function pad(value) {
@@ -132,32 +150,113 @@ function resolveShiftWindow(date, shiftCode, shiftDefs) {
     };
 }
 
-function buildWorkedIntervals(records, fallbackEnd) {
+// Tiempo máximo de un intervalo abierto antes de considerarlo "olvido de marcar EXIT".
+// 12 horas cubre cualquier turno legal (jornada máx 9h + 2h extras + buffer).
+const MAX_OPEN_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+// Mínimo entre dos ENTRY consecutivos para tratarlos como eventos distintos.
+// Por debajo de esto, se considera spam de marcación (segundo ENTRY descartado).
+const ENTRY_SPAM_THRESHOLD_MS = 5 * 60 * 1000;
+
+// Ventana después de un EXIT en la que un nuevo ENTRY se considera re-pulso del
+// kiosko (no un re-ingreso real). 30 min cubre verificaciones por cara/PIN
+// posteriores a la salida que en operación NO representan trabajo continuado.
+const POST_EXIT_REPULSE_MS = 30 * 60 * 1000;
+
+// Política Popping (acuerdo con el usuario): el descanso de DESAYUNO (subtype=BREAK)
+// hasta 20 min se considera tiempo trabajado (no se descuenta). El ALMUERZO
+// (subtype=LUNCH) y cualquier otra salida >20 min sí se descuentan.
+// 20 min = 15 min reales + buffer de tolerancia de marcación.
+const BREAK_PAID_MAX_MS = 20 * 60 * 1000;
+
+function buildWorkedIntervals(records, fallbackEnd, opts = {}) {
+    const isCurrentlyInPlant = !!opts.isInPlant;
     const ordered = [...records].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     const intervals = [];
     let currentEntry = null;
+    let lastExit = null;
 
-    for (const record of ordered) {
+    for (let i = 0; i < ordered.length; i++) {
+        const record = ordered[i];
         const ts = new Date(record.timestamp);
         if (record.type === 'ENTRY') {
+            // Re-pulso post-EXIT: si entró antes de 30 min después del último EXIT
+            // y no hay un EXIT explícito siguiente, lo descartamos como spam del kiosko.
+            if (!currentEntry && lastExit) {
+                const sincePrevExit = ts.getTime() - lastExit.getTime();
+                if (sincePrevExit >= 0 && sincePrevExit < POST_EXIT_REPULSE_MS) {
+                    // Solo lo descartamos si NO hay EXIT más adelante en este record set.
+                    const nextExit = ordered.slice(i + 1).find((r) => r.type === 'EXIT' && new Date(r.timestamp) > ts);
+                    if (!nextExit) continue;
+                }
+            }
+            if (currentEntry) {
+                // Ya hay un ENTRY abierto. Tres opciones:
+                //  1. Si delta < 5 min → spam de marcación, ignoramos el segundo ENTRY.
+                //  2. Si delta razonable → operario olvidó marcar EXIT; cerramos
+                //     el intervalo previo en este timestamp y abrimos uno nuevo.
+                //  3. Si delta excede el máx (12h) → el ENTRY anterior es huérfano
+                //     viejo, lo descartamos y abrimos un nuevo intervalo.
+                const delta = ts.getTime() - currentEntry.getTime();
+                if (delta < ENTRY_SPAM_THRESHOLD_MS) {
+                    continue; // spam, mantener currentEntry
+                }
+                if (delta <= MAX_OPEN_INTERVAL_MS) {
+                    intervals.push({ start: currentEntry, end: ts });
+                }
+                currentEntry = ts;
+                continue;
+            }
             currentEntry = ts;
             continue;
         }
 
         if (record.type === 'EXIT' && currentEntry && ts > currentEntry) {
+            // Política Popping: el desayuno (subtype BREAK) ≤ 20 min se considera
+            // tiempo trabajado. Si vemos EXIT BREAK seguido de un ENTRY dentro de
+            // 20 min, NO cerramos el intervalo y saltamos el ENTRY de regreso —
+            // el operario "estuvo descansando pero pago".
+            if (record.subtype === 'BREAK') {
+                const next = ordered[i + 1];
+                if (next && next.type === 'ENTRY') {
+                    const nextTs = new Date(next.timestamp);
+                    if (nextTs.getTime() - ts.getTime() <= BREAK_PAID_MAX_MS) {
+                        i++; // saltar el ENTRY de regreso, intervalo continúa
+                        continue;
+                    }
+                }
+            }
             intervals.push({ start: currentEntry, end: ts });
             currentEntry = null;
+            lastExit = ts;
         }
     }
 
+    // Manejo del ENTRY abierto al final de los records (sin EXIT correspondiente).
     if (currentEntry && fallbackEnd) {
-        // For an open ENTRY (no matching EXIT), close at min(fallbackEnd, now).
-        // Without the `now` cap a person currently in plant accumulates hours
-        // until the end of the reporting period — generating phantom worked time.
         const now = new Date();
-        const cap = new Date(Math.min(new Date(fallbackEnd).getTime(), now.getTime()));
-        if (cap > currentEntry) {
-            intervals.push({ start: currentEntry, end: cap });
+        const periodCap = new Date(Math.min(new Date(fallbackEnd).getTime(), now.getTime()));
+
+        // Si ya hubo un EXIT en el MISMO día calendario (Colombia) que este ENTRY,
+        // el operario ya cerró su jornada del día → descartamos el ENTRY huérfano
+        // (es ruido del kiosko, no un re-ingreso real).
+        const sameDayExit = lastExit
+            && toDateKey(lastExit) === toDateKey(currentEntry)
+            && lastExit < currentEntry;
+
+        if (sameDayExit) {
+            // No agregamos nada — el ENTRY huérfano post-EXIT del mismo día se ignora.
+        } else {
+            // Política: solo extender hasta `now` si el operario sigue marcado en planta.
+            // Si no, capeamos al máximo razonable (12h después del ENTRY) para evitar
+            // que un olvido de marcar EXIT genere horas fantasma.
+            const maxCap = new Date(currentEntry.getTime() + MAX_OPEN_INTERVAL_MS);
+            const cap = isCurrentlyInPlant
+                ? new Date(Math.min(periodCap.getTime(), maxCap.getTime()))
+                : new Date(Math.min(currentEntry.getTime() + 60 * 1000, periodCap.getTime()));
+            if (cap > currentEntry) {
+                intervals.push({ start: currentEntry, end: cap });
+            }
         }
     }
 
@@ -264,9 +363,17 @@ const ZERO_BANDS = () => ({
 });
 
 /**
- * Calcula el devengado en pesos para un empleado a partir de las 8 bandas
- * y el perfil de nómina. Aplica recargos sobre la hora ordinaria base.
- * Retorna null si no hay perfil cargado.
+ * Calcula el devengado completo en pesos según CST + Ley 100/1993 + Ley 21/1982 + Art. 114-1 ET.
+ *
+ * Devuelve:
+ *  - Salario ordinario (suma de las 4 bandas ordinarias + dom/fest)
+ *  - Horas extras ($ y horas)
+ *  - Auxilio de transporte (aplica si gana <= N SMMLV y profile.transportAllowance=true)
+ *  - Devengado bruto = ordinario + extras + auxilio + bono
+ *  - Deducciones empleado (salud 4% + pensión 4%)
+ *  - Neto a pagar = bruto - deducciones
+ *  - Aportes patronales (salud, pensión, ARL, CCF, ICBF, SENA con exoneraciones aplicadas)
+ *  - Costo total empresa = bruto + aportes patronales
  */
 function computePayInPesos(summaryItem, profile, config) {
     if (!profile) return null;
@@ -276,35 +383,130 @@ function computePayInPesos(summaryItem, profile, config) {
     const valueHour = salary / divisor;
     const round = (n) => Math.round(n);
 
-    const bands = [
+    // ── 1) Bandas horarias × valor hora × factor de recargo ──
+    const ordinaryBands = [
         { key: 'ordDay',     hours: summaryItem.ordDayHours,     factor: 1 },
         { key: 'ordNight',   hours: summaryItem.ordNightHours,   factor: 1 + (config.surchargeNight || 0) },
         { key: 'ordSunDay',  hours: summaryItem.ordSunDayHours,  factor: 1 + (config.surchargeSundayDay || 0) },
         { key: 'ordSunNight',hours: summaryItem.ordSunNightHours,factor: 1 + (config.surchargeSundayNight || 0) },
-        { key: 'extDay',     hours: summaryItem.extDayHours,     factor: 1 + (config.overtimeDay || 0) },
-        { key: 'extNight',   hours: summaryItem.extNightHours,   factor: 1 + (config.overtimeNight || 0) },
-        { key: 'extSunDay',  hours: summaryItem.extSunDayHours,  factor: 1 + (config.overtimeSundayDay || 0) },
-        { key: 'extSunNight',hours: summaryItem.extSunNightHours,factor: 1 + (config.overtimeSundayNight || 0) },
+    ];
+    // Extras autorizadas = se pagan
+    const overtimeBandsAuth = [
+        { key: 'extDay',     hours: summaryItem.extDayHoursAuth,     factor: 1 + (config.overtimeDay || 0) },
+        { key: 'extNight',   hours: summaryItem.extNightHoursAuth,   factor: 1 + (config.overtimeNight || 0) },
+        { key: 'extSunDay',  hours: summaryItem.extSunDayHoursAuth,  factor: 1 + (config.overtimeSundayDay || 0) },
+        { key: 'extSunNight',hours: summaryItem.extSunNightHoursAuth,factor: 1 + (config.overtimeSundayNight || 0) },
+    ];
+    // Extras pendientes = NO se pagan, solo informativo (cuánto se pagaría si se aprueban)
+    const overtimeBandsPending = [
+        { key: 'extDay',     hours: summaryItem.extDayHoursPending,     factor: 1 + (config.overtimeDay || 0) },
+        { key: 'extNight',   hours: summaryItem.extNightHoursPending,   factor: 1 + (config.overtimeNight || 0) },
+        { key: 'extSunDay',  hours: summaryItem.extSunDayHoursPending,  factor: 1 + (config.overtimeSundayDay || 0) },
+        { key: 'extSunNight',hours: summaryItem.extSunNightHoursPending,factor: 1 + (config.overtimeSundayNight || 0) },
     ];
 
     const breakdown = {};
-    let total = 0;
-    for (const b of bands) {
+    let ordinaryPay = 0;
+    let overtimePay = 0;          // pago real (autorizadas)
+    let overtimePendingPay = 0;   // potencial (informativo)
+    let overtimeHours = 0;
+    for (const b of ordinaryBands) {
         const amount = round(valueHour * (b.hours || 0) * b.factor);
         breakdown[`${b.key}Pay`] = amount;
-        total += amount;
+        ordinaryPay += amount;
+    }
+    for (const b of overtimeBandsAuth) {
+        const amount = round(valueHour * (b.hours || 0) * b.factor);
+        breakdown[`${b.key}Pay`] = amount;     // se mantiene este nombre (compat) — solo autorizadas
+        overtimePay += amount;
+        overtimeHours += (b.hours || 0);
+    }
+    for (const b of overtimeBandsPending) {
+        const amount = round(valueHour * (b.hours || 0) * b.factor);
+        breakdown[`${b.key}PayPending`] = amount;
+        overtimePendingPay += amount;
     }
 
+    // ── 2) Bono fijo prorrateado quincenal ──
     const monthlyBonus = Number(profile.monthlyBonus) || 0;
-    // Bono fijo prorrateado a quincena (15/30 de mes)
     const proratedBonus = round(monthlyBonus / 2);
+
+    // ── 3) Auxilio de transporte (Decreto 1573/2025) ──
+    // Aplica si: profile.transportAllowance=true Y salario <= N × SMMLV.
+    // No es factor salarial → NO suma al IBC.
+    const smmlv = config.smmlv || 1_423_500;
+    const threshold = (config.transportAllowanceThresholdSMMLV || 2) * smmlv;
+    const aplicaAux = !!profile.transportAllowance && salary <= threshold;
+    const transportAllowanceMonthly = aplicaAux ? (config.transportAllowance || 0) : 0;
+    const transportAllowance = round(transportAllowanceMonthly / 2); // prorrateado quincena
+
+    // ── 4) Devengado bruto ──
+    const grossPay = ordinaryPay + overtimePay + proratedBonus + transportAllowance;
+
+    // ── 5) IBC (Ingreso Base de Cotización) — Art. 17 Ley 100/1993 ──
+    // IBC = salario base + bonos salariales. NO incluye aux. transporte.
+    // Para quincena: salario_mensual / 2 + bono_prorrateado.
+    // Para deducciones del empleado y aportes patronales se usa el IBC.
+    const ibcQ = round(salary / 2) + proratedBonus;
+
+    // ── 6) Deducciones del empleado (Ley 100/1993) ──
+    const healthEmployee = round(ibcQ * (config.healthEmployeePct || 0.04));
+    const pensionEmployee = round(ibcQ * (config.pensionEmployeePct || 0.04));
+    const totalDeductions = healthEmployee + pensionEmployee;
+
+    // ── 7) Neto a pagar (lo que se gira al empleado) ──
+    const netPay = grossPay - totalDeductions;
+
+    // ── 8) Aportes patronales — Ley 100 + Ley 21/1982 + Art. 114-1 ET ──
+    // Exoneración: si art114Exonerated=true Y empleado gana <= 10 SMMLV,
+    // empresa NO paga salud, ICBF ni SENA por ese empleado.
+    const exonerated = !!config.art114Exonerated && salary <= (10 * smmlv);
+    const healthEmployer = exonerated ? 0 : round(ibcQ * (config.healthEmployerPct || 0.085));
+    const pensionEmployer = round(ibcQ * (config.pensionEmployerPct || 0.12));
+    const arl = round(ibcQ * (config.arlPct || 0.01044));
+    const ccf = round(ibcQ * (config.ccfPct || 0.04));
+    const icbf = exonerated ? 0 : round(ibcQ * (config.icbfPct || 0.03));
+    const sena = exonerated ? 0 : round(ibcQ * (config.senaPct || 0.02));
+    const totalEmployerContrib = healthEmployer + pensionEmployer + arl + ccf + icbf + sena;
+
+    // ── 9) Costo total para la empresa ──
+    const totalEmployerCost = grossPay + totalEmployerContrib;
 
     return {
         salaryMonthly: salary,
         valueHour: round(valueHour),
+        ibcQ,
+        // Por banda
         ...breakdown,
+        // Subtotales
+        ordinaryPay,         // ord día + noche + dom día + dom noche (todas las "ordinarias" del CST)
+        overtimePay,         // las 4 extras AUTORIZADAS (se pagan)
+        overtimeHours: +overtimeHours.toFixed(2), // horas autorizadas
+        overtimePendingPay,  // pesos potenciales si se aprueban las pendientes
+        overtimePendingHours: summaryItem.overtimePendingHours || 0,
         bonusPay: proratedBonus,
-        totalPay: total + proratedBonus,
+        transportAllowance,
+        // Bruto
+        grossPay,
+        // Deducciones empleado
+        healthEmployee,
+        pensionEmployee,
+        totalDeductions,
+        // Neto
+        netPay,
+        // Aportes patronales
+        healthEmployer,
+        pensionEmployer,
+        arl,
+        ccf,
+        icbf,
+        sena,
+        totalEmployerContrib,
+        exonerated,
+        // Costo empresa total
+        totalEmployerCost,
+        // Mantener compat (campo viejo que usa el reporte actual)
+        totalPay: grossPay,
     };
 }
 
@@ -320,6 +522,7 @@ async function loadPayrollConfig() {
 
     const raw = (row && typeof row.value === 'object' && row.value) ? row.value : {};
     const num = (key) => (typeof raw[key] === 'number' && !Number.isNaN(raw[key])) ? raw[key] : DEFAULT_CONFIG[key];
+    const bool = (key) => (typeof raw[key] === 'boolean' ? raw[key] : DEFAULT_CONFIG[key]);
     return {
         dayStart: typeof raw.dayStart === 'string' ? raw.dayStart : DEFAULT_CONFIG.dayStart,
         nightStart: typeof raw.nightStart === 'string' ? raw.nightStart : DEFAULT_CONFIG.nightStart,
@@ -335,6 +538,18 @@ async function loadPayrollConfig() {
         overtimeNight: num('overtimeNight'),
         overtimeSundayDay: num('overtimeSundayDay'),
         overtimeSundayNight: num('overtimeSundayNight'),
+        smmlv: num('smmlv'),
+        transportAllowance: num('transportAllowance'),
+        transportAllowanceThresholdSMMLV: num('transportAllowanceThresholdSMMLV'),
+        healthEmployeePct: num('healthEmployeePct'),
+        pensionEmployeePct: num('pensionEmployeePct'),
+        healthEmployerPct: num('healthEmployerPct'),
+        pensionEmployerPct: num('pensionEmployerPct'),
+        arlPct: num('arlPct'),
+        ccfPct: num('ccfPct'),
+        icbfPct: num('icbfPct'),
+        senaPct: num('senaPct'),
+        art114Exonerated: bool('art114Exonerated'),
     };
 }
 
@@ -482,6 +697,11 @@ function finalizeEmployeeSummary(employee, dayRows, reasonCounter) {
     let presentDays = 0;
     let absenceDays = 0;
     const totals = ZERO_BANDS();
+    // Extras separadas SOLO por approval real:
+    //   AUTH    = hay approval APPROVED ese día → se paga
+    //   PENDING = todo lo demás (PENDING en BD o sin approval registrada) → admin debe aprobar
+    const totalsAuth = { extDayMinutes: 0, extNightMinutes: 0, extSunDayMinutes: 0, extSunNightMinutes: 0 };
+    const totalsPending = { extDayMinutes: 0, extNightMinutes: 0, extSunDayMinutes: 0, extSunNightMinutes: 0 };
 
     for (const row of orderedDays) {
         scheduledMinutes += row.scheduledMinutes;
@@ -490,6 +710,16 @@ function finalizeEmployeeSummary(employee, dayRows, reasonCounter) {
         if (row.scheduledMinutes > 0) scheduledDays++;
         if (row.present) presentDays++;
         if (row.absenceReason) absenceDays++;
+        // Solo APPROVED se paga. PENDING o sin approval = pendiente de aprobación.
+        const target = row.overtimeStatus === 'APPROVED' ? totalsAuth
+            : (row.overtimeStatus === 'PENDING' || row.overtimeStatus === 'UNREGISTERED') ? totalsPending
+            : null;
+        if (target) {
+            target.extDayMinutes += row.extDayMinutes || 0;
+            target.extNightMinutes += row.extNightMinutes || 0;
+            target.extSunDayMinutes += row.extSunDayMinutes || 0;
+            target.extSunNightMinutes += row.extSunNightMinutes || 0;
+        }
     }
 
     const ordinaryMinutes = totals.ordDayMinutes + totals.ordNightMinutes
@@ -497,6 +727,10 @@ function finalizeEmployeeSummary(employee, dayRows, reasonCounter) {
     const overtimeDayMinutes = totals.extDayMinutes + totals.extSunDayMinutes;
     const overtimeNightMinutes = totals.extNightMinutes + totals.extSunNightMinutes;
     const overtimeMinutes = overtimeDayMinutes + overtimeNightMinutes;
+    const overtimePendingMinutes = totalsPending.extDayMinutes + totalsPending.extNightMinutes
+        + totalsPending.extSunDayMinutes + totalsPending.extSunNightMinutes;
+    const overtimeAuthorizedMinutes = totalsAuth.extDayMinutes + totalsAuth.extNightMinutes
+        + totalsAuth.extSunDayMinutes + totalsAuth.extSunNightMinutes;
 
     const workedPct = scheduledMinutes > 0 ? +((workedMinutes / scheduledMinutes) * 100).toFixed(1) : 0;
     const attendancePct = scheduledDays > 0 ? +((presentDays / scheduledDays) * 100).toFixed(1) : 0;
@@ -521,7 +755,7 @@ function finalizeEmployeeSummary(employee, dayRows, reasonCounter) {
         overtimeHours: h(overtimeMinutes),
         overtimeDayHours: h(overtimeDayMinutes),
         overtimeNightHours: h(overtimeNightMinutes),
-        // 8 bandas legales
+        // 8 bandas legales (TOTALES sin distinción de aprobación)
         ordDayHours: h(totals.ordDayMinutes),
         ordNightHours: h(totals.ordNightMinutes),
         ordSunDayHours: h(totals.ordSunDayMinutes),
@@ -530,6 +764,17 @@ function finalizeEmployeeSummary(employee, dayRows, reasonCounter) {
         extNightHours: h(totals.extNightMinutes),
         extSunDayHours: h(totals.extSunDayMinutes),
         extSunNightHours: h(totals.extSunNightMinutes),
+        // Extras separadas por estado de aprobación (filtro de pago)
+        extDayHoursAuth: h(totalsAuth.extDayMinutes),
+        extNightHoursAuth: h(totalsAuth.extNightMinutes),
+        extSunDayHoursAuth: h(totalsAuth.extSunDayMinutes),
+        extSunNightHoursAuth: h(totalsAuth.extSunNightMinutes),
+        extDayHoursPending: h(totalsPending.extDayMinutes),
+        extNightHoursPending: h(totalsPending.extNightMinutes),
+        extSunDayHoursPending: h(totalsPending.extSunDayMinutes),
+        extSunNightHoursPending: h(totalsPending.extSunNightMinutes),
+        overtimeAuthorizedHours: h(overtimeAuthorizedMinutes),
+        overtimePendingHours: h(overtimePendingMinutes),
         workedPct,
         attendancePct,
         absencePct,
@@ -683,7 +928,7 @@ async function getLaborSummary({
         const reasonCounter = {};
         const employeeAbsences = absencesByEmployee.get(employee.id) || [];
         const employeeRecords = recordsByEmployee.get(employee.id) || [];
-        const rawIntervals = buildWorkedIntervals(employeeRecords, period.to);
+        const rawIntervals = buildWorkedIntervals(employeeRecords, period.to, { isInPlant: !!employee.isInPlant });
         // Clip intervals to the reporting period. Records are loaded with ±1 day
         // of padding to handle night shifts that cross midnight, but only the
         // portion of work that lies inside [period.from, period.to] should count.
@@ -748,25 +993,43 @@ async function getLaborSummary({
             for (const extra of extras) addExtraSegmentToDays(extra, dayMap, config, holidaySet);
         }
 
-        // Add manually-approved overtime hours to the corresponding day rows.
-        // Hoy OvertimeApproval solo guarda dayHours/nightHours; las repartimos
-        // a las bandas extras laborables. Si más adelante agregamos campos
-        // sundayDayHours/sundayNightHours, se enrutan a extSun*.
+        // ── POLÍTICA DE EXTRAS (acuerdo con dueño 2026-05-06) ──
+        //
+        // Las marcaciones (KIOSK + HANDOVER + MANUAL) capturan TODO el tiempo
+        // trabajado, incluido fuera del turno (= extras naturales). Pero las
+        // extras solo se PAGAN si el ADMIN las autoriza vía OvertimeApproval
+        // con status=APPROVED para esa fecha del empleado.
+        //
+        // Estados:
+        //   - APPROVED → extras del día se pagan ✓
+        //   - PENDING  → extras del día quedan en "pendiente de aprobación"
+        //                (visibles, NO pagadas todavía)
+        //   - REJECTED → extras del día NO se pagan
+        //   - sin approval → extras quedan como "pendiente" (default seguro)
+        //
+        // Esto evita que se paguen extras no autorizadas y mantiene visibles
+        // las pendientes para que admin las revise.
         const employeeApprovals = approvalsByEmployee.get(employee.id) || [];
+        const approvedDayKeys = new Set();
+        const pendingDayKeys = new Set();
         for (const approval of employeeApprovals) {
-            const dateKey = toDateKey(approval.date);
-            const row = ensureDayRow(dayMap, dateKey);
-            const dayMin = Math.round((approval.dayHours || 0) * 60);
-            const nightMin = Math.round((approval.nightHours || 0) * 60);
-            if (row.isHoliday || new Date(`${dateKey}T12:00:00`).getDay() === 0) {
-                row.extSunDayMinutes += dayMin;
-                row.extSunNightMinutes += nightMin;
+            const dateKey = holidayKey(approval.date);
+            if (approval.status === 'APPROVED') approvedDayKeys.add(dateKey);
+            else if (approval.status === 'PENDING' || !approval.status) pendingDayKeys.add(dateKey);
+        }
+        // Marcar cada day-row con su estado de autorización
+        for (const [dateKey, row] of dayMap.entries()) {
+            const hasExtras = (row.extDayMinutes + row.extNightMinutes
+                + row.extSunDayMinutes + row.extSunNightMinutes) > 0;
+            if (!hasExtras) {
+                row.overtimeStatus = 'NONE';
+            } else if (approvedDayKeys.has(dateKey)) {
+                row.overtimeStatus = 'APPROVED';
+            } else if (pendingDayKeys.has(dateKey)) {
+                row.overtimeStatus = 'PENDING';
             } else {
-                row.extDayMinutes += dayMin;
-                row.extNightMinutes += nightMin;
+                row.overtimeStatus = 'UNREGISTERED'; // hay extras pero sin approval creada
             }
-            row.overtimeDayMinutes += dayMin;
-            row.overtimeNightMinutes += nightMin;
         }
 
         return finalizeEmployeeSummary(employee, dayMap, reasonCounter);
@@ -808,6 +1071,17 @@ async function getLaborSummary({
                 extNightHours: item.extNightHours,
                 extSunDayHours: item.extSunDayHours,
                 extSunNightHours: item.extSunNightHours,
+                // Extras separadas por estado de aprobación
+                extDayHoursAuth: item.extDayHoursAuth,
+                extNightHoursAuth: item.extNightHoursAuth,
+                extSunDayHoursAuth: item.extSunDayHoursAuth,
+                extSunNightHoursAuth: item.extSunNightHoursAuth,
+                extDayHoursPending: item.extDayHoursPending,
+                extNightHoursPending: item.extNightHoursPending,
+                extSunDayHoursPending: item.extSunDayHoursPending,
+                extSunNightHoursPending: item.extSunNightHoursPending,
+                overtimeAuthorizedHours: item.overtimeAuthorizedHours,
+                overtimePendingHours: item.overtimePendingHours,
                 workedPct: item.workedPct,
                 attendancePct: item.attendancePct,
                 absencePct: item.absencePct,

@@ -293,8 +293,30 @@ exports.validate = async (req, res) => {
         ]);
 
         const allItemsReceived = orderItemsState.every(item => item.quantityReceived >= item.quantityOrdered);
+
+        // ── Validar cobertura de lotes (2026-05-07) ─────────────────────────
+        // Una OC NO debe pasar a COMPLETED si hay items con quantityReceived>0
+        // sin material_lot creado por la cantidad recibida. Sin esa validación,
+        // las recepciones quedan en Siigo (Movement) pero la app no las refleja
+        // como inventario disponible — origen del descuadre crónico de MP.
+        const itemsWithLotCoverage = await prisma.purchaseOrderItem.findMany({
+            where: { purchaseOrderId: reception.purchaseOrderId, quantityReceived: { gt: 0 } },
+            select: {
+                id: true, siigoProductCode: true, siigoProductName: true,
+                quantityReceived: true,
+                lots: { select: { initialQuantity: true } }
+            }
+        });
+        const itemsConCoberturaIncompleta = itemsWithLotCoverage.filter(item => {
+            const lotsTotal = (item.lots || []).reduce((s, l) => s + (l.initialQuantity || 0), 0);
+            return lotsTotal < item.quantityReceived;
+        });
+        const allLotsCreated = itemsConCoberturaIncompleta.length === 0;
+
         const nextOrderStatus = allItemsReceived
-            ? (pendingReceptions === 0 ? 'COMPLETED' : 'ACCOUNTING_PENDING')
+            ? (pendingReceptions === 0
+                ? (allLotsCreated ? 'COMPLETED' : 'ACCOUNTING_PENDING')
+                : 'ACCOUNTING_PENDING')
             : 'PARTIALLY_RECEIVED';
 
         const completedOrder = await prisma.purchaseOrder.update({
@@ -311,8 +333,19 @@ exports.validate = async (req, res) => {
             }
         }
 
-        logger.info(`💰 Recepción validada por contabilidad: ${req.user.name} — Siigo ref: ${siigoInvoiceRef || 'N/A'}`);
-        res.json(updated);
+        // Logging detallado: items pendientes de lotear
+        if (!allLotsCreated) {
+            const detalle = itemsConCoberturaIncompleta
+                .map(it => {
+                    const lotsTotal = (it.lots || []).reduce((s, l) => s + (l.initialQuantity || 0), 0);
+                    return `${it.siigoProductCode}: recibido=${it.quantityReceived}, loteado=${lotsTotal}, falta=${it.quantityReceived - lotsTotal}`;
+                })
+                .join(' | ');
+            logger.warn(`⚠️ [Recepción] OC ${reception.purchaseOrderId}: ${itemsConCoberturaIncompleta.length} items SIN loteo completo. OC NO pasa a COMPLETED. Detalle: ${detalle}`);
+        }
+
+        logger.info(`💰 Recepción validada por contabilidad: ${req.user.name} — Siigo ref: ${siigoInvoiceRef || 'N/A'} — OC status: ${nextOrderStatus}${!allLotsCreated ? ' (loteo pendiente)' : ''}`);
+        res.json({ ...updated, lotCoverageWarning: !allLotsCreated, itemsPendingLots: !allLotsCreated ? itemsConCoberturaIncompleta.length : 0 });
     } catch (error) {
         logger.error('Error validating reception:', error.message);
         res.status(500).json({ error: 'Error validando recepción' });

@@ -93,18 +93,20 @@ const InventoryMatrix = ({ products, onProductClick, onBulkValidationOpen }) => 
         return { sizes, flavors, productMap, hasData: true };
     };
 
-    const HIDDEN_WAREHOUSES = new Set(['MAQUILAS']);
+    // Bodegas ocultas en la matriz — case-insensitive
+    const HIDDEN_WAREHOUSES = ['MAQUILAS', 'MATERIA PRIMA TRANSITORIA'];
+    const isHiddenWarehouse = (name) =>
+        HIDDEN_WAREHOUSES.includes(String(name || '').trim().toUpperCase());
 
     // 4. Get unique warehouses for a group
     const getWarehousesForGroup = (groupName) => {
         const groupProducts = products.filter(p => p.group === groupName);
         const warehouseNames = new Set();
 
-        const HIDDEN_WAREHOUSES = ['Maquilas'];
         groupProducts.forEach(p => {
             if (Array.isArray(p.warehouses) && p.warehouses.length > 0) {
                 p.warehouses.forEach(w => {
-                    if (!HIDDEN_WAREHOUSES.includes(w.name)) warehouseNames.add(w.name);
+                    if (!isHiddenWarehouse(w.name)) warehouseNames.add(w.name);
                 });
             } else {
                 warehouseNames.add('Sin asignar');

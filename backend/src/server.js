@@ -68,26 +68,22 @@ pool.query('SELECT NOW()', (err, res) => {
         const siigoService = require('./services/siigoService');
         const dataMiningService = require('./services/dataMiningService');
         const siigoQueue = require('./services/siigoQueue');
-
-        const syncSales = () => siigoQueue.enqueue('sync-ventas', async () => {
-            const now = new Date();
-            const dateEnd = now.toISOString().split('T')[0];
-            const start = new Date(now);
-            start.setDate(start.getDate() - 60);
-            const dateStart = start.toISOString().split('T')[0];
-
-            logger.info(`⏰ CRON Sync ventas: ${dateStart} → ${dateEnd}`);
-            const result = await siigoService.syncInvoicesRange(dateStart, dateEnd);
-            logger.info(`⏰ CRON Sync ventas: ${result.totalProcessed || 0} facturas procesadas`);
-            await dataMiningService.calculateVelocities().catch(() => { });
-            logger.info('⏰ CRON Velocidades actualizadas');
-        }).catch(err => logger.error(`⏰ CRON Sync ventas error: ${err.message}`));
-
-        // Ejecutar al iniciar (después de 30s para que todo esté listo)
-        setTimeout(syncSales, 30000);
-        // Repetir cada hora (3600000ms)
-        setInterval(syncSales, 3600000);
-        logger.info('⏰ CRON: Sync ventas programado cada 1 hora');
+        // ═══ CRON Sync ventas: DESACTIVADO 2026-05-07 ═══
+        // El descuento de finishedLotStock por VTA Siigo causaba doble descuento
+        // (picking interno YA descuenta los lotes; el cron repetía la operación).
+        // Los pedidos internos pasan por picking → descuentan lotes correctamente.
+        // El sync Siigo ya no aporta valor para inventario terminado y solo
+        // generaba descuadre. Si se necesita reactivar, también modificar
+        // siigoService.processInvoiceAsMovement para que NO llame consumeFEFO.
+        // La función syncInvoicesRange queda disponible para llamadas manuales
+        // desde /api/movements/sync (auditoría) sin tocar finishedLotStock.
+        const dataMiningService_ = dataMiningService;
+        const recalcVelocidades = () => dataMiningService_.calculateVelocities()
+            .then(() => logger.info('⏰ CRON Velocidades actualizadas'))
+            .catch(err => logger.warn(`⏰ CRON Velocidades error: ${err.message}`));
+        setTimeout(recalcVelocidades, 30000);
+        setInterval(recalcVelocidades, 3600000);
+        logger.info('⏰ CRON: Sync ventas DESACTIVADO. Solo recálculo de velocidades cada 1h.');
 
         // ═══ CRON: Global timer alerts (cocción, etc.) ═══
         const { startTimerAlertCron } = require('./services/timerAlertService');

@@ -580,26 +580,12 @@ class SiigoService {
                             }
                         });
 
-                        // Descontar finishedLotStock FEFO solo si el movement es NUEVO
-                        // (no al re-procesar la misma factura). Mantiene el espejo
-                        // gestionpbi ↔ Siigo: cuando Siigo factura, gestionpbi descuenta.
-                        if (!existing) {
-                            try {
-                                const finishedLotService = require('./finishedLotService');
-                                const result = await finishedLotService.consumeFEFO({
-                                    productId: product.id,
-                                    quantity: item.quantity,
-                                    reason: `Factura Siigo ${documentNumber}`,
-                                    source: 'SIIGO_INVOICE',
-                                    referenceId: movementId,
-                                });
-                                if (result.shortfall > 0) {
-                                    logger.warn(`[siigo VTA] ${product.sku} factura ${documentNumber}: pidió ${item.quantity}, descontó ${result.consumed}, faltó ${result.shortfall} en finishedLotStock`);
-                                }
-                            } catch (e) {
-                                logger.warn(`[siigo VTA] No se pudo descontar finishedLotStock para ${product.sku}: ${e.message}`);
-                            }
-                        }
+                        // ── 2026-05-07: bloque consumeFEFO eliminado ──
+                        // Antes: cuando llegaba la factura Siigo, descontaba lotes.
+                        // Causaba DOBLE descuento porque picking interno ya descontó
+                        // al confirmar el pedido. Ahora la factura solo registra
+                        // el Movement (arriba) — sirve para auditoría/dashboard
+                        // pero no toca finishedLotStock.
                     }
                 }
             }

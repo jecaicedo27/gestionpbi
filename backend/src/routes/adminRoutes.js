@@ -23,4 +23,17 @@ router.delete('/network-ips/:ip', networkIpsController.remove);
 // Reports
 // router.get('/reports/sales', reportController.getSalesReport);
 
+// Inventory sync audit (read-only) — descuadre Siigo vs gestionpbi
+router.get('/inventory-sync-report', async (req, res) => {
+    try {
+        const { runAudit } = require('../scripts/auditInventorySync');
+        const threshold = parseInt(req.query.threshold || '1000', 10);
+        const result = await runAudit({ threshold });
+        res.json(result);
+    } catch (e) {
+        console.error('[inventory-sync-report]', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 module.exports = router;

@@ -28,6 +28,19 @@ const DEFAULT_PAYROLL_CONFIG = {
     overtimeNight: 0.75,
     overtimeSundayDay: 1.05,
     overtimeSundayNight: 1.55,
+    // Valores legales 2026 (Decretos 1469 y 1470 de 29-dic-2025)
+    smmlv: 1_750_905,
+    transportAllowance: 249_095,
+    transportAllowanceThresholdSMMLV: 2,
+    healthEmployeePct: 0.04,
+    pensionEmployeePct: 0.04,
+    healthEmployerPct: 0.085,
+    pensionEmployerPct: 0.12,
+    arlPct: 0.01044,
+    ccfPct: 0.04,
+    icbfPct: 0.03,
+    senaPct: 0.02,
+    art114Exonerated: true,
 };
 const LABOR_NOVELTY_TYPES = [
     'AUSENCIA',
@@ -932,6 +945,17 @@ exports.exportPayrollSummary = async (req, res) => {
             money:          'FFE9F8EE', // verde pálido
             moneyTotal:     'FF15803D', // verde fuerte
             footerTotal:    'FFD1FAE5',
+            transp:         'FFDBEAFE', // azul claro (aux transporte)
+            gross:          'FF1E40AF', // azul fuerte (bruto)
+            grossLight:     'FFEFF6FF',
+            deduction:      'FFFEE2E2', // rojo claro (deducciones)
+            deductionDark:  'FFB91C1C', // rojo fuerte
+            net:            'FF15803D', // verde fuerte (neto)
+            netLight:       'FFD1FAE5',
+            employer:       'FFFEF3C7', // amarillo claro (aportes patronales)
+            employerDark:   'FFB45309',
+            cost:           'FF6D28D9', // violeta (costo empresa)
+            costLight:      'FFEDE9FE',
         };
 
         const columns = [
@@ -964,7 +988,21 @@ exports.exportPayrollSummary = async (req, res) => {
                 { key: '$extSunDay', header: '$ EX. DOM DÍA',    sub: '',          width: 14, group: 'extSun',     align: 'right', fmt: '$#,##0' },
                 { key: '$extSunNight', header: '$ EX. DOM NOCHE', sub: '',         width: 14, group: 'extSunNight',align: 'right', fmt: '$#,##0' },
                 { key: '$bonus',     header: '$ BONO',           sub: 'prorrateado', width: 12, group: 'money',     align: 'right', fmt: '$#,##0' },
-                { key: '$total',     header: '$ TOTAL DEVENGADO', sub: 'quincena',   width: 18, group: 'moneyTotal', align: 'right', fmt: '$#,##0' },
+                { key: '$transp',    header: '$ AUX. TRANSP.',   sub: 'quincena',  width: 14, group: 'transp',     align: 'right', fmt: '$#,##0' },
+                { key: '$gross',     header: '$ BRUTO',          sub: 'devengado', width: 14, group: 'grossLight', align: 'right', fmt: '$#,##0', bold: true },
+                { key: '$health',    header: '$ SALUD EMP.',     sub: '−4%',       width: 12, group: 'deduction',  align: 'right', fmt: '$#,##0' },
+                { key: '$pension',   header: '$ PENSIÓN EMP.',   sub: '−4%',       width: 13, group: 'deduction',  align: 'right', fmt: '$#,##0' },
+                { key: '$totalDed',  header: '$ TOTAL DEDUCC.',  sub: '',          width: 14, group: 'deduction',  align: 'right', fmt: '$#,##0', bold: true },
+                { key: '$net',       header: '$ NETO A PAGAR',   sub: '',          width: 16, group: 'netLight',   align: 'right', fmt: '$#,##0', bold: true },
+                { key: '$healthEr',  header: '$ SALUD PATR.',    sub: '8.5%',      width: 13, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$pensionEr', header: '$ PENSIÓN PATR.',  sub: '12%',       width: 14, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$arl',       header: '$ ARL',            sub: '',          width: 11, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$ccf',       header: '$ CCF',            sub: '4%',        width: 11, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$icbf',      header: '$ ICBF',           sub: '3%',        width: 11, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$sena',      header: '$ SENA',           sub: '2%',        width: 11, group: 'employer',   align: 'right', fmt: '$#,##0' },
+                { key: '$totalEr',   header: '$ TOTAL APORTES',  sub: 'patronales',width: 14, group: 'employer',   align: 'right', fmt: '$#,##0', bold: true },
+                { key: '$cost',      header: '$ COSTO EMPRESA',  sub: 'total',     width: 16, group: 'costLight',  align: 'right', fmt: '$#,##0', bold: true },
+                { key: '$total',     header: '$ TOTAL DEVENGADO', sub: 'compat',   width: 18, group: 'moneyTotal', align: 'right', fmt: '$#,##0' },
             );
         }
 
@@ -989,7 +1027,13 @@ exports.exportPayrollSummary = async (req, res) => {
                     p.salaryMonthly || 0, p.valueHour || 0,
                     p.ordDayPay || 0, p.ordNightPay || 0, p.ordSunDayPay || 0, p.ordSunNightPay || 0,
                     p.extDayPay || 0, p.extNightPay || 0, p.extSunDayPay || 0, p.extSunNightPay || 0,
-                    p.bonusPay || 0, p.totalPay || 0,
+                    p.bonusPay || 0,
+                    p.transportAllowance || 0, p.grossPay || 0,
+                    p.healthEmployee || 0, p.pensionEmployee || 0, p.totalDeductions || 0,
+                    p.netPay || 0,
+                    p.healthEmployer || 0, p.pensionEmployer || 0, p.arl || 0, p.ccf || 0, p.icbf || 0, p.sena || 0, p.totalEmployerContrib || 0,
+                    p.totalEmployerCost || 0,
+                    p.totalPay || 0,
                 ];
             });
             const csv = [csvHeaders, ...csvRows].map((row) => row.map(escapeCsv).join(',')).join('\n');
@@ -1147,6 +1191,20 @@ exports.exportPayrollSummary = async (req, res) => {
                 $extSunDay: p.extSunDayPay || null,
                 $extSunNight: p.extSunNightPay || null,
                 $bonus: p.bonusPay || null,
+                $transp: p.transportAllowance || null,
+                $gross: p.grossPay || null,
+                $health: p.healthEmployee ? -p.healthEmployee : null,
+                $pension: p.pensionEmployee ? -p.pensionEmployee : null,
+                $totalDed: p.totalDeductions ? -p.totalDeductions : null,
+                $net: p.netPay || null,
+                $healthEr: p.healthEmployer || null,
+                $pensionEr: p.pensionEmployer || null,
+                $arl: p.arl || null,
+                $ccf: p.ccf || null,
+                $icbf: p.icbf || null,
+                $sena: p.sena || null,
+                $totalEr: p.totalEmployerContrib || null,
+                $cost: p.totalEmployerCost || null,
                 $total: p.totalPay || null,
             };
             const rowNum = dataStartRow + idx;
@@ -1205,13 +1263,34 @@ exports.exportPayrollSummary = async (req, res) => {
         totals.$extSunDay  = sumPay('extSunDayPay');
         totals.$extSunNight= sumPay('extSunNightPay');
         totals.$bonus      = sumPay('bonusPay');
+        totals.$transp     = sumPay('transportAllowance');
+        totals.$gross      = sumPay('grossPay');
+        totals.$health     = -sumPay('healthEmployee');
+        totals.$pension    = -sumPay('pensionEmployee');
+        totals.$totalDed   = -sumPay('totalDeductions');
+        totals.$net        = sumPay('netPay');
+        totals.$healthEr   = sumPay('healthEmployer');
+        totals.$pensionEr  = sumPay('pensionEmployer');
+        totals.$arl        = sumPay('arl');
+        totals.$ccf        = sumPay('ccf');
+        totals.$icbf       = sumPay('icbf');
+        totals.$sena       = sumPay('sena');
+        totals.$totalEr    = sumPay('totalEmployerContrib');
+        totals.$cost       = sumPay('totalEmployerCost');
         totals.$total      = sumPay('totalPay');
 
+        const FOOTER_DARK_GROUPS = { moneyTotal: COLOR.moneyTotal, netLight: COLOR.net, costLight: COLOR.cost };
+        const FOOTER_FILL = {
+            grossLight: COLOR.gross,
+            deduction: COLOR.deductionDark,
+            employer: COLOR.employerDark,
+        };
         columns.forEach((c, i) => {
             const cell = ws.getCell(totalRowNum, i + 1);
-            cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: c.group === 'moneyTotal' ? 'FFFFFFFF' : COLOR.corp } };
+            const darkBg = FOOTER_DARK_GROUPS[c.group] || FOOTER_FILL[c.group];
+            cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: darkBg ? 'FFFFFFFF' : COLOR.corp } };
             cell.alignment = { vertical: 'middle', horizontal: c.align || 'left' };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.group === 'moneyTotal' ? COLOR.moneyTotal : COLOR.footerTotal } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: darkBg || COLOR.footerTotal } };
             cell.border = {
                 top:    { style: 'medium', color: { argb: COLOR.corp } },
                 bottom: { style: 'medium', color: { argb: COLOR.corp } },
@@ -1272,7 +1351,12 @@ exports.updatePayrollConfig = async (req, res) => {
             'weeklyHours', 'monthlyHourDivisor',
             'surchargeNight', 'surchargeSundayDay', 'surchargeSundayNight',
             'overtimeDay', 'overtimeNight', 'overtimeSundayDay', 'overtimeSundayNight',
+            'smmlv', 'transportAllowance', 'transportAllowanceThresholdSMMLV',
+            'healthEmployeePct', 'pensionEmployeePct',
+            'healthEmployerPct', 'pensionEmployerPct',
+            'arlPct', 'ccfPct', 'icbfPct', 'senaPct',
         ];
+        const boolKeys = ['art114Exonerated'];
         const config = {
             dayStart: typeof payload.dayStart === 'string' ? payload.dayStart : DEFAULT_PAYROLL_CONFIG.dayStart,
             nightStart: typeof payload.nightStart === 'string' ? payload.nightStart : DEFAULT_PAYROLL_CONFIG.nightStart,
@@ -1283,6 +1367,9 @@ exports.updatePayrollConfig = async (req, res) => {
             const num = typeof raw === 'number' ? raw : parseFloat(raw);
             config[key] = Number.isFinite(num) ? num : DEFAULT_PAYROLL_CONFIG[key];
         }
+        for (const key of boolKeys) {
+            config[key] = typeof payload[key] === 'boolean' ? payload[key] : DEFAULT_PAYROLL_CONFIG[key];
+        }
 
         if (!config.dayStart.includes(':') || !config.nightStart.includes(':')) {
             return res.status(400).json({ error: 'Las franjas diurna y nocturna deben tener formato HH:MM' });
@@ -1290,10 +1377,15 @@ exports.updatePayrollConfig = async (req, res) => {
         if (config.fortnightCutoffDay < 1 || config.fortnightCutoffDay > 28) {
             return res.status(400).json({ error: 'El corte quincenal debe estar entre 1 y 28' });
         }
-        for (const key of numericKeys) {
+        // Recargos y % de aportes/deducciones: rango razonable [0, 5]
+        const pctKeys = numericKeys.filter((k) => !['smmlv','transportAllowance','transportAllowanceThresholdSMMLV','weeklyHours','monthlyHourDivisor'].includes(k));
+        for (const key of pctKeys) {
             if (config[key] < 0 || config[key] > 5) {
                 return res.status(400).json({ error: `El valor de ${key} debe estar entre 0 y 5` });
             }
+        }
+        if (config.smmlv < 0 || config.transportAllowance < 0) {
+            return res.status(400).json({ error: 'SMMLV y aux. transporte no pueden ser negativos' });
         }
 
         const updated = await prisma.systemSettings.upsert({
@@ -1314,6 +1406,51 @@ exports.updatePayrollConfig = async (req, res) => {
 };
 
 // ── Festivos (PayrollHoliday) ──────────────────────────────────────────────────
+
+// ── Categorías de motivos de horas extras (chuleables en kiosko) ──────────────
+// Se almacenan en SystemSettings con clave 'overtime_categories'.
+// Cada categoría = { id, label, requiresArea? } donde requiresArea pide
+// sub-selección del área a la que apoyó (ej. "Apoyo en otra área").
+
+const OVERTIME_CATEGORIES_KEY = 'overtime_categories';
+const DEFAULT_OVERTIME_CATEGORIES = [
+    { id: 'APOYO_AREA',   label: 'Apoyo en otra área', requiresArea: true,
+      areas: ['MANTENIMIENTO', 'PRODUCCION', 'SIROPES', 'EMPAQUE', 'LOGISTICA', 'ASEO'] },
+    { id: 'EMPAQUE_PEND', label: 'Empaque pendiente' },
+    { id: 'CIERRE_BACHE', label: 'Cierre de bache' },
+    { id: 'FALTA_PERSONAL', label: 'Falta de personal en otro turno' },
+    { id: 'OTRO',         label: 'Otro (especificar)' },
+];
+
+exports.listOvertimeCategories = async (req, res) => {
+    try {
+        const row = await prisma.systemSettings.findUnique({ where: { key: OVERTIME_CATEGORIES_KEY } });
+        const value = (row && Array.isArray(row.value)) ? row.value : DEFAULT_OVERTIME_CATEGORIES;
+        res.json(value);
+    } catch (err) {
+        logger.error('listOvertimeCategories error:', err);
+        res.json(DEFAULT_OVERTIME_CATEGORIES);
+    }
+};
+
+exports.updateOvertimeCategories = async (req, res) => {
+    try {
+        const list = Array.isArray(req.body) ? req.body : req.body?.categories;
+        if (!Array.isArray(list)) return res.status(400).json({ error: 'Esperaba un array de categorías' });
+        for (const c of list) {
+            if (!c.id || !c.label) return res.status(400).json({ error: 'Cada categoría requiere id y label' });
+        }
+        await prisma.systemSettings.upsert({
+            where: { key: OVERTIME_CATEGORIES_KEY },
+            create: { key: OVERTIME_CATEGORIES_KEY, value: list, description: 'Categorías de motivos de horas extras (kiosko)' },
+            update: { value: list },
+        });
+        res.json(list);
+    } catch (err) {
+        logger.error('updateOvertimeCategories error:', err);
+        res.status(500).json({ error: 'Error guardando categorías' });
+    }
+};
 
 exports.listHolidays = async (req, res) => {
     try {
@@ -2182,11 +2319,19 @@ function getScheduledShiftEnd(employee, ts) {
     return new Date(endColUtc.getTime() + 5 * 3600 * 1000);
 }
 
+// Áreas cuyo personal NO puede hacer horas extras: si salen tarde se capea
+// al fin de turno sin pedir motivo ni generar approval. Política 2026-05-07.
+const NON_OVERTIME_AREAS = new Set(['PERSONAL_OFICINA']);
+
 function assessOvertime(employee, exitTimestamp) {
     const scheduledEnd = getScheduledShiftEnd(employee, exitTimestamp);
     if (!scheduledEnd) return { applies: false };
     const minutesOver = Math.round((exitTimestamp - scheduledEnd) / 60000);
     if (minutesOver <= OVERTIME_TOLERANCE_MIN) return { applies: true, status: 'normal', minutesOver, scheduledEnd };
+    // Empleados de áreas NON_OVERTIME nunca generan extras: capeo al fin de turno
+    if (NON_OVERTIME_AREAS.has(employee.area)) {
+        return { applies: true, status: 'warning', minutesOver, scheduledEnd, capped: true };
+    }
     if (minutesOver <= OVERTIME_AUTH_THRESHOLD_MIN) return { applies: true, status: 'warning', minutesOver, scheduledEnd };
     return { applies: true, status: 'requires_auth', minutesOver, scheduledEnd };
 }
@@ -2493,6 +2638,32 @@ exports.createOvertimeApproval = async (req, res) => {
     } catch (err) {
         logger.error('createOvertimeApproval error:', err);
         res.status(500).json({ error: 'Error registrando aprobación' });
+    }
+};
+
+exports.updateOvertimeApprovalStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status, reviewNotes } = req.body || {};
+        if (!['APPROVED', 'REJECTED', 'PENDING'].includes(status)) {
+            return res.status(400).json({ error: 'status debe ser APPROVED, REJECTED o PENDING' });
+        }
+        const existing = await prisma.overtimeApproval.findUnique({ where: { id } });
+        if (!existing) return res.status(404).json({ error: 'No encontrado' });
+        const updated = await prisma.overtimeApproval.update({
+            where: { id },
+            data: {
+                status,
+                reviewNotes: reviewNotes || existing.reviewNotes || null,
+                approvedById: req.user?.id || existing.approvedById,
+                approvedAt: status === 'APPROVED' ? new Date() : existing.approvedAt,
+            },
+        });
+        logger.info(`[OvertimeApproval] ${id} -> ${status} by ${req.user?.name}`);
+        res.json(updated);
+    } catch (err) {
+        logger.error('updateOvertimeApprovalStatus error:', err);
+        res.status(500).json({ error: 'Error actualizando aprobación' });
     }
 };
 
@@ -2804,10 +2975,9 @@ async function _getEmployeeCurrentState(employeeId) {
  */
 exports.justifyOvertime = async (req, res) => {
     try {
-        const { cedula, reason, adminPin } = req.body || {};
+        const { cedula, reason, category } = req.body || {};
         if (!cedula) return res.status(400).json({ error: 'Falta cédula' });
         if (!reason || reason.trim().length < 5) return res.status(400).json({ error: 'Motivo demasiado corto (mínimo 5 caracteres)' });
-        if (!adminPin || !/^\d{4}$/.test(adminPin)) return res.status(400).json({ error: 'PIN admin debe ser 4 dígitos' });
 
         // 1) Buscar empleado
         const employee = await prisma.shiftEmployee.findUnique({
@@ -2817,17 +2987,9 @@ exports.justifyOvertime = async (req, res) => {
         if (!employee) return res.status(404).json({ error: 'Cédula no registrada' });
         if (!employee.active) return res.status(403).json({ error: 'Empleado inactivo' });
 
-        // 2) Validar PIN admin
-        const bcrypt = require('bcrypt');
-        const admins = await prisma.user.findMany({
-            where: { role: 'ADMIN', pin: { not: null } },
-            select: { id: true, name: true, pin: true }
-        });
-        let admin = null;
-        for (const a of admins) {
-            if (await bcrypt.compare(adminPin, a.pin)) { admin = a; break; }
-        }
-        if (!admin) return res.status(401).json({ error: 'PIN admin incorrecto' });
+        // 2) (Política 2026-05: ya NO se requiere PIN admin en el momento.
+        //     El operario registra el motivo y queda PENDING para que el
+        //     admin lo revise después desde el panel "Revisar y aprobar".)
 
         // 3) Calcular tiempo extra
         const ts = new Date();
@@ -2853,11 +3015,11 @@ exports.justifyOvertime = async (req, res) => {
                 source: 'KIOSK',
                 timestamp: ts,
                 verified: true,
-                notes: `Tiempo extra autorizado por ${admin.name} | Motivo: ${reason}`,
+                notes: `Tiempo extra registrado por empleado | Categoría: ${category || 'OTRO'} | Motivo: ${reason}`,
             }
         });
 
-        // 6) Crear OvertimeApproval
+        // 6) Crear OvertimeApproval (queda PENDING — admin revisa después)
         const approval = await prisma.overtimeApproval.create({
             data: {
                 employeeId: employee.id,
@@ -2865,7 +3027,8 @@ exports.justifyOvertime = async (req, res) => {
                 dayHours,
                 nightHours,
                 reason: reason.trim(),
-                approvedById: admin.id,
+                category: category || null,
+                status: 'PENDING',
             }
         });
 
@@ -2875,7 +3038,7 @@ exports.justifyOvertime = async (req, res) => {
             data: { isInPlant: false }
         });
 
-        logger.info(`[justifyOvertime] ✅ ${employee.name} | +${minutesOver.toFixed(0)}min (${dayHours}d/${nightHours}n) | autorizado por ${admin.name} | motivo: ${reason}`);
+        logger.info(`[justifyOvertime] ⏳ PENDING ${employee.name} | +${minutesOver.toFixed(0)}min (${dayHours}d/${nightHours}n) | categoría: ${category} | motivo: ${reason}`);
         res.json({
             success: true,
             employeeName: employee.name,
@@ -2883,7 +3046,8 @@ exports.justifyOvertime = async (req, res) => {
             minutesOver: Math.round(minutesOver),
             dayHours,
             nightHours,
-            authorizedBy: admin.name,
+            status: 'PENDING',
+            message: 'Registrado correctamente. Pendiente de aprobación por administrador.',
             approvalId: approval.id,
             recordId: record.id,
         });

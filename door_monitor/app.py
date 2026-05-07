@@ -359,6 +359,12 @@ async def process_frame(
     file:      UploadFile = File(...),
     source_id: str        = "tablet_kiosk",
 ):
+    # ── DESACTIVADO 2026-05-06 — vigilancia continua saturaba CPU (500%) ─────
+    # La tablet sigue enviando frames cada 2-3 s pero el server los descarta.
+    # /match (marcaje puntual) sigue activo y ahora responde sin contención.
+    await file.read()  # drenar el body para no bloquear el cliente
+    return {"detections": [], "crossings": [], "disabled": True}
+
     raw   = await file.read()
     arr   = np.frombuffer(raw, dtype=np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)

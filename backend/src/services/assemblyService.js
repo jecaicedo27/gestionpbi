@@ -1447,6 +1447,21 @@ class AssemblyService {
                             changes: { stageName: note.stageName, processType: processCode, alerts: consumptionAlerts }
                         }
                     });
+                    // ── 2026-05-07: bloquear PESAJE con NO_CONSUMPTION ──
+                    // Si en una nota de PESAJE algún ingrediente esperado > 0 quedó
+                    // con consumo 0 (ningún lote descontado), eso significa descuadre
+                    // garantizado: físicamente se peso pero el sistema no descontó.
+                    // Bloquear para forzar resolución (ej: transferir lotes a producción).
+                    const noConsumptionIssues = consumptionAlerts.filter(a => a.issue === 'NO_CONSUMPTION');
+                    if (processCode === 'PESAJE' && noConsumptionIssues.length > 0) {
+                        const detalle = noConsumptionIssues
+                            .map(a => `${a.component} (esperado ${a.expected}g)`)
+                            .join(', ');
+                        throw new Error(
+                            `CONSUMO_NO_REGISTRADO: Los siguientes ingredientes no se pudieron descontar de ningún lote: ${detalle}. ` +
+                            `Verifica que haya stock disponible en zona PRODUCCIÓN o transfiere desde Bodega antes de completar el pesaje.`
+                        );
+                    }
                 }
             }
 
@@ -1533,21 +1548,26 @@ class AssemblyService {
                 // so they can be consumed by downstream assembly stages.
                 const isFinishedProduct = [1401, 1402].includes(note.product?.accountGroup) && note.product?.type !== 'MATERIA_PRIMA';
                 if (!isFinishedProduct) {
-                    await tx.materialLot.create({
-                        data: {
-                            productId: note.productId,
-                            siigoProductCode: note.product?.sku || '',
-                            siigoProductName: note.product?.name || '',
-                            lotNumber,
-                            initialQuantity: qty,
-                            currentQuantity: qty,
-                            unit: note.unit || note.product?.unit || 'unidad',
-                            receivedAt: new Date(),
-                            status: 'AVAILABLE',
-                            zone: 'PRODUCTION'
-                        }
-                    });
-                    console.log(`[completeNote] ✅ MaterialLot created for ${note.product?.name} — lot: ${lotNumber} (${qty} uds)`);
+                    try {
+                        const createdLot = await tx.materialLot.create({
+                            data: {
+                                productId: note.productId,
+                                siigoProductCode: note.product?.sku || '',
+                                siigoProductName: note.product?.name || '',
+                                lotNumber,
+                                initialQuantity: qty,
+                                currentQuantity: qty,
+                                unit: note.unit || note.product?.unit || 'unidad',
+                                receivedAt: new Date(),
+                                status: 'AVAILABLE',
+                                zone: 'PRODUCTION'
+                            }
+                        });
+                        console.log(`[completeNote] ✅ MaterialLot created — bache=${note.productionBatch?.batchNumber} sku=${note.product?.sku} lote=${lotNumber} qty=${qty} id=${createdLot.id}`);
+                    } catch (lotErr) {
+                        console.error(`[completeNote] ❌ Falló creación MaterialLot — bache=${note.productionBatch?.batchNumber} sku=${note.product?.sku} lote=${lotNumber}: ${lotErr.message}`);
+                        throw new Error(`PRODUCCION_NO_REGISTRADA: No se pudo crear material_lot para ${note.product?.sku} (lote ${lotNumber}): ${lotErr.message}`);
+                    }
                 } else {
                     // ── FINISHED PRODUCTS: stock ingestion handled by EMPAQUE wizard ──
                     // Finished products (LIQUIPOPS, SIROPES, etc.) are tracked in

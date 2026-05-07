@@ -1023,7 +1023,150 @@ const PAYROLL_BAND_COLS = [
 
 const fmtCOP = (n) => (n == null ? '—' : `$${Math.round(n).toLocaleString('es-CO')}`);
 
-function PayrollQuincenalView({ data, loading }) {
+function ViewSwitcher({ view, setView, anyPay }) {
+    if (!anyPay) return null;
+    return (
+        <div className="px-5 py-2 bg-neutral-50 border-b flex items-center gap-2">
+            <span className="text-xs font-bold text-neutral-500 uppercase">Vista:</span>
+            <button onClick={() => setView('hours')}
+                className={`px-3 py-1 rounded-md text-xs font-semibold ${view === 'hours' ? 'bg-primary-600 text-white' : 'bg-white text-neutral-600 border border-neutral-200'}`}>
+                Horas trabajadas
+            </button>
+            <button onClick={() => setView('money')}
+                className={`px-3 py-1 rounded-md text-xs font-semibold ${view === 'money' ? 'bg-emerald-600 text-white' : 'bg-white text-neutral-600 border border-neutral-200'}`}>
+                Nómina (pesos)
+            </button>
+        </div>
+    );
+}
+
+function PayrollMoneyView({ rows, holidays, setView, onOpenApprovals }) {
+    const tot = (k) => rows.reduce((s, r) => s + (r.pay?.[k] || 0), 0);
+    const totHrs = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
+    const pendingHrsTotal = totHrs('overtimePendingHours');
+    const pendingPayTotal = tot('overtimePendingPay');
+    return (
+        <Card className="overflow-hidden">
+            {holidays.length > 0 && (
+                <div className="px-5 py-3 bg-rose-50 border-b border-rose-100 flex items-start gap-2">
+                    <Calendar size={14} className="text-rose-600 mt-0.5 shrink-0"/>
+                    <div className="text-xs text-rose-800">
+                        <span className="font-bold">Festivos:</span>{' '}
+                        {holidays.map((h, i) => (
+                            <span key={h.date}>{i > 0 ? ' · ' : ''}{h.date} {h.name}</span>
+                        ))}
+                    </div>
+                </div>
+            )}
+            <ViewSwitcher view="money" setView={setView} anyPay={true} />
+            {pendingHrsTotal > 0 && (
+                <div className="px-5 py-3 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3">
+                    <div className="text-xs text-amber-900">
+                        ⚠️ <span className="font-bold">{pendingHrsTotal.toFixed(2)}h</span> de extras
+                        <span className="font-bold"> pendientes de aprobación</span> ({fmtCOP(pendingPayTotal)} potencial).
+                        Las extras no se pagan hasta que se aprueben.
+                    </div>
+                    <button onClick={onOpenApprovals}
+                        className="px-3 py-2 bg-amber-600 text-white rounded-lg text-xs font-semibold hover:bg-amber-700 flex items-center gap-1 whitespace-nowrap">
+                        Revisar y aprobar
+                    </button>
+                </div>
+            )}
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead className="bg-neutral-50 border-b">
+                        <tr>
+                            <th rowSpan={2} className="px-3 py-2 text-left font-bold text-neutral-500 uppercase sticky left-0 bg-neutral-50 z-10 min-w-[180px] border-r">Empleado</th>
+                            <th colSpan={4} className="px-3 py-1.5 text-center font-bold text-blue-700 uppercase bg-blue-50 border-r border-blue-200 text-[11px]">Devengado</th>
+                            <th rowSpan={2} className="px-3 py-2 text-right font-bold text-blue-800 uppercase bg-blue-100 border-r whitespace-nowrap">Bruto</th>
+                            <th colSpan={3} className="px-3 py-1.5 text-center font-bold text-red-700 uppercase bg-red-50 border-r border-red-200 text-[11px]">Deducciones empleado</th>
+                            <th rowSpan={2} className="px-3 py-2 text-right font-bold text-emerald-800 uppercase bg-emerald-100 border-r whitespace-nowrap">NETO A PAGAR</th>
+                            <th colSpan={6} className="px-3 py-1.5 text-center font-bold text-amber-700 uppercase bg-amber-50 border-r border-amber-200 text-[11px]">Aportes patronales (informativo)</th>
+                            <th rowSpan={2} className="px-3 py-2 text-right font-bold text-violet-800 uppercase bg-violet-100 whitespace-nowrap">Costo empresa</th>
+                        </tr>
+                        <tr className="text-[10px]">
+                            <th className="px-2 py-1 text-right font-semibold text-blue-600 bg-blue-50">Salario ord.</th>
+                            <th className="px-2 py-1 text-right font-semibold text-emerald-700 bg-blue-50">Extras ✓</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-blue-50">Pendientes ⚠️</th>
+                            <th className="px-2 py-1 text-right font-semibold text-blue-600 bg-blue-50 border-r border-blue-200">Aux. Transp.</th>
+                            <th className="px-2 py-1 text-right font-semibold text-red-600 bg-red-50">Salud 4%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-red-600 bg-red-50">Pensión 4%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-red-600 bg-red-50 border-r border-red-200">Total ded.</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50">Salud 8.5%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50">Pens. 12%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50">ARL</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50">CCF 4%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50">ICBF 3%</th>
+                            <th className="px-2 py-1 text-right font-semibold text-amber-700 bg-amber-50 border-r border-amber-200">SENA 2%</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                        {rows.map((r) => {
+                            const p = r.pay;
+                            return (
+                                <tr key={r.employee.id} className="hover:bg-blue-50/30">
+                                    <td className="px-3 py-2 font-medium text-neutral-800 sticky left-0 bg-white hover:bg-blue-50/30 border-r">
+                                        {r.employee.name}
+                                        {r.employee.cedula && <div className="text-[10px] text-neutral-400">CC {r.employee.cedula}</div>}
+                                    </td>
+                                    {!p ? (
+                                        <td colSpan={15} className="px-3 py-2 text-center text-neutral-400 italic">sin perfil de salario</td>
+                                    ) : (<>
+                                        <td className="px-2 py-2 text-right text-blue-700 font-semibold">{fmtCOP(p.ordinaryPay)}</td>
+                                        <td className="px-2 py-2 text-right text-emerald-700 font-semibold" title={`${r.overtimeAuthorizedHours || 0}h autorizadas`}>
+                                            {p.overtimePay > 0 ? fmtCOP(p.overtimePay) : <span className="text-neutral-300 font-normal">—</span>}
+                                        </td>
+                                        <td className="px-2 py-2 text-right" title={`${r.overtimePendingHours || 0}h pendientes (no pagadas)`}>
+                                            {p.overtimePendingPay > 0
+                                                ? <span className="text-amber-700">{fmtCOP(p.overtimePendingPay)} <span className="text-[9px] opacity-70">({(r.overtimePendingHours || 0).toFixed(2)}h)</span></span>
+                                                : <span className="text-neutral-300">—</span>}
+                                        </td>
+                                        <td className="px-2 py-2 text-right text-blue-600 border-r">{p.transportAllowance > 0 ? fmtCOP(p.transportAllowance) : <span className="text-neutral-300">—</span>}</td>
+                                        <td className="px-2 py-2 text-right text-blue-900 font-bold bg-blue-50/50 border-r">{fmtCOP(p.grossPay)}</td>
+                                        <td className="px-2 py-2 text-right text-red-600">−{fmtCOP(p.healthEmployee)}</td>
+                                        <td className="px-2 py-2 text-right text-red-600">−{fmtCOP(p.pensionEmployee)}</td>
+                                        <td className="px-2 py-2 text-right text-red-700 font-semibold border-r">−{fmtCOP(p.totalDeductions)}</td>
+                                        <td className="px-2 py-2 text-right text-emerald-800 font-bold bg-emerald-50 border-r">{fmtCOP(p.netPay)}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700">{p.healthEmployer > 0 ? fmtCOP(p.healthEmployer) : <span className="text-emerald-600 text-[10px]" title="Exonerado Art. 114-1 ET">exonerado</span>}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700">{fmtCOP(p.pensionEmployer)}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700">{fmtCOP(p.arl)}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700">{fmtCOP(p.ccf)}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700">{p.icbf > 0 ? fmtCOP(p.icbf) : <span className="text-emerald-600 text-[10px]">exonerado</span>}</td>
+                                        <td className="px-2 py-2 text-right text-amber-700 border-r">{p.sena > 0 ? fmtCOP(p.sena) : <span className="text-emerald-600 text-[10px]">exonerado</span>}</td>
+                                        <td className="px-2 py-2 text-right text-violet-900 font-bold bg-violet-50">{fmtCOP(p.totalEmployerCost)}</td>
+                                    </>)}
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                    <tfoot className="bg-neutral-100 border-t-2 border-neutral-300">
+                        <tr>
+                            <td className="px-3 py-2 font-bold text-neutral-700 uppercase text-xs sticky left-0 bg-neutral-100 border-r">TOTAL</td>
+                            <td className="px-2 py-2 text-right font-bold text-blue-800">{fmtCOP(tot('ordinaryPay'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-emerald-700">{fmtCOP(tot('overtimePay'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-700">{fmtCOP(pendingPayTotal)}</td>
+                            <td className="px-2 py-2 text-right font-bold text-blue-800 border-r">{fmtCOP(tot('transportAllowance'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-blue-900 bg-blue-100 border-r">{fmtCOP(tot('grossPay'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-red-700">−{fmtCOP(tot('healthEmployee'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-red-700">−{fmtCOP(tot('pensionEmployee'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-red-700 border-r">−{fmtCOP(tot('totalDeductions'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-emerald-900 bg-emerald-100 border-r">{fmtCOP(tot('netPay'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800">{fmtCOP(tot('healthEmployer'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800">{fmtCOP(tot('pensionEmployer'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800">{fmtCOP(tot('arl'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800">{fmtCOP(tot('ccf'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800">{fmtCOP(tot('icbf'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-amber-800 border-r">{fmtCOP(tot('sena'))}</td>
+                            <td className="px-2 py-2 text-right font-bold text-violet-900 bg-violet-100">{fmtCOP(tot('totalEmployerCost'))}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </Card>
+    );
+}
+
+function PayrollQuincenalView({ data, loading, view, setView, onOpenApprovals }) {
     if (loading) return <div className="flex justify-center py-12"><Spinner /></div>;
     if (!data) return null;
     const rows = data.summary || [];
@@ -1034,6 +1177,10 @@ function PayrollQuincenalView({ data, loading }) {
     const totals = PAYROLL_BAND_COLS.reduce((acc, c) => ({ ...acc, [c.key]: 0 }), {});
     rows.forEach((r) => PAYROLL_BAND_COLS.forEach((c) => { totals[c.key] += r[c.key] || 0; }));
     const totalAll = Object.values(totals).reduce((s, v) => s + v, 0);
+
+    if (view === 'money') {
+        return <PayrollMoneyView rows={rows} holidays={holidays} setView={setView} onOpenApprovals={onOpenApprovals} />;
+    }
 
     return (
         <Card className="overflow-hidden">
@@ -1050,6 +1197,7 @@ function PayrollQuincenalView({ data, loading }) {
                     </div>
                 </div>
             )}
+            <ViewSwitcher view={view} setView={setView} anyPay={anyPay} />
             <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                     <thead className="bg-neutral-50 border-b">
@@ -1242,6 +1390,26 @@ function PayrollConfigModal({ onClose }) {
         ['overtimeSundayNight',  'Extra dom/fest nocturna',            '× ord.'],
     ];
 
+    const LEGAL_FIELDS = [
+        ['smmlv',                          'SMMLV 2026',                 '$/mes',     'currency'],
+        ['transportAllowance',             'Auxilio transporte',         '$/mes',     'currency'],
+        ['transportAllowanceThresholdSMMLV','Umbral aux. transporte',    'SMMLV',     'number'],
+    ];
+
+    const DEDUCTION_FIELDS = [
+        ['healthEmployeePct',  'Salud empleado',    '%'],
+        ['pensionEmployeePct', 'Pensión empleado',  '%'],
+    ];
+
+    const EMPLOYER_FIELDS = [
+        ['healthEmployerPct',  'Salud empleador',    '%', 'Exonerado si Art.114-1 está activo y empleado <10 SMMLV'],
+        ['pensionEmployerPct', 'Pensión empleador',  '%', ''],
+        ['arlPct',             'ARL',                '%', 'Default clase II = 1.044 %'],
+        ['ccfPct',             'Caja Compensación',  '%', ''],
+        ['icbfPct',            'ICBF',               '%', 'Exonerado si Art.114-1 está activo'],
+        ['senaPct',            'SENA',               '%', 'Exonerado si Art.114-1 está activo'],
+    ];
+
     return (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -1285,6 +1453,81 @@ function PayrollConfigModal({ onClose }) {
                         <p className="font-semibold mb-1">Referencia legal vigente (CST + Ley 2466/2025):</p>
                         <p>Recargos: nocturno 0.35, dom/fest diurno 0.80 (sube a 0.90 en jul-2026), dom/fest nocturno 1.15.</p>
                         <p>Extras: diurna 0.25, nocturna 0.75, dom/fest diurna 1.05, dom/fest nocturna 1.55.</p>
+                    </div>
+
+                    {/* ── Valores legales 2026 ── */}
+                    <div className="border-t pt-4">
+                        <h3 className="text-xs font-bold text-neutral-500 uppercase mb-3">Valores legales 2026</h3>
+                        <div className="grid grid-cols-3 gap-3">
+                            {LEGAL_FIELDS.map(([k, label, unit, kind]) => (
+                                <div key={k}>
+                                    <label className="block text-xs text-neutral-600 mb-1">{label} <span className="text-neutral-400">({unit})</span></label>
+                                    <input
+                                        type="number"
+                                        step={kind === 'currency' ? '1' : '0.01'}
+                                        value={cfg[k] ?? 0}
+                                        onChange={(e) => set(k, parseFloat(e.target.value))}
+                                        className="w-full px-3 py-2 border border-neutral-200 rounded-lg text-sm font-mono"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-2 italic">
+                            Decretos 1469 y 1470 de 29-dic-2025. SMMLV $1.750.905 · Aux. transporte $249.095 · Umbral 2 SMMLV.
+                        </p>
+                    </div>
+
+                    {/* ── Deducciones del empleado (Ley 100/1993) ── */}
+                    <div className="border-t pt-4">
+                        <h3 className="text-xs font-bold text-red-600 uppercase mb-3">Deducciones del empleado (Ley 100/1993)</h3>
+                        <div className="grid grid-cols-2 gap-3">
+                            {DEDUCTION_FIELDS.map(([k, label, unit]) => (
+                                <div key={k}>
+                                    <label className="block text-xs text-neutral-600 mb-1">{label} <span className="text-neutral-400">({unit})</span></label>
+                                    <input
+                                        type="number" step="0.001"
+                                        value={cfg[k] ?? 0}
+                                        onChange={(e) => set(k, parseFloat(e.target.value))}
+                                        className="w-full px-3 py-2 border border-red-100 rounded-lg text-sm font-mono bg-red-50/30"
+                                    />
+                                    <p className="text-[10px] text-neutral-500 mt-0.5">{(cfg[k] * 100).toFixed(1)} %</p>
+                                </div>
+                            ))}
+                        </div>
+                        <p className="text-[11px] text-neutral-400 mt-2 italic">
+                            Aplicado sobre IBC (salario base sin auxilio de transporte).
+                        </p>
+                    </div>
+
+                    {/* ── Aportes patronales (Ley 100 + Ley 21/1982) ── */}
+                    <div className="border-t pt-4">
+                        <div className="flex items-center justify-between mb-3">
+                            <h3 className="text-xs font-bold text-amber-700 uppercase">Aportes patronales (Ley 100 + Ley 21/1982)</h3>
+                            <label className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
+                                <input
+                                    type="checkbox"
+                                    checked={!!cfg.art114Exonerated}
+                                    onChange={(e) => set('art114Exonerated', e.target.checked)}
+                                />
+                                Aplicar Art. 114-1 ET (exonera salud, ICBF, SENA si gana &lt; 10 SMMLV)
+                            </label>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                            {EMPLOYER_FIELDS.map(([k, label, unit, hint]) => (
+                                <div key={k}>
+                                    <label className="block text-xs text-neutral-600 mb-1">{label} <span className="text-neutral-400">({unit})</span></label>
+                                    <input
+                                        type="number" step="0.0001"
+                                        value={cfg[k] ?? 0}
+                                        onChange={(e) => set(k, parseFloat(e.target.value))}
+                                        className="w-full px-3 py-2 border border-amber-100 rounded-lg text-sm font-mono bg-amber-50/30"
+                                    />
+                                    <p className="text-[10px] text-neutral-500 mt-0.5">
+                                        {(cfg[k] * 100).toFixed(2)} %{hint && <> · <span className="italic">{hint}</span></>}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
                 <div className="px-6 py-4 border-t bg-neutral-50 flex justify-end gap-2 sticky bottom-0">
@@ -1456,6 +1699,226 @@ function SalariesModal({ onClose }) {
     );
 }
 
+function OvertimeApprovalsModal({ anchorDate, onClose }) {
+    const [list, setList] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [filter, setFilter] = useState('PENDING'); // PENDING | APPROVED | REJECTED | ALL
+    const [showCreate, setShowCreate] = useState(false);
+    const [employees, setEmployees] = useState([]);
+    const [categories, setCategories] = useState([]);
+    const [createForm, setCreateForm] = useState({ employeeId: '', date: anchorDate, dayHours: '', nightHours: '', categoryId: '', reasonExtra: '' });
+    const [creating, setCreating] = useState(false);
+
+    useEffect(() => {
+        api.get('/attendance/employees').then(r => setEmployees(r.data || [])).catch(()=>{});
+        api.get('/attendance/overtime-categories').then(r => setCategories(r.data || [])).catch(()=>{});
+    }, []);
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            // Tomo los últimos 60 días (cubre quincena anterior + actual)
+            const to = new Date(`${anchorDate}T12:00:00`); to.setDate(to.getDate() + 30);
+            const from = new Date(`${anchorDate}T12:00:00`); from.setDate(from.getDate() - 60);
+            const r = await api.get('/attendance/overtime-approvals', {
+                params: { from: from.toISOString().substring(0,10), to: to.toISOString().substring(0,10) },
+            });
+            const arr = Array.isArray(r.data) ? r.data : (r.data?.items || []);
+            setList(arr);
+        } catch (e) { console.error(e); }
+        finally { setLoading(false); }
+    }, [anchorDate]);
+    useEffect(() => { load(); }, [load]);
+
+    const setStatus = async (id, status) => {
+        try {
+            await api.put(`/attendance/overtime-approvals/${id}/status`, { status });
+            load();
+        } catch (e) {
+            alert(e.response?.data?.error || 'Error');
+        }
+    };
+
+    const createManualApproval = async () => {
+        if (!createForm.employeeId) { alert('Selecciona el empleado'); return; }
+        const day = parseFloat(createForm.dayHours) || 0;
+        const night = parseFloat(createForm.nightHours) || 0;
+        if (day === 0 && night === 0) { alert('Indica al menos una hora (día o noche)'); return; }
+        const cat = categories.find(c => c.id === createForm.categoryId);
+        if (!cat) { alert('Selecciona el motivo'); return; }
+        const reason = createForm.reasonExtra
+            ? `${cat.label} — ${createForm.reasonExtra}`
+            : cat.label;
+        if (reason.length < 5) { alert('El motivo es muy corto'); return; }
+        setCreating(true);
+        try {
+            await api.post('/attendance/overtime-approvals', {
+                employeeId: createForm.employeeId,
+                date: createForm.date,
+                dayHours: day,
+                nightHours: night,
+                reason,
+                category: createForm.categoryId,
+            });
+            setShowCreate(false);
+            setCreateForm({ employeeId: '', date: anchorDate, dayHours: '', nightHours: '', categoryId: '', reasonExtra: '' });
+            load();
+        } catch (e) {
+            alert(e.response?.data?.error || 'Error creando');
+        } finally {
+            setCreating(false);
+        }
+    };
+
+    const filtered = list.filter((a) => filter === 'ALL' ? true : a.status === filter);
+    const pendingCount = list.filter((a) => a.status === 'PENDING').length;
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                <div className="px-6 py-4 border-b flex items-center justify-between">
+                    <h2 className="font-bold text-neutral-800 flex items-center gap-2">
+                        <TrendingUp size={18}/> Aprobación de Horas Extras
+                    </h2>
+                    <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700"><XCircle size={22}/></button>
+                </div>
+                <div className="px-6 py-3 border-b bg-neutral-50 flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-neutral-500 uppercase">Filtro:</span>
+                    {[
+                        { v: 'PENDING',  label: `Pendientes (${pendingCount})`, active: 'bg-amber-600 text-white' },
+                        { v: 'APPROVED', label: 'Aprobadas',  active: 'bg-emerald-600 text-white' },
+                        { v: 'REJECTED', label: 'Rechazadas', active: 'bg-red-600 text-white' },
+                        { v: 'ALL',      label: 'Todas',      active: 'bg-neutral-600 text-white' },
+                    ].map(f => (
+                        <button key={f.v} onClick={() => setFilter(f.v)}
+                            className={`px-3 py-1 rounded text-xs font-semibold ${filter === f.v ? f.active : 'bg-white border border-neutral-200 text-neutral-600'}`}>
+                            {f.label}
+                        </button>
+                    ))}
+                    <button onClick={() => setShowCreate(s => !s)}
+                        className="ml-auto px-3 py-1 rounded text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 flex items-center gap-1">
+                        <Plus size={12}/> Agregar manual
+                    </button>
+                </div>
+                {showCreate && (
+                    <div className="px-6 py-4 border-b bg-blue-50">
+                        <h3 className="text-xs font-bold text-blue-900 uppercase mb-3">Agregar horas extras manualmente</h3>
+                        <div className="grid grid-cols-6 gap-2 items-end">
+                            <div className="col-span-2">
+                                <label className="block text-[10px] text-neutral-600 mb-1">Empleado</label>
+                                <select value={createForm.employeeId}
+                                    onChange={e => setCreateForm(f => ({...f, employeeId: e.target.value}))}
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs">
+                                    <option value="">— Selecciona —</option>
+                                    {employees.map(e => <option key={e.id} value={e.id}>{e.name} ({e.area})</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] text-neutral-600 mb-1">Fecha</label>
+                                <input type="date" value={createForm.date}
+                                    onChange={e => setCreateForm(f => ({...f, date: e.target.value}))}
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs"/>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] text-neutral-600 mb-1">Hrs día</label>
+                                <input type="number" step="0.25" min="0" max="12" value={createForm.dayHours}
+                                    onChange={e => setCreateForm(f => ({...f, dayHours: e.target.value}))}
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs"/>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] text-neutral-600 mb-1">Hrs noche</label>
+                                <input type="number" step="0.25" min="0" max="12" value={createForm.nightHours}
+                                    onChange={e => setCreateForm(f => ({...f, nightHours: e.target.value}))}
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs"/>
+                            </div>
+                            <div className="col-span-2">
+                                <label className="block text-[10px] text-neutral-600 mb-1">Motivo</label>
+                                <select value={createForm.categoryId}
+                                    onChange={e => setCreateForm(f => ({...f, categoryId: e.target.value}))}
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs">
+                                    <option value="">— Selecciona —</option>
+                                    {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                </select>
+                            </div>
+                            <div className="col-span-3">
+                                <label className="block text-[10px] text-neutral-600 mb-1">Detalle (opcional)</label>
+                                <input type="text" value={createForm.reasonExtra}
+                                    onChange={e => setCreateForm(f => ({...f, reasonExtra: e.target.value}))}
+                                    placeholder="Detalle adicional..."
+                                    className="w-full px-2 py-1.5 border border-neutral-200 rounded text-xs"/>
+                            </div>
+                            <div className="col-span-1 flex gap-1 justify-end">
+                                <button onClick={() => setShowCreate(false)} className="px-2 py-1.5 text-xs font-semibold text-neutral-600 hover:bg-neutral-200 rounded">Cancelar</button>
+                                <button onClick={createManualApproval} disabled={creating}
+                                    className="px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50">
+                                    Crear
+                                </button>
+                            </div>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 mt-2 italic">
+                            Útil para rotativos (Producción/Siropes/Empaque) que hicieron extras y no las pudieron registrar por kiosko.
+                            Se crea como APROBADA.
+                        </p>
+                    </div>
+                )}
+                <div className="overflow-y-auto flex-1">
+                    {loading ? <div className="flex justify-center py-12"><Spinner/></div> : (
+                    <table className="w-full text-sm">
+                        <thead className="bg-neutral-50 border-b sticky top-0">
+                            <tr>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Empleado</th>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Fecha</th>
+                                <th className="px-2 py-2 text-right text-xs font-bold text-neutral-500 uppercase">H. Día</th>
+                                <th className="px-2 py-2 text-right text-xs font-bold text-neutral-500 uppercase">H. Noche</th>
+                                <th className="px-4 py-2 text-left text-xs font-bold text-neutral-500 uppercase">Motivo</th>
+                                <th className="px-4 py-2 text-center text-xs font-bold text-neutral-500 uppercase">Estado</th>
+                                <th className="px-2 py-2"></th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-100">
+                            {filtered.map((a) => (
+                                <tr key={a.id} className="hover:bg-blue-50/30">
+                                    <td className="px-4 py-2 font-medium text-neutral-800">{a.employee?.name}</td>
+                                    <td className="px-4 py-2 text-neutral-600 text-xs">{new Date(a.date).toISOString().substring(0,10)}</td>
+                                    <td className="px-2 py-2 text-right font-mono">{a.dayHours}</td>
+                                    <td className="px-2 py-2 text-right font-mono">{a.nightHours}</td>
+                                    <td className="px-4 py-2 text-neutral-600 text-xs">{a.reason || '—'}</td>
+                                    <td className="px-4 py-2 text-center">
+                                        <Badge className={
+                                            a.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' :
+                                            a.status === 'REJECTED' ? 'bg-red-100 text-red-700' :
+                                            'bg-amber-100 text-amber-800'
+                                        }>{a.status}</Badge>
+                                    </td>
+                                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                                        {a.status !== 'APPROVED' && (
+                                            <button onClick={() => setStatus(a.id, 'APPROVED')}
+                                                className="px-2 py-1 bg-emerald-600 text-white text-[11px] font-semibold rounded hover:bg-emerald-700">
+                                                Aprobar
+                                            </button>
+                                        )}
+                                        {a.status !== 'REJECTED' && (
+                                            <button onClick={() => setStatus(a.id, 'REJECTED')}
+                                                className="ml-1 px-2 py-1 bg-red-500 text-white text-[11px] font-semibold rounded hover:bg-red-600">
+                                                Rechazar
+                                            </button>
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                            {filtered.length === 0 && <tr><td colSpan={7} className="text-center text-neutral-400 py-12">Sin registros</td></tr>}
+                        </tbody>
+                    </table>
+                    )}
+                </div>
+                <div className="px-6 py-3 border-t bg-amber-50 text-xs text-amber-900">
+                    💡 Las extras solo se pagan cuando se aprueban. Las rechazadas no se incluyen en el devengado.
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function TabReports() {
     const [activeReport, setActiveReport] = useState('payroll');
     const [from, setFrom] = useState(monthStart());
@@ -1471,6 +1934,8 @@ function TabReports() {
     const [showHolidaysModal, setShowHolidaysModal] = useState(false);
     const [showConfigModal, setShowConfigModal] = useState(false);
     const [showSalariesModal, setShowSalariesModal] = useState(false);
+    const [payrollView, setPayrollView] = useState('hours'); // 'hours' | 'money'
+    const [showApprovalsModal, setShowApprovalsModal] = useState(false);
 
     useEffect(() => {
         api.get('/attendance/employees').then(r => setEmployees(r.data)).catch(()=>{});
@@ -1637,6 +2102,9 @@ function TabReports() {
                 <PayrollQuincenalView
                     data={payrollData}
                     loading={payrollLoading}
+                    view={payrollView}
+                    setView={setPayrollView}
+                    onOpenApprovals={() => setShowApprovalsModal(true)}
                 />
             )}
 
@@ -1648,6 +2116,12 @@ function TabReports() {
             )}
             {showSalariesModal && (
                 <SalariesModal onClose={() => { setShowSalariesModal(false); loadPayroll(payrollAnchor); }} />
+            )}
+            {showApprovalsModal && (
+                <OvertimeApprovalsModal
+                    anchorDate={payrollAnchor}
+                    onClose={() => { setShowApprovalsModal(false); loadPayroll(payrollAnchor); }}
+                />
             )}
 
             {/* Resultado */}

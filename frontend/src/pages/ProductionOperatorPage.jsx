@@ -763,6 +763,7 @@ const ProductionOperatorPage = () => {
     }, []);
 
     const [showAuxEventModal, setShowAuxEventModal] = useState(false);
+    const [failureModal, setFailureModal] = useState({ show: false, type: '', detail: '' });
 
     const AUX_EVENT_OPTIONS = [
         { name: 'CAMBIO DE AGUA',  duration: 30,  icon: '💧', color: 'cyan',   editable: false },
@@ -826,25 +827,9 @@ const ProductionOperatorPage = () => {
         const apiBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
 
         if (isFalla) {
-            const note = prompt('Describe brevemente la falla (opcional):', '') || '';
-            try {
-                const now = new Date();
-                const created = await api.post(`${apiBase}/schedule`, {
-                    flavor: 'FALLA',
-                    scheduledStart: now,
-                    scheduledEnd: new Date(now.getTime() + 60000),
-                    baseWeight: 0,
-                    mix: [],
-                    notes: note ? `${note}` : 'Falla reportada por operario'
-                });
-                await api.patch(`${apiBase}/${created.data.id}/aux-action`, { action: 'start' });
-                setShowAuxEventModal(false);
-                alert('⚠️ FALLA iniciada — Recuerda resolverla cuando se solucione');
-                fetchData(true);
-                fetchFailureStats();
-            } catch (e) {
-                alert('Error: ' + (e.response?.data?.error || e.message));
-            }
+            // Abre modal estilizado de selección de tipo de falla
+            setShowAuxEventModal(false);
+            setFailureModal({ show: true, type: '', detail: '' });
             return;
         }
 
@@ -869,6 +854,38 @@ const ProductionOperatorPage = () => {
             setShowAuxEventModal(false);
             alert(`✓ ${evt.name} registrado (${dur} min)`);
             fetchData(true);
+        } catch (e) {
+            alert('Error: ' + (e.response?.data?.error || e.message));
+        }
+    };
+
+    const FAILURE_TYPES = [
+        { name: 'Falta de ingredientes', icon: '🧂', color: 'amber',  desc: 'No hay materia prima preparada' },
+        { name: 'Falla mecánica',        icon: '⚙️', color: 'orange', desc: 'Equipo dañado o atascado' },
+        { name: 'Falla eléctrica',       icon: '⚡', color: 'yellow', desc: 'Corte o problema de energía' },
+        { name: 'Limpieza no programada',icon: '🧼', color: 'cyan',   desc: 'Aseo urgente fuera de cronograma' },
+        { name: 'Otro',                  icon: '❓', color: 'slate',  desc: 'Otra causa' },
+    ];
+
+    const submitFailure = async () => {
+        const { type, detail } = failureModal;
+        if (!type) { alert('Selecciona un tipo de falla'); return; }
+        const apiBase = activeLine === 'geniality' ? '/geniality/production' : '/production/liquipops';
+        const note = `[${type}]${detail ? ' ' + detail : ''}`;
+        try {
+            const now = new Date();
+            const created = await api.post(`${apiBase}/schedule`, {
+                flavor: 'FALLA',
+                scheduledStart: now,
+                scheduledEnd: new Date(now.getTime() + 60000),
+                baseWeight: 0,
+                mix: [],
+                notes: note,
+            });
+            await api.patch(`${apiBase}/${created.data.id}/aux-action`, { action: 'start' });
+            setFailureModal({ show: false, type: '', detail: '' });
+            fetchData(true);
+            fetchFailureStats();
         } catch (e) {
             alert('Error: ' + (e.response?.data?.error || e.message));
         }
@@ -1499,6 +1516,92 @@ const ProductionOperatorPage = () => {
                                     </button>
                                 );
                             })}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal estilizado de tipo de falla */}
+            {failureModal.show && (
+                <div
+                    className="fixed inset-0 bg-black/60 z-[10000] flex items-center justify-center p-4"
+                    onClick={() => setFailureModal({ show: false, type: '', detail: '' })}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-2">
+                                <div className="text-3xl">⚠️</div>
+                                <div>
+                                    <h3 className="text-lg font-extrabold text-red-700">Reportar falla</h3>
+                                    <p className="text-xs text-slate-500">El cronograma se pausa hasta que se resuelva</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setFailureModal({ show: false, type: '', detail: '' })}
+                                className="text-slate-400 hover:text-slate-600 p-1"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        <label className="block text-xs font-bold text-slate-600 uppercase mb-2">¿Qué tipo de falla?</label>
+                        <div className="grid grid-cols-2 gap-2 mb-4">
+                            {FAILURE_TYPES.map(t => {
+                                const colorMap = {
+                                    amber:  'bg-amber-50 border-amber-300 text-amber-800',
+                                    orange: 'bg-orange-50 border-orange-300 text-orange-800',
+                                    yellow: 'bg-yellow-50 border-yellow-300 text-yellow-800',
+                                    cyan:   'bg-cyan-50 border-cyan-300 text-cyan-800',
+                                    slate:  'bg-slate-50 border-slate-300 text-slate-800',
+                                };
+                                const activeMap = {
+                                    amber:  'ring-2 ring-amber-500 bg-amber-100',
+                                    orange: 'ring-2 ring-orange-500 bg-orange-100',
+                                    yellow: 'ring-2 ring-yellow-500 bg-yellow-100',
+                                    cyan:   'ring-2 ring-cyan-500 bg-cyan-100',
+                                    slate:  'ring-2 ring-slate-500 bg-slate-100',
+                                };
+                                const selected = failureModal.type === t.name;
+                                return (
+                                    <button
+                                        key={t.name}
+                                        onClick={() => setFailureModal(prev => ({ ...prev, type: t.name }))}
+                                        className={`p-3 rounded-xl border-2 ${colorMap[t.color]} ${selected ? activeMap[t.color] : ''} flex flex-col items-center gap-1 transition-all hover:scale-[1.02]`}
+                                    >
+                                        <span className="text-2xl">{t.icon}</span>
+                                        <span className="text-xs font-bold text-center leading-tight">{t.name}</span>
+                                        <span className="text-[10px] opacity-70 text-center leading-tight">{t.desc}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        <label className="block text-xs font-bold text-slate-600 uppercase mb-1">Detalle adicional (opcional)</label>
+                        <textarea
+                            value={failureModal.detail}
+                            onChange={e => setFailureModal(prev => ({ ...prev, detail: e.target.value }))}
+                            placeholder="Ej: faltó glucosa, no había materia prima preparada"
+                            rows={2}
+                            className="w-full p-2 border-2 border-slate-200 rounded-lg text-sm focus:outline-none focus:border-red-400"
+                        />
+
+                        <div className="flex gap-2 mt-4">
+                            <button
+                                onClick={() => setFailureModal({ show: false, type: '', detail: '' })}
+                                className="flex-1 px-4 py-2.5 bg-slate-100 text-slate-700 rounded-lg font-bold hover:bg-slate-200"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={submitFailure}
+                                disabled={!failureModal.type}
+                                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg font-black hover:bg-red-700 disabled:opacity-30 flex items-center justify-center gap-2"
+                            >
+                                ⚠️ Iniciar falla
+                            </button>
                         </div>
                     </div>
                 </div>

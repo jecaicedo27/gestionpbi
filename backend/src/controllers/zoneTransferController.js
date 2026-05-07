@@ -243,33 +243,77 @@ exports.transferIn = async (req, res) => {
                 // Decrement lot quantity and mark zone
                 const newLotQty = lot.currentQuantity - Math.round(quantity);
                 if (newLotQty <= 0) {
-                    // Entire lot moves to production
-                    await tx.materialLot.update({
-                        where: { id: materialLotId },
-                        data: { zone: 'PRODUCTION', currentQuantity: lot.currentQuantity }
+                    // Entire lot moves to production — merge into existing PRODUCTION row if present
+                    const existingProd = await tx.materialLot.findFirst({
+                        where: {
+                            productId: lot.productId,
+                            lotNumber: lot.lotNumber,
+                            zone: 'PRODUCTION',
+                            id: { not: materialLotId }
+                        }
                     });
+                    if (existingProd) {
+                        await tx.materialLot.update({
+                            where: { id: existingProd.id },
+                            data: {
+                                initialQuantity: existingProd.initialQuantity + lot.currentQuantity,
+                                currentQuantity: existingProd.currentQuantity + lot.currentQuantity,
+                                status: 'AVAILABLE',
+                                expiresAt: existingProd.expiresAt || lot.expiresAt
+                            }
+                        });
+                        await tx.materialLot.update({
+                            where: { id: materialLotId },
+                            data: { currentQuantity: 0, status: 'DEPLETED' }
+                        });
+                    } else {
+                        await tx.materialLot.update({
+                            where: { id: materialLotId },
+                            data: { zone: 'PRODUCTION', currentQuantity: lot.currentQuantity }
+                        });
+                    }
                 } else {
-                    // Partial transfer: create a new lot in PRODUCTION zone
+                    // Partial transfer: decrement WAREHOUSE row and consolidate into existing PRODUCTION row if any
                     await tx.materialLot.update({
                         where: { id: materialLotId },
                         data: { currentQuantity: newLotQty }
                     });
-                    await tx.materialLot.create({
-                        data: {
+                    const transferQty = Math.round(quantity);
+                    const existingProd = await tx.materialLot.findFirst({
+                        where: {
                             productId: lot.productId,
-                            siigoProductCode: lot.siigoProductCode,
-                            siigoProductName: lot.siigoProductName,
                             lotNumber: lot.lotNumber,
-                            initialQuantity: Math.round(quantity),
-                            currentQuantity: Math.round(quantity),
-                            unit: lot.unit,
-                            receivedAt: lot.receivedAt,
-                            expiresAt: lot.expiresAt,
-                            status: 'AVAILABLE',
-                            zone: 'PRODUCTION',
-                            purchaseOrderItemId: lot.purchaseOrderItemId
+                            zone: 'PRODUCTION'
                         }
                     });
+                    if (existingProd) {
+                        await tx.materialLot.update({
+                            where: { id: existingProd.id },
+                            data: {
+                                initialQuantity: existingProd.initialQuantity + transferQty,
+                                currentQuantity: existingProd.currentQuantity + transferQty,
+                                status: 'AVAILABLE',
+                                expiresAt: existingProd.expiresAt || lot.expiresAt
+                            }
+                        });
+                    } else {
+                        await tx.materialLot.create({
+                            data: {
+                                productId: lot.productId,
+                                siigoProductCode: lot.siigoProductCode,
+                                siigoProductName: lot.siigoProductName,
+                                lotNumber: lot.lotNumber,
+                                initialQuantity: transferQty,
+                                currentQuantity: transferQty,
+                                unit: lot.unit,
+                                receivedAt: lot.receivedAt,
+                                expiresAt: lot.expiresAt,
+                                status: 'AVAILABLE',
+                                zone: 'PRODUCTION',
+                                purchaseOrderItemId: lot.purchaseOrderItemId
+                            }
+                        });
+                    }
                 }
             }
 

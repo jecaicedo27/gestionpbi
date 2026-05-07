@@ -291,41 +291,35 @@
         <p id="overtimeMessage" style="margin-bottom:14px"></p>
 
         <div style="text-align:left;margin:14px 0">
-            <label style="display:block;font-size:13px;font-weight:700;margin-bottom:6px;color:#374151">📝 Motivo del tiempo extra:</label>
-            <textarea id="overtimeReason" rows="3" maxlength="200"
-                placeholder="Ej: Cierre de inventario, apoyo a producción, tarea pendiente..."
-                style="width:100%;padding:10px;border:2px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;background:white;color:#111827"></textarea>
+            <label style="display:block;font-size:13px;font-weight:700;margin-bottom:6px;color:#374151">📋 ¿Qué hiciste durante el tiempo extra?</label>
+            <select id="overtimeCategory" onchange="onOvertimeCategoryChange()"
+                style="width:100%;padding:10px;border:2px solid #d1d5db;border-radius:8px;font-size:14px;background:white;color:#111827">
+                <option value="">— Selecciona un motivo —</option>
+            </select>
+        </div>
+
+        <div id="overtimeAreaWrap" style="text-align:left;margin:14px 0;display:none">
+            <label style="display:block;font-size:13px;font-weight:700;margin-bottom:6px;color:#374151">🏭 ¿En qué área apoyaste?</label>
+            <select id="overtimeArea"
+                style="width:100%;padding:10px;border:2px solid #d1d5db;border-radius:8px;font-size:14px;background:white;color:#111827">
+                <option value="">— Selecciona el área —</option>
+            </select>
         </div>
 
         <div style="text-align:left;margin:14px 0">
-            <label style="display:block;font-size:13px;font-weight:700;margin-bottom:6px;color:#374151">🔐 PIN del Administrador que autoriza:</label>
-            <div style="display:flex;justify-content:center;gap:8px;margin-bottom:8px">
-                <div id="otPinDots" style="display:flex;gap:8px">
-                    <div class="ot-pin-dot" style="width:36px;height:44px;border:2px solid #d1d5db;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;background:white;color:#111827"></div>
-                    <div class="ot-pin-dot" style="width:36px;height:44px;border:2px solid #d1d5db;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;background:white;color:#111827"></div>
-                    <div class="ot-pin-dot" style="width:36px;height:44px;border:2px solid #d1d5db;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;background:white;color:#111827"></div>
-                    <div class="ot-pin-dot" style="width:36px;height:44px;border:2px solid #d1d5db;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;background:white;color:#111827"></div>
-                </div>
-            </div>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:240px;margin:0 auto">
-                <button onclick="otPinPress('1')" class="btn" style="padding:12px">1</button>
-                <button onclick="otPinPress('2')" class="btn" style="padding:12px">2</button>
-                <button onclick="otPinPress('3')" class="btn" style="padding:12px">3</button>
-                <button onclick="otPinPress('4')" class="btn" style="padding:12px">4</button>
-                <button onclick="otPinPress('5')" class="btn" style="padding:12px">5</button>
-                <button onclick="otPinPress('6')" class="btn" style="padding:12px">6</button>
-                <button onclick="otPinPress('7')" class="btn" style="padding:12px">7</button>
-                <button onclick="otPinPress('8')" class="btn" style="padding:12px">8</button>
-                <button onclick="otPinPress('9')" class="btn" style="padding:12px">9</button>
-                <button onclick="otPinClear()" class="btn btn-outline" style="padding:12px">Limpiar</button>
-                <button onclick="otPinPress('0')" class="btn" style="padding:12px">0</button>
-                <button onclick="otPinBack()" class="btn btn-outline" style="padding:12px">←</button>
-            </div>
+            <label style="display:block;font-size:13px;font-weight:700;margin-bottom:6px;color:#374151">📝 Detalle (opcional para casos predefinidos, obligatorio si elegiste "Otro"):</label>
+            <textarea id="overtimeReason" rows="2" maxlength="200"
+                placeholder="Detalle adicional o, si elegiste 'Otro', explica qué hiciste..."
+                style="width:100%;padding:10px;border:2px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;background:white;color:#111827"></textarea>
+        </div>
+
+        <div style="background:#FEF3C7;border:1px solid #F59E0B;padding:10px;border-radius:8px;font-size:12px;color:#78350F;margin:10px 0">
+            ⏳ Tu registro queda <b>pendiente de aprobación</b> por el administrador. No requiere PIN.
         </div>
 
         <div style="display:flex;gap:8px;margin-top:14px">
             <button class="btn btn-outline" onclick="cancelOvertime()" style="flex:1">Cancelar</button>
-            <button class="btn btn-primary" id="btnConfirmOvertime" onclick="confirmOvertime()" style="flex:2">Autorizar y registrar</button>
+            <button class="btn btn-primary" id="btnConfirmOvertime" onclick="confirmOvertime()" style="flex:2">Registrar</button>
         </div>
     </div>
 </div>
@@ -814,66 +808,107 @@ async function renderStep3() {
 //  SUBMIT ACCIÓN
 // ══════════════════════════════════════════════════════
 // Estado del modal de tiempo extra
-let otPinValue = '';
-let otPendingData = null; // { type, subtype } para retomar después de autorizar
+let otPendingData = null;          // { type, subtype } para retomar después de registrar
+let overtimeCategoriesCache = null; // se carga una vez del backend
 
-function otPinPress(d) {
-    if (otPinValue.length < 4) { otPinValue += d; renderOtPin(); }
+async function loadOvertimeCategories() {
+    if (overtimeCategoriesCache) return overtimeCategoriesCache;
+    try {
+        const r = await fetch(`${API}/overtime-categories`);
+        overtimeCategoriesCache = await r.json();
+    } catch {
+        overtimeCategoriesCache = [
+            { id: 'APOYO_AREA', label: 'Apoyo en otra área', requiresArea: true,
+              areas: ['MANTENIMIENTO','PRODUCCION','SIROPES','EMPAQUE','LOGISTICA','ASEO'] },
+            { id: 'EMPAQUE_PEND', label: 'Empaque pendiente' },
+            { id: 'CIERRE_BACHE', label: 'Cierre de bache' },
+            { id: 'FALTA_PERSONAL', label: 'Falta de personal en otro turno' },
+            { id: 'OTRO', label: 'Otro (especificar)' },
+        ];
+    }
+    return overtimeCategoriesCache;
 }
-function otPinBack() {
-    otPinValue = otPinValue.slice(0, -1); renderOtPin();
+
+async function populateOvertimeCategorySelect() {
+    const cats = await loadOvertimeCategories();
+    const sel = document.getElementById('overtimeCategory');
+    sel.innerHTML = '<option value="">— Selecciona un motivo —</option>'
+        + cats.map(c => `<option value="${c.id}">${c.label}</option>`).join('');
 }
-function otPinClear() {
-    otPinValue = ''; renderOtPin();
+
+function onOvertimeCategoryChange() {
+    const id = document.getElementById('overtimeCategory').value;
+    const cat = (overtimeCategoriesCache || []).find(c => c.id === id);
+    const wrap = document.getElementById('overtimeAreaWrap');
+    const areaSel = document.getElementById('overtimeArea');
+    if (cat?.requiresArea && Array.isArray(cat.areas)) {
+        wrap.style.display = 'block';
+        areaSel.innerHTML = '<option value="">— Selecciona el área —</option>'
+            + cat.areas.map(a => `<option value="${a}">${a}</option>`).join('');
+    } else {
+        wrap.style.display = 'none';
+        areaSel.value = '';
+    }
 }
-function renderOtPin() {
-    document.querySelectorAll('.ot-pin-dot').forEach((dot, i) => {
-        dot.textContent = otPinValue[i] ? '●' : '';
-        dot.style.borderColor = otPinValue.length > i ? '#6366f1' : '#d1d5db';
-    });
-}
+
 function cancelOvertime() {
     closeModal('modalOvertime');
-    otPinValue = '';
     otPendingData = null;
     document.getElementById('overtimeReason').value = '';
+    const cat = document.getElementById('overtimeCategory'); if (cat) cat.value = '';
+    const wrap = document.getElementById('overtimeAreaWrap'); if (wrap) wrap.style.display = 'none';
     document.querySelectorAll('#actionButtons button').forEach(b=>{b.disabled=false;b.style.opacity='1';});
 }
+
 async function confirmOvertime() {
-    const reason = document.getElementById('overtimeReason').value.trim();
+    const categoryId = document.getElementById('overtimeCategory').value;
+    if (!categoryId) { alert('Selecciona un motivo'); return; }
+    const cat = (overtimeCategoriesCache || []).find(c => c.id === categoryId);
+    let reasonExtra = document.getElementById('overtimeReason').value.trim();
+    let categoryStr = cat?.label || categoryId;
+
+    if (cat?.requiresArea) {
+        const area = document.getElementById('overtimeArea').value;
+        if (!area) { alert('Selecciona el área a la que apoyaste'); return; }
+        categoryStr = `${cat.label}: ${area}`;
+    }
+    if (categoryId === 'OTRO' && reasonExtra.length < 5) {
+        alert('Si elegiste "Otro", el detalle debe tener al menos 5 caracteres'); return;
+    }
+    const reason = reasonExtra ? `${categoryStr} — ${reasonExtra}` : categoryStr;
     if (reason.length < 5) { alert('El motivo debe tener al menos 5 caracteres'); return; }
-    if (otPinValue.length !== 4) { alert('PIN admin debe ser 4 dígitos'); return; }
 
     const btn = document.getElementById('btnConfirmOvertime');
-    btn.disabled = true; btn.textContent = 'Validando...';
+    btn.disabled = true; btn.textContent = 'Registrando...';
 
     try {
         const resp = await fetch(`${API}/justify-overtime`, {
             method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ cedula: currentEmployee.cedula, reason, adminPin: otPinValue })
+            body: JSON.stringify({ cedula: currentEmployee.cedula, reason, category: categoryId })
         });
         const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'No autorizado');
+        if (!resp.ok) throw new Error(data.error || 'Error al registrar');
 
         closeModal('modalOvertime');
-        otPinValue = ''; otPendingData = null;
+        otPendingData = null;
         document.getElementById('overtimeReason').value = '';
+        document.getElementById('overtimeCategory').value = '';
+        document.getElementById('overtimeAreaWrap').style.display = 'none';
         stopCamera();
 
-        // Mostrar confirmación
-        document.getElementById('successIcon').textContent = '✅';
-        document.getElementById('successTitle').textContent = '✅ Salida con tiempo extra registrada';
+        document.getElementById('successIcon').textContent = '⏳';
+        document.getElementById('successTitle').textContent = '⏳ Registro pendiente de aprobación';
         document.getElementById('successMessage').textContent = `${data.employeeName} — ${data.minutesOver} min extra`;
         document.getElementById('successInfo').innerHTML =
             `<div class="info-row"><span class="info-label">Horas día</span><span class="info-value">${data.dayHours}h</span></div>
              <div class="info-row"><span class="info-label">Horas noche</span><span class="info-value">${data.nightHours}h</span></div>
-             <div class="info-row"><span class="info-label">Autorizado por</span><span class="info-value">${data.authorizedBy}</span></div>`;
+             <div class="info-row"><span class="info-label">Estado</span><span class="info-value" style="color:#B45309">PENDIENTE de aprobación admin</span></div>`;
         showSuccess();
         setTimeout(() => { closeModal('modalSuccess'); goToStep(1); }, 5000);
     } catch (err) {
         alert('Error: ' + err.message);
     } finally {
-        btn.disabled = false; btn.textContent = 'Autorizar y registrar';
+        btn.disabled = false; btn.textContent = 'Registrar';
     }
 }
 function showSuccess() {
@@ -899,14 +934,16 @@ async function submitAction(type, subtype) {
         const res  = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
         const data = await res.json();
 
-        // Caso 422: requiere autorización admin para tiempo extra
+        // Caso 422: tiempo extra detectado — pedimos motivo (sin PIN admin)
         if (res.status === 422 && data.requiresOvertimeAuth) {
             otPendingData = { type, subtype };
-            otPinValue = '';
-            renderOtPin();
+            await populateOvertimeCategorySelect();
+            document.getElementById('overtimeCategory').value = '';
+            document.getElementById('overtimeAreaWrap').style.display = 'none';
+            document.getElementById('overtimeReason').value = '';
             document.getElementById('overtimeMessage').innerHTML =
                 `<strong>${data.employeeName}</strong>, saliste <strong>${data.minutesOver} min</strong> después de tu hora oficial. ` +
-                `Para registrar el tiempo extra necesitas la autorización del administrador.`;
+                `Selecciona el motivo y lo registramos. El administrador lo revisará después.`;
             document.getElementById('modalOvertime').classList.remove('hidden');
             return;
         }
@@ -1147,17 +1184,19 @@ document.getElementById('modalSuccess').addEventListener('click', e=>{
         if (document.hidden) {
             console.info('[kiosko] Pestaña oculta — liberando cámara');
             stopMonitor();
-        } else {
-            console.info('[kiosko] Pestaña visible — reactivando vigilancia');
-            setTimeout(startMonitor, 800); // pequeño delay para evitar carrera
         }
+        // No reactivamos vigilancia: ya está deshabilitada por diseño.
     });
 
     // También liberar al cerrar/recargar
     window.addEventListener('pagehide', stopMonitor);
 
-    // Iniciar cuando el DOM esté listo (da 3s para que el kiosko cargue primero)
-    setTimeout(startMonitor, 3000);
+    // ── DESACTIVADO 2026-05-06 — vigilancia continua no se usa ──
+    // El kiosko ya solo necesita /match (cédula + cara). El monitoreo
+    // de cruces saturaba el CPU del door-monitor (500%) y bloqueaba /match.
+    // setTimeout(startMonitor, 3000);
+    setBadge('inactive');
+    badge.style.display = 'none';
 
     // Auto-reload diario a las 4:00 AM Colombia para tomar versiones nuevas del HTML
     // (evita que la tablet quede atascada en versiones viejas indefinidamente)

@@ -220,11 +220,16 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
                     }
                 }
 
-                // 3. Delete output FinishedLotStocks created by this batch
+                // 3. Revertir/borrar FinishedLotStocks creados por este bache.
+                //    Si el lote ya tuvo despachos/ventas registradas (transfers fuera
+                //    del bache), NO se borra — solo se pone en 0/DEPLETED para
+                //    preservar trazabilidad. Borrarlo perdería el histórico de
+                //    salidas y dejaría transfers huérfanos.
                 const outputFinished = await tx.finishedLotStock.findMany({
                     where: { batchId: id },
-                    select: { id: true, productId: true, currentQuantity: true }
+                    select: { id: true, productId: true, currentQuantity: true, lotNumber: true }
                 });
+                let blockedFinished = 0;
                 for (const of_ of outputFinished) {
                     if (of_.productId && of_.currentQuantity > 0) {
                         await tx.product.update({
@@ -235,10 +240,28 @@ router.delete('/production-batches/:id', auth, async (req, res) => {
                             }
                         });
                     }
-                    console.log(`[deleteBatch] Deleted output FinishedLotStock ${of_.id} (${of_.currentQuantity} uds)`);
+                    // ¿Hay transfers de salida (despacho/venta) para este lote?
+                    const externalTransfers = await tx.finishedLotTransfer.count({
+                        where: {
+                            finishedLotStockId: of_.id,
+                            reason: { not: { contains: 'Ingreso desde producción' } }
+                        }
+                    });
+                    if (externalTransfers > 0) {
+                        // Tiene salidas: zero-out (no borrar) para preservar histórico
+                        await tx.finishedLotStock.update({
+                            where: { id: of_.id },
+                            data: { currentQuantity: 0, status: 'DEPLETED' }
+                        });
+                        blockedFinished++;
+                        console.log(`[deleteBatch] Zeroed FinishedLotStock ${of_.id} (lote ${of_.lotNumber}, ${of_.currentQuantity} uds) — ${externalTransfers} salidas/ventas previas, no se borra`);
+                    } else {
+                        await tx.finishedLotStock.delete({ where: { id: of_.id } });
+                        console.log(`[deleteBatch] Deleted FinishedLotStock ${of_.id} (lote ${of_.lotNumber}, ${of_.currentQuantity} uds)`);
+                    }
                 }
-                if (outputFinished.length > 0) {
-                    await tx.finishedLotStock.deleteMany({ where: { batchId: id } });
+                if (blockedFinished > 0) {
+                    console.warn(`[deleteBatch] ⚠️ ${blockedFinished} FinishedLotStocks no se borraron (ya tuvieron salidas) — quedaron en DEPLETED para preservar trazabilidad`);
                 }
 
                 // 4. Delete RPA executions linked to this batch's notes
@@ -287,6 +310,8 @@ router.use('/productive-traceability', productiveTraceabilityRoutes);
 router.use('/forensic-recovery', forensicRecoveryRoutes);
 const zoneTransferRoutes = require('./zoneTransferRoutes');
 router.use('/zone-transfers', zoneTransferRoutes);
+const printRoutes = require('./printRoutes');
+router.use('/print', printRoutes);
 router.use('/cart', cartRoutes);
 const finishedLotRoutes = require('./finishedLotRoutes');
 router.use('/finished-lots', finishedLotRoutes);

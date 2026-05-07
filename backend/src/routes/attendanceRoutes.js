@@ -74,6 +74,8 @@ router.put('/payroll-config',     auth, roles(ADMIN_ROLES), ac.updatePayrollConf
 router.get('/holidays',           auth, ac.listHolidays);
 router.post('/holidays',          auth, roles(ADMIN_ROLES), ac.createHoliday);
 router.delete('/holidays/:id',    auth, roles(ADMIN_ROLES), ac.deleteHoliday);
+router.get('/overtime-categories', ac.listOvertimeCategories);
+router.put('/overtime-categories', auth, roles(ADMIN_ROLES), ac.updateOvertimeCategories);
 router.get('/payroll-profiles',   auth, ac.listPayrollProfiles);
 router.put('/payroll-profiles',   auth, roles(ADMIN_ROLES), ac.upsertPayrollProfile);
 router.delete('/payroll-profiles/:employeeId', auth, roles(ADMIN_ROLES), ac.deletePayrollProfile);
@@ -84,6 +86,7 @@ router.delete('/labor-novelties/:id', auth, roles(ADMIN_ROLES), ac.deleteLaborNo
 // ── Aprobaciones de horas extra ──────────────────────────────────────────────
 router.get('/overtime-approvals',          auth, ac.listOvertimeApprovals);
 router.post('/overtime-approvals',         auth, roles(ADMIN_ROLES), ac.createOvertimeApproval);
+router.put('/overtime-approvals/:id/status', auth, roles(ADMIN_ROLES), ac.updateOvertimeApprovalStatus);
 router.delete('/overtime-approvals/:id',   auth, roles(ADMIN_ROLES), ac.deleteOvertimeApproval);
 router.get('/payroll-closures',   auth, ac.getPayrollClosures);
 router.get('/payroll-closures/:id', auth, ac.getPayrollClosureDetail);

@@ -55,6 +55,7 @@ import AdminLeaderBonusPage from './pages/AdminLeaderBonusPage';
 import TimingAnalysisPage from './pages/TimingAnalysisPage';
 import AdminPhysicalInventoryPage from './pages/AdminPhysicalInventoryPage';
 import ProductiveTraceabilityPage from './pages/ProductiveTraceability/ProductiveTraceabilityPage';
+import PrintLabelsPage from './pages/diseno/PrintLabelsPage';
 
 // ── Geniality Parallel Production System ──
 import GenialityTemplatesPage from './pages/Geniality/GenialityTemplatesPage';
@@ -225,6 +226,9 @@ function App() {
                             <Route path="admin/leader-bonus" element={<AdminLeaderBonusPage />} />
                             <Route path="admin/timing-analysis" element={<TimingAnalysisPage />} />
                             <Route path="admin/physical-inventory" element={<AdminPhysicalInventoryPage />} />
+
+                            {/* DISEÑO — Área de Impresión Etiquetas */}
+                            <Route path="diseno/imprimir" element={<PrintLabelsPage />} />
 
 
                             {/* Assembly System - Geniality (Siropes) */}

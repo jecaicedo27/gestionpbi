@@ -2453,6 +2453,7 @@ enum UserRole {
   QUIMICO
   RECURSOS_HUMANOS
   MECANICO
+  DISENO
 }
 
 enum ProductType {

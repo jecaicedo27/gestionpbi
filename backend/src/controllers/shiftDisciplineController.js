@@ -867,18 +867,24 @@ exports.history = async (req, res) => {
 
             // Cálculo de bono por turno (alineado con monthlyBonus):
             //   bono = base × (70% × pctExtras + 30% × pctCronograma)
-            // Privilegia extras (lo que la empresa empieza a ganar) pero deja
-            // piso por cumplimiento del cronograma normal.
+            // Falla mecánica (2026-05-07): NO regala 100% como antes. Ahora
+            // protege solo los EXTRAS proporcional a la duración solapada con
+            // el turno (fallRatio). El cronograma sigue evaluándose real
+            // porque los pasos administrativos no dependen de la máquina.
             let bonusValue = 0;
             try {
                 const bases = await countBatchesForShift(r.shiftStart, r.shiftEnd);
                 const esfer = await countEsferForShift(r.shiftStart, r.shiftEnd);
-                const hadFailure = await shiftHadFailure(r.shiftStart, r.shiftEnd);
+                const failMin = await shiftFailureDurationMin(r.shiftStart, r.shiftEnd);
+                const shiftMin = (r.shiftEnd - r.shiftStart) / 60000;
+                const fallRatio = shiftMin > 0 ? Math.min(1, failMin / shiftMin) : 0;
                 const esferTarget = _esferTargetForShift(r.shiftDate, r.shiftCode);
                 const baseTarget  = _baseTargetForShift(r.shiftDate, r.shiftCode);
-                const pctCron   = hadFailure ? 1.0 : computePctCronogramaTotal(steps);
-                const pctEsfer  = hadFailure ? 1.0 : interpolatePctByBaches(esfer, esferTarget);
-                const pctBases  = hadFailure ? 1.0 : interpolatePctByBaches(bases, baseTarget);
+                const realPctEsfer = interpolatePctByBaches(esfer, esferTarget);
+                const realPctBases = interpolatePctByBaches(bases, baseTarget);
+                const pctEsfer = realPctEsfer * (1 - fallRatio) + fallRatio;
+                const pctBases = realPctBases * (1 - fallRatio) + fallRatio;
+                const pctCron  = computePctCronogramaTotal(steps); // siempre real
                 const pctExtras = (pctEsfer + pctBases) / 2;
                 const pct = (pctExtras * 0.7) + (pctCron * 0.3);
                 bonusValue = Math.round(valuePerShift * pct);
@@ -1207,20 +1213,34 @@ const countBatchesForShift = async (shiftStart, shiftEnd) => {
     return total;
 };
 
-// Devuelve true si en la ventana del turno hubo al menos una FALLA registrada
-// (productionBatch flavor='FALLA' que solapa la ventana).
-const shiftHadFailure = async (shiftStart, shiftEnd) => {
-    const fail = await prisma.productionBatch.findFirst({
+// Suma minutos de FALLAs registradas que solapan con la ventana del turno.
+// Solape parcial cuenta solo el tramo solapado (no la falla completa si parte
+// queda fuera del turno). Reemplazó al antiguo `shiftHadFailure` (boolean) en
+// 2026-05-07 — ahora el bono por falla es proporcional a la duración, no
+// regalado al 100% por presencia binaria.
+const shiftFailureDurationMin = async (shiftStart, shiftEnd) => {
+    const fails = await prisma.productionBatch.findMany({
         where: {
             flavor: 'FALLA',
             OR: [
-                { startedAt: { gte: shiftStart, lt: shiftEnd } },
-                { scheduledStart: { gte: shiftStart, lt: shiftEnd } },
+                { startedAt: { lt: shiftEnd } },
+                { scheduledStart: { lt: shiftEnd } },
             ],
         },
-        select: { id: true },
+        select: { startedAt: true, completedAt: true, scheduledStart: true, scheduledEnd: true },
     });
-    return !!fail;
+    let totalMin = 0;
+    for (const f of fails) {
+        const fStart = f.startedAt || f.scheduledStart;
+        const fEnd   = f.completedAt || f.scheduledEnd || new Date();
+        if (!fStart) continue;
+        const overlapStart = fStart > shiftStart ? fStart : shiftStart;
+        const overlapEnd   = fEnd   < shiftEnd   ? fEnd   : shiftEnd;
+        if (overlapEnd > overlapStart) {
+            totalMin += (overlapEnd - overlapStart) / 60000;
+        }
+    }
+    return totalMin;
 };
 
 exports.monthlyBonus = async (req, res) => {
@@ -1285,7 +1305,9 @@ exports.monthlyBonus = async (req, res) => {
         for (const r of runs) {
             const bases = await countBatchesForShift(r.shiftStart, r.shiftEnd);
             const esfer = await countEsferForShift(r.shiftStart, r.shiftEnd);
-            const hadFailure = await shiftHadFailure(r.shiftStart, r.shiftEnd);
+            const failMin = await shiftFailureDurationMin(r.shiftStart, r.shiftEnd);
+            const shiftMin = (r.shiftEnd - r.shiftStart) / 60000;
+            const fallRatio = shiftMin > 0 ? Math.min(1, failMin / shiftMin) : 0;
             const esferTarget = _esferTargetForShift(r.shiftDate, r.shiftCode);
             const baseTarget  = _baseTargetForShift(r.shiftDate, r.shiftCode);
             const stepsArr = Array.isArray(r.steps) ? r.steps : [];
@@ -1296,9 +1318,14 @@ exports.monthlyBonus = async (req, res) => {
             // si sí trabajó.
             //   • 70% EXTRAS: ½(pctEsfer + pctBases) — paga sobre 5/6/7 baches
             //   • 30% CRONOGRAMA: pctCronogramaTotal (bases + alg + prot)
-            const pctCron   = hadFailure ? 1.0 : computePctCronogramaTotal(stepsArr);
-            const pctEsfer  = hadFailure ? 1.0 : interpolatePctByBaches(esfer, esferTarget);
-            const pctBases  = hadFailure ? 1.0 : interpolatePctByBaches(bases, baseTarget);
+            // Falla mecánica (2026-05-07): protege EXTRAS proporcional a fallRatio
+            // (duración_falla / duración_turno). El cronograma sigue real porque
+            // los pasos administrativos no dependen de la máquina.
+            const realPctEsfer = interpolatePctByBaches(esfer, esferTarget);
+            const realPctBases = interpolatePctByBaches(bases, baseTarget);
+            const pctEsfer = realPctEsfer * (1 - fallRatio) + fallRatio;
+            const pctBases = realPctBases * (1 - fallRatio) + fallRatio;
+            const pctCron  = computePctCronogramaTotal(stepsArr); // siempre real
             const pctExtras = (pctEsfer + pctBases) / 2;
             const pctSoporte = computePctSoporte(stepsArr); // informativo
             const pctProduccion = (pctExtras * 0.7) + (pctCron * 0.3);
@@ -1321,14 +1348,14 @@ exports.monthlyBonus = async (req, res) => {
                 .map(([t, v]) => `${t}: ${v.done}/${v.total}`)
                 .join(' · ');
 
+            const hadFailure = fallRatio > 0;
             const reasons = [];
-            if (!hadFailure) {
-                reasons.push(`Esfer ${esfer}/${esferTarget} → ${(pctEsfer*100).toFixed(0)}% · Bases ${bases.toFixed(1)}/${baseTarget} → ${(pctBases*100).toFixed(0)}%`);
-                if (pctSoporte < 1) {
-                    reasons.push(`Soporte ${(pctSoporte*100).toFixed(0)}% (alginatos+protección) → ${breakdown}`);
-                }
-            } else {
-                reasons.push('FALLA registrada → mantiene 100% esfer y bases');
+            reasons.push(`Esfer ${esfer}/${esferTarget} → ${(pctEsfer*100).toFixed(0)}% · Bases ${bases.toFixed(1)}/${baseTarget} → ${(pctBases*100).toFixed(0)}%`);
+            if (hadFailure) {
+                reasons.push(`FALLA ${Math.round(failMin)}min (${(fallRatio*100).toFixed(0)}% del turno) → protección parcial extras`);
+            }
+            if (pctSoporte < 1) {
+                reasons.push(`Soporte ${(pctSoporte*100).toFixed(0)}% (alginatos+protección) → ${breakdown}`);
             }
             if (adherence < 1) reasons.push(`Adherencia ${Math.round(r.finalScore || 0)}% (informativo)`);
 
